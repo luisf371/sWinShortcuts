@@ -1,0 +1,74 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Color x:Key="AccentColor">#FF3C9AD6</Color>
+    <Color x:Key="AccentDarkColor">#FF2579AD</Color>
+    <Color x:Key="AccentLightColor">#FF65BDED</Color>
+    <Color x:Key="BackgroundColor">#FF070A0F</Color>
+    <Color x:Key="BackgroundElevatedColor">#FF0E141D</Color>
+    <Color x:Key="SurfaceColor">#FF141E2B</Color>
+    <Color x:Key="InputSurfaceColor">#FF0F1A26</Color>
+    <Color x:Key="BorderColor">#FF1E2A3B</Color>
+    <Color x:Key="ForegroundPrimaryColor">#FFE1E1E1</Color>
+    <Color x:Key="ForegroundSecondaryColor">#FF7D7D7D</Color>
+    <!-- ComboBox natural white background with dark text -->
+    <Color x:Key="ComboBoxBackgroundColor">#FFFFFFFF</Color>
+    <Color x:Key="ComboBoxForegroundColor">#FF000000</Color>
+
+    <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}" />
+    <SolidColorBrush x:Key="AccentDarkBrush" Color="{StaticResource AccentDarkColor}" />
+    <SolidColorBrush x:Key="AccentLightBrush" Color="{StaticResource AccentLightColor}" />
+    <SolidColorBrush x:Key="BackgroundBrush" Color="{StaticResource BackgroundColor}" />
+    <SolidColorBrush x:Key="BackgroundElevatedBrush" Color="{StaticResource BackgroundElevatedColor}" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}" />
+    <SolidColorBrush x:Key="InputSurfaceBrush" Color="{StaticResource InputSurfaceColor}" />
+    <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}" />
+    <SolidColorBrush x:Key="ForegroundPrimaryBrush" Color="{StaticResource ForegroundPrimaryColor}" />
+    <SolidColorBrush x:Key="ForegroundSecondaryBrush" Color="{StaticResource ForegroundSecondaryColor}" />
+    <SolidColorBrush x:Key="ComboBoxBackgroundBrush" Color="{StaticResource ComboBoxBackgroundColor}" />
+    <SolidColorBrush x:Key="ComboBoxForegroundBrush" Color="{StaticResource ComboBoxForegroundColor}" />
+
+    <!-- Light style for ComboBox dropdown items -->
+    <Style x:Key="ComboBoxItemLightStyle" TargetType="ComboBoxItem">
+        <Setter Property="Foreground" Value="{StaticResource ComboBoxForegroundBrush}" />
+        <Setter Property="Background" Value="{StaticResource ComboBoxBackgroundBrush}" />
+        <Setter Property="Padding" Value="6,3" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Border"
+                            Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter>
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource ComboBoxForegroundBrush}" />
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{StaticResource AccentLightBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{StaticResource AccentBrush}" />
+                        </Trigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Border" Property="TextElement.Foreground" Value="{StaticResource ForegroundPrimaryBrush}" />
+                        </MultiTrigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsSelected" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="Border" Property="TextElement.Foreground" Value="{StaticResource ForegroundPrimaryBrush}" />
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>
