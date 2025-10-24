@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.IO;
 using System.Windows;
 using Forms = System.Windows.Forms;
 
@@ -11,6 +12,7 @@ public sealed class SystemTrayService : ISystemTrayService
     private Forms.NotifyIcon? _notifyIcon;
     private Window? _mainWindow;
     private bool _disposed;
+    private Icon? _customIcon;
 
     public SystemTrayService()
     {
@@ -41,6 +43,39 @@ public sealed class SystemTrayService : ISystemTrayService
         menu.Items.Add("Open", null, (_, _) => ShowMainWindow());
         menu.Items.Add("Exit", null, (_, _) => _application.Dispatcher.Invoke(() => _application.Shutdown()));
         _notifyIcon.ContextMenuStrip = menu;
+    }
+
+    public void SetIcon(string iconPath)
+    {
+        ThrowIfDisposed();
+
+        if (_notifyIcon is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(iconPath) || !File.Exists(iconPath))
+            {
+                _notifyIcon.Icon = SystemIcons.Application;
+                _customIcon?.Dispose();
+                _customIcon = null;
+                return;
+            }
+
+            var newIcon = new Icon(iconPath);
+            _customIcon?.Dispose();
+            _customIcon = newIcon;
+            _notifyIcon.Icon = _customIcon;
+        }
+        catch
+        {
+            // Fallback to default icon on error
+            _notifyIcon.Icon = SystemIcons.Application;
+            _customIcon?.Dispose();
+            _customIcon = null;
+        }
     }
 
     public void ShowBalloon(string title, string message)
@@ -82,6 +117,9 @@ public sealed class SystemTrayService : ISystemTrayService
             _notifyIcon.Dispose();
             _notifyIcon = null;
         }
+
+        _customIcon?.Dispose();
+        _customIcon = null;
     }
 
     private void ShowMainWindow()

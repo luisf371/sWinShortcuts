@@ -9,9 +9,20 @@
         Height="720"
         MinWidth="960"
         MinHeight="640"
+        ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource BackgroundBrush}"
-        x:Name="RootWindow">
+        x:Name="RootWindow"
+        Closing="Window_Closing"
+        SizeChanged="Window_SizeChanged"
+        LocationChanged="Window_LocationChanged">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="32"
+                      ResizeBorderThickness="5"
+                      GlassFrameThickness="0"
+                      CornerRadius="0"
+                      UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <Window.Resources>
         <conv:BooleanNegationConverter x:Key="NotConverter" />
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
@@ -19,13 +30,55 @@
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
     </Window.Resources>
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        
+        <!-- Custom Title Bar -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource BackgroundElevatedBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid>
+                <TextBlock Text="sWinShortcuts"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Left"
+                           Margin="12,0,0,0"
+                           Foreground="{DynamicResource ForegroundPrimaryBrush}"
+                           FontSize="12" />
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top">
+                    <Button Click="MinimizeButton_Click"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button.ToolTip>
+                            <ToolTip Content="Minimize" Background="#FF1E1E1E" Foreground="White" />
+                        </Button.ToolTip>
+                        <TextBlock Text="_" FontSize="16" FontWeight="Bold" Margin="0,-8,0,0" />
+                    </Button>
+                    <Button Click="CloseButton_Click"
+                            Style="{StaticResource TitleBarCloseButtonStyle}"
+                            WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button.ToolTip>
+                            <ToolTip Content="Close" Background="#FF1E1E1E" Foreground="White" />
+                        </Button.ToolTip>
+                        <TextBlock Text="X" FontSize="12" FontWeight="Normal" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Main Content -->
+        <Grid Grid.Row="1">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="2*" />
             <ColumnDefinition Width="8*" />
         </Grid.ColumnDefinitions>
 
         <Border Grid.Column="0"
-                Margin="16"
+                Margin="16,8,16,16"
                 Padding="16"
                 Background="{DynamicResource BackgroundElevatedBrush}"
                 CornerRadius="12">
@@ -74,21 +127,28 @@
         </Border>
 
         <Border Grid.Column="1"
-                Margin="16"
+                Margin="16,8,16,16"
                 Padding="0"
                 Background="{DynamicResource BackgroundElevatedBrush}"
                 CornerRadius="12">
-            <ScrollViewer Margin="0" Padding="24" Background="{StaticResource BackgroundElevatedBrush}">
+            <ScrollViewer Margin="0" Padding="24,16,24,24" Background="{StaticResource BackgroundElevatedBrush}">
                 <ContentControl Content="{Binding SelectedProfile}">
                                         <ContentControl.ContentTemplate>
                         <DataTemplate DataType="{x:Type vm:ProfileViewModel}">
                             <StackPanel Margin="0">
-                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,12">
-                                    <TextBlock Text="{Binding Name}" FontSize="20" FontWeight="Bold" />
-                                    <CheckBox Content="Enabled" IsChecked="{Binding IsEnabled}" Margin="16,0,0,0" />
-                                </StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <TextBlock Text="{Binding Name}"
+                                              FontSize="20"
+                                              FontWeight="Bold"
+                                              VerticalAlignment="Center"
+                                              HorizontalAlignment="Left" />
+                                    <CheckBox Content="Enabled"
+                                             IsChecked="{Binding IsEnabled}"
+                                             HorizontalAlignment="Right"
+                                             VerticalAlignment="Center" />
+                                </Grid>
 
-                                <StackPanel Margin="0,0,0,12"
+                                <StackPanel Margin="0,0,0,8"
                                             Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                     <TextBlock Text="Executable" Margin="0,0,0,4" />
                                     <DockPanel>
@@ -100,7 +160,7 @@
                                     </DockPanel>
                                 </StackPanel>
 
-                                <GroupBox Header="Alt + Mouse" Padding="16" Margin="0,0,0,12"
+                                <GroupBox Header="Alt + Mouse" Padding="16" Margin="0,0,0,8"
                                           Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                     <StackPanel>
                                         <CheckBox Content="Enable Alt modifiers" IsChecked="{Binding AltMouse.IsEnabled}" />
@@ -200,7 +260,7 @@
                                     </StackPanel>
                                 </GroupBox>
 
-                                <GroupBox Header="Right Mouse Overrides" Padding="16" Margin="0,0,0,12"
+                                <GroupBox Header="Right Mouse Overrides" Padding="16" Margin="0,0,0,8"
                                           Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                     <StackPanel>
                                         <CheckBox Content="Enable right mouse overrides"
@@ -270,7 +330,7 @@
                                     </StackPanel>
                                 </GroupBox>
 
-                                <GroupBox Header="Caps Lock" Padding="16" Margin="0,0,0,12">
+                                <GroupBox Header="Caps Lock" Padding="16" Margin="0,0,0,8">
                                     <StackPanel>
                                         <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                             <TextBlock Text="Mode" VerticalAlignment="Center" />
@@ -294,7 +354,7 @@
                                     </StackPanel>
                                 </GroupBox>
 
-                                <GroupBox Header="Windows Launcher" Padding="16" Margin="0,0,0,12"
+                                <GroupBox Header="Windows Launcher" Padding="16" Margin="0,0,0,8"
                                           Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfTrue}}">
                                     <StackPanel>
                                         <ItemsControl ItemsSource="{Binding WindowsLaunchers}">
@@ -318,7 +378,6 @@
                                         </ItemsControl>
                                     </StackPanel>
                                 </GroupBox>
-                                <TextBlock Text="Changes are saved automatically." Foreground="{StaticResource ForegroundSecondaryBrush}" Margin="0,12,0,0" />
 
                             </StackPanel>
                         </DataTemplate>
@@ -326,6 +385,7 @@
                 </ContentControl>
             </ScrollViewer>
         </Border>
+        </Grid>
     </Grid>
 </Window>
 

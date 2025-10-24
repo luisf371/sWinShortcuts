@@ -10,4 +10,6 @@ public interface ISystemTrayService : IDisposable
     void ShowBalloon(string title, string message);
 
     void UpdateStatus(bool isProfileActive, string? profileName);
+
+    void SetIcon(string iconPath);
 }
