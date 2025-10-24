@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:sWinShortcuts.ViewModels"
         xmlns:conv="clr-namespace:sWinShortcuts.Converters"
+        xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
         Title="sWinShortcuts"
         Width="1100"
         Height="720"
@@ -91,11 +92,11 @@
                                             Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                     <TextBlock Text="Executable" Margin="0,0,0,4" />
                                     <DockPanel>
-                                        <TextBox Text="{Binding Executable, UpdateSourceTrigger=PropertyChanged}"
-                                                 MinWidth="320" />
                                         <Button Content="Browse"
                                                 Command="{Binding DataContext.BrowseExecutableCommand, ElementName=RootWindow}"
+                                                DockPanel.Dock="Right"
                                                 Margin="8,0,0,0" />
+                                        <TextBox Text="{Binding Executable, UpdateSourceTrigger=PropertyChanged}" />
                                     </DockPanel>
                                 </StackPanel>
 
@@ -128,6 +129,7 @@
                                             <ComboBox Grid.Row="1" Grid.Column="1"
                                                       ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                       SelectedItem="{Binding AltMouse.LeftButton.TapKey, Mode=TwoWay}"
+                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                       Margin="4,2">
                                                 <ComboBox.ItemTemplate>
                                                     <DataTemplate>
@@ -138,6 +140,7 @@
                                             <ComboBox Grid.Row="1" Grid.Column="2"
                                                       ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                       SelectedItem="{Binding AltMouse.LeftButton.HoldKey, Mode=TwoWay}"
+                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                       Margin="4,2">
                                                 <ComboBox.ItemTemplate>
                                                     <DataTemplate>
@@ -150,6 +153,7 @@
                                             <ComboBox Grid.Row="2" Grid.Column="1"
                                                       ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                       SelectedItem="{Binding AltMouse.RightButton.TapKey, Mode=TwoWay}"
+                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                       Margin="4,2">
                                                 <ComboBox.ItemTemplate>
                                                     <DataTemplate>
@@ -160,6 +164,7 @@
                                             <ComboBox Grid.Row="2" Grid.Column="2"
                                                       ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                       SelectedItem="{Binding AltMouse.RightButton.HoldKey, Mode=TwoWay}"
+                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                       Margin="4,2">
                                                 <ComboBox.ItemTemplate>
                                                     <DataTemplate>
@@ -172,6 +177,7 @@
                                             <ComboBox Grid.Row="3" Grid.Column="1"
                                                       ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                       SelectedItem="{Binding AltMouse.MiddleButton.TapKey, Mode=TwoWay}"
+                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                       Margin="4,2">
                                                 <ComboBox.ItemTemplate>
                                                     <DataTemplate>
@@ -182,6 +188,7 @@
                                             <ComboBox Grid.Row="3" Grid.Column="2"
                                                       ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                       SelectedItem="{Binding AltMouse.MiddleButton.HoldKey, Mode=TwoWay}"
+                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                       Margin="4,2">
                                                 <ComboBox.ItemTemplate>
                                                     <DataTemplate>
@@ -214,7 +221,8 @@
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
                                                             <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                                      SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                                      SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                                 <ComboBox.ItemTemplate>
                                                                     <DataTemplate>
                                                                         <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
@@ -228,7 +236,8 @@
                                                     <DataGridTemplateColumn.CellTemplate>
                                                         <DataTemplate>
                                                             <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                                      SelectedItem="{Binding TargetKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                                      SelectedItem="{Binding TargetKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                                 <ComboBox.ItemTemplate>
                                                                     <DataTemplate>
                                                                         <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
@@ -238,11 +247,25 @@
                                                         </DataTemplate>
                                                     </DataGridTemplateColumn.CellTemplate>
                                                 </DataGridTemplateColumn>
+                                                <DataGridTemplateColumn Header="" Width="Auto">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Button Content="✕"
+                                                                    Command="{Binding DataContext.RemoveRightMouseOverrideCommand, ElementName=RootWindow}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Width="24"
+                                                                    Height="24"
+                                                                    Padding="0"
+                                                                    FontSize="14"
+                                                                    ToolTip="Remove this mapping" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
                                             </DataGrid.Columns>
                                         </DataGrid>
                                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                                             <Button Content="Add Mapping" Command="{Binding DataContext.AddRightMouseOverrideCommand, ElementName=RootWindow}" Width="130" />
-                                            <Button Content="Remove Selected" Command="{Binding DataContext.RemoveRightMouseOverrideCommand, ElementName=RootWindow}" Width="150" Margin="8,0,0,0" />
+                                            <Button Content="Remove All Mappings" Command="{Binding DataContext.RemoveAllRightMouseOverridesCommand, ElementName=RootWindow}" Width="170" Margin="8,0,0,0" />
                                         </StackPanel>
                                     </StackPanel>
                                 </GroupBox>
@@ -259,6 +282,7 @@
                                             <TextBlock Text="Remap target" VerticalAlignment="Center" />
                                             <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                       SelectedItem="{Binding CapsLockRemapKey, Mode=TwoWay}"
+                                                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                       Margin="8,0,0,0" Width="160">
                                                 <ComboBox.ItemTemplate>
                                                     <DataTemplate>
@@ -281,12 +305,13 @@
                                                             <TextBlock Text="Win+" Foreground="{StaticResource ForegroundPrimaryBrush}" />
                                                             <TextBlock Text="{Binding Key, Converter={StaticResource KeyDisplayConverter}}" Foreground="{StaticResource ForegroundPrimaryBrush}" />
                                                         </StackPanel>
-                                                        <TextBox Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}" MinWidth="260" />
+                                                        <CheckBox Content="Run as admin" IsChecked="{Binding RunAsAdministrator}" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" />
                                                         <Button Content="Browse"
                                                                 Command="{Binding DataContext.BrowseLauncherTargetCommand, ElementName=RootWindow}"
                                                                 CommandParameter="{Binding}"
+                                                                DockPanel.Dock="Right"
                                                                 Margin="8,0,0,0" Width="80" />
-                                                        <CheckBox Content="Run as admin" IsChecked="{Binding RunAsAdministrator}" Margin="12,0,0,0" VerticalAlignment="Center" />
+                                                        <TextBox Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}" />
                                                     </DockPanel>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>

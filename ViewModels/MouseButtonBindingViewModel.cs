@@ -15,30 +15,44 @@ public sealed class MouseButtonBindingViewModel : ViewModelBase
 
     public event EventHandler? Changed;
 
-    public Key? TapKey
+    public Key TapKey
     {
-        get => _model.TapKey;
+        get => _model.TapKey ?? Key.None;
         set
         {
-            if (_model.TapKey != value)
+            System.Diagnostics.Debug.WriteLine($"[DEBUG] TapKey setter called with value: {value}");
+            var newValue = value == Key.None ? null : (Key?)value;
+            if (_model.TapKey != newValue)
             {
-                _model.TapKey = value;
+                System.Diagnostics.Debug.WriteLine($"[DEBUG] TapKey changing from {(_model.TapKey?.ToString() ?? "NULL")} to {(newValue?.ToString() ?? "NULL")}");
+                _model.TapKey = newValue;
                 OnPropertyChanged();
                 Changed?.Invoke(this, EventArgs.Empty);
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"[DEBUG] TapKey value unchanged: {value}");
             }
         }
     }
 
-    public Key? HoldKey
+    public Key HoldKey
     {
-        get => _model.HoldKey;
+        get => _model.HoldKey ?? Key.None;
         set
         {
-            if (_model.HoldKey != value)
+            System.Diagnostics.Debug.WriteLine($"[DEBUG] HoldKey setter called with value: {value}");
+            var newValue = value == Key.None ? null : (Key?)value;
+            if (_model.HoldKey != newValue)
             {
-                _model.HoldKey = value;
+                System.Diagnostics.Debug.WriteLine($"[DEBUG] HoldKey changing from {(_model.HoldKey?.ToString() ?? "NULL")} to {(newValue?.ToString() ?? "NULL")}");
+                _model.HoldKey = newValue;
                 OnPropertyChanged();
                 Changed?.Invoke(this, EventArgs.Empty);
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"[DEBUG] HoldKey value unchanged: {value}");
             }
         }
     }

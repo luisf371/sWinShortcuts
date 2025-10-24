@@ -20,7 +20,7 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IDialogService _dialogService;
     private readonly ObservableCollection<ProfileViewModel> _profiles = [];
     private readonly IReadOnlyList<Key> _keyOptions = KeyCatalog.GetCommonKeys();
-    private readonly IReadOnlyList<Key?> _keyOptionsWithNone;
+    private readonly IReadOnlyList<Key> _keyOptionsWithNone;
     private readonly IReadOnlyList<CapsLockMode> _capsLockModes = Enum.GetValues<CapsLockMode>();
     private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
 
@@ -28,7 +28,7 @@ public sealed partial class MainViewModel : ViewModelBase
     {
         _profileManager = profileManager ?? throw new ArgumentNullException(nameof(profileManager));
         _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
-        _keyOptionsWithNone = new[] { (Key?)null }.Concat(_keyOptions.Select(k => (Key?)k)).ToArray();
+        _keyOptionsWithNone = new[] { Key.None }.Concat(_keyOptions).ToArray();
         Profiles = new ReadOnlyObservableCollection<ProfileViewModel>(_profiles);
 
         _profileManager.ProfileAdded += OnProfileAdded;
@@ -39,7 +39,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
     public IReadOnlyList<Key> KeyOptions => _keyOptions;
 
-    public IReadOnlyList<Key?> KeyOptionsWithNone => _keyOptionsWithNone;
+    public IReadOnlyList<Key> KeyOptionsWithNone => _keyOptionsWithNone;
 
     public IReadOnlyList<CapsLockMode> CapsLockModes => _capsLockModes;
 
@@ -128,20 +128,33 @@ public sealed partial class MainViewModel : ViewModelBase
         SelectedProfile?.AddRightMouseOverride();
     }
 
-    [RelayCommand(CanExecute = nameof(CanRemoveRightMouse))]
-    private void RemoveRightMouseOverride()
+    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    private void RemoveRightMouseOverride(RightMouseOverrideEntryViewModel? entry)
     {
         if (SelectedProfile is null)
         {
             return;
         }
 
-        SelectedProfile.RemoveRightMouseOverride(SelectedProfile.SelectedRightMouseOverride);
+        SelectedProfile.RemoveRightMouseOverride(entry);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    private void RemoveAllRightMouseOverrides()
+    {
+        if (SelectedProfile is null)
+        {
+            return;
+        }
+
+        // Remove all entries by clearing the collection
+        while (SelectedProfile.RightMouseOverrides.Count > 0)
+        {
+            SelectedProfile.RemoveRightMouseOverride(SelectedProfile.RightMouseOverrides[0]);
+        }
     }
 
     private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false };
-
-    private bool CanRemoveRightMouse() => SelectedProfile is { IsWindowsProfile: false, SelectedRightMouseOverride: not null };
 
     [RelayCommand(CanExecute = nameof(CanBrowseExecutable))]
     private void BrowseExecutable()
@@ -181,6 +194,7 @@ public sealed partial class MainViewModel : ViewModelBase
         SaveProfileCommand.NotifyCanExecuteChanged();
         AddRightMouseOverrideCommand.NotifyCanExecuteChanged();
         RemoveRightMouseOverrideCommand.NotifyCanExecuteChanged();
+        RemoveAllRightMouseOverridesCommand.NotifyCanExecuteChanged();
         BrowseExecutableCommand.NotifyCanExecuteChanged();
     }
 
@@ -231,6 +245,7 @@ public sealed partial class MainViewModel : ViewModelBase
         if (ReferenceEquals(sender, SelectedProfile))
         {
             RemoveRightMouseOverrideCommand.NotifyCanExecuteChanged();
+            RemoveAllRightMouseOverridesCommand.NotifyCanExecuteChanged();
         }
     }
 

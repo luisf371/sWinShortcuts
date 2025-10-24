@@ -143,16 +143,23 @@ public sealed class ProfileViewModel : ViewModelBase
         }
     }
 
-    public Key? CapsLockRemapKey
+    public Key CapsLockRemapKey
     {
-        get => Model.CapsLock.RemapTarget;
+        get => Model.CapsLock.RemapTarget ?? Key.None;
         set
         {
-            if (Model.CapsLock.RemapTarget != value)
+            System.Diagnostics.Debug.WriteLine($"[DEBUG] CapsLockRemapKey setter called with value: {value}");
+            var newValue = value == Key.None ? null : (Key?)value;
+            if (Model.CapsLock.RemapTarget != newValue)
             {
-                Model.CapsLock.RemapTarget = value;
+                System.Diagnostics.Debug.WriteLine($"[DEBUG] CapsLockRemapKey changing from {(Model.CapsLock.RemapTarget?.ToString() ?? "NULL")} to {(newValue?.ToString() ?? "NULL")}");
+                Model.CapsLock.RemapTarget = newValue;
                 OnPropertyChanged();
                 OnProfileChanged();
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine($"[DEBUG] CapsLockRemapKey value unchanged: {value}");
             }
         }
     }
