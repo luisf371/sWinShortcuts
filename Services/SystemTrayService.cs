@@ -3,6 +3,7 @@ using System.Drawing;
 using System.IO;
 using System.Windows;
 using Forms = System.Windows.Forms;
+using sWinShortcuts;
 
 namespace sWinShortcuts.Services;
 
@@ -32,16 +33,17 @@ public sealed class SystemTrayService : ISystemTrayService
 
         _notifyIcon = new Forms.NotifyIcon
         {
-            Icon = SystemIcons.Application,
-            Visible = true,
             Text = "sWinShortcuts"
         };
+
+        ApplyDefaultIcon();
+        _notifyIcon.Visible = true;
 
         _notifyIcon.DoubleClick += (_, _) => ShowMainWindow();
 
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open", null, (_, _) => ShowMainWindow());
-        menu.Items.Add("Exit", null, (_, _) => _application.Dispatcher.Invoke(() => _application.Shutdown()));
+        menu.Items.Add("Exit", null, (_, _) => ExitApplication());
         _notifyIcon.ContextMenuStrip = menu;
     }
 
@@ -58,9 +60,7 @@ public sealed class SystemTrayService : ISystemTrayService
         {
             if (string.IsNullOrWhiteSpace(iconPath) || !File.Exists(iconPath))
             {
-                _notifyIcon.Icon = SystemIcons.Application;
-                _customIcon?.Dispose();
-                _customIcon = null;
+                ApplyDefaultIcon();
                 return;
             }
 
@@ -72,9 +72,7 @@ public sealed class SystemTrayService : ISystemTrayService
         catch
         {
             // Fallback to default icon on error
-            _notifyIcon.Icon = SystemIcons.Application;
-            _customIcon?.Dispose();
-            _customIcon = null;
+            ApplyDefaultIcon();
         }
     }
 
@@ -131,6 +129,12 @@ public sealed class SystemTrayService : ISystemTrayService
 
         _application.Dispatcher.Invoke(() =>
         {
+            if (_mainWindow is MainWindow mainWindow)
+            {
+                mainWindow.RestoreFromTray();
+                return;
+            }
+
             if (_mainWindow.WindowState == WindowState.Minimized)
             {
                 _mainWindow.WindowState = WindowState.Normal;
@@ -144,11 +148,76 @@ public sealed class SystemTrayService : ISystemTrayService
         });
     }
 
+    private void ExitApplication()
+    {
+        if (_mainWindow is null)
+        {
+            return;
+        }
+
+        _application.Dispatcher.Invoke(() =>
+        {
+            if (_mainWindow is MainWindow mainWindow)
+            {
+                mainWindow.ExitFromTray();
+                return;
+            }
+
+            _mainWindow.Show();
+            _mainWindow.Activate();
+            _mainWindow.Topmost = true;
+            _mainWindow.Topmost = false;
+            _mainWindow.Focus();
+            _application.Shutdown();
+        });
+    }
+
     private void ThrowIfDisposed()
     {
         if (_disposed)
         {
             throw new ObjectDisposedException(nameof(SystemTrayService));
+        }
+    }
+
+    private void ApplyDefaultIcon()
+    {
+        if (_notifyIcon is null)
+        {
+            return;
+        }
+
+        var defaultIcon = LoadDefaultIcon();
+        if (defaultIcon is null)
+        {
+            _notifyIcon.Icon = SystemIcons.Application;
+            _customIcon?.Dispose();
+            _customIcon = null;
+            return;
+        }
+
+        _customIcon?.Dispose();
+        _customIcon = defaultIcon;
+        _notifyIcon.Icon = _customIcon;
+    }
+
+    private static Icon? LoadDefaultIcon()
+    {
+        try
+        {
+            var resourceUri = new Uri("pack://application:,,,/Icons/Icon.ico", UriKind.Absolute);
+            var resourceInfo = System.Windows.Application.GetResourceStream(resourceUri);
+            if (resourceInfo?.Stream is null)
+            {
+                return null;
+            }
+
+            using var stream = resourceInfo.Stream;
+            return new Icon(stream);
+        }
+        catch
+        {
+            return null;
         }
     }
 }

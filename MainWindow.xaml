@@ -5,6 +5,7 @@
         xmlns:conv="clr-namespace:sWinShortcuts.Converters"
         xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
         Title="sWinShortcuts"
+        Icon="pack://application:,,,/Icons/Icon.ico"
         Width="1100"
         Height="720"
         MinWidth="960"
@@ -21,7 +22,8 @@
                       ResizeBorderThickness="5"
                       GlassFrameThickness="0"
                       CornerRadius="0"
-                      UseAeroCaptionButtons="False" />
+                      UseAeroCaptionButtons="False"
+                      NonClientFrameEdges="None" />
     </WindowChrome.WindowChrome>
     <Window.Resources>
         <conv:BooleanNegationConverter x:Key="NotConverter" />
@@ -39,7 +41,9 @@
         <Border Grid.Row="0"
                 Background="{DynamicResource BackgroundElevatedBrush}"
                 BorderBrush="{DynamicResource BorderBrush}"
-                BorderThickness="0,0,0,1">
+                BorderThickness="0,0,0,1"
+                x:Name="TitleBar"
+                MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
             <Grid>
                 <TextBlock Text="sWinShortcuts"
                            VerticalAlignment="Center"
@@ -50,21 +54,13 @@
                 <StackPanel Orientation="Horizontal"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Top">
-                    <Button Click="MinimizeButton_Click"
-                            Style="{StaticResource TitleBarButtonStyle}"
-                            WindowChrome.IsHitTestVisibleInChrome="True">
-                        <Button.ToolTip>
-                            <ToolTip Content="Minimize" Background="#FF1E1E1E" Foreground="White" />
-                        </Button.ToolTip>
-                        <TextBlock Text="_" FontSize="16" FontWeight="Bold" Margin="0,-8,0,0" />
-                    </Button>
                     <Button Click="CloseButton_Click"
                             Style="{StaticResource TitleBarCloseButtonStyle}"
                             WindowChrome.IsHitTestVisibleInChrome="True">
                         <Button.ToolTip>
-                            <ToolTip Content="Close" Background="#FF1E1E1E" Foreground="White" />
+                            <ToolTip Content="Minimize to tray" Background="#FF1E1E1E" Foreground="White" />
                         </Button.ToolTip>
-                        <TextBlock Text="X" FontSize="12" FontWeight="Normal" />
+                        <TextBlock Text="&#xE8BB;" FontSize="12" FontFamily="Segoe MDL2 Assets" />
                     </Button>
                 </StackPanel>
             </Grid>
