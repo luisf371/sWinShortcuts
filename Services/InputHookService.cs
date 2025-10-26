@@ -235,14 +235,14 @@ public sealed class InputHookService : IInputHookService
                 break;
         }
 
-        var handled = HandleAltMouse(message);
+        var handled = HandleAltMouse(message, data.mouseData);
 
         return handled
             ? (IntPtr)1
             : NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
     }
 
-    private bool HandleAltMouse(int message)
+    private bool HandleAltMouse(int message, uint mouseData)
     {
         var profile = _activeProfile;
         if (profile is null || !profile.AltMouse.IsEnabled || !_altPressed)
@@ -255,7 +255,7 @@ public sealed class InputHookService : IInputHookService
             NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP => Models.MouseButton.Left,
             NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP => Models.MouseButton.Right,
             NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP => Models.MouseButton.Middle,
-            NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP => GetXButton(message),
+            NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP => GetXButton(mouseData),
             _ => (Models.MouseButton?)null
         };
 
@@ -370,12 +370,18 @@ public sealed class InputHookService : IInputHookService
         return false;
     }
 
-    private Models.MouseButton GetXButton(int message)
+    private Models.MouseButton GetXButton(uint mouseData)
     {
-        // For WM_XBUTTONDOWN/UP, wParam contains which X button was pressed
-        // This is a simplified approach - in a real implementation you'd extract this from lParam
-        // For now, we'll default to XButton1
-        return Models.MouseButton.XButton1;
+        // Extract which X button from the high-order word of mouseData
+        // XBUTTON1 = 0x0001, XBUTTON2 = 0x0002
+        var xButton = (mouseData >> 16) & 0xFFFF;
+        
+        return xButton switch
+        {
+            1 => Models.MouseButton.XButton1, // Mouse Button 4
+            2 => Models.MouseButton.XButton2, // Mouse Button 5
+            _ => Models.MouseButton.XButton1  // Default to Button 4 if unclear
+        };
     }
 
     private void CancelHoldTimer(MouseButtonState state)

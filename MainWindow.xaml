@@ -29,6 +29,7 @@
         <conv:BooleanNegationConverter x:Key="NotConverter" />
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
         <conv:MouseButtonDisplayConverter x:Key="MouseButtonDisplayConverter" />
+        <conv:AvailableMouseButtonsConverter x:Key="AvailableMouseButtonsConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
         <Style x:Key="DisabledContentShadeStyle" TargetType="FrameworkElement">
@@ -318,8 +319,13 @@
                                                     <DataGridTemplateColumn Header="Button" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.SelectedProfile.AvailableMouseButtons, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding Button, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                                <ComboBox SelectedItem="{Binding Button, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                                    <ComboBox.ItemsSource>
+                                                                        <MultiBinding Converter="{StaticResource AvailableMouseButtonsConverter}">
+                                                                            <Binding Path="DataContext.SelectedProfile.AvailableMouseButtons" ElementName="RootWindow" />
+                                                                            <Binding Path="Button" />
+                                                                        </MultiBinding>
+                                                                    </ComboBox.ItemsSource>
                                                                     <ComboBox.ItemTemplate>
                                                                         <DataTemplate>
                                                                             <TextBlock Text="{Binding Converter={StaticResource MouseButtonDisplayConverter}}" />

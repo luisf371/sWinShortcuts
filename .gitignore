@@ -1,0 +1,10 @@
+# .NET / C# build output
+bin/
+obj/
+
+# IDE cruft (optional but recommended)
+.vs/
+.vscode/
+*.user
+*.suo
+.idea/
