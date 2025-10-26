@@ -126,8 +126,120 @@
                 Margin="16,8,16,16"
                 Padding="0"
                 Background="{DynamicResource BackgroundElevatedBrush}"
-                CornerRadius="12">
-            <ScrollViewer Margin="0" Padding="24,16,24,24" Background="{StaticResource BackgroundElevatedBrush}">
+                CornerRadius="12"
+                ClipToBounds="True">
+            <ScrollViewer Margin="0"
+                          Padding="24,16,28,24"
+                          Background="Transparent"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <ScrollViewer.Resources>
+                    <SolidColorBrush x:Key="ScrollBarTrackBrush" Color="#331E2A3B" />
+                    <SolidColorBrush x:Key="ScrollBarThumbBrush" Color="#88E1E1E1" />
+                    <Style x:Key="MinimalScrollBarButtonStyle" TargetType="RepeatButton">
+                        <Setter Property="Focusable" Value="False" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="RepeatButton">
+                                    <Border Background="Transparent" />
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                    <Style x:Key="MinimalScrollBarThumbStyle" TargetType="Thumb">
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Thumb">
+                                    <Border x:Name="ThumbRoot"
+                                            Background="{StaticResource ScrollBarThumbBrush}"
+                                            CornerRadius="4" />
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="ThumbRoot"
+                                                    Property="Background"
+                                                    Value="{DynamicResource AccentBrush}" />
+                                        </Trigger>
+                                        <Trigger Property="IsDragging" Value="True">
+                                            <Setter TargetName="ThumbRoot"
+                                                    Property="Background"
+                                                    Value="{DynamicResource AccentDarkBrush}" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                    <Style TargetType="ScrollBar">
+                        <Setter Property="Width" Value="8" />
+                        <Setter Property="Background" Value="{StaticResource ScrollBarTrackBrush}" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ScrollBar">
+                                    <Grid x:Name="Root"
+                                          Width="{TemplateBinding Width}"
+                                          Background="Transparent">
+                                        <Border Background="{TemplateBinding Background}"
+                                                CornerRadius="4" />
+                                        <Track x:Name="PART_Track"
+                                               IsDirectionReversed="True"
+                                               Margin="0">
+                                            <Track.DecreaseRepeatButton>
+                                                <RepeatButton Command="ScrollBar.LineUpCommand"
+                                                              Style="{StaticResource MinimalScrollBarButtonStyle}" />
+                                            </Track.DecreaseRepeatButton>
+                                            <Track.Thumb>
+                                                <Thumb Style="{StaticResource MinimalScrollBarThumbStyle}" />
+                                            </Track.Thumb>
+                                            <Track.IncreaseRepeatButton>
+                                                <RepeatButton Command="ScrollBar.LineDownCommand"
+                                                              Style="{StaticResource MinimalScrollBarButtonStyle}" />
+                                            </Track.IncreaseRepeatButton>
+                                        </Track>
+                                    </Grid>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </ScrollViewer.Resources>
+                <ScrollViewer.Template>
+                    <ControlTemplate TargetType="ScrollViewer">
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}" />
+                            <Border Margin="{TemplateBinding Padding}">
+                                <ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
+                                                        CanContentScroll="{TemplateBinding CanContentScroll}"
+                                                        Content="{TemplateBinding Content}"
+                                                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                        ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                            </Border>
+                            <ScrollBar x:Name="PART_VerticalScrollBar"
+                                       HorizontalAlignment="Right"
+                                       Margin="0,16,1,16"
+                                       Orientation="Vertical"
+                                       Minimum="0"
+                                       Maximum="{TemplateBinding ScrollableHeight}"
+                                       ViewportSize="{TemplateBinding ViewportHeight}"
+                                       Value="{TemplateBinding VerticalOffset}"
+                                       Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
+                            <ScrollBar x:Name="PART_HorizontalScrollBar"
+                                       VerticalAlignment="Bottom"
+                                       Margin="16,0,16,16"
+                                       Orientation="Horizontal"
+                                       Minimum="0"
+                                       Maximum="{TemplateBinding ScrollableWidth}"
+                                       ViewportSize="{TemplateBinding ViewportWidth}"
+                                       Value="{TemplateBinding HorizontalOffset}"
+                                       Visibility="Collapsed" />
+                        </Grid>
+                    </ControlTemplate>
+                </ScrollViewer.Template>
                 <ContentControl Content="{Binding SelectedProfile}">
                                         <ContentControl.ContentTemplate>
                         <DataTemplate DataType="{x:Type vm:ProfileViewModel}">
