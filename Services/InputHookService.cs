@@ -444,7 +444,7 @@ public sealed class InputHookService : IInputHookService
         }
 
         var settings = GetEffectiveCapsLockSettings();
-        if (settings is null)
+        if (settings is not { IsEnabled: true })
         {
             return false;
         }
@@ -495,23 +495,34 @@ public sealed class InputHookService : IInputHookService
     private CapsLockSettings? GetEffectiveCapsLockSettings()
     {
         var active = _activeProfile?.CapsLock;
-        if (active is not null && active.Mode != CapsLockMode.Normal)
+        if (active is { IsEnabled: true } enabledActive && enabledActive.Mode != CapsLockMode.Normal)
+        {
+            return enabledActive;
+        }
+
+        var global = _windowsProfile?.CapsLock;
+        if (global is { IsEnabled: true } enabledGlobal && enabledGlobal.Mode != CapsLockMode.Normal)
+        {
+            return enabledGlobal;
+        }
+
+        if (active?.IsEnabled == true)
         {
             return active;
         }
 
-        if (_windowsProfile?.CapsLock is { } global)
+        if (global?.IsEnabled == true)
         {
             return global;
         }
 
-        return active;
+        return null;
     }
 
     private bool HandleWindowsLauncher(int vkCode, bool isKeyDown)
     {
         var profile = _windowsProfile;
-        if (profile is null || !isKeyDown)
+        if (profile is null || !profile.WindowsLauncher.IsEnabled || !isKeyDown)
         {
             return false;
         }

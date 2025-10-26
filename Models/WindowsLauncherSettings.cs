@@ -5,6 +5,8 @@ namespace sWinShortcuts.Models;
 
 public sealed class WindowsLauncherSettings
 {
+    public bool IsEnabled { get; set; } = true;
+
     public Dictionary<Key, LauncherBinding> Launchers { get; } = new();
 }
 

@@ -87,6 +87,20 @@ public sealed class ProfileViewModel : ViewModelBase
 
     public ObservableCollection<WindowsLauncherEntryViewModel> WindowsLaunchers { get; }
 
+    public bool WindowsLauncherEnabled
+    {
+        get => Model.WindowsLauncher.IsEnabled;
+        set
+        {
+            if (Model.WindowsLauncher.IsEnabled != value)
+            {
+                Model.WindowsLauncher.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
     public bool RightMouseOverrideEnabled
     {
         get => Model.RightMouseOverrides.IsEnabled;
@@ -127,6 +141,20 @@ public sealed class ProfileViewModel : ViewModelBase
     {
         get => _selectedLauncher;
         set => SetProperty(ref _selectedLauncher, value);
+    }
+
+    public bool CapsLockEnabled
+    {
+        get => Model.CapsLock.IsEnabled;
+        set
+        {
+            if (Model.CapsLock.IsEnabled != value)
+            {
+                Model.CapsLock.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
     }
 
     public CapsLockMode CapsLockMode
@@ -283,8 +311,10 @@ public sealed class ProfileViewModel : ViewModelBase
             Model.IsEnabled = IsEnabled;
             Model.RightMouseOverrides.IsEnabled = RightMouseOverrideEnabled;
             Model.RightMouseOverrides.SuppressOriginalKey = SuppressOriginalRightMouseKey;
+            Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
             Model.CapsLock.RemapTarget = CapsLockRemapKey;
+            Model.WindowsLauncher.IsEnabled = WindowsLauncherEnabled;
             Model.Executable = Executable;
 
             if (!IsWindowsProfile)

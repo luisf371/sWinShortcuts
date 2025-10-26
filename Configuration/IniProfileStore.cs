@@ -116,6 +116,8 @@ public sealed class IniProfileStore : IProfileStore
         var profileInstance = ProfileFactory.CreateWindowsProfile();
         profileInstance.SourcePath = path;
         profileInstance.IsEnabled = document.GetBoolean("Profile", "Enabled", true);
+        profileInstance.WindowsLauncher.IsEnabled = document.GetBoolean("WindowsLauncher", "Enabled", profileInstance.WindowsLauncher.IsEnabled);
+        DeserializeCapsLock(document, profileInstance.CapsLock);
 
         foreach (var (key, binding) in profileInstance.WindowsLauncher.Launchers.ToArray())
         {
@@ -184,6 +186,7 @@ public sealed class IniProfileStore : IProfileStore
 
     private static void DeserializeCapsLock(IniDocument document, CapsLockSettings settings)
     {
+        settings.IsEnabled = document.GetBoolean("CapsLock", "Enabled", settings.IsEnabled);
         settings.Mode = document.GetEnum("CapsLock", "Mode", settings.Mode);
         settings.RemapTarget = document.GetKey("CapsLock", "RemapTarget");
     }
@@ -215,6 +218,7 @@ public sealed class IniProfileStore : IProfileStore
         }
 
         var capsLock = profile.CapsLock;
+        document.SetBoolean("CapsLock", "Enabled", capsLock.IsEnabled);
         document.SetEnum("CapsLock", "Mode", capsLock.Mode);
         document.SetKey("CapsLock", "RemapTarget", capsLock.RemapTarget);
 
@@ -225,6 +229,12 @@ public sealed class IniProfileStore : IProfileStore
     {
         var document = new IniDocument();
         document.SetBoolean("Profile", "Enabled", profile.IsEnabled);
+        document.SetBoolean("WindowsLauncher", "Enabled", profile.WindowsLauncher.IsEnabled);
+
+        var capsLock = profile.CapsLock;
+        document.SetBoolean("CapsLock", "Enabled", capsLock.IsEnabled);
+        document.SetEnum("CapsLock", "Mode", capsLock.Mode);
+        document.SetKey("CapsLock", "RemapTarget", capsLock.RemapTarget);
 
         foreach (var (key, binding) in profile.WindowsLauncher.Launchers)
         {

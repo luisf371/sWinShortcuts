@@ -4,6 +4,8 @@ namespace sWinShortcuts.Models;
 
 public sealed class CapsLockSettings
 {
+    public bool IsEnabled { get; set; } = true;
+
     public CapsLockMode Mode { get; set; } = CapsLockMode.Normal;
 
     public Key? RemapTarget { get; set; }
