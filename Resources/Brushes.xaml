@@ -10,9 +10,9 @@
     <Color x:Key="BorderColor">#FF1E2A3B</Color>
     <Color x:Key="ForegroundPrimaryColor">#FFE1E1E1</Color>
     <Color x:Key="ForegroundSecondaryColor">#FF7D7D7D</Color>
-    <!-- ComboBox natural white background with dark text -->
-    <Color x:Key="ComboBoxBackgroundColor">#FFFFFFFF</Color>
-    <Color x:Key="ComboBoxForegroundColor">#FF000000</Color>
+    <!-- ComboBox surfaces follow the dark theme -->
+    <Color x:Key="ComboBoxBackgroundColor">#FF0F1A26</Color>
+    <Color x:Key="ComboBoxForegroundColor">#FFE1E1E1</Color>
 
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}" />
     <SolidColorBrush x:Key="AccentDarkBrush" Color="{StaticResource AccentDarkColor}" />
@@ -27,7 +27,7 @@
     <SolidColorBrush x:Key="ComboBoxBackgroundBrush" Color="{StaticResource ComboBoxBackgroundColor}" />
     <SolidColorBrush x:Key="ComboBoxForegroundBrush" Color="{StaticResource ComboBoxForegroundColor}" />
 
-    <!-- Light style for ComboBox dropdown items -->
+    <!-- ComboBox dropdown items styled for dark surfaces -->
     <Style x:Key="ComboBoxItemLightStyle" TargetType="ComboBoxItem">
         <Setter Property="Foreground" Value="{StaticResource ComboBoxForegroundBrush}" />
         <Setter Property="Background" Value="{StaticResource ComboBoxBackgroundBrush}" />

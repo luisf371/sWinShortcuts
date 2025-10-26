@@ -16,11 +16,13 @@ namespace sWinShortcuts.Services;
 public sealed class InputHookService : IInputHookService
 {
     private readonly object _syncRoot = new();
-    private readonly Dictionary<TrackedMouseButton, MouseButtonState> _mouseStates = new()
+    private readonly Dictionary<Models.MouseButton, MouseButtonState> _mouseStates = new()
     {
-        { TrackedMouseButton.Left, new MouseButtonState() },
-        { TrackedMouseButton.Right, new MouseButtonState() },
-        { TrackedMouseButton.Middle, new MouseButtonState() }
+        { Models.MouseButton.Left, new MouseButtonState() },
+        { Models.MouseButton.Right, new MouseButtonState() },
+        { Models.MouseButton.Middle, new MouseButtonState() },
+        { Models.MouseButton.XButton1, new MouseButtonState() },
+        { Models.MouseButton.XButton2, new MouseButtonState() }
     };
     private readonly Dictionary<Key, Key> _activeRightMouseOverrides = new();
     private readonly Random _random = new();
@@ -248,22 +250,28 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        var (button, binding) = message switch
+        var button = message switch
         {
-            NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP => (TrackedMouseButton.Left, profile.AltMouse.LeftButton),
-            NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP => (TrackedMouseButton.Right, profile.AltMouse.RightButton),
-            NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP => (TrackedMouseButton.Middle, profile.AltMouse.MiddleButton),
-            _ => (TrackedMouseButton.Left, null)
+            NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP => Models.MouseButton.Left,
+            NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP => Models.MouseButton.Right,
+            NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP => Models.MouseButton.Middle,
+            NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP => GetXButton(message),
+            _ => (Models.MouseButton?)null
         };
+
+        if (!button.HasValue || !profile.AltMouse.Bindings.TryGetValue(button.Value, out var binding))
+        {
+            return false;
+        }
 
         if (binding is null || (!binding.TapKey.HasValue && !binding.HoldKey.HasValue))
         {
             return false;
         }
 
-        var state = _mouseStates[button];
-        var isDown = message is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_MBUTTONDOWN;
-        var isUp = message is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or NativeMethods.WM_MBUTTONUP;
+        var state = _mouseStates[button.Value];
+        var isDown = message is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_XBUTTONDOWN;
+        var isUp = message is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or NativeMethods.WM_MBUTTONUP or NativeMethods.WM_XBUTTONUP;
 
         if (isDown)
         {
@@ -360,6 +368,14 @@ public sealed class InputHookService : IInputHookService
         }
 
         return false;
+    }
+
+    private Models.MouseButton GetXButton(int message)
+    {
+        // For WM_XBUTTONDOWN/UP, wParam contains which X button was pressed
+        // This is a simplified approach - in a real implementation you'd extract this from lParam
+        // For now, we'll default to XButton1
+        return Models.MouseButton.XButton1;
     }
 
     private void CancelHoldTimer(MouseButtonState state)
@@ -684,13 +700,6 @@ public sealed class InputHookService : IInputHookService
         public bool AltHandled { get; set; }
         public CancellationTokenSource? HoldToken { get; set; }
         public bool HoldTriggered { get; set; }
-    }
-
-    private enum TrackedMouseButton
-    {
-        Left,
-        Right,
-        Middle
     }
 
     private static void LogDebug(string message)

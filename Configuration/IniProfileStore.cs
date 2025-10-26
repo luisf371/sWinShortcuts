@@ -155,14 +155,69 @@ public sealed class IniProfileStore : IProfileStore
         settings.IsEnabled = document.GetBoolean("AltMouse", "Enabled", settings.IsEnabled);
         settings.HoldThresholdMilliseconds = Math.Max(10, document.GetInt32("AltMouse", "HoldThreshold", settings.HoldThresholdMilliseconds));
 
-        settings.LeftButton.TapKey = document.GetKey("AltMouse.Left", "Tap");
-        settings.LeftButton.HoldKey = document.GetKey("AltMouse.Left", "Hold");
+        settings.Bindings.Clear();
 
-        settings.RightButton.TapKey = document.GetKey("AltMouse.Right", "Tap");
-        settings.RightButton.HoldKey = document.GetKey("AltMouse.Right", "Hold");
+        // Try to load new format first (AltMouseBindings section)
+        var bindingsSection = document.GetSection("AltMouseBindings");
+        if (bindingsSection.Any())
+        {
+            foreach (var pair in bindingsSection)
+            {
+                if (Enum.TryParse<Models.MouseButton>(pair.Key, out var button))
+                {
+                    var parts = pair.Value.Split('|');
+                    var binding = new MouseButtonBinding();
+                    
+                    if (parts.Length > 0)
+                    {
+                        binding.TapKey = KeySerializer.Deserialize(parts[0]);
+                    }
+                    
+                    if (parts.Length > 1)
+                    {
+                        binding.HoldKey = KeySerializer.Deserialize(parts[1]);
+                    }
+                    
+                    settings.Bindings[button] = binding;
+                }
+            }
+        }
+        else
+        {
+            // Fallback to old format for migration (AltMouse.Left, AltMouse.Right, AltMouse.Middle)
+            var leftTap = document.GetKey("AltMouse.Left", "Tap");
+            var leftHold = document.GetKey("AltMouse.Left", "Hold");
+            if (leftTap.HasValue || leftHold.HasValue)
+            {
+                settings.Bindings[Models.MouseButton.Left] = new MouseButtonBinding
+                {
+                    TapKey = leftTap,
+                    HoldKey = leftHold
+                };
+            }
 
-        settings.MiddleButton.TapKey = document.GetKey("AltMouse.Middle", "Tap");
-        settings.MiddleButton.HoldKey = document.GetKey("AltMouse.Middle", "Hold");
+            var rightTap = document.GetKey("AltMouse.Right", "Tap");
+            var rightHold = document.GetKey("AltMouse.Right", "Hold");
+            if (rightTap.HasValue || rightHold.HasValue)
+            {
+                settings.Bindings[Models.MouseButton.Right] = new MouseButtonBinding
+                {
+                    TapKey = rightTap,
+                    HoldKey = rightHold
+                };
+            }
+
+            var middleTap = document.GetKey("AltMouse.Middle", "Tap");
+            var middleHold = document.GetKey("AltMouse.Middle", "Hold");
+            if (middleTap.HasValue || middleHold.HasValue)
+            {
+                settings.Bindings[Models.MouseButton.Middle] = new MouseButtonBinding
+                {
+                    TapKey = middleTap,
+                    HoldKey = middleHold
+                };
+            }
+        }
     }
 
     private static void DeserializeRightMouse(IniDocument document, RightMouseOverrideSettings settings)
@@ -201,12 +256,21 @@ public sealed class IniProfileStore : IProfileStore
         var altMouse = profile.AltMouse;
         document.SetBoolean("AltMouse", "Enabled", altMouse.IsEnabled);
         document.SetInt32("AltMouse", "HoldThreshold", altMouse.HoldThresholdMilliseconds);
-        document.SetKey("AltMouse.Left", "Tap", altMouse.LeftButton.TapKey);
-        document.SetKey("AltMouse.Left", "Hold", altMouse.LeftButton.HoldKey);
-        document.SetKey("AltMouse.Right", "Tap", altMouse.RightButton.TapKey);
-        document.SetKey("AltMouse.Right", "Hold", altMouse.RightButton.HoldKey);
-        document.SetKey("AltMouse.Middle", "Tap", altMouse.MiddleButton.TapKey);
-        document.SetKey("AltMouse.Middle", "Hold", altMouse.MiddleButton.HoldKey);
+        
+        // Remove old format sections
+        document.RemoveSection("AltMouse.Left");
+        document.RemoveSection("AltMouse.Right");
+        document.RemoveSection("AltMouse.Middle");
+        document.RemoveSection("AltMouseBindings");
+        
+        // Write new format
+        foreach (var binding in altMouse.Bindings)
+        {
+            var tapStr = binding.Value.TapKey.HasValue ? KeySerializer.Serialize(binding.Value.TapKey.Value) : "";
+            var holdStr = binding.Value.HoldKey.HasValue ? KeySerializer.Serialize(binding.Value.HoldKey.Value) : "";
+            var value = $"{tapStr}|{holdStr}";
+            document.SetString("AltMouseBindings", binding.Key.ToString(), value);
+        }
 
         var rightMouse = profile.RightMouseOverrides;
         document.SetBoolean("RightMouse", "Enabled", rightMouse.IsEnabled);

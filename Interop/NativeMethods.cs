@@ -19,6 +19,8 @@ internal static class NativeMethods
     internal const int WM_RBUTTONUP = 0x0205;
     internal const int WM_MBUTTONDOWN = 0x0207;
     internal const int WM_MBUTTONUP = 0x0208;
+    internal const int WM_XBUTTONDOWN = 0x020B;
+    internal const int WM_XBUTTONUP = 0x020C;
 
     internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;

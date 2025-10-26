@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Windows.Input;
+using MouseButton = sWinShortcuts.Models.MouseButton;
 
 namespace sWinShortcuts.Models;
 
@@ -6,11 +8,7 @@ public sealed class AltMouseSettings
 {
     public bool IsEnabled { get; set; }
 
-    public MouseButtonBinding LeftButton { get; init; } = new();
-
-    public MouseButtonBinding RightButton { get; init; } = new();
-
-    public MouseButtonBinding MiddleButton { get; init; } = new();
+    public Dictionary<MouseButton, MouseButtonBinding> Bindings { get; } = new();
 
     /// <summary>
     /// Tap-hold split threshold in milliseconds.

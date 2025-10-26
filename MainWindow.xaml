@@ -28,6 +28,7 @@
     <Window.Resources>
         <conv:BooleanNegationConverter x:Key="NotConverter" />
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
+        <conv:MouseButtonDisplayConverter x:Key="MouseButtonDisplayConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
         <Style x:Key="DisabledContentShadeStyle" TargetType="FrameworkElement">
@@ -300,99 +301,85 @@
                                                     IsEnabled="{Binding AltMouse.IsEnabled}"
                                                     Tag="{Binding AltMouse.IsEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                                 <TextBlock Text="Hold threshold (ms)" VerticalAlignment="Center" />
                                                 <TextBox Text="{Binding AltMouse.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}" Width="60" Margin="8,0,0,0" />
                                             </StackPanel>
-                                            <Grid Margin="0,12,0,0">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="120" />
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-                                                <Grid.RowDefinitions>
-                                                    <RowDefinition Height="Auto" />
-                                                    <RowDefinition Height="Auto" />
-                                                    <RowDefinition Height="Auto" />
-                                                    <RowDefinition Height="Auto" />
-                                                </Grid.RowDefinitions>
 
-                                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Button" FontWeight="Bold" />
-                                                <TextBlock Grid.Row="0" Grid.Column="1" Text="Tap" FontWeight="Bold" />
-                                                <TextBlock Grid.Row="0" Grid.Column="2" Text="Hold" FontWeight="Bold" />
+                                            <DataGrid ItemsSource="{Binding AltMouseBindings}"
+                                                      AutoGenerateColumns="False"
+                                                      HeadersVisibility="Column"
+                                                      CanUserAddRows="False"
+                                                      CanUserDeleteRows="False"
+                                                      Margin="0,0,0,8"
+                                                      RowHeight="32"
+                                                      BorderThickness="0">
+                                                <DataGrid.Columns>
+                                                    <DataGridTemplateColumn Header="Button" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <ComboBox ItemsSource="{Binding DataContext.SelectedProfile.AvailableMouseButtons, ElementName=RootWindow}"
+                                                                          SelectedItem="{Binding Button, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                                    <ComboBox.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <TextBlock Text="{Binding Converter={StaticResource MouseButtonDisplayConverter}}" />
+                                                                        </DataTemplate>
+                                                                    </ComboBox.ItemTemplate>
+                                                                </ComboBox>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="Tap" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
+                                                                          SelectedItem="{Binding TapKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
+                                                                    <ComboBox.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                                        </DataTemplate>
+                                                                    </ComboBox.ItemTemplate>
+                                                                </ComboBox>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="Hold" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
+                                                                          SelectedItem="{Binding HoldKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
+                                                                    <ComboBox.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                                        </DataTemplate>
+                                                                    </ComboBox.ItemTemplate>
+                                                                </ComboBox>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="" Width="Auto">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Button Content="✕"
+                                                                        Command="{Binding DataContext.RemoveAltMouseBindingCommand, ElementName=RootWindow}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Width="24"
+                                                                        Height="24"
+                                                                        Padding="0"
+                                                                        FontSize="14"
+                                                                        ToolTip="Remove this binding" />
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                </DataGrid.Columns>
+                                            </DataGrid>
 
-                                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Left" VerticalAlignment="Center" />
-                                                <ComboBox Grid.Row="1" Grid.Column="1"
-                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AltMouse.LeftButton.TapKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="4,2">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                                <ComboBox Grid.Row="1" Grid.Column="2"
-                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AltMouse.LeftButton.HoldKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="4,2">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-
-                                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Right" VerticalAlignment="Center" />
-                                                <ComboBox Grid.Row="2" Grid.Column="1"
-                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AltMouse.RightButton.TapKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="4,2">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                                <ComboBox Grid.Row="2" Grid.Column="2"
-                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AltMouse.RightButton.HoldKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="4,2">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-
-                                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Middle" VerticalAlignment="Center" />
-                                                <ComboBox Grid.Row="3" Grid.Column="1"
-                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AltMouse.MiddleButton.TapKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="4,2">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                                <ComboBox Grid.Row="3" Grid.Column="2"
-                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AltMouse.MiddleButton.HoldKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="4,2">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                            </Grid>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                                <Button Content="Add Binding" Command="{Binding DataContext.AddAltMouseBindingCommand, ElementName=RootWindow}" Width="130" />
+                                                <Button Content="Remove All Bindings" Command="{Binding DataContext.RemoveAllAltMouseBindingsCommand, ElementName=RootWindow}" Width="170" Margin="8,0,0,0" />
+                                            </StackPanel>
                                         </StackPanel>
                                     </GroupBox>
 
@@ -455,7 +442,7 @@
                                                     <DataGridTemplateColumn Header="" Width="Auto">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <Button Content="?"
+                                                                <Button Content="✕"
                                                                         Command="{Binding DataContext.RemoveRightMouseOverrideCommand, ElementName=RootWindow}"
                                                                         CommandParameter="{Binding}"
                                                                         Width="24"

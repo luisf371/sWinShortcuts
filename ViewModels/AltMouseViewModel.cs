@@ -1,5 +1,9 @@
 using System;
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.Linq;
 using sWinShortcuts.Models;
+using MouseButton = sWinShortcuts.Models.MouseButton;
 
 namespace sWinShortcuts.ViewModels;
 
@@ -14,16 +18,17 @@ public sealed class AltMouseViewModel : ViewModelBase
     public AltMouseViewModel(AltMouseSettings model)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
-        LeftButton = new MouseButtonBindingViewModel(_model.LeftButton);
-        RightButton = new MouseButtonBindingViewModel(_model.RightButton);
-        MiddleButton = new MouseButtonBindingViewModel(_model.MiddleButton);
+        
+        Bindings = new ObservableCollection<AltMouseBindingEntryViewModel>(
+            _model.Bindings.Select(pair => new AltMouseBindingEntryViewModel(pair.Key, pair.Value.TapKey, pair.Value.HoldKey)));
+        Bindings.CollectionChanged += OnBindingsChanged;
+        foreach (var entry in Bindings)
+        {
+            AttachEntry(entry);
+        }
 
         _isEnabled = _model.IsEnabled;
         _holdThresholdMilliseconds = _model.HoldThresholdMilliseconds;
-
-        LeftButton.Changed += OnChildChanged;
-        RightButton.Changed += OnChildChanged;
-        MiddleButton.Changed += OnChildChanged;
     }
 
     public bool IsEnabled
@@ -53,14 +58,57 @@ public sealed class AltMouseViewModel : ViewModelBase
         }
     }
 
-    public MouseButtonBindingViewModel LeftButton { get; }
+    public ObservableCollection<AltMouseBindingEntryViewModel> Bindings { get; }
 
-    public MouseButtonBindingViewModel RightButton { get; }
+    private void OnBindingsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.NewItems is not null)
+        {
+            foreach (AltMouseBindingEntryViewModel item in e.NewItems)
+            {
+                AttachEntry(item);
+            }
+        }
 
-    public MouseButtonBindingViewModel MiddleButton { get; }
+        if (e.OldItems is not null)
+        {
+            foreach (AltMouseBindingEntryViewModel item in e.OldItems)
+            {
+                DetachEntry(item);
+            }
+        }
+
+        SyncToModel();
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void AttachEntry(AltMouseBindingEntryViewModel entry)
+    {
+        entry.Changed += OnChildChanged;
+    }
+
+    private void DetachEntry(AltMouseBindingEntryViewModel entry)
+    {
+        entry.Changed -= OnChildChanged;
+    }
 
     private void OnChildChanged(object? sender, EventArgs e)
     {
+        SyncToModel();
         Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void SyncToModel()
+    {
+        _model.Bindings.Clear();
+        foreach (var entry in Bindings)
+        {
+            var binding = new MouseButtonBinding
+            {
+                TapKey = entry.TapKey == System.Windows.Input.Key.None ? null : entry.TapKey,
+                HoldKey = entry.HoldKey == System.Windows.Input.Key.None ? null : entry.HoldKey
+            };
+            _model.Bindings[entry.Button] = binding;
+        }
     }
 }

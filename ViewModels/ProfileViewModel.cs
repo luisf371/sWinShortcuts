@@ -20,7 +20,12 @@ public sealed class ProfileViewModel : ViewModelBase
         _keyOptions = keyOptions ?? KeyCatalog.GetCommonKeys();
 
         AltMouse = new AltMouseViewModel(Model.AltMouse);
-        AltMouse.Changed += (_, _) => OnProfileChanged();
+        AltMouse.Changed += (_, _) =>
+        {
+            OnPropertyChanged(nameof(AvailableMouseButtons));
+            OnProfileChanged();
+        };
+        AltMouse.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableMouseButtons));
 
         RightMouseOverrides = new ObservableCollection<RightMouseOverrideEntryViewModel>(
             Model.RightMouseOverrides.Overrides.Select(pair => new RightMouseOverrideEntryViewModel(pair.Key, pair.Value)));
@@ -82,6 +87,18 @@ public sealed class ProfileViewModel : ViewModelBase
     public bool IsWindowsProfile => Model.IsWindowsProfile;
 
     public AltMouseViewModel AltMouse { get; }
+
+    public ObservableCollection<AltMouseBindingEntryViewModel> AltMouseBindings => AltMouse.Bindings;
+
+    public IReadOnlyList<Models.MouseButton> AvailableMouseButtons
+    {
+        get
+        {
+            var allButtons = new[] { Models.MouseButton.Left, Models.MouseButton.Right, Models.MouseButton.Middle, Models.MouseButton.XButton1, Models.MouseButton.XButton2 };
+            var usedButtons = AltMouse.Bindings.Select(b => b.Button).ToHashSet();
+            return allButtons.Where(b => !usedButtons.Contains(b)).ToList();
+        }
+    }
 
     public ObservableCollection<RightMouseOverrideEntryViewModel> RightMouseOverrides { get; }
 
@@ -223,6 +240,32 @@ public sealed class ProfileViewModel : ViewModelBase
             }
 
             OnProfileChanged();
+        }
+    }
+
+    public void AddAltMouseBinding()
+    {
+        var availableButtons = AvailableMouseButtons;
+        if (availableButtons.Count == 0)
+        {
+            return;
+        }
+
+        var entry = new AltMouseBindingEntryViewModel(availableButtons[0], null, null);
+        AltMouse.Bindings.Add(entry);
+        OnPropertyChanged(nameof(AvailableMouseButtons));
+    }
+
+    public void RemoveAltMouseBinding(AltMouseBindingEntryViewModel? entry)
+    {
+        if (entry is null)
+        {
+            return;
+        }
+
+        if (AltMouse.Bindings.Remove(entry))
+        {
+            OnPropertyChanged(nameof(AvailableMouseButtons));
         }
     }
 

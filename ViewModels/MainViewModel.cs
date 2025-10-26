@@ -156,6 +156,40 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false };
 
+    [RelayCommand(CanExecute = nameof(CanEditAltMouse))]
+    private void AddAltMouseBinding()
+    {
+        SelectedProfile?.AddAltMouseBinding();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanEditAltMouse))]
+    private void RemoveAltMouseBinding(AltMouseBindingEntryViewModel? entry)
+    {
+        if (SelectedProfile is null)
+        {
+            return;
+        }
+
+        SelectedProfile.RemoveAltMouseBinding(entry);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanEditAltMouse))]
+    private void RemoveAllAltMouseBindings()
+    {
+        if (SelectedProfile is null)
+        {
+            return;
+        }
+
+        // Remove all entries by clearing the collection
+        while (SelectedProfile.AltMouseBindings.Count > 0)
+        {
+            SelectedProfile.RemoveAltMouseBinding(SelectedProfile.AltMouseBindings[0]);
+        }
+    }
+
+    private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false };
+
     [RelayCommand(CanExecute = nameof(CanBrowseExecutable))]
     private void BrowseExecutable()
     {
@@ -195,6 +229,9 @@ public sealed partial class MainViewModel : ViewModelBase
         AddRightMouseOverrideCommand.NotifyCanExecuteChanged();
         RemoveRightMouseOverrideCommand.NotifyCanExecuteChanged();
         RemoveAllRightMouseOverridesCommand.NotifyCanExecuteChanged();
+        AddAltMouseBindingCommand.NotifyCanExecuteChanged();
+        RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
+        RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
         BrowseExecutableCommand.NotifyCanExecuteChanged();
     }
 
@@ -246,6 +283,8 @@ public sealed partial class MainViewModel : ViewModelBase
         {
             RemoveRightMouseOverrideCommand.NotifyCanExecuteChanged();
             RemoveAllRightMouseOverridesCommand.NotifyCanExecuteChanged();
+            RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
+            RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
         }
     }
 
