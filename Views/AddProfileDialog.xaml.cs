@@ -34,14 +34,11 @@ public partial class AddProfileDialog : Window
 
         var profileName = options.ProfileName ?? string.Empty;
         NameTextBox.Text = profileName.Trim();
-        NameTextBox.IsReadOnly = options.IsProfileNameReadOnly;
-        NameTextBox.IsHitTestVisible = !options.IsProfileNameReadOnly;
-        NameTextBox.Focusable = !options.IsProfileNameReadOnly;
 
         var executable = NormalizeExecutable(options.ExecutableName);
         ExecutableTextBox.Text = executable;
 
-        if (options.IsProfileNameReadOnly)
+        if (!string.IsNullOrWhiteSpace(profileName))
         {
             ExecutableTextBox.Focus();
             ExecutableTextBox.SelectAll();

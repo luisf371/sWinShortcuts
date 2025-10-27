@@ -204,10 +204,15 @@ public sealed partial class MainViewModel : ViewModelBase
             return;
         }
 
-        var executable = result.ExecutableName;
-        if (!string.IsNullOrWhiteSpace(executable))
+        // Update both name and executable
+        if (!string.IsNullOrWhiteSpace(result.ProfileName))
         {
-            SelectedProfile.Executable = executable;
+            SelectedProfile.Name = result.ProfileName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.ExecutableName))
+        {
+            SelectedProfile.Executable = result.ExecutableName;
         }
     }
 

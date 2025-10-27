@@ -74,10 +74,10 @@
                             VerticalAlignment="Top">
                     <Button Click="CloseButton_Click"
                             Style="{StaticResource TitleBarCloseButtonStyle}"
-                            WindowChrome.IsHitTestVisibleInChrome="True">
-                        <Button.ToolTip>
-                            <ToolTip Content="Minimize to tray" Background="#FF1E1E1E" Foreground="White" />
-                        </Button.ToolTip>
+                            WindowChrome.IsHitTestVisibleInChrome="True"
+                            ToolTip="Minimize to tray"
+                            ToolTipService.InitialShowDelay="0"
+                            ToolTipService.Placement="Right">
                         <TextBlock Text="&#xE8BB;" FontSize="12" FontFamily="Segoe MDL2 Assets" />
                     </Button>
                 </StackPanel>
@@ -294,18 +294,38 @@
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <CheckBox Content="Alt + Mouse"
-                                                      IsChecked="{Binding AltMouse.IsEnabled}"
-                                                      Margin="0"
-                                                      VerticalAlignment="Center" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Alt + Mouse"
+                                                          IsChecked="{Binding AltMouse.IsEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Hold Alt and click mouse buttons to trigger tap/hold actions. Configure button mappings and hold threshold below."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
                                         </GroupBox.Header>
                                         <StackPanel Margin="0,8,0,0"
                                                     IsEnabled="{Binding AltMouse.IsEnabled}"
                                                     Tag="{Binding AltMouse.IsEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <TextBlock Text="Hold threshold (ms)" VerticalAlignment="Center" />
-                                                <TextBox Text="{Binding AltMouse.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}" Width="60" Margin="8,0,0,0" />
+                                                <TextBlock Text="Hold threshold (ms)"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <Slider Value="{Binding AltMouse.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}"
+                                                        Minimum="10"
+                                                        Maximum="1000"
+                                                        TickFrequency="5"
+                                                        IsSnapToTickEnabled="True"
+                                                        Width="200"
+                                                        VerticalAlignment="Center"
+                                                        Margin="8,0,8,0" />
+                                                <TextBlock Text="{Binding AltMouse.HoldThresholdMilliseconds, StringFormat='{}{0} ms'}"
+                                                           VerticalAlignment="Center"
+                                                           Width="50"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           FontWeight="SemiBold" />
                                             </StackPanel>
 
                                             <DataGrid ItemsSource="{Binding AltMouseBindings}"
@@ -322,11 +342,12 @@
                                                     <DataGridTemplateColumn Header="Button" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox SelectedItem="{Binding Button, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                                <ComboBox SelectedItem="{Binding Button, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Delay=100}"
+                                                                          IsSynchronizedWithCurrentItem="False">
                                                                     <ComboBox.ItemsSource>
-                                                                        <MultiBinding Converter="{StaticResource AvailableMouseButtonsConverter}">
-                                                                            <Binding Path="DataContext.SelectedProfile.AvailableMouseButtons" ElementName="RootWindow" />
-                                                                            <Binding Path="Button" />
+                                                                        <MultiBinding Converter="{StaticResource AvailableMouseButtonsConverter}" UpdateSourceTrigger="PropertyChanged">
+                                                                            <Binding Path="DataContext.SelectedProfile.AvailableMouseButtons" ElementName="RootWindow" Mode="OneWay" />
+                                                                            <Binding Path="Button" Mode="OneWay" />
                                                                         </MultiBinding>
                                                                     </ComboBox.ItemsSource>
                                                                     <ComboBox.ItemTemplate>
@@ -409,18 +430,29 @@
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <CheckBox Content="Right Mouse Overrides"
-                                                      IsChecked="{Binding RightMouseOverrideEnabled}"
-                                                      Margin="0"
-                                                      VerticalAlignment="Center" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Right Mouse Overrides"
+                                                          IsChecked="{Binding RightMouseOverrideEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="While holding right mouse button, remap source keys to target keys. Useful for context-specific key rebinding."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
                                         </GroupBox.Header>
                                         <StackPanel Margin="0,8,0,0"
                                                     IsEnabled="{Binding RightMouseOverrideEnabled}"
                                                     Tag="{Binding RightMouseOverrideEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <CheckBox Content="Suppress original key"
-                                                      IsChecked="{Binding SuppressOriginalRightMouseKey}"
-                                                      Margin="0,0,0,8" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <CheckBox Content="Suppress original key"
+                                                          IsChecked="{Binding SuppressOriginalRightMouseKey}" />
+                                                <TextBlock Style="{StaticResource WarningIconStyle}"
+                                                           ToolTip="⚠️ WARNING: Using multiple keys per mapping with suppression enabled can cause unexpected behavior! Only recommended for single-key mappings."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
 
                                             <DataGrid ItemsSource="{Binding RightMouseOverrides}"
                                                       SelectedItem="{Binding SelectedRightMouseOverride, Mode=TwoWay}"
@@ -504,10 +536,16 @@
 
                                     <GroupBox Padding="16" Margin="0,0,0,8">
                                         <GroupBox.Header>
-                                            <CheckBox Content="Caps Lock"
-                                                      IsChecked="{Binding CapsLockEnabled}"
-                                                      Margin="0"
-                                                      VerticalAlignment="Center" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Caps Lock"
+                                                          IsChecked="{Binding CapsLockEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Remap Caps Lock to another key. Choose between different modes like Toggle, Hold, or Disabled."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
                                         </GroupBox.Header>
                                         <StackPanel Margin="0,8,0,0"
                                                     IsEnabled="{Binding CapsLockEnabled}"

@@ -139,6 +139,13 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException("Profile is not managed by this manager.");
             }
 
+            // Check for duplicate profile name (excluding the current profile)
+            if (_profiles.Any(p => !ReferenceEquals(p, profile) &&
+                                   string.Equals(p.Name, profile.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException($"A profile named '{profile.Name}' already exists.");
+            }
+
             await _store.SaveProfileAsync(profile, cancellationToken).ConfigureAwait(false);
         }
         finally

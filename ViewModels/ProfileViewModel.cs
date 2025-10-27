@@ -43,6 +43,7 @@ public sealed class ProfileViewModel : ViewModelBase
             AttachLauncherEntry(launcher);
         }
 
+        _name = Model.Name;
         _isEnabled = Model.IsEnabled;
         _executable = Model.Executable;
     }
@@ -51,7 +52,21 @@ public sealed class ProfileViewModel : ViewModelBase
 
     public Profile Model { get; }
 
-    public string Name => Model.Name;
+    private string _name = string.Empty;
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            var normalized = (value ?? string.Empty).Trim();
+            if (SetProperty(ref _name, normalized))
+            {
+                Model.Name = normalized;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
 
     private string _executable = string.Empty;
     public string Executable
@@ -252,6 +267,16 @@ public sealed class ProfileViewModel : ViewModelBase
         }
 
         var entry = new AltMouseBindingEntryViewModel(availableButtons[0], null, null);
+        
+        // Attach change handler before adding to collection
+        entry.PropertyChanged += (s, e) =>
+        {
+            if (e.PropertyName == nameof(AltMouseBindingEntryViewModel.Button))
+            {
+                OnPropertyChanged(nameof(AvailableMouseButtons));
+            }
+        };
+        
         AltMouse.Bindings.Add(entry);
         OnPropertyChanged(nameof(AvailableMouseButtons));
     }

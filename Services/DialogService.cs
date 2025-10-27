@@ -28,7 +28,7 @@ public sealed class DialogService : IDialogService
             PrimaryButtonText: "Save",
             ProfileName: profileName,
             ExecutableName: executableName,
-            IsProfileNameReadOnly: true);
+            IsProfileNameReadOnly: false);
 
         return ShowProfileDialog(options);
     }

@@ -7,7 +7,7 @@ public sealed class Profile
 {
     private string _executable = string.Empty;
 
-    public required string Name { get; init; }
+    public required string Name { get; set; }
 
     public string Executable
     {
