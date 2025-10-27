@@ -7,13 +7,13 @@ namespace sWinShortcuts.Services;
 
 public sealed class DialogService : IDialogService
 {
-    public AddProfileDialogResult? ShowAddProfileDialog()
+    public AddProfileDialogResult? ShowAddProfileDialog(string? profileName = null, string? executableName = null)
     {
         var options = new AddProfileDialogOptions(
             Title: "Add Profile",
             PrimaryButtonText: "Add",
-            ProfileName: string.Empty,
-            ExecutableName: string.Empty,
+            ProfileName: profileName,
+            ExecutableName: executableName,
             IsProfileNameReadOnly: false);
 
         return ShowProfileDialog(options);

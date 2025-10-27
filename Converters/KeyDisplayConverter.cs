@@ -16,6 +16,11 @@ public sealed class KeyDisplayConverter : IValueConverter
             {
                 return "None";
             }
+            if (key is >= Key.D0 and <= Key.D9)
+            {
+                var digitIndex = (int)key - (int)Key.D0;
+                return ((char)('0' + digitIndex)).ToString();
+            }
             return key.ToString();
         }
 
@@ -36,6 +41,13 @@ public sealed class KeyDisplayConverter : IValueConverter
             {
                 System.Diagnostics.Debug.WriteLine($"[DEBUG] KeyDisplayConverter.ConvertBack returning Key.None");
                 return Key.None;
+            }
+
+            if (text.Length == 1 && char.IsDigit(text[0]))
+            {
+                var digitKey = (Key)((int)Key.D0 + (text[0] - '0'));
+                System.Diagnostics.Debug.WriteLine($"[DEBUG] KeyDisplayConverter.ConvertBack returning digit Key: {digitKey}");
+                return digitKey;
             }
             
             if (Enum.TryParse<Key>(text, true, out var key))

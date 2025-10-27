@@ -2,7 +2,7 @@ namespace sWinShortcuts.Services;
 
 public interface IDialogService
 {
-    AddProfileDialogResult? ShowAddProfileDialog();
+    AddProfileDialogResult? ShowAddProfileDialog(string? profileName = null, string? executableName = null);
 
     AddProfileDialogResult? ShowEditProfileDialog(string profileName, string executableName);
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
@@ -79,19 +80,35 @@ public sealed partial class MainViewModel : ViewModelBase
     [RelayCommand]
     private async Task AddProfileAsync()
     {
-        var result = _dialogService.ShowAddProfileDialog();
-        if (result is null)
-        {
-            return;
-        }
+        string? profileName = null;
+        string? executableName = null;
 
-        try
+        while (true)
         {
-            await _profileManager.AddProfileAsync(result.ProfileName, result.ExecutableName);
-        }
-        catch (Exception ex)
-        {
-            _dialogService.ShowError(ex.Message, "Unable to add profile");
+            var result = _dialogService.ShowAddProfileDialog(profileName, executableName);
+            if (result is null)
+            {
+                return;
+            }
+
+            profileName = result.ProfileName;
+            executableName = result.ExecutableName;
+
+            try
+            {
+                await _profileManager.AddProfileAsync(result.ProfileName, result.ExecutableName);
+                return;
+            }
+            catch (InvalidOperationException ex)
+            {
+                _dialogService.ShowError(ex.Message, "Unable to add profile");
+                continue;
+            }
+            catch (Exception ex)
+            {
+                _dialogService.ShowError(ex.Message, "Unable to add profile");
+                return;
+            }
         }
     }
 
@@ -193,26 +210,63 @@ public sealed partial class MainViewModel : ViewModelBase
     [RelayCommand(CanExecute = nameof(CanModifyProfile))]
     private void ModifyProfile()
     {
-        if (SelectedProfile is null)
+        var selected = SelectedProfile;
+        if (selected is null)
         {
             return;
         }
 
-        var result = _dialogService.ShowEditProfileDialog(SelectedProfile.Name, SelectedProfile.Executable);
-        if (result is null)
+        var proposedName = selected.Name ?? string.Empty;
+        var proposedExecutable = selected.Executable ?? string.Empty;
+
+        while (true)
         {
+            var result = _dialogService.ShowEditProfileDialog(proposedName, proposedExecutable);
+            if (result is null)
+            {
+                return;
+            }
+
+            proposedName = result.ProfileName ?? string.Empty;
+            proposedExecutable = result.ExecutableName ?? string.Empty;
+
+            var newName = proposedName.Trim();
+            var newExecutable = proposedExecutable.Trim();
+
+            if (!string.IsNullOrWhiteSpace(newName) &&
+                !string.Equals(newName, selected.Name, StringComparison.OrdinalIgnoreCase) &&
+                _profiles.Any(p => !ReferenceEquals(p, selected) &&
+                                   string.Equals(p.Name, newName, StringComparison.OrdinalIgnoreCase)))
+            {
+                _dialogService.ShowError($"A profile named '{newName}' already exists.", "Unable to modify profile");
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(newExecutable))
+            {
+                var candidateNormalized = NormalizeExecutable(newExecutable);
+                var currentNormalized = NormalizeExecutable(selected.Executable);
+                if (!string.Equals(candidateNormalized, currentNormalized, StringComparison.OrdinalIgnoreCase) &&
+                    _profiles.Any(p => !ReferenceEquals(p, selected) &&
+                                       string.Equals(p.Model.NormalizedExecutable, candidateNormalized, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _dialogService.ShowError($"A profile for executable '{newExecutable}' already exists.", "Unable to modify profile");
+                    continue;
+                }
+            }
+
+            // Update both name and executable
+            if (!string.IsNullOrWhiteSpace(newName))
+            {
+                selected.Name = newName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(newExecutable))
+            {
+                selected.Executable = newExecutable;
+            }
+
             return;
-        }
-
-        // Update both name and executable
-        if (!string.IsNullOrWhiteSpace(result.ProfileName))
-        {
-            SelectedProfile.Name = result.ProfileName;
-        }
-
-        if (!string.IsNullOrWhiteSpace(result.ExecutableName))
-        {
-            SelectedProfile.Executable = result.ExecutableName;
         }
     }
 
@@ -320,5 +374,16 @@ public sealed partial class MainViewModel : ViewModelBase
         {
             _saveSemaphore.Release();
         }
+    }
+
+    private static string NormalizeExecutable(string? executable)
+    {
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            return string.Empty;
+        }
+
+        var fileName = Path.GetFileNameWithoutExtension(executable);
+        return fileName?.Trim().ToLowerInvariant() ?? string.Empty;
     }
 }
