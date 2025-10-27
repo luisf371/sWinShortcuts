@@ -58,22 +58,37 @@
                             Click="OnBrowseClick"/>
                 </Grid>
 
-                <StackPanel Grid.Row="4"
-                            Grid.ColumnSpan="2"
-                            Orientation="Horizontal"
-                            HorizontalAlignment="Right">
-                    <Button Content="Cancel"
-                            Width="96"
+                <Grid Grid.Row="4"
+                      Grid.ColumnSpan="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Button Grid.Column="0"
+                            Content="Running Processes"
+                            Width="160"
                             Height="30"
-                            Margin="0,0,8,0"
-                            IsCancel="True"
-                            Click="OnCancelClick"/>
-                    <Button Content="Add"
-                            Width="96"
-                            Height="30"
-                            IsDefault="True"
-                            Click="OnAddClick"/>
-                </StackPanel>
+                            Margin="0,0,12,0"
+                            HorizontalAlignment="Left"
+                            Click="OnShowProcessesClick"/>
+
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Right">
+                        <Button Content="Cancel"
+                                Width="96"
+                                Height="30"
+                                Margin="0,0,8,0"
+                                IsCancel="True"
+                                Click="OnCancelClick"/>
+                        <Button Content="Add"
+                                Width="96"
+                                Height="30"
+                                IsDefault="True"
+                                Click="OnAddClick"/>
+                    </StackPanel>
+                </Grid>
             </Grid>
         </Border>
     </Grid>

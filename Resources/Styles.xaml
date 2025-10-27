@@ -213,6 +213,123 @@
         </Setter>
     </Style>
 
+    <!-- Context menu styling keeps dropdowns consistent with the dark theme -->
+    <Style x:Key="ContextMenuItemStyle" TargetType="MenuItem">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{StaticResource ComboBoxForegroundBrush}" />
+        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="MenuItem">
+                    <Border x:Name="BackgroundBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4"
+                            Padding="{TemplateBinding Padding}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <Grid x:Name="GlyphContainer"
+                                  Grid.Column="0"
+                                  Width="18"
+                                  Margin="0,0,8,0"
+                                  HorizontalAlignment="Left"
+                                  Visibility="Visible">
+                                <Path x:Name="CheckMark"
+                                      Data="M 0 4 L 3 7 L 8 2"
+                                      Stroke="{StaticResource ForegroundPrimaryBrush}"
+                                      StrokeThickness="1.7"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      Visibility="Collapsed"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center" />
+                                <ContentPresenter x:Name="IconPresenter"
+                                                  ContentSource="Icon"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  Visibility="Visible" />
+                            </Grid>
+
+                            <ContentPresenter x:Name="HeaderPresenter"
+                                              Grid.Column="1"
+                                              RecognizesAccessKey="True"
+                                              ContentSource="Header"
+                                              VerticalAlignment="Center" />
+
+                            <ContentPresenter Grid.Column="2"
+                                              ContentSource="InputGestureText"
+                                              Margin="16,0,0,0"
+                                              VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="Icon" Value="{x:Null}" />
+                                <Condition Property="IsCheckable" Value="False" />
+                            </MultiTrigger.Conditions>
+                            <Setter TargetName="GlyphContainer" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="GlyphContainer" Property="Width" Value="0" />
+                            <Setter TargetName="GlyphContainer" Property="Margin" Value="0" />
+                        </MultiTrigger>
+                        <Trigger Property="Icon" Value="{x:Null}">
+                            <Setter TargetName="IconPresenter" Property="Visibility" Value="Collapsed" />
+                        </Trigger>
+                        <Trigger Property="IsCheckable" Value="True">
+                            <Setter TargetName="CheckMark" Property="Visibility" Value="Hidden" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="CheckMark" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="BackgroundBorder" Property="Background" Value="{StaticResource AccentBrush}" />
+                            <Setter TargetName="BackgroundBorder" Property="BorderBrush" Value="{StaticResource AccentDarkBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource ForegroundPrimaryBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ContextMenu">
+        <Setter Property="Background" Value="{StaticResource ComboBoxBackgroundBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Foreground" Value="{StaticResource ComboBoxForegroundBrush}" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="ItemContainerStyle" Value="{StaticResource ContextMenuItemStyle}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContextMenu">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <ScrollViewer CanContentScroll="True">
+                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </ScrollViewer>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style TargetType="DataGrid">
         <Setter Property="Foreground" Value="{StaticResource ForegroundPrimaryBrush}" />
         <Setter Property="Background" Value="{StaticResource InputSurfaceBrush}" />
