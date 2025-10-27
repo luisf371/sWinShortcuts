@@ -87,7 +87,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
         try
         {
-            await _profileManager.AddProfileAsync(result.ProfileName, result.ExecutablePath);
+            await _profileManager.AddProfileAsync(result.ProfileName, result.ExecutableName);
         }
         catch (Exception ex)
         {

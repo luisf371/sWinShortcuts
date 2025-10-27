@@ -6,33 +6,75 @@
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner"
         Background="{DynamicResource BackgroundBrush}">
-    <Grid Margin="24" Width="420">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="12"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="16"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="24"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+    <Grid Margin="24" MinWidth="440">
+        <Border Padding="16"
+                Background="{DynamicResource BackgroundElevatedBrush}"
+                CornerRadius="12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="8"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="12"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
 
-        <StackPanel Grid.Row="0">
-            <TextBlock Text="Profile Name" Margin="0,0,0,4"/>
-            <TextBox x:Name="NameTextBox" MinWidth="300"/>
-        </StackPanel>
+                <TextBlock Grid.Row="0"
+                           Grid.Column="0"
+                           Text="Profile Name"
+                           Margin="0,0,12,0"
+                           VerticalAlignment="Center" />
+                <TextBox x:Name="NameTextBox"
+                         Grid.Row="0"
+                         Grid.Column="1"
+                         Width="376"
+                         Margin="0" />
 
-        <StackPanel Grid.Row="4">
-            <TextBlock Text="Executable (.exe)" Margin="0,0,0,4"/>
-            <DockPanel>
-                <TextBox x:Name="ExecutableTextBox" MinWidth="260"/>
-                <Button Content="Browse" Margin="8,0,0,0" Padding="12,4" DockPanel.Dock="Right" Click="OnBrowseClick"/>
-            </DockPanel>
-        </StackPanel>
+                <TextBlock Grid.Row="2"
+                           Grid.Column="0"
+                           Text="Executable (.exe)"
+                           Margin="0,0,12,0"
+                           VerticalAlignment="Center" />
+                <Grid Grid.Row="2"
+                      Grid.Column="1"
+                      Margin="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
 
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="Cancel" Width="80" Margin="0,0,8,0" IsCancel="True" Click="OnCancelClick"/>
-            <Button Content="Add" Width="80" IsDefault="True" Click="OnAddClick"/>
-        </StackPanel>
+                    <TextBox x:Name="ExecutableTextBox"
+                             Grid.Column="0"
+                             Width="260"
+                             Margin="0,0,12,0" />
+                    <Button Grid.Column="1"
+                            Content="Browse"
+                            Width="96"
+                            Padding="12,6"
+                            Click="OnBrowseClick"/>
+                </Grid>
+
+                <StackPanel Grid.Row="4"
+                            Grid.ColumnSpan="2"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right">
+                    <Button Content="Cancel"
+                            Width="96"
+                            Height="30"
+                            Margin="0,0,8,0"
+                            IsCancel="True"
+                            Click="OnCancelClick"/>
+                    <Button Content="Add"
+                            Width="96"
+                            Height="30"
+                            IsDefault="True"
+                            Click="OnAddClick"/>
+                </StackPanel>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

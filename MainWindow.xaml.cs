@@ -1,5 +1,7 @@
 using System;
+using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Interop;
 using sWinShortcuts.Utilities;
@@ -14,6 +16,10 @@ public partial class MainWindow : Window
     private bool _isLoaded;
     private bool _allowClose;
     private bool _isMinimizingToTray;
+    private bool _isInitializingViewModel;
+    private bool _startMinimized;
+    private string? _startupProfileName;
+    private string? _lastProfileName;
     private WindowState _previousWindowState = WindowState.Normal;
     private const int WM_NCLBUTTONDBLCLK = 0x00A3; // Non-client double-click message
 
@@ -22,11 +28,12 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = _viewModel = viewModel;
         Loaded += OnLoaded;
+        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var rootDirectory = Path.Combine(appData, "sWinShortcuts");
         _settingsPath = Path.Combine(rootDirectory, "sWinShortcuts.ini");
-        
+
         LoadWindowState();
         
         // Add logging for mouse events
@@ -41,18 +48,56 @@ public partial class MainWindow : Window
     {
         Loaded -= OnLoaded;
         _isLoaded = true;
-        await _viewModel.InitializeAsync();
+        var restoredProfile = false;
+        _isInitializingViewModel = true;
+        try
+        {
+            await _viewModel.InitializeAsync();
+
+            if (!string.IsNullOrWhiteSpace(_startupProfileName))
+            {
+                var match = _viewModel.Profiles.FirstOrDefault(p =>
+                    string.Equals(p.Name, _startupProfileName, StringComparison.OrdinalIgnoreCase));
+
+                if (match is not null)
+                {
+                    _viewModel.SelectedProfile = match;
+                    restoredProfile = true;
+                }
+            }
+
+            _lastProfileName = _viewModel.SelectedProfile?.Name;
+        }
+        finally
+        {
+            _isInitializingViewModel = false;
+        }
+
+        if (!restoredProfile && !string.IsNullOrWhiteSpace(_startupProfileName))
+        {
+            SaveAppSettings();
+        }
+
+        if (_startMinimized)
+        {
+            MinimizeToTray();
+        }
     }
 
     private void LoadWindowState()
     {
         try
         {
-            if (!File.Exists(_settingsPath))
-                return;
-
             var ini = IniDocument.Load(_settingsPath);
-            
+
+            _startupProfileName = ini.GetValue("App", "LastProfile")?.Trim();
+            _lastProfileName = _startupProfileName;
+
+            if (bool.TryParse(ini.GetValue("Window", "StartMinimized"), out var startMinimized))
+            {
+                _startMinimized = startMinimized;
+            }
+
             var width = ini.GetValue("Window", "Width");
             var height = ini.GetValue("Window", "Height");
             var left = ini.GetValue("Window", "Left");
@@ -90,10 +135,8 @@ public partial class MainWindow : Window
 
     private void SaveWindowState()
     {
-        try
+        UpdateSettings(ini =>
         {
-            var ini = new IniDocument();
-            
             // Save normal bounds even when maximized
             double width, height, left, top;
             if (WindowState == WindowState.Normal)
@@ -116,13 +159,8 @@ public partial class MainWindow : Window
             ini.SetValue("Window", "Left", left.ToString("F0"));
             ini.SetValue("Window", "Top", top.ToString("F0"));
             ini.SetValue("Window", "State", WindowState.ToString());
-
-            ini.Save(_settingsPath);
-        }
-        catch
-        {
-            // Ignore errors saving window state
-        }
+            ApplySharedSettings(ini);
+        });
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -225,6 +263,8 @@ public partial class MainWindow : Window
             {
                 _previousWindowState = WindowState;
             }
+            _startMinimized = true;
+            SaveAppSettings();
 
             ShowInTaskbar = false;
             if (WindowState != WindowState.Minimized)
@@ -266,6 +306,9 @@ public partial class MainWindow : Window
             ? WindowState.Normal
             : _previousWindowState;
 
+        _startMinimized = false;
+        SaveAppSettings();
+
         WindowState = targetState;
 
         Dispatcher.BeginInvoke(new Action(() =>
@@ -282,5 +325,51 @@ public partial class MainWindow : Window
         SaveWindowState();
         _allowClose = true;
         Close();
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!string.Equals(e.PropertyName, nameof(MainViewModel.SelectedProfile), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (_isInitializingViewModel)
+        {
+            return;
+        }
+
+        _lastProfileName = _viewModel.SelectedProfile?.Name;
+        SaveAppSettings();
+    }
+
+    private void SaveAppSettings()
+    {
+        if (!_isLoaded)
+        {
+            return;
+        }
+
+        UpdateSettings(ApplySharedSettings);
+    }
+
+    private void UpdateSettings(Action<IniDocument> updater)
+    {
+        try
+        {
+            var document = IniDocument.Load(_settingsPath);
+            updater(document);
+            document.Save(_settingsPath);
+        }
+        catch
+        {
+            // Ignore errors updating settings
+        }
+    }
+
+    private void ApplySharedSettings(IniDocument ini)
+    {
+        ini.SetValue("App", "LastProfile", string.IsNullOrWhiteSpace(_lastProfileName) ? null : _lastProfileName);
+        ini.SetValue("Window", "StartMinimized", _startMinimized ? "true" : "false");
     }
 }

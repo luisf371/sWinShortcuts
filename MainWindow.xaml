@@ -285,7 +285,8 @@
                                             <Button Content="Browse"
                                                     Command="{Binding DataContext.BrowseExecutableCommand, ElementName=RootWindow}"
                                                     DockPanel.Dock="Right"
-                                                    Margin="8,0,0,0" />
+                                                    Margin="8,0,0,0"
+                                                    Width="100" />
                                             <TextBox Text="{Binding Executable, UpdateSourceTrigger=PropertyChanged}" />
                                         </DockPanel>
                                     </StackPanel>
@@ -311,6 +312,8 @@
                                                       AutoGenerateColumns="False"
                                                       HeadersVisibility="Column"
                                                       CanUserAddRows="False"
+                                                      CanUserReorderColumns="False"
+                                                      CanUserResizeColumns="False"
                                                       CanUserDeleteRows="False"
                                                       Margin="0,0,0,8"
                                                       RowHeight="32"
@@ -382,10 +385,24 @@
                                                 </DataGrid.Columns>
                                             </DataGrid>
 
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                                                <Button Content="Add Binding" Command="{Binding DataContext.AddAltMouseBindingCommand, ElementName=RootWindow}" Width="130" />
-                                                <Button Content="Remove All Bindings" Command="{Binding DataContext.RemoveAllAltMouseBindingsCommand, ElementName=RootWindow}" Width="170" Margin="8,0,0,0" />
-                                            </StackPanel>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Button Grid.Column="0"
+                                                        Content="Add Binding"
+                                                        Command="{Binding DataContext.AddAltMouseBindingCommand, ElementName=RootWindow}"
+                                                        Width="130"
+                                                        Height="32" />
+                                                <Button Grid.Column="1"
+                                                        Content="Remove All Bindings"
+                                                        Command="{Binding DataContext.RemoveAllAltMouseBindingsCommand, ElementName=RootWindow}"
+                                                        Width="170"
+                                                        Margin="16,0,0,0"
+                                                        Height="32"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
                                         </StackPanel>
                                     </GroupBox>
 
@@ -410,6 +427,8 @@
                                                       AutoGenerateColumns="False"
                                                       HeadersVisibility="Column"
                                                       CanUserAddRows="False"
+                                                      CanUserReorderColumns="False"
+                                                      CanUserResizeColumns="False"
                                                       CanUserDeleteRows="False"
                                                       Margin="0,0,0,8"
                                                       RowHeight="32"
@@ -462,10 +481,24 @@
                                                 </DataGrid.Columns>
                                             </DataGrid>
 
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                                                <Button Content="Add Mapping" Command="{Binding DataContext.AddRightMouseOverrideCommand, ElementName=RootWindow}" Width="130" />
-                                                <Button Content="Remove All Mappings" Command="{Binding DataContext.RemoveAllRightMouseOverridesCommand, ElementName=RootWindow}" Width="170" Margin="8,0,0,0" />
-                                            </StackPanel>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Button Grid.Column="0"
+                                                        Content="Add Mapping"
+                                                        Command="{Binding DataContext.AddRightMouseOverrideCommand, ElementName=RootWindow}"
+                                                        Width="130"
+                                                        Height="32" />
+                                                <Button Grid.Column="1"
+                                                        Content="Remove All Mappings"
+                                                        Command="{Binding DataContext.RemoveAllRightMouseOverridesCommand, ElementName=RootWindow}"
+                                                        Width="170"
+                                                        Margin="16,0,0,0"
+                                                        Height="32"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
                                         </StackPanel>
                                     </GroupBox>
 
@@ -527,7 +560,8 @@
                                                                     Command="{Binding DataContext.BrowseLauncherTargetCommand, ElementName=RootWindow}"
                                                                     CommandParameter="{Binding}"
                                                                     DockPanel.Dock="Right"
-                                                                    Margin="8,0,0,0" Width="80" />
+                                                                    Margin="8,0,0,0"
+                                                                    Width="100" />
                                                             <TextBox Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}" />
                                                         </DockPanel>
                                                     </DataTemplate>

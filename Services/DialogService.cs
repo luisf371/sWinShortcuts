@@ -16,7 +16,7 @@ public sealed class DialogService : IDialogService
         }
 
         return dialog.ShowDialog() == true
-            ? new AddProfileDialogResult(dialog.ProfileName, dialog.ExecutablePath)
+            ? new AddProfileDialogResult(dialog.ProfileName, dialog.ExecutableName)
             : null;
     }
 

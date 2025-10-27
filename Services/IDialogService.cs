@@ -9,4 +9,4 @@ public interface IDialogService
     void ShowError(string message, string title);
 }
 
-public sealed record AddProfileDialogResult(string ProfileName, string ExecutablePath);
+public sealed record AddProfileDialogResult(string ProfileName, string ExecutableName);

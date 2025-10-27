@@ -1,5 +1,4 @@
 using System;
-using System;
 using System.IO;
 using System.Windows;
 
@@ -14,7 +13,7 @@ public partial class AddProfileDialog : Window
 
     public string ProfileName => NameTextBox.Text.Trim();
 
-    public string ExecutablePath => ExecutableTextBox.Text.Trim();
+    public string ExecutableName => NormalizeExecutable(ExecutableTextBox.Text);
 
     private void OnBrowseClick(object sender, RoutedEventArgs e)
     {
@@ -28,7 +27,7 @@ public partial class AddProfileDialog : Window
 
         if (dialog.ShowDialog(this) == true)
         {
-            ExecutableTextBox.Text = dialog.FileName;
+            ExecutableTextBox.Text = NormalizeExecutable(dialog.FileName);
         }
     }
 
@@ -40,19 +39,20 @@ public partial class AddProfileDialog : Window
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(ExecutablePath))
+        var executable = ExecutableName;
+        if (string.IsNullOrWhiteSpace(executable))
         {
-            System.Windows.MessageBox.Show(this, "Please enter an executable path or file name.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            System.Windows.MessageBox.Show(this, "Please enter an executable file name.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var path = ExecutablePath;
-        if (!File.Exists(path) && !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(Path.GetExtension(executable), ".exe", StringComparison.OrdinalIgnoreCase))
         {
-            System.Windows.MessageBox.Show(this, "The executable must end with .exe or point to an existing file.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            System.Windows.MessageBox.Show(this, "The executable must end with .exe.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
+        ExecutableTextBox.Text = executable;
         DialogResult = true;
     }
 
@@ -60,5 +60,15 @@ public partial class AddProfileDialog : Window
     {
         DialogResult = false;
     }
-}
 
+    private static string NormalizeExecutable(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var fileName = Path.GetFileName(value.Trim());
+        return fileName?.Trim() ?? string.Empty;
+    }
+}
