@@ -282,8 +282,8 @@
                                                 Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <TextBlock Text="Executable" Margin="0,0,0,4" />
                                         <DockPanel>
-                                            <Button Content="Browse"
-                                                    Command="{Binding DataContext.BrowseExecutableCommand, ElementName=RootWindow}"
+                                            <Button Content="Modify"
+                                                    Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
                                                     DockPanel.Dock="Right"
                                                     Margin="8,0,0,0"
                                                     Width="100" />

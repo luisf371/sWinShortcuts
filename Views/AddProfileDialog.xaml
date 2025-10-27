@@ -82,7 +82,8 @@
                                 Margin="0,0,8,0"
                                 IsCancel="True"
                                 Click="OnCancelClick"/>
-                        <Button Content="Add"
+                        <Button x:Name="PrimaryButton"
+                                Content="Add"
                                 Width="96"
                                 Height="30"
                                 IsDefault="True"

@@ -190,22 +190,28 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false };
 
-    [RelayCommand(CanExecute = nameof(CanBrowseExecutable))]
-    private void BrowseExecutable()
+    [RelayCommand(CanExecute = nameof(CanModifyProfile))]
+    private void ModifyProfile()
     {
         if (SelectedProfile is null)
         {
             return;
         }
 
-        var path = _dialogService.ShowOpenFileDialog("Select Executable", "Executable Files (*.exe)|*.exe", SelectedProfile.Executable);
-        if (!string.IsNullOrWhiteSpace(path))
+        var result = _dialogService.ShowEditProfileDialog(SelectedProfile.Name, SelectedProfile.Executable);
+        if (result is null)
         {
-            SelectedProfile.Executable = path;
+            return;
+        }
+
+        var executable = result.ExecutableName;
+        if (!string.IsNullOrWhiteSpace(executable))
+        {
+            SelectedProfile.Executable = executable;
         }
     }
 
-    private bool CanBrowseExecutable() => SelectedProfile is { IsWindowsProfile: false };
+    private bool CanModifyProfile() => SelectedProfile is { IsWindowsProfile: false };
 
     [RelayCommand]
     private void BrowseLauncherTarget(WindowsLauncherEntryViewModel? launcher)
@@ -232,7 +238,7 @@ public sealed partial class MainViewModel : ViewModelBase
         AddAltMouseBindingCommand.NotifyCanExecuteChanged();
         RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
         RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
-        BrowseExecutableCommand.NotifyCanExecuteChanged();
+        ModifyProfileCommand.NotifyCanExecuteChanged();
     }
 
     private void OnProfileAdded(object? sender, Profile profile)
@@ -246,15 +252,16 @@ public sealed partial class MainViewModel : ViewModelBase
     private void OnProfileRemoved(object? sender, Profile profile)
     {
         var existing = _profiles.FirstOrDefault(p => ReferenceEquals(p.Model, profile));
-        if (existing is not null)
+        if (existing is null)
         {
-            DetachProfile(existing);
-            _profiles.Remove(existing);
-            if (ReferenceEquals(SelectedProfile, existing))
-            {
-                SelectedProfile = _profiles.FirstOrDefault();
-            }
+            return;
         }
+
+        DetachProfile(existing);
+        _profiles.Remove(existing);
+
+        var windowsProfile = _profiles.FirstOrDefault(p => ReferenceEquals(p.Model, _profileManager.WindowsProfile));
+        SelectedProfile = windowsProfile ?? _profiles.FirstOrDefault();
     }
 
     private void AttachProfile(ProfileViewModel viewModel)

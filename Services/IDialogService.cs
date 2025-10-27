@@ -4,6 +4,8 @@ public interface IDialogService
 {
     AddProfileDialogResult? ShowAddProfileDialog();
 
+    AddProfileDialogResult? ShowEditProfileDialog(string profileName, string executableName);
+
     string? ShowOpenFileDialog(string title, string filter, string? initialPath = null);
 
     void ShowError(string message, string title);

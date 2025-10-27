@@ -18,6 +18,36 @@ public partial class AddProfileDialog : Window
         InitializeComponent();
     }
 
+    public void Configure(AddProfileDialogOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (!string.IsNullOrWhiteSpace(options.Title))
+        {
+            Title = options.Title;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.PrimaryButtonText))
+        {
+            PrimaryButton.Content = options.PrimaryButtonText;
+        }
+
+        var profileName = options.ProfileName ?? string.Empty;
+        NameTextBox.Text = profileName.Trim();
+        NameTextBox.IsReadOnly = options.IsProfileNameReadOnly;
+        NameTextBox.IsHitTestVisible = !options.IsProfileNameReadOnly;
+        NameTextBox.Focusable = !options.IsProfileNameReadOnly;
+
+        var executable = NormalizeExecutable(options.ExecutableName);
+        ExecutableTextBox.Text = executable;
+
+        if (options.IsProfileNameReadOnly)
+        {
+            ExecutableTextBox.Focus();
+            ExecutableTextBox.SelectAll();
+        }
+    }
+
     public string ProfileName => NameTextBox.Text.Trim();
 
     public string ExecutableName => NormalizeExecutable(ExecutableTextBox.Text);
@@ -191,3 +221,10 @@ public partial class AddProfileDialog : Window
 
     private sealed record ProcessEntry(string Executable, long WorkingSet);
 }
+
+public sealed record AddProfileDialogOptions(
+    string? Title,
+    string? PrimaryButtonText,
+    string? ProfileName,
+    string? ExecutableName,
+    bool IsProfileNameReadOnly);

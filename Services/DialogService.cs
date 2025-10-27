@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Windows;
 using sWinShortcuts.Views;
@@ -8,16 +9,28 @@ public sealed class DialogService : IDialogService
 {
     public AddProfileDialogResult? ShowAddProfileDialog()
     {
-        var dialog = new AddProfileDialog();
+        var options = new AddProfileDialogOptions(
+            Title: "Add Profile",
+            PrimaryButtonText: "Add",
+            ProfileName: string.Empty,
+            ExecutableName: string.Empty,
+            IsProfileNameReadOnly: false);
 
-        if (System.Windows.Application.Current?.MainWindow is Window owner)
-        {
-            dialog.Owner = owner;
-        }
+        return ShowProfileDialog(options);
+    }
 
-        return dialog.ShowDialog() == true
-            ? new AddProfileDialogResult(dialog.ProfileName, dialog.ExecutableName)
-            : null;
+    public AddProfileDialogResult? ShowEditProfileDialog(string profileName, string executableName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileName);
+
+        var options = new AddProfileDialogOptions(
+            Title: "Modify Profile",
+            PrimaryButtonText: "Save",
+            ProfileName: profileName,
+            ExecutableName: executableName,
+            IsProfileNameReadOnly: true);
+
+        return ShowProfileDialog(options);
     }
 
     public string? ShowOpenFileDialog(string title, string filter, string? initialPath = null)
@@ -51,5 +64,20 @@ public sealed class DialogService : IDialogService
     public void ShowError(string message, string title)
     {
         System.Windows.MessageBox.Show(System.Windows.Application.Current?.MainWindow, message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    private static AddProfileDialogResult? ShowProfileDialog(AddProfileDialogOptions options)
+    {
+        var dialog = new AddProfileDialog();
+        dialog.Configure(options);
+
+        if (System.Windows.Application.Current?.MainWindow is Window owner)
+        {
+            dialog.Owner = owner;
+        }
+
+        return dialog.ShowDialog() == true
+            ? new AddProfileDialogResult(dialog.ProfileName, dialog.ExecutableName)
+            : null;
     }
 }

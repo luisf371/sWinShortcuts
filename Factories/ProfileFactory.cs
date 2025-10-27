@@ -39,11 +39,14 @@ public static class ProfileFactory
 
     public static Profile CreateCustomProfile(string name, string executable)
     {
-        return new Profile
+        var profile = new Profile
         {
             Name = name,
             Executable = executable,
             IsEnabled = true
         };
+
+        profile.CapsLock.IsEnabled = false;
+        return profile;
     }
 }
