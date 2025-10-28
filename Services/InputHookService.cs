@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -24,7 +25,7 @@ public sealed class InputHookService : IInputHookService
         { Models.MouseButton.XButton1, new MouseButtonState() },
         { Models.MouseButton.XButton2, new MouseButtonState() }
     };
-    private readonly Dictionary<Key, Key> _activeRightMouseOverrides = new();
+    private readonly Dictionary<Key, RightMouseOverrideState> _activeRightMouseOverrides = new();
     private readonly Random _random = new();
 
     private Profile? _activeProfile;
@@ -173,7 +174,7 @@ public sealed class InputHookService : IInputHookService
         var message = (int)wParam;
         var data = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
 
-        if ((data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0)
+        if ((data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 || data.dwExtraInfo == NativeMethods.INPUT_IGNORE)
         {
             return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
@@ -420,12 +421,14 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        if (!profile.RightMouseOverrides.Overrides.TryGetValue(sourceKey.Value, out var targetKey))
+        var overrideEntry = profile.RightMouseOverrides.Overrides.FirstOrDefault(o => o.SourceKey == sourceKey.Value);
+        if (overrideEntry is null)
         {
             return false;
         }
 
-        var suppressOriginal = profile.RightMouseOverrides.SuppressOriginalKey;
+        var suppressOriginal = overrideEntry.SuppressOriginalKey;
+        var targetKey = overrideEntry.TargetKey;
 
         if (isKeyDown)
         {
@@ -439,17 +442,21 @@ public sealed class InputHookService : IInputHookService
                 return suppressOriginal;
             }
 
-            _activeRightMouseOverrides[sourceKey.Value] = targetKey;
+            _activeRightMouseOverrides[sourceKey.Value] = new RightMouseOverrideState
+            {
+                TargetKey = targetKey,
+                SuppressOriginal = suppressOriginal
+            };
             SendKey(targetKey, true);
             return suppressOriginal;
         }
 
         if (isKeyUp)
         {
-            if (_activeRightMouseOverrides.Remove(sourceKey.Value, out var mapped))
+            if (_activeRightMouseOverrides.Remove(sourceKey.Value, out var state))
             {
-                SendKey(mapped, false);
-                return suppressOriginal;
+                SendKey(state.TargetKey, false);
+                return state.SuppressOriginal;
             }
 
             return false;
@@ -607,7 +614,7 @@ public sealed class InputHookService : IInputHookService
         });
     }
 
-    private void SendKey(Key key, bool isKeyDown)
+    private void SendKey(Key key, bool isKeyDown, bool bypassHook = true)
     {
         var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
         if (virtualKey == 0)
@@ -634,7 +641,7 @@ public sealed class InputHookService : IInputHookService
                     wScan = (ushort)NativeMethods.MapVirtualKey(virtualKey, 0),
                     dwFlags = flags,
                     time = 0,
-                    dwExtraInfo = IntPtr.Zero
+                    dwExtraInfo = bypassHook ? NativeMethods.INPUT_IGNORE : IntPtr.Zero
                 }
             }
         };
@@ -652,9 +659,9 @@ public sealed class InputHookService : IInputHookService
 
     private void ReleaseOverrideKeys()
     {
-        foreach (var (_, target) in _activeRightMouseOverrides)
+        foreach (var (_, state) in _activeRightMouseOverrides)
         {
-            SendKey(target, false);
+            SendKey(state.TargetKey, false);
         }
 
         _activeRightMouseOverrides.Clear();
@@ -706,6 +713,12 @@ public sealed class InputHookService : IInputHookService
         public bool AltHandled { get; set; }
         public CancellationTokenSource? HoldToken { get; set; }
         public bool HoldTriggered { get; set; }
+    }
+
+    private sealed class RightMouseOverrideState
+    {
+        public Key TargetKey { get; set; }
+        public bool SuppressOriginal { get; set; }
     }
 
     private static void LogDebug(string message)

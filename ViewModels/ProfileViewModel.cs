@@ -28,7 +28,7 @@ public sealed class ProfileViewModel : ViewModelBase
         AltMouse.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableMouseButtons));
 
         RightMouseOverrides = new ObservableCollection<RightMouseOverrideEntryViewModel>(
-            Model.RightMouseOverrides.Overrides.Select(pair => new RightMouseOverrideEntryViewModel(pair.Key, pair.Value)));
+            Model.RightMouseOverrides.Overrides.Select(entry => new RightMouseOverrideEntryViewModel(entry)));
         RightMouseOverrides.CollectionChanged += OnRightMouseOverridesChanged;
         foreach (var entry in RightMouseOverrides)
         {
@@ -147,19 +147,6 @@ public sealed class ProfileViewModel : ViewModelBase
         }
     }
 
-    public bool SuppressOriginalRightMouseKey
-    {
-        get => Model.RightMouseOverrides.SuppressOriginalKey;
-        set
-        {
-            if (Model.RightMouseOverrides.SuppressOriginalKey != value)
-            {
-                Model.RightMouseOverrides.SuppressOriginalKey = value;
-                OnPropertyChanged();
-                OnProfileChanged();
-            }
-        }
-    }
 
     private RightMouseOverrideEntryViewModel? _selectedRightMouseOverride;
     public RightMouseOverrideEntryViewModel? SelectedRightMouseOverride
@@ -378,7 +365,6 @@ public sealed class ProfileViewModel : ViewModelBase
         {
             Model.IsEnabled = IsEnabled;
             Model.RightMouseOverrides.IsEnabled = RightMouseOverrideEnabled;
-            Model.RightMouseOverrides.SuppressOriginalKey = SuppressOriginalRightMouseKey;
             Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
             Model.CapsLock.RemapTarget = CapsLockRemapKey;
@@ -388,9 +374,11 @@ public sealed class ProfileViewModel : ViewModelBase
             if (!IsWindowsProfile)
             {
                 Model.RightMouseOverrides.Overrides.Clear();
-                foreach (var entry in RightMouseOverrides)
+                foreach (var vm in RightMouseOverrides)
                 {
-                    Model.RightMouseOverrides.Overrides[entry.SourceKey] = entry.TargetKey;
+                    var model = new RightMouseOverrideEntry();
+                    vm.UpdateModel(model);
+                    Model.RightMouseOverrides.Overrides.Add(model);
                 }
             }
         }

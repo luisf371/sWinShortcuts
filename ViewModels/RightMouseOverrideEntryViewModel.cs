@@ -1,6 +1,7 @@
 using System;
 using CommunityToolkit.Mvvm.ComponentModel;
 using System.Windows.Input;
+using sWinShortcuts.Models;
 
 namespace sWinShortcuts.ViewModels;
 
@@ -12,12 +13,14 @@ public sealed partial class RightMouseOverrideEntryViewModel : ViewModelBase
     {
         sourceKey = Key.A;
         targetKey = Key.A;
+        suppressOriginalKey = true;
     }
 
-    public RightMouseOverrideEntryViewModel(Key source, Key target)
+    public RightMouseOverrideEntryViewModel(RightMouseOverrideEntry model)
     {
-        sourceKey = source;
-        targetKey = target;
+        sourceKey = model.SourceKey;
+        targetKey = model.TargetKey;
+        suppressOriginalKey = model.SuppressOriginalKey;
     }
 
     [ObservableProperty]
@@ -26,7 +29,19 @@ public sealed partial class RightMouseOverrideEntryViewModel : ViewModelBase
     [ObservableProperty]
     private Key targetKey;
 
+    [ObservableProperty]
+    private bool suppressOriginalKey;
+
     partial void OnSourceKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);
 
     partial void OnTargetKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);
+
+    partial void OnSuppressOriginalKeyChanged(bool value) => Changed?.Invoke(this, EventArgs.Empty);
+
+    public void UpdateModel(RightMouseOverrideEntry model)
+    {
+        model.SourceKey = SourceKey;
+        model.TargetKey = TargetKey;
+        model.SuppressOriginalKey = SuppressOriginalKey;
+    }
 }

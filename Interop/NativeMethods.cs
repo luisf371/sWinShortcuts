@@ -24,6 +24,7 @@ internal static class NativeMethods
 
     internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    internal static readonly IntPtr INPUT_IGNORE = new(12345);
 
     internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
     internal delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);

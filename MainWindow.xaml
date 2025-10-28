@@ -445,14 +445,6 @@
                                                     IsEnabled="{Binding RightMouseOverrideEnabled}"
                                                     Tag="{Binding RightMouseOverrideEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <CheckBox Content="Suppress original key"
-                                                          IsChecked="{Binding SuppressOriginalRightMouseKey}" />
-                                                <TextBlock Style="{StaticResource WarningIconStyle}"
-                                                           ToolTip="⚠️ WARNING: Using multiple keys per mapping with suppression enabled can cause unexpected behavior! Only recommended for single-key mappings."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
-                                            </StackPanel>
 
                                             <DataGrid ItemsSource="{Binding RightMouseOverrides}"
                                                       SelectedItem="{Binding SelectedRightMouseOverride, Mode=TwoWay}"
@@ -493,6 +485,24 @@
                                                                         </DataTemplate>
                                                                     </ComboBox.ItemTemplate>
                                                                 </ComboBox>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Width="Auto">
+                                                        <DataGridTemplateColumn.Header>
+                                                            <StackPanel Orientation="Horizontal"
+                                                                        ToolTip="⚠️ WARNING: Using multiple keys per mapping with suppression enabled can cause unexpected behavior! Only recommended for single-key mappings."
+                                                                        ToolTipService.InitialShowDelay="0"
+                                                                        ToolTipService.Placement="Right">
+                                                                <TextBlock Text="Suppress" VerticalAlignment="Center" />
+                                                                <TextBlock Style="{StaticResource WarningIconStyle}" Margin="4,0,0,0" />
+                                                            </StackPanel>
+                                                        </DataGridTemplateColumn.Header>
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <CheckBox IsChecked="{Binding SuppressOriginalKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          VerticalAlignment="Center"
+                                                                          HorizontalAlignment="Center" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>

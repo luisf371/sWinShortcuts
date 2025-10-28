@@ -223,19 +223,26 @@ public sealed class IniProfileStore : IProfileStore
     private static void DeserializeRightMouse(IniDocument document, RightMouseOverrideSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("RightMouse", "Enabled", settings.IsEnabled);
-        settings.SuppressOriginalKey = document.GetBoolean("RightMouse", "SuppressOriginal", settings.SuppressOriginalKey);
 
         settings.Overrides.Clear();
         var section = document.GetSection("RightMouseOverrides");
         foreach (var pair in section)
         {
             var source = KeySerializer.Deserialize(pair.Key);
-            var target = KeySerializer.Deserialize(pair.Value);
+            if (source is null) continue;
 
-            if (source is { } sourceKey && target is { } targetKey)
+            var parts = pair.Value.Split('|');
+            var target = KeySerializer.Deserialize(parts[0]);
+            if (target is null) continue;
+
+            var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var val) ? val : true;
+
+            settings.Overrides.Add(new RightMouseOverrideEntry
             {
-                settings.Overrides[sourceKey] = targetKey;
-            }
+                SourceKey = source.Value,
+                TargetKey = target.Value,
+                SuppressOriginalKey = suppress
+            });
         }
     }
 
@@ -274,11 +281,12 @@ public sealed class IniProfileStore : IProfileStore
 
         var rightMouse = profile.RightMouseOverrides;
         document.SetBoolean("RightMouse", "Enabled", rightMouse.IsEnabled);
-        document.SetBoolean("RightMouse", "SuppressOriginal", rightMouse.SuppressOriginalKey);
         document.RemoveSection("RightMouseOverrides");
-        foreach (var mapping in rightMouse.Overrides)
+        foreach (var entry in rightMouse.Overrides)
         {
-            document.SetString("RightMouseOverrides", KeySerializer.Serialize(mapping.Key), KeySerializer.Serialize(mapping.Value));
+            var key = KeySerializer.Serialize(entry.SourceKey);
+            var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}";
+            document.SetString("RightMouseOverrides", key, value);
         }
 
         var capsLock = profile.CapsLock;
