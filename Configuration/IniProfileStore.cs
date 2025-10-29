@@ -145,6 +145,7 @@ public sealed class IniProfileStore : IProfileStore
 
         DeserializeAltMouse(document, profile.AltMouse);
         DeserializeRightMouse(document, profile.RightMouseOverrides);
+        DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
         DeserializeCapsLock(document, profile.CapsLock);
 
         return profile;
@@ -246,6 +247,14 @@ public sealed class IniProfileStore : IProfileStore
         }
     }
 
+    private static void DeserializeRightClickHoldBreath(IniDocument document, RightClickHoldBreathSettings settings)
+    {
+        settings.IsEnabled = document.GetBoolean("RightClickHoldBreath", "Enabled", settings.IsEnabled);
+        settings.HoldBreathKey = document.GetKey("RightClickHoldBreath", "Key") ?? settings.HoldBreathKey;
+        settings.Mode = document.GetEnum("RightClickHoldBreath", "Mode", settings.Mode);
+        settings.DelayMilliseconds = Math.Max(5, document.GetInt32("RightClickHoldBreath", "Delay", settings.DelayMilliseconds));
+    }
+
     private static void DeserializeCapsLock(IniDocument document, CapsLockSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("CapsLock", "Enabled", settings.IsEnabled);
@@ -288,6 +297,12 @@ public sealed class IniProfileStore : IProfileStore
             var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}";
             document.SetString("RightMouseOverrides", key, value);
         }
+
+        var rightClickHoldBreath = profile.RightClickHoldBreath;
+        document.SetBoolean("RightClickHoldBreath", "Enabled", rightClickHoldBreath.IsEnabled);
+        document.SetKey("RightClickHoldBreath", "Key", rightClickHoldBreath.HoldBreathKey);
+        document.SetEnum("RightClickHoldBreath", "Mode", rightClickHoldBreath.Mode);
+        document.SetInt32("RightClickHoldBreath", "Delay", rightClickHoldBreath.DelayMilliseconds);
 
         var capsLock = profile.CapsLock;
         document.SetBoolean("CapsLock", "Enabled", capsLock.IsEnabled);

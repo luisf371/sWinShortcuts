@@ -23,6 +23,7 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IReadOnlyList<Key> _keyOptions = KeyCatalog.GetCommonKeys();
     private readonly IReadOnlyList<Key> _keyOptionsWithNone;
     private readonly IReadOnlyList<CapsLockMode> _capsLockModes = Enum.GetValues<CapsLockMode>();
+    private readonly IReadOnlyList<HoldBreathMode> _holdBreathModes = Enum.GetValues<HoldBreathMode>();
     private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
 
     public MainViewModel(IProfileManager profileManager, IDialogService dialogService)
@@ -43,6 +44,8 @@ public sealed partial class MainViewModel : ViewModelBase
     public IReadOnlyList<Key> KeyOptionsWithNone => _keyOptionsWithNone;
 
     public IReadOnlyList<CapsLockMode> CapsLockModes => _capsLockModes;
+
+    public IReadOnlyList<HoldBreathMode> HoldBreathModes => _holdBreathModes;
 
     [ObservableProperty]
     private ProfileViewModel? selectedProfile;

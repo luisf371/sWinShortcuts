@@ -389,17 +389,19 @@
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="" Width="Auto">
+                                                    <DataGridTemplateColumn Header="🗑️" Width="Auto">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <Button Content="✕"
                                                                         Command="{Binding DataContext.RemoveAltMouseBindingCommand, ElementName=RootWindow}"
                                                                         CommandParameter="{Binding}"
-                                                                        Width="24"
+                                                                        Width="30"
                                                                         Height="24"
                                                                         Padding="0"
                                                                         FontSize="14"
-                                                                        ToolTip="Remove this binding" />
+                                                                        ToolTip="Remove this binding"
+                                                                        ToolTipService.InitialShowDelay="0"
+                                                                        ToolTipService.Placement="Right" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
@@ -491,7 +493,7 @@
                                                     <DataGridTemplateColumn Width="Auto">
                                                         <DataGridTemplateColumn.Header>
                                                             <StackPanel Orientation="Horizontal"
-                                                                        ToolTip="⚠️ WARNING: Using multiple keys per mapping with suppression enabled can cause unexpected behavior! Only recommended for single-key mappings."
+                                                                        ToolTip="⚠️ WARNING: Turning Suppression Off violates '1 key = 1 action' rules in competitive or anti-cheat restricted games. Use at your own risk."
                                                                         ToolTipService.InitialShowDelay="0"
                                                                         ToolTipService.Placement="Right">
                                                                 <TextBlock Text="Suppress" VerticalAlignment="Center" />
@@ -506,17 +508,19 @@
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="" Width="Auto">
+                                                    <DataGridTemplateColumn Header="🗑️" Width="Auto">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <Button Content="✕"
                                                                         Command="{Binding DataContext.RemoveRightMouseOverrideCommand, ElementName=RootWindow}"
                                                                         CommandParameter="{Binding}"
-                                                                        Width="24"
+                                                                        Width="30"
                                                                         Height="24"
                                                                         Padding="0"
                                                                         FontSize="14"
-                                                                        ToolTip="Remove this mapping" />
+                                                                        ToolTip="Remove this mapping"
+                                                                        ToolTipService.InitialShowDelay="0"
+                                                                        ToolTipService.Placement="Right" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
@@ -541,6 +545,70 @@
                                                         Height="32"
                                                         HorizontalAlignment="Right" />
                                             </Grid>
+                                        </StackPanel>
+                                    </GroupBox>
+
+                                    <GroupBox Padding="16" Margin="0,0,0,8"
+                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Right Click - Hold Breath"
+                                                          IsChecked="{Binding RightClickHoldBreathEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Upon right mouse button down, after a delay, press or toggle the hold breath key. Release on right mouse button up."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                                <TextBlock Style="{StaticResource WarningIconStyle}"
+                                                           ToolTip="⚠️ WARNING: This violates '1 key = 1 action' rules in competitive or anti-cheat restricted games. Use at your own risk."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding RightClickHoldBreathEnabled}"
+                                                    Tag="{Binding RightClickHoldBreathEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <TextBlock Text="Hold breath key"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding RightClickHoldBreathKey, Mode=TwoWay}"
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                                          Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <TextBlock Text="Mode" VerticalAlignment="Center" Width="140" />
+                                                <ComboBox ItemsSource="{Binding DataContext.HoldBreathModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding RightClickHoldBreathMode, Mode=TwoWay}"
+                                                          Width="160" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Delay (ms)"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <Slider Value="{Binding RightClickHoldBreathDelay, UpdateSourceTrigger=PropertyChanged}"
+                                                        Minimum="0"
+                                                        Maximum="500"
+                                                        TickFrequency="5"
+                                                        IsSnapToTickEnabled="True"
+                                                        Width="200"
+                                                        VerticalAlignment="Center"
+                                                        Margin="0,0,8,0" />
+                                                <TextBlock Text="{Binding RightClickHoldBreathDelay, StringFormat='{}{0} ms'}"
+                                                           VerticalAlignment="Center"
+                                                           Width="50"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           FontWeight="SemiBold" />
+                                            </StackPanel>
                                         </StackPanel>
                                     </GroupBox>
 

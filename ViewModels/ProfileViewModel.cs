@@ -162,6 +162,62 @@ public sealed class ProfileViewModel : ViewModelBase
         set => SetProperty(ref _selectedLauncher, value);
     }
 
+    public bool RightClickHoldBreathEnabled
+    {
+        get => Model.RightClickHoldBreath.IsEnabled;
+        set
+        {
+            if (Model.RightClickHoldBreath.IsEnabled != value)
+            {
+                Model.RightClickHoldBreath.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public Key RightClickHoldBreathKey
+    {
+        get => Model.RightClickHoldBreath.HoldBreathKey;
+        set
+        {
+            if (Model.RightClickHoldBreath.HoldBreathKey != value)
+            {
+                Model.RightClickHoldBreath.HoldBreathKey = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public HoldBreathMode RightClickHoldBreathMode
+    {
+        get => Model.RightClickHoldBreath.Mode;
+        set
+        {
+            if (Model.RightClickHoldBreath.Mode != value)
+            {
+                Model.RightClickHoldBreath.Mode = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public int RightClickHoldBreathDelay
+    {
+        get => Model.RightClickHoldBreath.DelayMilliseconds;
+        set
+        {
+            if (Model.RightClickHoldBreath.DelayMilliseconds != value)
+            {
+                Model.RightClickHoldBreath.DelayMilliseconds = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
     public bool CapsLockEnabled
     {
         get => Model.CapsLock.IsEnabled;
@@ -365,6 +421,10 @@ public sealed class ProfileViewModel : ViewModelBase
         {
             Model.IsEnabled = IsEnabled;
             Model.RightMouseOverrides.IsEnabled = RightMouseOverrideEnabled;
+            Model.RightClickHoldBreath.IsEnabled = RightClickHoldBreathEnabled;
+            Model.RightClickHoldBreath.HoldBreathKey = RightClickHoldBreathKey;
+            Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
+            Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
             Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
             Model.CapsLock.RemapTarget = CapsLockRemapKey;

@@ -35,6 +35,8 @@ public sealed class InputHookService : IInputHookService
     private bool _rightButtonPressed;
     private bool _capsShiftEngaged;
     private Key? _capsRemappedKey;
+    private bool _holdBreathActive;
+    private CancellationTokenSource? _holdBreathDelayToken;
 
     private NativeMethods.LowLevelKeyboardProc? _keyboardProc;
     private NativeMethods.LowLevelMouseProc? _mouseProc;
@@ -103,6 +105,7 @@ public sealed class InputHookService : IInputHookService
             _altPressed = false;
             _rightButtonPressed = false;
             ReleaseCapsState();
+            ReleaseHoldBreathState();
 
             _isRunning = false;
         }
@@ -229,10 +232,12 @@ public sealed class InputHookService : IInputHookService
         {
             case NativeMethods.WM_RBUTTONDOWN:
                 _rightButtonPressed = true;
+                HandleRightClickHoldBreathDown();
                 break;
             case NativeMethods.WM_RBUTTONUP:
                 _rightButtonPressed = false;
                 ReleaseOverrideKeys();
+                HandleRightClickHoldBreathUp();
                 break;
         }
 
@@ -680,6 +685,7 @@ public sealed class InputHookService : IInputHookService
         ReleaseOverrideKeys();
         ResetMouseStates();
         ReleaseCapsState();
+        ReleaseHoldBreathState();
         _altPressed = false;
         _rightButtonPressed = false;
     }
@@ -705,6 +711,140 @@ public sealed class InputHookService : IInputHookService
         state.HoldTriggered = false;
         state.DownTick = null;
         state.AltHandled = false;
+    }
+
+    private void HandleRightClickHoldBreathDown()
+    {
+        var profile = _activeProfile;
+        if (profile is null || !profile.RightClickHoldBreath.IsEnabled)
+        {
+            return;
+        }
+
+        // Cancel any pending delay
+        CancelHoldBreathDelay();
+
+        var settings = profile.RightClickHoldBreath;
+        var delay = Math.Max(0, settings.DelayMilliseconds);
+
+        if (delay > 0)
+        {
+            // Start delay timer
+            var cts = new CancellationTokenSource();
+            _holdBreathDelayToken = cts;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(delay, cts.Token).ConfigureAwait(false);
+                }
+                catch (TaskCanceledException)
+                {
+                    return;
+                }
+
+                lock (_syncRoot)
+                {
+                    if (!_isRunning || cts.IsCancellationRequested || !_rightButtonPressed)
+                    {
+                        return;
+                    }
+
+                    ActivateHoldBreath(settings);
+                }
+            });
+        }
+        else
+        {
+            // No delay, activate immediately
+            ActivateHoldBreath(settings);
+        }
+    }
+
+    private void HandleRightClickHoldBreathUp()
+    {
+        // Cancel any pending delay
+        CancelHoldBreathDelay();
+
+        var profile = _activeProfile;
+        if (profile is null || !profile.RightClickHoldBreath.IsEnabled || !_holdBreathActive)
+        {
+            return;
+        }
+
+        var settings = profile.RightClickHoldBreath;
+
+        if (settings.Mode == HoldBreathMode.Hold)
+        {
+            // Release the key immediately
+            SendKey(settings.HoldBreathKey, false);
+            _holdBreathActive = false;
+        }
+        // Toggle mode does nothing on mouse up - game handles the state reset
+    }
+
+    private void ActivateHoldBreath(RightClickHoldBreathSettings settings)
+    {
+        if (_holdBreathActive)
+        {
+            return;
+        }
+
+        _holdBreathActive = true;
+
+        if (settings.Mode == HoldBreathMode.Hold)
+        {
+            // Press and hold the key
+            SendKey(settings.HoldBreathKey, true);
+        }
+        else if (settings.Mode == HoldBreathMode.Toggle)
+        {
+            // Toggle mode: Send a quick tap (down + up) with random delay
+            Task.Run(() =>
+            {
+                SendKey(settings.HoldBreathKey, true);
+                Thread.Sleep(_random.Next(20, 31)); // 20-30ms random delay
+                SendKey(settings.HoldBreathKey, false);
+            });
+            _holdBreathActive = false; // Reset immediately since we're just tapping
+        }
+    }
+
+    private void CancelHoldBreathDelay()
+    {
+        if (_holdBreathDelayToken is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _holdBreathDelayToken.Cancel();
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _holdBreathDelayToken.Dispose();
+            _holdBreathDelayToken = null;
+        }
+    }
+
+    private void ReleaseHoldBreathState()
+    {
+        CancelHoldBreathDelay();
+
+        if (_holdBreathActive)
+        {
+            var profile = _activeProfile;
+            if (profile?.RightClickHoldBreath.IsEnabled == true)
+            {
+                SendKey(profile.RightClickHoldBreath.HoldBreathKey, false);
+            }
+            _holdBreathActive = false;
+        }
     }
 
     private sealed class MouseButtonState
