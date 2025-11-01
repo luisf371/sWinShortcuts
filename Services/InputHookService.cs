@@ -1071,14 +1071,14 @@ public sealed class InputHookService : IInputHookService
             
             // Human-like key press duration with jitter
             var duration = rng.Next(KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS + 1);
-            
-            // High-resolution wait (more accurate than Thread.Sleep for <50ms)
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < duration)
-            {
-                Thread.SpinWait(1000);  // ~10-50μs per iteration
-            }
-            
+
+            //// High-resolution wait (more accurate than Thread.Sleep for <50ms)
+            //var sw = Stopwatch.StartNew();
+            //while (sw.ElapsedMilliseconds < duration)
+            //{
+            //    Thread.SpinWait(1000);  // ~10-50μs per iteration
+            //}
+            Thread.Sleep(duration);
             SendKey(key, false);
             
             LogDebug($"FireTapKey: {key}, duration={duration}ms, warmup={warmupCalls}");
