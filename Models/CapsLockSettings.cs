@@ -15,6 +15,6 @@ public enum CapsLockMode
 {
     Normal = 0,
     Disabled = 1,
-    MomentaryShift = 2,
+    Hold = 2,
     Remap = 3
 }

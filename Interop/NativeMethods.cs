@@ -24,6 +24,7 @@ internal static class NativeMethods
 
     internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    internal const int VK_CAPITAL = 0x14;
     internal static readonly IntPtr INPUT_IGNORE = new(12345);
 
     internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -51,6 +52,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll")]
+    internal static extern short GetKeyState(int nVirtKey);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);

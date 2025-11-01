@@ -669,16 +669,16 @@ public sealed class InputHookService : IInputHookService
                 LogDebug("CapsLock suppressed (Disabled mode)");
                 return true;
 
-            case CapsLockMode.MomentaryShift:
+            case CapsLockMode.Hold:
                 if (isKeyDown && Interlocked.CompareExchange(ref _capsShiftEngaged, 1, 0) == 0)
                 {
-                    SendKey(Key.LeftShift, true);
-                    LogDebug("CapsLock → Shift DOWN (MomentaryShift mode)");
+                    ForceCapsLockState(true);
+                    LogDebug("CapsLock → FORCED ON (Hold mode)");
                 }
                 else if (isKeyUp && Interlocked.CompareExchange(ref _capsShiftEngaged, 0, 1) == 1)
                 {
-                    SendKey(Key.LeftShift, false);
-                    LogDebug("CapsLock → Shift UP (MomentaryShift mode)");
+                    ForceCapsLockState(false);
+                    LogDebug("CapsLock → FORCED OFF (Hold mode)");
                 }
                 return true;
 
@@ -739,8 +739,19 @@ public sealed class InputHookService : IInputHookService
     {
         if (Interlocked.CompareExchange(ref _capsShiftEngaged, 0, 1) == 1)
         {
-            SendKey(Key.LeftShift, false);
-            LogDebug("Force-release CapsLock Shift");
+            // Check if we're in Hold mode
+            var settings = GetEffectiveCapsLockSettings();
+            if (settings is { IsEnabled: true, Mode: CapsLockMode.Hold })
+            {
+                ForceCapsLockState(false);
+                LogDebug("Force-release CapsLock (Hold → OFF)");
+            }
+            else
+            {
+                // Legacy Shift emulation path (if mode was changed during hold)
+                SendKey(Key.LeftShift, false);
+                LogDebug("Force-release CapsLock Shift");
+            }
         }
 
         if (_capsRemappedKey.HasValue)
@@ -748,6 +759,50 @@ public sealed class InputHookService : IInputHookService
             SendKey(_capsRemappedKey.Value, false);
             LogDebug($"Force-release CapsLock remap: {_capsRemappedKey.Value}");
             _capsRemappedKey = null;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsCapsLockOn()
+    {
+        return (NativeMethods.GetKeyState(NativeMethods.VK_CAPITAL) & 1) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ForceCapsLockState(bool enabled)
+    {
+        // Check current Caps Lock state
+        bool currentlyOn = IsCapsLockOn();
+        
+        // Only toggle if state doesn't match desired state
+        if (currentlyOn != enabled)
+        {
+            // Send Caps Lock key tap to toggle it (down + up)
+            // Using VK code directly for Caps Lock (0x14)
+            var input = new NativeMethods.INPUT
+            {
+                type = NativeMethods.InputType.INPUT_KEYBOARD,
+                U = new NativeMethods.InputUnion
+                {
+                    ki = new NativeMethods.KEYBDINPUT
+                    {
+                        wVk = NativeMethods.VK_CAPITAL,
+                        wScan = (ushort)NativeMethods.MapVirtualKey(NativeMethods.VK_CAPITAL, 0),
+                        dwFlags = 0,  // Key down
+                        time = 0,
+                        dwExtraInfo = NativeMethods.INPUT_IGNORE
+                    }
+                }
+            };
+            
+            // Send key down
+            NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
+            
+            // Send key up
+            input.U.ki.dwFlags = NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP;
+            NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
+            
+            LogDebug($"ForceCapsLockState: Toggled Caps Lock {(enabled ? "ON" : "OFF")}");
         }
     }
 
