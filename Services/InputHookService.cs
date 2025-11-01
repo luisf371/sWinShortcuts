@@ -462,14 +462,17 @@ public sealed class InputHookService : IInputHookService
         if (binding.HoldKey.HasValue)
         {
             var holdKey = binding.HoldKey.Value;
-            var baseThreshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
-            
-            // Add anti-cheat jitter
-            var rng = _random.Value!;
-            var jitter = rng.Next(ALT_MOUSE_HOLD_JITTER_MIN_MS, ALT_MOUSE_HOLD_JITTER_MAX_MS + 1);
-            var threshold = baseThreshold + jitter;
+            //    var baseThreshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
+            //    
+            //    // Add anti-cheat jitter
+            //    var rng = _random.Value!;
+            //    var jitter = rng.Next(ALT_MOUSE_HOLD_JITTER_MIN_MS, ALT_MOUSE_HOLD_JITTER_MAX_MS + 1);
+            //    var threshold = baseThreshold + jitter;
 
-            LogDebug($"[{button}] Hold timer: base={baseThreshold}ms, jitter=+{jitter}ms, total={threshold}ms");
+            //    LogDebug($"[{button}] Hold timer: base={baseThreshold}ms, jitter=+{jitter}ms, total={threshold}ms");
+            // Deterministic threshold (no jitter)
+            var threshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
+            LogDebug($"[{button}] Hold timer: {threshold}ms");
 
             // Only capture the state reference (not runtime flags)
             var stateRef = state;
