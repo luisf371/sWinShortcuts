@@ -119,6 +119,16 @@ public sealed class ProfileViewModel : ViewModelBase
 
     public ObservableCollection<WindowsLauncherEntryViewModel> WindowsLaunchers { get; }
 
+    // Keys available for the Source column in Right Mouse Overrides (no duplicates)
+    public IReadOnlyList<Key> AvailableRightMouseSourceKeys
+    {
+        get
+        {
+            var used = RightMouseOverrides.Select(e => e.SourceKey).ToHashSet();
+            return _keyOptions.Where(k => !used.Contains(k)).ToList();
+        }
+    }
+
     public bool WindowsLauncherEnabled
     {
         get => Model.WindowsLauncher.IsEnabled;
@@ -271,13 +281,21 @@ public sealed class ProfileViewModel : ViewModelBase
 
     public void AddRightMouseOverride()
     {
-        var defaultSource = _keyOptions.FirstOrDefault(k => k != Key.None);
+        var available = AvailableRightMouseSourceKeys;
+        var defaultSource = available.FirstOrDefault();
         if (defaultSource == default)
         {
-            defaultSource = Key.A;
+            defaultSource = _keyOptions.FirstOrDefault(k => k != Key.None);
+            if (defaultSource == default)
+            {
+                defaultSource = Key.A;
+            }
         }
 
-        var entry = new RightMouseOverrideEntryViewModel();
+        var entry = new RightMouseOverrideEntryViewModel
+        {
+            SourceKey = defaultSource
+        };
         RightMouseOverrides.Add(entry);
         SelectedRightMouseOverride = entry;
     }
@@ -359,7 +377,7 @@ public sealed class ProfileViewModel : ViewModelBase
                 DetachRightMouseEntry(item);
             }
         }
-
+        OnPropertyChanged(nameof(AvailableRightMouseSourceKeys));
         OnProfileChanged();
     }
 
@@ -406,6 +424,8 @@ public sealed class ProfileViewModel : ViewModelBase
 
     private void OnChildChanged(object? sender, EventArgs e)
     {
+        // Update filtered Source key options when any entry changes
+        OnPropertyChanged(nameof(AvailableRightMouseSourceKeys));
         OnProfileChanged();
     }
 

@@ -33,6 +33,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IForegroundWatcher, ForegroundWatcher>();
         services.AddSingleton<IInputHookService, InputHookService>();
         services.AddSingleton<ISystemTrayService, SystemTrayService>();
+        services.AddSingleton<IStartupService, StartupService>();
         services.AddHostedService<ProfileActivationService>();
         services.AddSingleton<IDialogService, DialogService>();
         services.AddSingleton<MainViewModel>();

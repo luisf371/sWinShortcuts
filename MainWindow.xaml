@@ -30,6 +30,7 @@
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
         <conv:MouseButtonDisplayConverter x:Key="MouseButtonDisplayConverter" />
         <conv:AvailableMouseButtonsConverter x:Key="AvailableMouseButtonsConverter" />
+        <conv:AvailableKeysConverter x:Key="AvailableKeysConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
         <Style x:Key="DisabledContentShadeStyle" TargetType="FrameworkElement">
@@ -472,9 +473,15 @@
                                                     <DataGridTemplateColumn Header="Source" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                                <ComboBox
                                                                           SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                                           behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
+                                                                    <ComboBox.ItemsSource>
+                                                                        <MultiBinding Converter="{StaticResource AvailableKeysConverter}" UpdateSourceTrigger="PropertyChanged">
+                                                                            <Binding Path="DataContext.SelectedProfile.AvailableRightMouseSourceKeys" ElementName="RootWindow" Mode="OneWay" />
+                                                                            <Binding Path="SourceKey" Mode="OneWay" />
+                                                                        </MultiBinding>
+                                                                    </ComboBox.ItemsSource>
                                                                     <ComboBox.ItemTemplate>
                                                                         <DataTemplate>
                                                                             <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
