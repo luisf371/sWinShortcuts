@@ -12,6 +12,7 @@ namespace sWinShortcuts;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
+    private readonly Services.IStartupService _startupService;
     private readonly string _settingsPath;
     private bool _isLoaded;
     private bool _allowClose;
@@ -23,10 +24,11 @@ public partial class MainWindow : Window
     private WindowState _previousWindowState = WindowState.Normal;
     private const int WM_NCLBUTTONDBLCLK = 0x00A3; // Non-client double-click message
 
-    public MainWindow(MainViewModel viewModel)
+    public MainWindow(MainViewModel viewModel, Services.IStartupService startupService)
     {
         InitializeComponent();
         DataContext = _viewModel = viewModel;
+        _startupService = startupService;
         Loaded += OnLoaded;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
@@ -166,6 +168,15 @@ public partial class MainWindow : Window
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         MinimizeToTray();
+    }
+
+    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var wnd = new Views.SettingsWindow(_startupService)
+        {
+            Owner = this
+        };
+        wnd.ShowDialog();
     }
 
     private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)

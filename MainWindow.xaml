@@ -70,8 +70,17 @@
                            Foreground="{DynamicResource ForegroundPrimaryBrush}"
                            FontSize="12" />
                 <StackPanel Orientation="Horizontal"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Top">
+                             HorizontalAlignment="Right"
+                             VerticalAlignment="Top">
+                    <Button Click="SettingsButton_Click"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            WindowChrome.IsHitTestVisibleInChrome="True"
+                            ToolTip="Settings"
+                            ToolTipService.InitialShowDelay="0"
+                            ToolTipService.Placement="Right"
+                            Margin="0,0,4,0">
+                        <TextBlock Text="&#xE713;" FontSize="12" FontFamily="Segoe MDL2 Assets" />
+                    </Button>
                     <Button Click="CloseButton_Click"
                             Style="{StaticResource TitleBarCloseButtonStyle}"
                             WindowChrome.IsHitTestVisibleInChrome="True"

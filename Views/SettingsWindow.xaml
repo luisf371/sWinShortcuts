@@ -1,0 +1,39 @@
+<Window x:Class="sWinShortcuts.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings" Width="380" Height="220"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource BackgroundElevatedBrush}">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Vertical">
+            <TextBlock Text="Startup"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,8"
+                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <CheckBox x:Name="StartWithWindowsCheck"
+                      Content="Start with Windows"
+                      IsChecked="{Binding StartWithWindows, Mode=TwoWay}"
+                      Margin="0,0,0,8"
+                      Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <CheckBox x:Name="StartAsAdminCheck"
+                      Content="Start as administrator"
+                      IsChecked="{Binding StartAsAdmin, Mode=TwoWay}"
+                      IsEnabled="{Binding CanChooseAdmin}"
+                      Margin="24,0,0,0"
+                      Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Width="80" Margin="0,0,8,0" MinHeight="28" IsCancel="True">Cancel</Button>
+            <Button Width="80" Margin="0" MinHeight="28" IsDefault="True" Click="OnSaveClick">Save</Button>
+        </StackPanel>
+    </Grid>
+</Window>
