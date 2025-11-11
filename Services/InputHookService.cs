@@ -86,6 +86,7 @@ public sealed class InputHookService : IInputHookService
     };
     
     private readonly Dictionary<Key, RightMouseOverrideState> _activeRightMouseOverrides = new();
+    private readonly Dictionary<Key, RightMouseOverrideState> _activeKeyRemapperOverrides = new();
     
     // Profile state
     private volatile Profile? _activeProfile;
@@ -344,6 +345,7 @@ public sealed class InputHookService : IInputHookService
 
         // Handle features in priority order
         var handled = HandleCapsLock(vkCode, isKeyDown, isKeyUp) ||
+                      HandleKeyRemapper(vkCode, isKeyDown, isKeyUp) ||
                       HandleRightMouseOverride(vkCode, isKeyDown, isKeyUp);
 
         if (!handled)
@@ -638,6 +640,65 @@ public sealed class InputHookService : IInputHookService
         return false;
     }
 
+    // ==================== KEY REMAPPER (GLOBAL, NO RIGHT-CLICK REQUIRED) ====================
+
+    private bool HandleKeyRemapper(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        var profile = _activeProfile;
+        if (profile is null || !profile.KeyRemapper.IsEnabled)
+        {
+            return false;
+        }
+
+        var sourceKey = KeyInteropUtilities.FromVirtualKey(vkCode);
+        if (sourceKey is null)
+        {
+            return false;
+        }
+
+        var remapEntry = profile.KeyRemapper.Overrides
+            .FirstOrDefault(o => o.SourceKey == sourceKey.Value);
+
+        if (remapEntry is null)
+        {
+            return false;
+        }
+
+        var suppressOriginal = remapEntry.SuppressOriginalKey;
+        var targetKey = remapEntry.TargetKey;
+
+        if (isKeyDown)
+        {
+            if (_activeKeyRemapperOverrides.ContainsKey(sourceKey.Value))
+            {
+                return suppressOriginal;
+            }
+
+            _activeKeyRemapperOverrides[sourceKey.Value] = new RightMouseOverrideState
+            {
+                TargetKey = targetKey,
+                SuppressOriginal = suppressOriginal
+            };
+
+            SendKey(targetKey, true);
+            LogDebug($"KeyRemapper: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
+
+            return suppressOriginal;
+        }
+
+        if (isKeyUp)
+        {
+            if (_activeKeyRemapperOverrides.Remove(sourceKey.Value, out var state))
+            {
+                SendKey(state.TargetKey, false);
+                LogDebug($"KeyRemapper released: {sourceKey.Value}");
+                return state.SuppressOriginal;
+            }
+        }
+
+        return false;
+    }
+
     private void ReleaseOverrideKeys()
     {
         foreach (var (key, state) in _activeRightMouseOverrides)
@@ -646,6 +707,16 @@ public sealed class InputHookService : IInputHookService
             LogDebug($"Force-release override key: {key}");
         }
         _activeRightMouseOverrides.Clear();
+    }
+
+    private void ReleaseKeyRemapperKeys()
+    {
+        foreach (var (key, state) in _activeKeyRemapperOverrides)
+        {
+            SendKey(state.TargetKey, false);
+            LogDebug($"Force-release key remap: {key}");
+        }
+        _activeKeyRemapperOverrides.Clear();
     }
 
     // ==================== CAPS LOCK HANDLING ====================
@@ -1139,6 +1210,7 @@ public sealed class InputHookService : IInputHookService
     
     private void ReleaseAllState()
     {
+        ReleaseKeyRemapperKeys();
         ReleaseOverrideKeys();
         ResetMouseStates();
         ReleaseCapsState();

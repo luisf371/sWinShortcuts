@@ -21,6 +21,23 @@ public sealed class KeyDisplayConverter : IValueConverter
                 var digitIndex = (int)key - (int)Key.D0;
                 return ((char)('0' + digitIndex)).ToString();
             }
+
+            // Friendly symbols for OEM keys (US layout defaults)
+            switch (key)
+            {
+                case Key.Oem3: return "`";             // ` ~
+                case Key.OemMinus: return "-";         // - _
+                case Key.OemPlus: return "=";          // = +
+                case Key.OemOpenBrackets: return "[";  // [ {
+                case Key.OemCloseBrackets: return "]"; // ] }
+                case Key.OemPipe: return "\\";         // \ |
+                case Key.OemSemicolon: return ";";     // ; :
+                case Key.OemQuotes: return "'";        // ' "
+                case Key.OemComma: return ",";         // , <
+                case Key.OemPeriod: return ".";        // . >
+                case Key.OemQuestion: return "/";      // / ?
+            }
+
             return key.ToString();
         }
 

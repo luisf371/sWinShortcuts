@@ -145,6 +145,7 @@ public sealed class IniProfileStore : IProfileStore
 
         DeserializeAltMouse(document, profile.AltMouse);
         DeserializeRightMouse(document, profile.RightMouseOverrides);
+        DeserializeKeyRemapper(document, profile.KeyRemapper);
         DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
         DeserializeCapsLock(document, profile.CapsLock);
 
@@ -247,6 +248,32 @@ public sealed class IniProfileStore : IProfileStore
         }
     }
 
+    private static void DeserializeKeyRemapper(IniDocument document, KeyRemapperSettings settings)
+    {
+        settings.IsEnabled = document.GetBoolean("KeyRemapper", "Enabled", settings.IsEnabled);
+
+        settings.Overrides.Clear();
+        var section = document.GetSection("KeyRemapperOverrides");
+        foreach (var pair in section)
+        {
+            var source = KeySerializer.Deserialize(pair.Key);
+            if (source is null) continue;
+
+            var parts = pair.Value.Split('|');
+            var target = KeySerializer.Deserialize(parts[0]);
+            if (target is null) continue;
+
+            var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var val) ? val : true;
+
+            settings.Overrides.Add(new KeyRemapperEntry
+            {
+                SourceKey = source.Value,
+                TargetKey = target.Value,
+                SuppressOriginalKey = suppress
+            });
+        }
+    }
+
     private static void DeserializeRightClickHoldBreath(IniDocument document, RightClickHoldBreathSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("RightClickHoldBreath", "Enabled", settings.IsEnabled);
@@ -296,6 +323,16 @@ public sealed class IniProfileStore : IProfileStore
             var key = KeySerializer.Serialize(entry.SourceKey);
             var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}";
             document.SetString("RightMouseOverrides", key, value);
+        }
+
+        var keyRemapper = profile.KeyRemapper;
+        document.SetBoolean("KeyRemapper", "Enabled", keyRemapper.IsEnabled);
+        document.RemoveSection("KeyRemapperOverrides");
+        foreach (var entry in keyRemapper.Overrides)
+        {
+            var key = KeySerializer.Serialize(entry.SourceKey);
+            var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}";
+            document.SetString("KeyRemapperOverrides", key, value);
         }
 
         var rightClickHoldBreath = profile.RightClickHoldBreath;

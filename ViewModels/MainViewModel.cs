@@ -176,6 +176,39 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false };
 
+    // Key Remapper commands
+
+    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    private void AddKeyRemapperMapping()
+    {
+        SelectedProfile?.AddKeyRemapperMapping();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    private void RemoveKeyRemapperMapping(KeyRemapperEntryViewModel? entry)
+    {
+        if (SelectedProfile is null)
+        {
+            return;
+        }
+
+        SelectedProfile.RemoveKeyRemapperMapping(entry);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    private void RemoveAllKeyRemapperMappings()
+    {
+        if (SelectedProfile is null)
+        {
+            return;
+        }
+
+        while (SelectedProfile.KeyRemapperMappings.Count > 0)
+        {
+            SelectedProfile.RemoveKeyRemapperMapping(SelectedProfile.KeyRemapperMappings[0]);
+        }
+    }
+
     [RelayCommand(CanExecute = nameof(CanEditAltMouse))]
     private void AddAltMouseBinding()
     {
@@ -301,6 +334,9 @@ public sealed partial class MainViewModel : ViewModelBase
         RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
         RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
         ModifyProfileCommand.NotifyCanExecuteChanged();
+        AddKeyRemapperMappingCommand.NotifyCanExecuteChanged();
+        RemoveKeyRemapperMappingCommand.NotifyCanExecuteChanged();
+        RemoveAllKeyRemapperMappingsCommand.NotifyCanExecuteChanged();
     }
 
     private void OnProfileAdded(object? sender, Profile profile)
@@ -354,6 +390,8 @@ public sealed partial class MainViewModel : ViewModelBase
             RemoveAllRightMouseOverridesCommand.NotifyCanExecuteChanged();
             RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
             RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
+            RemoveKeyRemapperMappingCommand.NotifyCanExecuteChanged();
+            RemoveAllKeyRemapperMappingsCommand.NotifyCanExecuteChanged();
         }
     }
 

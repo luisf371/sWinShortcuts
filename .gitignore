@@ -8,3 +8,6 @@ obj/
 *.user
 *.suo
 .idea/
+
+#Local BK files
+*.bk

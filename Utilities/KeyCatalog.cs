@@ -48,6 +48,22 @@ public static class KeyCatalog
         keys.Add(Key.Divide);
         keys.Add(Key.Decimal);
 
+        // OEM and punctuation keys (for games that restrict certain keys)
+        keys.AddRange(new[]
+        {
+            Key.Oem3,            // ` ~
+            Key.OemMinus,        // - _
+            Key.OemPlus,         // = +
+            Key.OemOpenBrackets, // [ {
+            Key.OemCloseBrackets,// ] }
+            Key.OemPipe,         // \ |
+            Key.OemSemicolon,    // ; :
+            Key.OemQuotes,       // ' "
+            Key.OemComma,        // , <
+            Key.OemPeriod,       // . >
+            Key.OemQuestion      // / ?
+        });
+
         return keys.Distinct().ToArray();
     }
 }

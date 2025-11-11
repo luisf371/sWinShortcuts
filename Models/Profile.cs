@@ -29,6 +29,8 @@ public sealed class Profile
 
     public RightClickHoldBreathSettings RightClickHoldBreath { get; init; } = new();
 
+    public KeyRemapperSettings KeyRemapper { get; init; } = new();
+
     public CapsLockSettings CapsLock { get; init; } = new();
 
     public WindowsLauncherSettings WindowsLauncher { get; init; } = new();

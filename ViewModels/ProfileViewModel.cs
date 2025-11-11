@@ -35,6 +35,14 @@ public sealed class ProfileViewModel : ViewModelBase
             AttachRightMouseEntry(entry);
         }
 
+        KeyRemapperMappings = new ObservableCollection<KeyRemapperEntryViewModel>(
+            Model.KeyRemapper.Overrides.Select(entry => new KeyRemapperEntryViewModel(entry)));
+        KeyRemapperMappings.CollectionChanged += OnKeyRemapperMappingsChanged;
+        foreach (var entry in KeyRemapperMappings)
+        {
+            AttachKeyRemapperEntry(entry);
+        }
+
         WindowsLaunchers = new ObservableCollection<WindowsLauncherEntryViewModel>(
             Model.WindowsLauncher.Launchers.OrderBy(pair => pair.Key).Select(pair => new WindowsLauncherEntryViewModel(pair.Key, pair.Value)));
         WindowsLaunchers.CollectionChanged += OnWindowsLaunchersChanged;
@@ -117,6 +125,8 @@ public sealed class ProfileViewModel : ViewModelBase
 
     public ObservableCollection<RightMouseOverrideEntryViewModel> RightMouseOverrides { get; }
 
+    public ObservableCollection<KeyRemapperEntryViewModel> KeyRemapperMappings { get; }
+
     public ObservableCollection<WindowsLauncherEntryViewModel> WindowsLaunchers { get; }
 
     // Keys available for the Source column in Right Mouse Overrides (no duplicates)
@@ -125,6 +135,16 @@ public sealed class ProfileViewModel : ViewModelBase
         get
         {
             var used = RightMouseOverrides.Select(e => e.SourceKey).ToHashSet();
+            return _keyOptions.Where(k => !used.Contains(k)).ToList();
+        }
+    }
+
+    // Keys available for the Source column in Key Re-Mapper (no duplicates)
+    public IReadOnlyList<Key> AvailableKeyRemapperSourceKeys
+    {
+        get
+        {
+            var used = KeyRemapperMappings.Select(e => e.SourceKey).ToHashSet();
             return _keyOptions.Where(k => !used.Contains(k)).ToList();
         }
     }
@@ -157,12 +177,33 @@ public sealed class ProfileViewModel : ViewModelBase
         }
     }
 
+    public bool KeyRemapperEnabled
+    {
+        get => Model.KeyRemapper.IsEnabled;
+        set
+        {
+            if (Model.KeyRemapper.IsEnabled != value)
+            {
+                Model.KeyRemapper.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
 
     private RightMouseOverrideEntryViewModel? _selectedRightMouseOverride;
     public RightMouseOverrideEntryViewModel? SelectedRightMouseOverride
     {
         get => _selectedRightMouseOverride;
         set => SetProperty(ref _selectedRightMouseOverride, value);
+    }
+
+    private KeyRemapperEntryViewModel? _selectedKeyRemapperMapping;
+    public KeyRemapperEntryViewModel? SelectedKeyRemapperMapping
+    {
+        get => _selectedKeyRemapperMapping;
+        set => SetProperty(ref _selectedKeyRemapperMapping, value);
     }
 
     private WindowsLauncherEntryViewModel? _selectedLauncher;
@@ -300,6 +341,27 @@ public sealed class ProfileViewModel : ViewModelBase
         SelectedRightMouseOverride = entry;
     }
 
+    public void AddKeyRemapperMapping()
+    {
+        var available = AvailableKeyRemapperSourceKeys;
+        var defaultSource = available.FirstOrDefault();
+        if (defaultSource == default)
+        {
+            defaultSource = _keyOptions.FirstOrDefault(k => k != Key.None);
+            if (defaultSource == default)
+            {
+                defaultSource = Key.A;
+            }
+        }
+
+        var entry = new KeyRemapperEntryViewModel
+        {
+            SourceKey = defaultSource
+        };
+        KeyRemapperMappings.Add(entry);
+        SelectedKeyRemapperMapping = entry;
+    }
+
     public void RemoveRightMouseOverride(RightMouseOverrideEntryViewModel? entry)
     {
         if (entry is null)
@@ -313,6 +375,25 @@ public sealed class ProfileViewModel : ViewModelBase
             if (ReferenceEquals(SelectedRightMouseOverride, entry))
             {
                 SelectedRightMouseOverride = RightMouseOverrides.LastOrDefault();
+            }
+
+            OnProfileChanged();
+        }
+    }
+
+    public void RemoveKeyRemapperMapping(KeyRemapperEntryViewModel? entry)
+    {
+        if (entry is null)
+        {
+            return;
+        }
+
+        if (KeyRemapperMappings.Remove(entry))
+        {
+            DetachKeyRemapperEntry(entry);
+            if (ReferenceEquals(SelectedKeyRemapperMapping, entry))
+            {
+                SelectedKeyRemapperMapping = KeyRemapperMappings.LastOrDefault();
             }
 
             OnProfileChanged();
@@ -381,12 +462,43 @@ public sealed class ProfileViewModel : ViewModelBase
         OnProfileChanged();
     }
 
+    private void OnKeyRemapperMappingsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.NewItems is not null)
+        {
+            foreach (KeyRemapperEntryViewModel item in e.NewItems)
+            {
+                AttachKeyRemapperEntry(item);
+            }
+        }
+
+        if (e.OldItems is not null)
+        {
+            foreach (KeyRemapperEntryViewModel item in e.OldItems)
+            {
+                DetachKeyRemapperEntry(item);
+            }
+        }
+        OnPropertyChanged(nameof(AvailableKeyRemapperSourceKeys));
+        OnProfileChanged();
+    }
+
     private void AttachRightMouseEntry(RightMouseOverrideEntryViewModel entry)
     {
         entry.Changed += OnChildChanged;
     }
 
     private void DetachRightMouseEntry(RightMouseOverrideEntryViewModel entry)
+    {
+        entry.Changed -= OnChildChanged;
+    }
+
+    private void AttachKeyRemapperEntry(KeyRemapperEntryViewModel entry)
+    {
+        entry.Changed += OnChildChanged;
+    }
+
+    private void DetachKeyRemapperEntry(KeyRemapperEntryViewModel entry)
     {
         entry.Changed -= OnChildChanged;
     }
@@ -426,6 +538,7 @@ public sealed class ProfileViewModel : ViewModelBase
     {
         // Update filtered Source key options when any entry changes
         OnPropertyChanged(nameof(AvailableRightMouseSourceKeys));
+        OnPropertyChanged(nameof(AvailableKeyRemapperSourceKeys));
         OnProfileChanged();
     }
 
@@ -445,6 +558,7 @@ public sealed class ProfileViewModel : ViewModelBase
             Model.RightClickHoldBreath.HoldBreathKey = RightClickHoldBreathKey;
             Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
             Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
+            Model.KeyRemapper.IsEnabled = KeyRemapperEnabled;
             Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
             Model.CapsLock.RemapTarget = CapsLockRemapKey;
@@ -459,6 +573,14 @@ public sealed class ProfileViewModel : ViewModelBase
                     var model = new RightMouseOverrideEntry();
                     vm.UpdateModel(model);
                     Model.RightMouseOverrides.Overrides.Add(model);
+                }
+
+                Model.KeyRemapper.Overrides.Clear();
+                foreach (var vm in KeyRemapperMappings)
+                {
+                    var model = new KeyRemapperEntry();
+                    vm.UpdateModel(model);
+                    Model.KeyRemapper.Overrides.Add(model);
                 }
             }
         }
