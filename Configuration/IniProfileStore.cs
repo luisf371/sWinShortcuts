@@ -144,8 +144,7 @@ public sealed class IniProfileStore : IProfileStore
         profile.IsEnabled = document.GetBoolean("Profile", "Enabled", true);
 
         DeserializeAltMouse(document, profile.AltMouse);
-        DeserializeRightMouse(document, profile.RightMouseOverrides);
-        DeserializeKeyRemapper(document, profile.KeyRemapper);
+        DeserializeCombinedMappings(document, profile.CombinedMappings);
         DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
         DeserializeCapsLock(document, profile.CapsLock);
 
@@ -222,54 +221,30 @@ public sealed class IniProfileStore : IProfileStore
         }
     }
 
-    private static void DeserializeRightMouse(IniDocument document, RightMouseOverrideSettings settings)
+    private static void DeserializeCombinedMappings(IniDocument document, CombinedMappingsSettings settings)
     {
-        settings.IsEnabled = document.GetBoolean("RightMouse", "Enabled", settings.IsEnabled);
+        settings.IsEnabled = document.GetBoolean("KeyMappings", "Enabled", settings.IsEnabled);
 
-        settings.Overrides.Clear();
-        var section = document.GetSection("RightMouseOverrides");
+        settings.Mappings.Clear();
+        var section = document.GetSection("KeyMappingsOverrides");
         foreach (var pair in section)
         {
             var source = KeySerializer.Deserialize(pair.Key);
             if (source is null) continue;
 
             var parts = pair.Value.Split('|');
-            var target = KeySerializer.Deserialize(parts[0]);
+            var target = parts.Length > 0 ? KeySerializer.Deserialize(parts[0]) : null;
             if (target is null) continue;
 
-            var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var val) ? val : true;
+            var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var sVal) ? sVal : true;
+            var rightClick = parts.Length > 2 && bool.TryParse(parts[2], out var rVal) ? rVal : false;
 
-            settings.Overrides.Add(new RightMouseOverrideEntry
+            settings.Mappings.Add(new CombinedMappingEntry
             {
                 SourceKey = source.Value,
                 TargetKey = target.Value,
-                SuppressOriginalKey = suppress
-            });
-        }
-    }
-
-    private static void DeserializeKeyRemapper(IniDocument document, KeyRemapperSettings settings)
-    {
-        settings.IsEnabled = document.GetBoolean("KeyRemapper", "Enabled", settings.IsEnabled);
-
-        settings.Overrides.Clear();
-        var section = document.GetSection("KeyRemapperOverrides");
-        foreach (var pair in section)
-        {
-            var source = KeySerializer.Deserialize(pair.Key);
-            if (source is null) continue;
-
-            var parts = pair.Value.Split('|');
-            var target = KeySerializer.Deserialize(parts[0]);
-            if (target is null) continue;
-
-            var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var val) ? val : true;
-
-            settings.Overrides.Add(new KeyRemapperEntry
-            {
-                SourceKey = source.Value,
-                TargetKey = target.Value,
-                SuppressOriginalKey = suppress
+                SuppressOriginalKey = suppress,
+                RightClickOnly = rightClick
             });
         }
     }
@@ -315,24 +290,14 @@ public sealed class IniProfileStore : IProfileStore
             document.SetString("AltMouseBindings", binding.Key.ToString(), value);
         }
 
-        var rightMouse = profile.RightMouseOverrides;
-        document.SetBoolean("RightMouse", "Enabled", rightMouse.IsEnabled);
-        document.RemoveSection("RightMouseOverrides");
-        foreach (var entry in rightMouse.Overrides)
+        var mappings = profile.CombinedMappings;
+        document.SetBoolean("KeyMappings", "Enabled", mappings.IsEnabled);
+        document.RemoveSection("KeyMappingsOverrides");
+        foreach (var entry in mappings.Mappings)
         {
             var key = KeySerializer.Serialize(entry.SourceKey);
-            var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}";
-            document.SetString("RightMouseOverrides", key, value);
-        }
-
-        var keyRemapper = profile.KeyRemapper;
-        document.SetBoolean("KeyRemapper", "Enabled", keyRemapper.IsEnabled);
-        document.RemoveSection("KeyRemapperOverrides");
-        foreach (var entry in keyRemapper.Overrides)
-        {
-            var key = KeySerializer.Serialize(entry.SourceKey);
-            var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}";
-            document.SetString("KeyRemapperOverrides", key, value);
+            var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}|{entry.RightClickOnly}";
+            document.SetString("KeyMappingsOverrides", key, value);
         }
 
         var rightClickHoldBreath = profile.RightClickHoldBreath;

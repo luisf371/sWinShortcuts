@@ -1,26 +1,19 @@
 using System;
 using CommunityToolkit.Mvvm.ComponentModel;
 using System.Windows.Input;
-using sWinShortcuts.Models;
 
 namespace sWinShortcuts.ViewModels;
 
-public sealed partial class RightMouseOverrideEntryViewModel : ViewModelBase
+public sealed partial class CombinedMappingEntryViewModel : ViewModelBase
 {
     public event EventHandler? Changed;
 
-    public RightMouseOverrideEntryViewModel()
+    public CombinedMappingEntryViewModel()
     {
         sourceKey = Key.A;
         targetKey = Key.A;
         suppressOriginalKey = true;
-    }
-
-    public RightMouseOverrideEntryViewModel(RightMouseOverrideEntry model)
-    {
-        sourceKey = model.SourceKey;
-        targetKey = model.TargetKey;
-        suppressOriginalKey = model.SuppressOriginalKey;
+        rightClickOnly = false;
     }
 
     [ObservableProperty]
@@ -32,16 +25,14 @@ public sealed partial class RightMouseOverrideEntryViewModel : ViewModelBase
     [ObservableProperty]
     private bool suppressOriginalKey;
 
+    [ObservableProperty]
+    private bool rightClickOnly;
+
     partial void OnSourceKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);
 
     partial void OnTargetKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);
 
     partial void OnSuppressOriginalKeyChanged(bool value) => Changed?.Invoke(this, EventArgs.Empty);
 
-    public void UpdateModel(RightMouseOverrideEntry model)
-    {
-        model.SourceKey = SourceKey;
-        model.TargetKey = TargetKey;
-        model.SuppressOriginalKey = SuppressOriginalKey;
-    }
+    partial void OnRightClickOnlyChanged(bool value) => Changed?.Invoke(this, EventArgs.Empty);
 }

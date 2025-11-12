@@ -33,6 +33,7 @@
         <conv:AvailableKeysConverter x:Key="AvailableKeysConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
+        
         <Style x:Key="DisabledContentShadeStyle" TargetType="FrameworkElement">
             <Setter Property="Opacity" Value="1" />
             <Style.Triggers>
@@ -301,6 +302,142 @@
                                         </DockPanel>
                                     </StackPanel>
 
+                                    <!-- Combined Key Mappings (Global + Right-click) -->
+                                    <GroupBox Padding="16" Margin="0,0,0,8"
+                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Key Mappings"
+                                                          IsChecked="{Binding CombinedKeyMappingsEnabled, Mode=TwoWay}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Single list of mappings. Toggle Right-click column to apply only while holding right button. The toggle enables/disables both global and right-click mappings."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding CombinedKeyMappingsEnabled}"
+                                                    Tag="{Binding CombinedKeyMappingsEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+
+                                            <DataGrid ItemsSource="{Binding CombinedMappings}"
+                                                      SelectedItem="{Binding SelectedCombinedMapping, Mode=TwoWay}"
+                                                      AutoGenerateColumns="False"
+                                                      HeadersVisibility="Column"
+                                                      CanUserAddRows="False"
+                                                      CanUserReorderColumns="False"
+                                                      CanUserResizeColumns="False"
+                                                      CanUserDeleteRows="False"
+                                                      Margin="0,0,0,8"
+                                                      RowHeight="32"
+                                                      BorderThickness="0">
+                                                <DataGrid.Columns>
+                                                    <DataGridTemplateColumn Header="Source" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <ComboBox SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          IsSynchronizedWithCurrentItem="False"
+                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
+                                                                    <ComboBox.ItemsSource>
+                                                                        <MultiBinding Converter="{StaticResource AvailableKeysConverter}" UpdateSourceTrigger="PropertyChanged">
+                                                                            <Binding Path="DataContext.SelectedProfile.AvailableCombinedSourceKeys" ElementName="RootWindow" Mode="OneWay" />
+                                                                            <Binding Path="SourceKey" Mode="OneWay" />
+                                                                        </MultiBinding>
+                                                                    </ComboBox.ItemsSource>
+                                                                    <ComboBox.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                                        </DataTemplate>
+                                                                    </ComboBox.ItemTemplate>
+                                                                </ComboBox>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="Target" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                                          SelectedItem="{Binding TargetKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          IsSynchronizedWithCurrentItem="False"
+                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
+                                                                    <ComboBox.ItemTemplate>
+                                                                        <DataTemplate>
+                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                                        </DataTemplate>
+                                                                    </ComboBox.ItemTemplate>
+                                                                </ComboBox>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="Right-click" Width="Auto">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <CheckBox IsChecked="{Binding RightClickOnly, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          VerticalAlignment="Center"
+                                                                          HorizontalAlignment="Center" />
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Width="Auto">
+                                                        <DataGridTemplateColumn.Header>
+                                                            <StackPanel Orientation="Horizontal"
+                                                                        ToolTip="⚠️ WARNING: Turning Suppression Off violates '1 key = 1 action' rules in competitive or anti-cheat restricted games. Use at your own risk."
+                                                                        ToolTipService.InitialShowDelay="0"
+                                                                        ToolTipService.Placement="Right">
+                                                                <TextBlock Text="Suppress" VerticalAlignment="Center" />
+                                                                <TextBlock Style="{StaticResource WarningIconStyle}" Margin="4,0,0,0" />
+                                                            </StackPanel>
+                                                        </DataGridTemplateColumn.Header>
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <CheckBox IsChecked="{Binding SuppressOriginalKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          VerticalAlignment="Center"
+                                                                          HorizontalAlignment="Center" />
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTemplateColumn Header="🗑️" Width="Auto">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <Button Content="?"
+                                                                        Command="{Binding DataContext.RemoveCombinedMappingCommand, ElementName=RootWindow}"
+                                                                        CommandParameter="{Binding}"
+                                                                        Width="30"
+                                                                        Height="24"
+                                                                        Padding="0"
+                                                                        FontSize="14"
+                                                                        ToolTip="Remove this mapping"
+                                                                        ToolTipService.InitialShowDelay="0"
+                                                                        ToolTipService.Placement="Right" />
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                </DataGrid.Columns>
+                                            </DataGrid>
+
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Button Grid.Column="0"
+                                                        Content="Add Mapping"
+                                                        Command="{Binding DataContext.AddCombinedMappingCommand, ElementName=RootWindow}"
+                                                        Width="130"
+                                                        Height="32" />
+                                                <Button Grid.Column="1"
+                                                        Content="Remove All Mappings"
+                                                        Command="{Binding DataContext.RemoveAllCombinedMappingsCommand, ElementName=RootWindow}"
+                                                        Width="170"
+                                                        Margin="16,0,0,0"
+                                                        Height="32"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </GroupBox>
+
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
@@ -438,132 +575,6 @@
                                             </Grid>
                                         </StackPanel>
                                     </GroupBox>
-
-                                    <GroupBox Padding="16" Margin="0,0,0,8"
-                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
-                                        <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
-                                                <CheckBox Content="Right Mouse Overrides"
-                                                          IsChecked="{Binding RightMouseOverrideEnabled}"
-                                                          Margin="0"
-                                                          VerticalAlignment="Center" />
-                                                <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="While holding right mouse button, remap source keys to target keys. Useful for context-specific key rebinding."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
-                                            </StackPanel>
-                                        </GroupBox.Header>
-                                        <StackPanel Margin="0,8,0,0"
-                                                    IsEnabled="{Binding RightMouseOverrideEnabled}"
-                                                    Tag="{Binding RightMouseOverrideEnabled}"
-                                                    Style="{StaticResource FeatureToggleContentStyle}">
-
-                                            <DataGrid ItemsSource="{Binding RightMouseOverrides}"
-                                                      SelectedItem="{Binding SelectedRightMouseOverride, Mode=TwoWay}"
-                                                      AutoGenerateColumns="False"
-                                                      HeadersVisibility="Column"
-                                                      CanUserAddRows="False"
-                                                      CanUserReorderColumns="False"
-                                                      CanUserResizeColumns="False"
-                                                      CanUserDeleteRows="False"
-                                                      Margin="0,0,0,8"
-                                                      RowHeight="32"
-                                                      BorderThickness="0">
-                                                <DataGrid.Columns>
-                                                    <DataGridTemplateColumn Header="Source" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <ComboBox
-                                                                          SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemsSource>
-                                                                        <MultiBinding Converter="{StaticResource AvailableKeysConverter}" UpdateSourceTrigger="PropertyChanged">
-                                                                            <Binding Path="DataContext.SelectedProfile.AvailableRightMouseSourceKeys" ElementName="RootWindow" Mode="OneWay" />
-                                                                            <Binding Path="SourceKey" Mode="OneWay" />
-                                                                        </MultiBinding>
-                                                                    </ComboBox.ItemsSource>
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="Target" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding TargetKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Width="Auto">
-                                                        <DataGridTemplateColumn.Header>
-                                                            <StackPanel Orientation="Horizontal"
-                                                                        ToolTip="⚠️ WARNING: Turning Suppression Off violates '1 key = 1 action' rules in competitive or anti-cheat restricted games. Use at your own risk."
-                                                                        ToolTipService.InitialShowDelay="0"
-                                                                        ToolTipService.Placement="Right">
-                                                                <TextBlock Text="Suppress" VerticalAlignment="Center" />
-                                                                <TextBlock Style="{StaticResource WarningIconStyle}" Margin="4,0,0,0" />
-                                                            </StackPanel>
-                                                        </DataGridTemplateColumn.Header>
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <CheckBox IsChecked="{Binding SuppressOriginalKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          VerticalAlignment="Center"
-                                                                          HorizontalAlignment="Center" />
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="🗑️" Width="Auto">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Button Content="✕"
-                                                                        Command="{Binding DataContext.RemoveRightMouseOverrideCommand, ElementName=RootWindow}"
-                                                                        CommandParameter="{Binding}"
-                                                                        Width="30"
-                                                                        Height="24"
-                                                                        Padding="0"
-                                                                        FontSize="14"
-                                                                        ToolTip="Remove this mapping"
-                                                                        ToolTipService.InitialShowDelay="0"
-                                                                        ToolTipService.Placement="Right" />
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                </DataGrid.Columns>
-                                            </DataGrid>
-
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-                                                <Button Grid.Column="0"
-                                                        Content="Add Mapping"
-                                                        Command="{Binding DataContext.AddRightMouseOverrideCommand, ElementName=RootWindow}"
-                                                        Width="130"
-                                                        Height="32" />
-                                                <Button Grid.Column="1"
-                                                        Content="Remove All Mappings"
-                                                        Command="{Binding DataContext.RemoveAllRightMouseOverridesCommand, ElementName=RootWindow}"
-                                                        Width="170"
-                                                        Margin="16,0,0,0"
-                                                        Height="32"
-                                                        HorizontalAlignment="Right" />
-                                            </Grid>
-                                        </StackPanel>
-                                    </GroupBox>
-
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
@@ -627,130 +638,6 @@
                                             </StackPanel>
                                         </StackPanel>
                                     </GroupBox>
-
-                                    <GroupBox Padding="16" Margin="0,0,0,8" Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
-                                        <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
-                                                <CheckBox Content="Key Re-Mapper"
-                                                          IsChecked="{Binding KeyRemapperEnabled}"
-                                                          Margin="0"
-                                                          VerticalAlignment="Center" />
-                                                <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Remap source keys to target keys globally. Hold behavior mirrors source."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
-                                            </StackPanel>
-                                        </GroupBox.Header>
-                                        <StackPanel Margin="0,8,0,0"
-                                                    IsEnabled="{Binding KeyRemapperEnabled}"
-                                                    Tag="{Binding KeyRemapperEnabled}"
-                                                    Style="{StaticResource FeatureToggleContentStyle}">
-                                            <DataGrid ItemsSource="{Binding KeyRemapperMappings}"
-                                                      SelectedItem="{Binding SelectedKeyRemapperMapping, Mode=TwoWay}"
-                                                      AutoGenerateColumns="False"
-                                                      HeadersVisibility="Column"
-                                                      CanUserAddRows="False"
-                                                      CanUserReorderColumns="False"
-                                                      CanUserResizeColumns="False"
-                                                      CanUserDeleteRows="False"
-                                                      Margin="0,0,0,8"
-                                                      RowHeight="32"
-                                                      BorderThickness="0">
-                                                <DataGrid.Columns>
-                                                    <DataGridTemplateColumn Header="Source" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <ComboBox
-                                                                          SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemsSource>
-                                                                        <MultiBinding Converter="{StaticResource AvailableKeysConverter}" UpdateSourceTrigger="PropertyChanged">
-                                                                            <Binding Path="DataContext.SelectedProfile.AvailableKeyRemapperSourceKeys" ElementName="RootWindow" Mode="OneWay" />
-                                                                            <Binding Path="SourceKey" Mode="OneWay" />
-                                                                        </MultiBinding>
-                                                                    </ComboBox.ItemsSource>
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="Target" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding TargetKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Width="Auto">
-                                                        <DataGridTemplateColumn.Header>
-                                                            <StackPanel Orientation="Horizontal"
-                                                                        ToolTip="⚠️ WARNING: Turning Suppression Off violates '1 key = 1 action' rules in competitive or anti-cheat restricted games. Use at your own risk."
-                                                                        ToolTipService.InitialShowDelay="0"
-                                                                        ToolTipService.Placement="Right">
-                                                                <TextBlock Text="Suppress" VerticalAlignment="Center" />
-                                                                <TextBlock Style="{StaticResource WarningIconStyle}" Margin="4,0,0,0" />
-                                                            </StackPanel>
-                                                        </DataGridTemplateColumn.Header>
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <CheckBox IsChecked="{Binding SuppressOriginalKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          VerticalAlignment="Center"
-                                                                          HorizontalAlignment="Center" />
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="🗑️" Width="Auto">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Button Content="?"
-                                                                        Command="{Binding DataContext.RemoveKeyRemapperMappingCommand, ElementName=RootWindow}"
-                                                                        CommandParameter="{Binding}"
-                                                                        Width="30"
-                                                                        Height="24"
-                                                                        Padding="0"
-                                                                        FontSize="14"
-                                                                        ToolTip="Remove this mapping"
-                                                                        ToolTipService.InitialShowDelay="0"
-                                                                        ToolTipService.Placement="Right" />
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                </DataGrid.Columns>
-                                            </DataGrid>
-
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-                                                <Button Grid.Column="0"
-                                                        Content="Add Mapping"
-                                                        Command="{Binding DataContext.AddKeyRemapperMappingCommand, ElementName=RootWindow}"
-                                                        Width="130"
-                                                        Height="32" />
-                                                <Button Grid.Column="1"
-                                                        Content="Remove All Mappings"
-                                                        Command="{Binding DataContext.RemoveAllKeyRemapperMappingsCommand, ElementName=RootWindow}"
-                                                        Width="170"
-                                                        Margin="16,0,0,0"
-                                                        Height="32"
-                                                        HorizontalAlignment="Right" />
-                                            </Grid>
-                                        </StackPanel>
-                                    </GroupBox>
-
                                     <GroupBox Padding="16" Margin="0,0,0,8">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal">

@@ -25,11 +25,10 @@ public sealed class Profile
 
     public AltMouseSettings AltMouse { get; init; } = new();
 
-    public RightMouseOverrideSettings RightMouseOverrides { get; init; } = new();
+    public CombinedMappingsSettings CombinedMappings { get; init; } = new();
 
     public RightClickHoldBreathSettings RightClickHoldBreath { get; init; } = new();
 
-    public KeyRemapperSettings KeyRemapper { get; init; } = new();
 
     public CapsLockSettings CapsLock { get; init; } = new();
 

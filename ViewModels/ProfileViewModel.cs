@@ -27,20 +27,18 @@ public sealed class ProfileViewModel : ViewModelBase
         };
         AltMouse.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableMouseButtons));
 
-        RightMouseOverrides = new ObservableCollection<RightMouseOverrideEntryViewModel>(
-            Model.RightMouseOverrides.Overrides.Select(entry => new RightMouseOverrideEntryViewModel(entry)));
-        RightMouseOverrides.CollectionChanged += OnRightMouseOverridesChanged;
-        foreach (var entry in RightMouseOverrides)
+        CombinedMappings = new ObservableCollection<CombinedMappingEntryViewModel>(
+            Model.CombinedMappings.Mappings.Select(e => new CombinedMappingEntryViewModel
+            {
+                SourceKey = e.SourceKey,
+                TargetKey = e.TargetKey,
+                SuppressOriginalKey = e.SuppressOriginalKey,
+                RightClickOnly = e.RightClickOnly
+            }));
+        CombinedMappings.CollectionChanged += OnCombinedMappingsChanged;
+        foreach (var m in CombinedMappings)
         {
-            AttachRightMouseEntry(entry);
-        }
-
-        KeyRemapperMappings = new ObservableCollection<KeyRemapperEntryViewModel>(
-            Model.KeyRemapper.Overrides.Select(entry => new KeyRemapperEntryViewModel(entry)));
-        KeyRemapperMappings.CollectionChanged += OnKeyRemapperMappingsChanged;
-        foreach (var entry in KeyRemapperMappings)
-        {
-            AttachKeyRemapperEntry(entry);
+            AttachCombinedVm(m);
         }
 
         WindowsLaunchers = new ObservableCollection<WindowsLauncherEntryViewModel>(
@@ -123,28 +121,22 @@ public sealed class ProfileViewModel : ViewModelBase
         }
     }
 
-    public ObservableCollection<RightMouseOverrideEntryViewModel> RightMouseOverrides { get; }
+    public ObservableCollection<CombinedMappingEntryViewModel> CombinedMappings { get; }
 
-    public ObservableCollection<KeyRemapperEntryViewModel> KeyRemapperMappings { get; }
+    private CombinedMappingEntryViewModel? _selectedCombinedMapping;
+    public CombinedMappingEntryViewModel? SelectedCombinedMapping
+    {
+        get => _selectedCombinedMapping;
+        set => SetProperty(ref _selectedCombinedMapping, value);
+    }
 
     public ObservableCollection<WindowsLauncherEntryViewModel> WindowsLaunchers { get; }
 
-    // Keys available for the Source column in Right Mouse Overrides (no duplicates)
-    public IReadOnlyList<Key> AvailableRightMouseSourceKeys
+    public IReadOnlyList<Key> AvailableCombinedSourceKeys
     {
         get
         {
-            var used = RightMouseOverrides.Select(e => e.SourceKey).ToHashSet();
-            return _keyOptions.Where(k => !used.Contains(k)).ToList();
-        }
-    }
-
-    // Keys available for the Source column in Key Re-Mapper (no duplicates)
-    public IReadOnlyList<Key> AvailableKeyRemapperSourceKeys
-    {
-        get
-        {
-            var used = KeyRemapperMappings.Select(e => e.SourceKey).ToHashSet();
+            var used = CombinedMappings.Select(e => e.SourceKey).ToHashSet();
             return _keyOptions.Where(k => !used.Contains(k)).ToList();
         }
     }
@@ -163,47 +155,18 @@ public sealed class ProfileViewModel : ViewModelBase
         }
     }
 
-    public bool RightMouseOverrideEnabled
+    public bool CombinedKeyMappingsEnabled
     {
-        get => Model.RightMouseOverrides.IsEnabled;
+        get => Model.CombinedMappings.IsEnabled;
         set
         {
-            if (Model.RightMouseOverrides.IsEnabled != value)
+            if (Model.CombinedMappings.IsEnabled != value)
             {
-                Model.RightMouseOverrides.IsEnabled = value;
+                Model.CombinedMappings.IsEnabled = value;
                 OnPropertyChanged();
                 OnProfileChanged();
             }
         }
-    }
-
-    public bool KeyRemapperEnabled
-    {
-        get => Model.KeyRemapper.IsEnabled;
-        set
-        {
-            if (Model.KeyRemapper.IsEnabled != value)
-            {
-                Model.KeyRemapper.IsEnabled = value;
-                OnPropertyChanged();
-                OnProfileChanged();
-            }
-        }
-    }
-
-
-    private RightMouseOverrideEntryViewModel? _selectedRightMouseOverride;
-    public RightMouseOverrideEntryViewModel? SelectedRightMouseOverride
-    {
-        get => _selectedRightMouseOverride;
-        set => SetProperty(ref _selectedRightMouseOverride, value);
-    }
-
-    private KeyRemapperEntryViewModel? _selectedKeyRemapperMapping;
-    public KeyRemapperEntryViewModel? SelectedKeyRemapperMapping
-    {
-        get => _selectedKeyRemapperMapping;
-        set => SetProperty(ref _selectedKeyRemapperMapping, value);
     }
 
     private WindowsLauncherEntryViewModel? _selectedLauncher;
@@ -302,27 +265,21 @@ public sealed class ProfileViewModel : ViewModelBase
         get => Model.CapsLock.RemapTarget ?? Key.None;
         set
         {
-            System.Diagnostics.Debug.WriteLine($"[DEBUG] CapsLockRemapKey setter called with value: {value}");
             var newValue = value == Key.None ? null : (Key?)value;
             if (Model.CapsLock.RemapTarget != newValue)
             {
-                System.Diagnostics.Debug.WriteLine($"[DEBUG] CapsLockRemapKey changing from {(Model.CapsLock.RemapTarget?.ToString() ?? "NULL")} to {(newValue?.ToString() ?? "NULL")}");
                 Model.CapsLock.RemapTarget = newValue;
                 OnPropertyChanged();
                 OnProfileChanged();
-            }
-            else
-            {
-                System.Diagnostics.Debug.WriteLine($"[DEBUG] CapsLockRemapKey value unchanged: {value}");
             }
         }
     }
 
     public IReadOnlyList<Key> KeyOptions => _keyOptions;
 
-    public void AddRightMouseOverride()
+    public void AddCombinedMapping()
     {
-        var available = AvailableRightMouseSourceKeys;
+        var available = AvailableCombinedSourceKeys;
         var defaultSource = available.FirstOrDefault();
         if (defaultSource == default)
         {
@@ -333,71 +290,42 @@ public sealed class ProfileViewModel : ViewModelBase
             }
         }
 
-        var entry = new RightMouseOverrideEntryViewModel
+        var combined = new CombinedMappingEntryViewModel
         {
-            SourceKey = defaultSource
+            SourceKey = defaultSource,
+            RightClickOnly = false
         };
-        RightMouseOverrides.Add(entry);
-        SelectedRightMouseOverride = entry;
+
+        CombinedMappings.Add(combined);
+        SelectedCombinedMapping = combined;
+        OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
+        OnProfileChanged();
     }
 
-    public void AddKeyRemapperMapping()
-    {
-        var available = AvailableKeyRemapperSourceKeys;
-        var defaultSource = available.FirstOrDefault();
-        if (defaultSource == default)
-        {
-            defaultSource = _keyOptions.FirstOrDefault(k => k != Key.None);
-            if (defaultSource == default)
-            {
-                defaultSource = Key.A;
-            }
-        }
-
-        var entry = new KeyRemapperEntryViewModel
-        {
-            SourceKey = defaultSource
-        };
-        KeyRemapperMappings.Add(entry);
-        SelectedKeyRemapperMapping = entry;
-    }
-
-    public void RemoveRightMouseOverride(RightMouseOverrideEntryViewModel? entry)
+    public void RemoveCombinedMapping(CombinedMappingEntryViewModel? entry)
     {
         if (entry is null)
         {
             return;
         }
 
-        if (RightMouseOverrides.Remove(entry))
+        if (CombinedMappings.Remove(entry))
         {
-            DetachRightMouseEntry(entry);
-            if (ReferenceEquals(SelectedRightMouseOverride, entry))
+            if (ReferenceEquals(SelectedCombinedMapping, entry))
             {
-                SelectedRightMouseOverride = RightMouseOverrides.LastOrDefault();
+                SelectedCombinedMapping = CombinedMappings.LastOrDefault();
             }
-
+            OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
             OnProfileChanged();
         }
     }
 
-    public void RemoveKeyRemapperMapping(KeyRemapperEntryViewModel? entry)
+    public void RemoveAllCombinedMappings()
     {
-        if (entry is null)
-        {
-            return;
-        }
-
-        if (KeyRemapperMappings.Remove(entry))
-        {
-            DetachKeyRemapperEntry(entry);
-            if (ReferenceEquals(SelectedKeyRemapperMapping, entry))
-            {
-                SelectedKeyRemapperMapping = KeyRemapperMappings.LastOrDefault();
-            }
-
-            OnProfileChanged();
-        }
+        if (CombinedMappings.Count == 0) return;
+        CombinedMappings.Clear();
+        OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
+        OnProfileChanged();
     }
 
     public void AddAltMouseBinding()
@@ -409,8 +337,7 @@ public sealed class ProfileViewModel : ViewModelBase
         }
 
         var entry = new AltMouseBindingEntryViewModel(availableButtons[0], null, null);
-        
-        // Attach change handler before adding to collection
+
         entry.PropertyChanged += (s, e) =>
         {
             if (e.PropertyName == nameof(AltMouseBindingEntryViewModel.Button))
@@ -418,7 +345,7 @@ public sealed class ProfileViewModel : ViewModelBase
                 OnPropertyChanged(nameof(AvailableMouseButtons));
             }
         };
-        
+
         AltMouse.Bindings.Add(entry);
         OnPropertyChanged(nameof(AvailableMouseButtons));
     }
@@ -441,66 +368,44 @@ public sealed class ProfileViewModel : ViewModelBase
         OnProfileChanged();
     }
 
-    private void OnRightMouseOverridesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void OnCombinedMappingsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         if (e.NewItems is not null)
         {
-            foreach (RightMouseOverrideEntryViewModel item in e.NewItems)
+            foreach (CombinedMappingEntryViewModel m in e.NewItems)
             {
-                AttachRightMouseEntry(item);
+                AttachCombinedVm(m);
             }
         }
-
         if (e.OldItems is not null)
         {
-            foreach (RightMouseOverrideEntryViewModel item in e.OldItems)
+            foreach (CombinedMappingEntryViewModel m in e.OldItems)
             {
-                DetachRightMouseEntry(item);
+                DetachCombinedVm(m);
             }
         }
-        OnPropertyChanged(nameof(AvailableRightMouseSourceKeys));
+        OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
         OnProfileChanged();
     }
 
-    private void OnKeyRemapperMappingsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void AttachCombinedVm(CombinedMappingEntryViewModel m)
     {
-        if (e.NewItems is not null)
-        {
-            foreach (KeyRemapperEntryViewModel item in e.NewItems)
-            {
-                AttachKeyRemapperEntry(item);
-            }
-        }
+        m.PropertyChanged += OnCombinedVmChanged;
+    }
 
-        if (e.OldItems is not null)
+    private void DetachCombinedVm(CombinedMappingEntryViewModel m)
+    {
+        m.PropertyChanged -= OnCombinedVmChanged;
+    }
+
+    private void OnCombinedVmChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(CombinedMappingEntryViewModel.SourceKey))
         {
-            foreach (KeyRemapperEntryViewModel item in e.OldItems)
-            {
-                DetachKeyRemapperEntry(item);
-            }
+            OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
         }
-        OnPropertyChanged(nameof(AvailableKeyRemapperSourceKeys));
+        // Persist and notify engine immediately on any mapping change
         OnProfileChanged();
-    }
-
-    private void AttachRightMouseEntry(RightMouseOverrideEntryViewModel entry)
-    {
-        entry.Changed += OnChildChanged;
-    }
-
-    private void DetachRightMouseEntry(RightMouseOverrideEntryViewModel entry)
-    {
-        entry.Changed -= OnChildChanged;
-    }
-
-    private void AttachKeyRemapperEntry(KeyRemapperEntryViewModel entry)
-    {
-        entry.Changed += OnChildChanged;
-    }
-
-    private void DetachKeyRemapperEntry(KeyRemapperEntryViewModel entry)
-    {
-        entry.Changed -= OnChildChanged;
     }
 
     private void OnWindowsLaunchersChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -536,9 +441,6 @@ public sealed class ProfileViewModel : ViewModelBase
 
     private void OnChildChanged(object? sender, EventArgs e)
     {
-        // Update filtered Source key options when any entry changes
-        OnPropertyChanged(nameof(AvailableRightMouseSourceKeys));
-        OnPropertyChanged(nameof(AvailableKeyRemapperSourceKeys));
         OnProfileChanged();
     }
 
@@ -553,35 +455,27 @@ public sealed class ProfileViewModel : ViewModelBase
         try
         {
             Model.IsEnabled = IsEnabled;
-            Model.RightMouseOverrides.IsEnabled = RightMouseOverrideEnabled;
             Model.RightClickHoldBreath.IsEnabled = RightClickHoldBreathEnabled;
             Model.RightClickHoldBreath.HoldBreathKey = RightClickHoldBreathKey;
             Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
             Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
-            Model.KeyRemapper.IsEnabled = KeyRemapperEnabled;
             Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
             Model.CapsLock.RemapTarget = CapsLockRemapKey;
             Model.WindowsLauncher.IsEnabled = WindowsLauncherEnabled;
             Model.Executable = Executable;
 
-            if (!IsWindowsProfile)
+            Model.CombinedMappings.IsEnabled = CombinedKeyMappingsEnabled;
+            Model.CombinedMappings.Mappings.Clear();
+            foreach (var vm in CombinedMappings)
             {
-                Model.RightMouseOverrides.Overrides.Clear();
-                foreach (var vm in RightMouseOverrides)
+                Model.CombinedMappings.Mappings.Add(new CombinedMappingEntry
                 {
-                    var model = new RightMouseOverrideEntry();
-                    vm.UpdateModel(model);
-                    Model.RightMouseOverrides.Overrides.Add(model);
-                }
-
-                Model.KeyRemapper.Overrides.Clear();
-                foreach (var vm in KeyRemapperMappings)
-                {
-                    var model = new KeyRemapperEntry();
-                    vm.UpdateModel(model);
-                    Model.KeyRemapper.Overrides.Add(model);
-                }
+                    SourceKey = vm.SourceKey,
+                    TargetKey = vm.TargetKey,
+                    SuppressOriginalKey = vm.SuppressOriginalKey,
+                    RightClickOnly = vm.RightClickOnly
+                });
             }
         }
         finally

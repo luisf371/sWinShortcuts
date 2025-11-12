@@ -85,8 +85,7 @@ public sealed class InputHookService : IInputHookService
         { Models.MouseButton.XButton2, new MouseButtonState() }
     };
     
-    private readonly Dictionary<Key, RightMouseOverrideState> _activeRightMouseOverrides = new();
-    private readonly Dictionary<Key, RightMouseOverrideState> _activeKeyRemapperOverrides = new();
+    private readonly Dictionary<Key, CombinedOverrideState> _activeCombinedOverrides = new();
     
     // Profile state
     private volatile Profile? _activeProfile;
@@ -345,8 +344,7 @@ public sealed class InputHookService : IInputHookService
 
         // Handle features in priority order
         var handled = HandleCapsLock(vkCode, isKeyDown, isKeyUp) ||
-                      HandleKeyRemapper(vkCode, isKeyDown, isKeyUp) ||
-                      HandleRightMouseOverride(vkCode, isKeyDown, isKeyUp);
+                      HandleCombinedMappings(vkCode, isKeyDown, isKeyUp);
 
         if (!handled)
         {
@@ -385,7 +383,7 @@ public sealed class InputHookService : IInputHookService
         else if (message == NativeMethods.WM_RBUTTONUP)
         {
             _rightButtonPressed = false;
-            ReleaseOverrideKeys();
+            ReleaseRightClickOverrides();
             HandleRightClickHoldBreathUp();
         }
 
@@ -576,12 +574,12 @@ public sealed class InputHookService : IInputHookService
         state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
     }
 
-    // ==================== RIGHT MOUSE OVERRIDE ====================
+    // ==================== COMBINED KEY MAPPINGS ====================
     
-    private bool HandleRightMouseOverride(int vkCode, bool isKeyDown, bool isKeyUp)
+    private bool HandleCombinedMappings(int vkCode, bool isKeyDown, bool isKeyUp)
     {
         var profile = _activeProfile;
-        if (profile is null || !profile.RightMouseOverrides.IsEnabled)
+        if (profile is null || !profile.CombinedMappings.IsEnabled)
         {
             return false;
         }
@@ -592,47 +590,48 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        var overrideEntry = profile.RightMouseOverrides.Overrides
-            .FirstOrDefault(o => o.SourceKey == sourceKey.Value);
-            
-        if (overrideEntry is null)
+        var entry = profile.CombinedMappings.Mappings.FirstOrDefault(m => m.SourceKey == sourceKey.Value);
+        if (entry is null)
         {
             return false;
         }
 
-        var suppressOriginal = overrideEntry.SuppressOriginalKey;
-        var targetKey = overrideEntry.TargetKey;
+        var suppressOriginal = entry.SuppressOriginalKey;
+        var targetKey = entry.TargetKey;
+        var requiresRightClick = entry.RightClickOnly;
 
         if (isKeyDown)
         {
-            if (!_rightButtonPressed)
+            if (requiresRightClick && !_rightButtonPressed)
             {
                 return false;
             }
 
-            if (_activeRightMouseOverrides.ContainsKey(sourceKey.Value))
+            if (_activeCombinedOverrides.ContainsKey(sourceKey.Value))
             {
                 return suppressOriginal;
             }
 
-            _activeRightMouseOverrides[sourceKey.Value] = new RightMouseOverrideState
+            // Safety: do nothing if mapping is a no-op (source == target)
+            if (targetKey == sourceKey.Value)
             {
-                TargetKey = targetKey,
-                SuppressOriginal = suppressOriginal
-            };
+                return false;
+            }
+
+            _activeCombinedOverrides[sourceKey.Value] = new CombinedOverrideState { TargetKey = targetKey, SuppressOriginal = suppressOriginal, RightClickOnly = requiresRightClick };
 
             SendKey(targetKey, true);
-            LogDebug($"RightMouse override: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
+            LogDebug($"Combined mapping: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
             
             return suppressOriginal;
         }
 
         if (isKeyUp)
         {
-            if (_activeRightMouseOverrides.Remove(sourceKey.Value, out var state))
+            if (_activeCombinedOverrides.Remove(sourceKey.Value, out var state))
             {
                 SendKey(state.TargetKey, false);
-                LogDebug($"RightMouse override released: {sourceKey.Value}");
+                LogDebug($"Combined mapping released: {sourceKey.Value}");
                 return state.SuppressOriginal;
             }
         }
@@ -640,90 +639,12 @@ public sealed class InputHookService : IInputHookService
         return false;
     }
 
-    // ==================== KEY REMAPPER (GLOBAL, NO RIGHT-CLICK REQUIRED) ====================
-
-    private bool HandleKeyRemapper(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        var profile = _activeProfile;
-        if (profile is null || !profile.KeyRemapper.IsEnabled)
-        {
-            return false;
-        }
-
-        var sourceKey = KeyInteropUtilities.FromVirtualKey(vkCode);
-        if (sourceKey is null)
-        {
-            return false;
-        }
-
-        var remapEntry = profile.KeyRemapper.Overrides
-            .FirstOrDefault(o => o.SourceKey == sourceKey.Value);
-
-        if (remapEntry is null)
-        {
-            return false;
-        }
-
-        var suppressOriginal = remapEntry.SuppressOriginalKey;
-        var targetKey = remapEntry.TargetKey;
-
-        if (isKeyDown)
-        {
-            if (_activeKeyRemapperOverrides.ContainsKey(sourceKey.Value))
-            {
-                return suppressOriginal;
-            }
-
-            _activeKeyRemapperOverrides[sourceKey.Value] = new RightMouseOverrideState
-            {
-                TargetKey = targetKey,
-                SuppressOriginal = suppressOriginal
-            };
-
-            SendKey(targetKey, true);
-            LogDebug($"KeyRemapper: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
-
-            return suppressOriginal;
-        }
-
-        if (isKeyUp)
-        {
-            if (_activeKeyRemapperOverrides.Remove(sourceKey.Value, out var state))
-            {
-                SendKey(state.TargetKey, false);
-                LogDebug($"KeyRemapper released: {sourceKey.Value}");
-                return state.SuppressOriginal;
-            }
-        }
-
-        return false;
-    }
-
-    private void ReleaseOverrideKeys()
-    {
-        foreach (var (key, state) in _activeRightMouseOverrides)
-        {
-            SendKey(state.TargetKey, false);
-            LogDebug($"Force-release override key: {key}");
-        }
-        _activeRightMouseOverrides.Clear();
-    }
-
-    private void ReleaseKeyRemapperKeys()
-    {
-        foreach (var (key, state) in _activeKeyRemapperOverrides)
-        {
-            SendKey(state.TargetKey, false);
-            LogDebug($"Force-release key remap: {key}");
-        }
-        _activeKeyRemapperOverrides.Clear();
-    }
-
-    // ==================== CAPS LOCK HANDLING ====================
     
-    private bool HandleCapsLock(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        if (vkCode != 0x14)  // VK_CAPITAL
+
+        private bool HandleCapsLock(int vkCode, bool isKeyDown, bool isKeyUp)
+        {
+        // Only handle CapsLock key events (VK_CAPITAL = 0x14)
+        if (vkCode != 0x14)
         {
             return false;
         }
@@ -973,11 +894,6 @@ public sealed class InputHookService : IInputHookService
             return;
         }
         
-        if (!_rightButtonPressed)
-        {
-            LogDebug("HoldBreath activation blocked - right button released");
-            return;
-        }
 
         // Atomically activate: PENDING → ACTIVE
         if (Interlocked.CompareExchange(ref _holdBreathState, HOLDBREATH_ACTIVE, HOLDBREATH_PENDING) != HOLDBREATH_PENDING)
@@ -1206,12 +1122,37 @@ public sealed class InputHookService : IInputHookService
                       Key.NumLock or Key.PrintScreen or Key.Divide;
     }
 
-    // ==================== STATE MANAGEMENT ====================
+        private void ReleaseRightClickOverrides()
+    {
+        var toRelease = _activeCombinedOverrides.Where(kvp => kvp.Value.RightClickOnly).ToList();
+        foreach (var (key, state) in toRelease)
+        {
+            SendKey(state.TargetKey, false);
+            LogDebug($"Force-release right-click override key: {key}");
+            _activeCombinedOverrides.Remove(key);
+        }
+    }
+
+    private void ReleaseAllOverrides()
+    {
+        if (_activeCombinedOverrides.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (key, state) in _activeCombinedOverrides.ToList())
+        {
+            SendKey(state.TargetKey, false);
+            LogDebug($"Force-release combined override key: {key} -> {state.TargetKey}");
+            _activeCombinedOverrides.Remove(key);
+        }
+    }
+// ==================== STATE MANAGEMENT ====================
     
     private void ReleaseAllState()
     {
-        ReleaseKeyRemapperKeys();
-        ReleaseOverrideKeys();
+        
+        ReleaseAllOverrides();
         ResetMouseStates();
         ReleaseCapsState();
         ReleaseHoldBreathState();
@@ -1255,10 +1196,11 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    private sealed class RightMouseOverrideState
+    private sealed class CombinedOverrideState
     {
         public required Key TargetKey { get; init; }
         public required bool SuppressOriginal { get; init; }
+        public required bool RightClickOnly { get; init; }
     }
 
     // ==================== LOGGING ====================
@@ -1279,3 +1221,9 @@ public sealed class InputHookService : IInputHookService
         _logQueue.TryAdd(entry);
     }
 }
+
+
+
+
+
+
