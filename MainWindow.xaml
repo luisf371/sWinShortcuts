@@ -401,7 +401,7 @@
                                                     <DataGridTemplateColumn Header="🗑️" Width="Auto">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <Button Content="?"
+                                                                <Button Content="✕"
                                                                         Command="{Binding DataContext.RemoveCombinedMappingCommand, ElementName=RootWindow}"
                                                                         CommandParameter="{Binding}"
                                                                         Width="30"
