@@ -24,12 +24,16 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IReadOnlyList<Key> _keyOptionsWithNone;
     private readonly IReadOnlyList<CapsLockMode> _capsLockModes = Enum.GetValues<CapsLockMode>();
     private readonly IReadOnlyList<HoldBreathMode> _holdBreathModes = Enum.GetValues<HoldBreathMode>();
+    private readonly IDisplayService _displayService;
+    private readonly IColorControlService _colorControlService;
     private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
 
-    public MainViewModel(IProfileManager profileManager, IDialogService dialogService)
+    public MainViewModel(IProfileManager profileManager, IDialogService dialogService, IDisplayService displayService, IColorControlService colorControlService)
     {
         _profileManager = profileManager ?? throw new ArgumentNullException(nameof(profileManager));
         _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
+        _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
+        _colorControlService = colorControlService ?? throw new ArgumentNullException(nameof(colorControlService));
         _keyOptionsWithNone = new[] { Key.None }.Concat(_keyOptions).ToArray();
         Profiles = new ReadOnlyObservableCollection<ProfileViewModel>(_profiles);
 
@@ -66,7 +70,7 @@ public sealed partial class MainViewModel : ViewModelBase
             await _profileManager.InitializeAsync(cancellationToken);
             _profiles.Clear();
 
-            foreach (var profile in _profileManager.Profiles.Select(p => new ProfileViewModel(p, _keyOptions)))
+            foreach (var profile in _profileManager.Profiles.Select(p => new ProfileViewModel(p, _displayService, _colorControlService, _keyOptions)))
             {
                 AttachProfile(profile);
                 _profiles.Add(profile);
@@ -126,7 +130,7 @@ public sealed partial class MainViewModel : ViewModelBase
         await _profileManager.RemoveProfileAsync(SelectedProfile.Model);
     }
 
-    private bool CanRemoveProfile() => SelectedProfile is { IsWindowsProfile: false };
+    private bool CanRemoveProfile() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
 
     [RelayCommand(CanExecute = nameof(CanSaveProfile))]
     private async Task SaveProfileAsync()
@@ -142,7 +146,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private bool CanSaveProfile() => SelectedProfile is not null;
 
-    private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false };
+    private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
 
     // Combined mappings (global + right-click) commands
 
@@ -206,7 +210,7 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false };
+    private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
 
     [RelayCommand(CanExecute = nameof(CanModifyProfile))]
     private void ModifyProfile()
@@ -271,7 +275,7 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private bool CanModifyProfile() => SelectedProfile is { IsWindowsProfile: false };
+    private bool CanModifyProfile() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
 
     [RelayCommand]
     private void BrowseLauncherTarget(WindowsLauncherEntryViewModel? launcher)
@@ -303,7 +307,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private void OnProfileAdded(object? sender, Profile profile)
     {
-        var viewModel = new ProfileViewModel(profile, _keyOptions);
+        var viewModel = new ProfileViewModel(profile, _displayService, _colorControlService, _keyOptions);
         AttachProfile(viewModel);
         _profiles.Add(viewModel);
         SelectedProfile = viewModel;

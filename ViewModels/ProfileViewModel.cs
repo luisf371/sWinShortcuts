@@ -5,6 +5,7 @@ using System.Collections.Specialized;
 using System.Linq;
 using System.Windows.Input;
 using sWinShortcuts.Models;
+using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.ViewModels;
@@ -14,9 +15,11 @@ public sealed class ProfileViewModel : ViewModelBase
     private readonly IReadOnlyList<Key> _keyOptions;
     private bool _isSyncing;
 
-    public ProfileViewModel(Profile model, IReadOnlyList<Key>? keyOptions = null)
+    public ProfileViewModel(Profile model, IDisplayService displayService, IColorControlService colorControlService, IReadOnlyList<Key>? keyOptions = null)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
+        ArgumentNullException.ThrowIfNull(displayService);
+        ArgumentNullException.ThrowIfNull(colorControlService);
         _keyOptions = keyOptions ?? KeyCatalog.GetCommonKeys();
 
         AltMouse = new AltMouseViewModel(Model.AltMouse);
@@ -48,6 +51,9 @@ public sealed class ProfileViewModel : ViewModelBase
         {
             AttachLauncherEntry(launcher);
         }
+
+        ColorSettings = new ColorSettingsViewModel(Model.ColorSettings, displayService, colorControlService);
+        ColorSettings.Changed += (_, _) => OnProfileChanged();
 
         _name = Model.Name;
         _isEnabled = Model.IsEnabled;
@@ -106,6 +112,8 @@ public sealed class ProfileViewModel : ViewModelBase
     }
 
     public bool IsWindowsProfile => Model.IsWindowsProfile;
+
+    public bool IsColorProfile => Model.IsColorProfile;
 
     public AltMouseViewModel AltMouse { get; }
 
@@ -276,6 +284,8 @@ public sealed class ProfileViewModel : ViewModelBase
     }
 
     public IReadOnlyList<Key> KeyOptions => _keyOptions;
+
+    public ColorSettingsViewModel ColorSettings { get; }
 
     public void AddCombinedMapping()
     {
@@ -464,6 +474,7 @@ public sealed class ProfileViewModel : ViewModelBase
             Model.CapsLock.RemapTarget = CapsLockRemapKey;
             Model.WindowsLauncher.IsEnabled = WindowsLauncherEnabled;
             Model.Executable = Executable;
+            Model.ColorSettings.SelectedDisplayId = ColorSettings.SelectedDisplayId;
 
             Model.CombinedMappings.IsEnabled = CombinedKeyMappingsEnabled;
             Model.CombinedMappings.Mappings.Clear();

@@ -41,6 +41,19 @@ public static class IniExtensions
             : defaultValue;
     }
 
+    public static double GetDouble(this IniDocument doc, string section, string key, double defaultValue = 0)
+    {
+        var value = doc.GetValue(section, key);
+        if (value is null)
+        {
+            return defaultValue;
+        }
+
+        return double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var result)
+            ? result
+            : defaultValue;
+    }
+
     public static TEnum GetEnum<TEnum>(this IniDocument doc, string section, string key, TEnum defaultValue)
         where TEnum : struct
     {
@@ -72,6 +85,11 @@ public static class IniExtensions
     public static void SetInt32(this IniDocument doc, string section, string key, int value)
     {
         doc.SetValue(section, key, value.ToString(CultureInfo.InvariantCulture));
+    }
+
+    public static void SetDouble(this IniDocument doc, string section, string key, double value)
+    {
+        doc.SetValue(section, key, value.ToString("0.###", CultureInfo.InvariantCulture));
     }
 
     public static void SetEnum<TEnum>(this IniDocument doc, string section, string key, TEnum value)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -16,6 +17,7 @@ public sealed class IniProfileStore : IProfileStore
     private readonly string _rootDirectory;
     private readonly string _profilesDirectory;
     private readonly string _windowsProfilePath;
+    private readonly string _colorProfilePath;
 
     public IniProfileStore()
     {
@@ -23,6 +25,7 @@ public sealed class IniProfileStore : IProfileStore
         _rootDirectory = Path.Combine(appData, "sWinShortcuts");
         _profilesDirectory = Path.Combine(_rootDirectory, ProfileConstants.ProfilesDirectoryName);
         _windowsProfilePath = Path.Combine(_rootDirectory, ProfileConstants.WindowsProfileFileName);
+        _colorProfilePath = Path.Combine(_rootDirectory, ProfileConstants.ColorProfileFileName);
 
         Directory.CreateDirectory(_rootDirectory);
         Directory.CreateDirectory(_profilesDirectory);
@@ -34,7 +37,8 @@ public sealed class IniProfileStore : IProfileStore
 
         var profiles = new List<Profile>
         {
-            LoadWindowsProfile(cancellationToken)
+            LoadWindowsProfile(cancellationToken),
+            LoadColorProfile(cancellationToken)
         };
 
         foreach (var file in Directory.EnumerateFiles(_profilesDirectory, "*.ini", SearchOption.TopDirectoryOnly))
@@ -62,11 +66,15 @@ public sealed class IniProfileStore : IProfileStore
 
         var path = profile.IsWindowsProfile
             ? _windowsProfilePath
-            : DetermineProfilePath(profile);
+            : profile.IsColorProfile
+                ? _colorProfilePath
+                : DetermineProfilePath(profile);
 
         var document = profile.IsWindowsProfile
             ? SerializeWindowsProfile(profile)
-            : SerializeProfile(profile);
+            : profile.IsColorProfile
+                ? SerializeColorProfile(profile)
+                : SerializeProfile(profile);
 
         document.Save(path);
         profile.SourcePath = path;
@@ -79,7 +87,7 @@ public sealed class IniProfileStore : IProfileStore
         ArgumentNullException.ThrowIfNull(profile);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (profile.IsWindowsProfile)
+        if (profile.IsWindowsProfile || profile.IsColorProfile)
         {
             return Task.CompletedTask;
         }
@@ -127,6 +135,29 @@ public sealed class IniProfileStore : IProfileStore
             binding.RunAsAdmin = document.GetBoolean(section, "RunAsAdmin", binding.RunAsAdmin);
             profileInstance.WindowsLauncher.Launchers[key] = binding;
         }
+
+        return profileInstance;
+    }
+
+    private Profile LoadColorProfile(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var path = _colorProfilePath;
+
+        if (!File.Exists(path))
+        {
+            var profile = ProfileFactory.CreateColorProfile();
+            profile.SourcePath = path;
+            SerializeColorProfile(profile).Save(path);
+            return profile;
+        }
+
+        var document = IniDocument.Load(path);
+        var profileInstance = ProfileFactory.CreateColorProfile();
+        profileInstance.SourcePath = path;
+        profileInstance.IsEnabled = document.GetBoolean("Profile", "Enabled", true);
+        DeserializeColorSettings(document, profileInstance.ColorSettings);
 
         return profileInstance;
     }
@@ -264,6 +295,35 @@ public sealed class IniProfileStore : IProfileStore
         settings.RemapTarget = document.GetKey("CapsLock", "RemapTarget");
     }
 
+    private static void DeserializeColorSettings(IniDocument document, ColorSettings settings)
+    {
+        settings.SelectedDisplayId = document.GetString("Color", "SelectedDisplay", settings.SelectedDisplayId);
+        settings.ClearProfiles();
+
+        var section = document.GetSection("ColorDisplays");
+        foreach (var pair in section)
+        {
+            var parts = pair.Value.Split('|');
+            var brightness = ParsePercentage(parts, 0, DisplayColorProfile.DefaultBrightness);
+            var contrast = ParsePercentage(parts, 1, DisplayColorProfile.DefaultContrast);
+            var gamma = parts.Length > 2 && double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGamma)
+                ? parsedGamma
+                : DisplayColorProfile.DefaultGamma;
+            var vibrance = ParsePercentage(parts, 3, DisplayColorProfile.DefaultDigitalVibrance);
+
+            var entry = new DisplayColorProfile
+            {
+                DisplayId = pair.Key,
+                Brightness = brightness,
+                Contrast = contrast,
+                Gamma = ClampGamma(gamma),
+                DigitalVibrance = vibrance
+            };
+
+            settings.SetProfile(entry);
+        }
+    }
+
     private static IniDocument SerializeProfile(Profile profile)
     {
         var document = new IniDocument();
@@ -314,6 +374,24 @@ public sealed class IniProfileStore : IProfileStore
         return document;
     }
 
+    private static IniDocument SerializeColorProfile(Profile profile)
+    {
+        var document = new IniDocument();
+        document.SetBoolean("Profile", "Enabled", profile.IsEnabled);
+
+        var color = profile.ColorSettings;
+        document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
+
+        document.RemoveSection("ColorDisplays");
+        foreach (var pair in color.DisplayProfiles)
+        {
+            var value = $"{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampPercent(pair.Value.DigitalVibrance)}";
+            document.SetString("ColorDisplays", pair.Key, value);
+        }
+
+        return document;
+    }
+
     private static IniDocument SerializeWindowsProfile(Profile profile)
     {
         var document = new IniDocument();
@@ -335,6 +413,21 @@ public sealed class IniProfileStore : IProfileStore
 
         return document;
     }
+
+    private static int ParsePercentage(string[] parts, int index, int defaultValue)
+    {
+        if (index < parts.Length &&
+            int.TryParse(parts[index], NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
+        {
+            return ClampPercent(value);
+        }
+
+        return ClampPercent(defaultValue);
+    }
+
+    private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
+
+    private static double ClampGamma(double value) => Math.Clamp(value, 0.5, 3.0);
 
     private string DetermineProfilePath(Profile profile)
     {

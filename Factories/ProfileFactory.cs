@@ -49,4 +49,23 @@ public static class ProfileFactory
         profile.CapsLock.IsEnabled = false;
         return profile;
     }
+
+    public static Profile CreateColorProfile()
+    {
+        var profile = new Profile
+        {
+            Name = ProfileConstants.ColorProfileName,
+            Executable = string.Empty,
+            IsEnabled = true
+        };
+
+        // Disable unrelated features for the dedicated color profile
+        profile.AltMouse.IsEnabled = false;
+        profile.CombinedMappings.IsEnabled = false;
+        profile.RightClickHoldBreath.IsEnabled = false;
+        profile.CapsLock.IsEnabled = false;
+        profile.WindowsLauncher.IsEnabled = false;
+
+        return profile;
+    }
 }

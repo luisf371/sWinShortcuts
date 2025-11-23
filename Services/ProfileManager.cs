@@ -24,6 +24,8 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
     public IReadOnlyList<Profile> Profiles => new ReadOnlyCollection<Profile>(_profiles);
 
     public Profile WindowsProfile => _profiles.First(p => p.IsWindowsProfile);
+    
+    public Profile ColorProfile => _profiles.First(p => p.IsColorProfile);
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -43,6 +45,13 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
             {
                 var windowsProfile = ProfileFactory.CreateWindowsProfile();
                 _profiles.Insert(0, windowsProfile);
+            }
+
+            if (!_profiles.Any(p => p.IsColorProfile))
+            {
+                var colorProfile = ProfileFactory.CreateColorProfile();
+                var insertIndex = _profiles.Any() && _profiles[0].IsWindowsProfile ? 1 : 0;
+                _profiles.Insert(insertIndex, colorProfile);
             }
         }
         finally
@@ -94,6 +103,11 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
             if (profile.IsWindowsProfile)
             {
                 throw new InvalidOperationException("The Windows profile cannot be removed.");
+            }
+            
+            if (profile.IsColorProfile)
+            {
+                throw new InvalidOperationException("The Color Settings profile cannot be removed.");
             }
 
             if (_profiles.Remove(profile))

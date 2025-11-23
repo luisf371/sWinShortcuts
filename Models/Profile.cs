@@ -29,6 +29,8 @@ public sealed class Profile
 
     public RightClickHoldBreathSettings RightClickHoldBreath { get; init; } = new();
 
+    public ColorSettings ColorSettings { get; init; } = new();
+
 
     public CapsLockSettings CapsLock { get; init; } = new();
 
@@ -38,6 +40,9 @@ public sealed class Profile
 
     public bool IsWindowsProfile =>
         string.Equals(Name, ProfileConstants.WindowsProfileName, StringComparison.OrdinalIgnoreCase);
+
+    public bool IsColorProfile =>
+        string.Equals(Name, ProfileConstants.ColorProfileName, StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeExecutable(string? value)
     {
