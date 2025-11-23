@@ -729,7 +729,7 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="140" />
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="80" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="Brightness" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -742,6 +742,8 @@
                                                         Margin="0,0,8,0" />
                                                 <TextBlock Text="{Binding ColorSettings.Brightness, StringFormat='{}{0}%'}"
                                                            VerticalAlignment="Center"
+                                                           Width="60"
+                                                           TextAlignment="Left"
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold" />
                                             </StackPanel>
@@ -756,7 +758,7 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="140" />
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="80" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="Contrast" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -769,6 +771,8 @@
                                                         Margin="0,0,8,0" />
                                                 <TextBlock Text="{Binding ColorSettings.Contrast, StringFormat='{}{0}%'}"
                                                            VerticalAlignment="Center"
+                                                           Width="60"
+                                                           TextAlignment="Left"
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold" />
                                             </StackPanel>
@@ -783,7 +787,7 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="140" />
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="80" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="Gamma" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -796,8 +800,10 @@
                                                         Margin="0,0,8,0" />
                                                 <TextBlock Text="{Binding ColorSettings.Gamma, StringFormat='{}{0:F2}'}"
                                                            VerticalAlignment="Center"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
+                                                           Width="60"
+                                                           TextAlignment="Left"
+                                                            Foreground="{StaticResource AccentBrush}"
+                                                            FontWeight="SemiBold" />
                                             </StackPanel>
                                             <Button Grid.Column="2"
                                                     Content="Reset"
@@ -810,12 +816,12 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="140" />
                                                 <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="80" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
                                             <StackPanel Grid.Column="1" Orientation="Horizontal">
                                                 <Slider Value="{Binding ColorSettings.DigitalVibrance, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="0"
+                                                        Minimum="50"
                                                         Maximum="100"
                                                         TickFrequency="1"
                                                         IsSnapToTickEnabled="True"
@@ -823,6 +829,8 @@
                                                         Margin="0,0,8,0" />
                                                 <TextBlock Text="{Binding ColorSettings.DigitalVibrance, StringFormat='{}{0}%'}"
                                                            VerticalAlignment="Center"
+                                                           Width="60"
+                                                           TextAlignment="Left"
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold" />
                                             </StackPanel>
