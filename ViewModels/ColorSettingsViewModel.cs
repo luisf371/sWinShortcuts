@@ -132,7 +132,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase
         get => _digitalVibrance;
         set
         {
-            var clamped = ClampPercent(value);
+            var clamped = ClampDigitalVibrance(value);
             if (SetProperty(ref _digitalVibrance, clamped))
             {
                 UpdateCurrentProfile(p => p.DigitalVibrance = clamped);
@@ -160,7 +160,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase
         _brightness = ClampPercent(profile.Brightness);
         _contrast = ClampPercent(profile.Contrast);
         _gamma = ClampGamma(profile.Gamma);
-        _digitalVibrance = ClampPercent(profile.DigitalVibrance);
+        _digitalVibrance = ClampDigitalVibrance(profile.DigitalVibrance);
 
         OnPropertyChanged(nameof(Brightness));
         OnPropertyChanged(nameof(Contrast));
@@ -192,6 +192,8 @@ public sealed class ColorSettingsViewModel : ViewModelBase
     }
 
     private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
+
+    private static int ClampDigitalVibrance(int value) => Math.Clamp(value, DisplayColorProfile.DefaultDigitalVibrance, 100);
 
     private static double ClampGamma(double value) => Math.Clamp(value, 0.5, 3.0);
 

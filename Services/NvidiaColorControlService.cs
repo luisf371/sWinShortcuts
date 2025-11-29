@@ -172,9 +172,11 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
 
     private static int ConvertPercentToNvLevel(int percent)
     {
-        var requestedPercent = Math.Clamp(percent, 0, 100);
+        const int NvNeutralPercent = DisplayColorProfile.DefaultDigitalVibrance;
+        var clampedPercent = Math.Clamp(percent, NvNeutralPercent, 100);
+        var normalized = (clampedPercent - NvNeutralPercent) / (100.0 - NvNeutralPercent);
         var span = Math.Max(1, DvcMaxLevel - DvcMinLevel);
-        return DvcMinLevel + (int)Math.Round(requestedPercent / 100.0 * span);
+        return DvcMinLevel + (int)Math.Round(normalized * span);
     }
 
     private bool EnsureNvapi()

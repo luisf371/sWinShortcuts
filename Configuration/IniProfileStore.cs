@@ -309,7 +309,7 @@ public sealed class IniProfileStore : IProfileStore
             var gamma = parts.Length > 2 && double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGamma)
                 ? parsedGamma
                 : DisplayColorProfile.DefaultGamma;
-            var vibrance = ParsePercentage(parts, 3, DisplayColorProfile.DefaultDigitalVibrance);
+            var vibrance = ClampDigitalVibrance(ParsePercentage(parts, 3, DisplayColorProfile.DefaultDigitalVibrance));
 
             var entry = new DisplayColorProfile
             {
@@ -385,7 +385,7 @@ public sealed class IniProfileStore : IProfileStore
         document.RemoveSection("ColorDisplays");
         foreach (var pair in color.DisplayProfiles)
         {
-            var value = $"{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampPercent(pair.Value.DigitalVibrance)}";
+            var value = $"{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
             document.SetString("ColorDisplays", pair.Key, value);
         }
 
@@ -426,6 +426,8 @@ public sealed class IniProfileStore : IProfileStore
     }
 
     private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
+
+    private static int ClampDigitalVibrance(int value) => Math.Clamp(value, DisplayColorProfile.DefaultDigitalVibrance, 100);
 
     private static double ClampGamma(double value) => Math.Clamp(value, 0.5, 3.0);
 
