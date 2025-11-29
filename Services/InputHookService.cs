@@ -1041,14 +1041,7 @@ public sealed class InputHookService : IInputHookService
     {
         try
         {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = binding.Path,
-                Arguments = binding.Arguments,
-                UseShellExecute = true,
-                Verb = binding.RunAsAdmin ? "runas" : string.Empty
-            };
-            Process.Start(startInfo);
+            ProcessLauncher.Launch(binding.Path, binding.Arguments, binding.RunAsAdmin);
             
             LogDebug($"Launch successful: {binding.Path}");
         }
