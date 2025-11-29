@@ -399,7 +399,7 @@ public sealed class InputHookService : IInputHookService
     private bool HandleAltMouse(int message, uint mouseData)
     {
         var profile = _activeProfile;
-        if (profile is null || !profile.AltMouse.IsEnabled || !_altPressed)
+        if (profile is null || !profile.AltMouse.IsEnabled)
         {
             return false;
         }
@@ -418,16 +418,32 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
+        var state = _mouseStates[button.Value];
+        var isUp = message is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or 
+                              NativeMethods.WM_MBUTTONUP or NativeMethods.WM_XBUTTONUP;
+
+        if (!_altPressed)
+        {
+            // If Alt is released, we normally don't handle the event.
+            // However, if we have stale state (DownTick) from a previous "Alt+Down" that wasn't completed,
+            // we must clear it now to prevent it from interfering with future clicks.
+            if (isUp && state.DownTick.HasValue)
+            {
+                LogDebug($"[{button}] Stale state cleared (Alt released)");
+                state.DownTick = null;
+                CancelHoldTimer(state);
+                Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
+            }
+            return false;
+        }
+
         if (binding is null || (!binding.TapKey.HasValue && !binding.HoldKey.HasValue))
         {
             return false;
         }
 
-        var state = _mouseStates[button.Value];
         var isDown = message is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or 
                                 NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_XBUTTONDOWN;
-        var isUp = message is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or 
-                              NativeMethods.WM_MBUTTONUP or NativeMethods.WM_XBUTTONUP;
 
         if (isDown)
         {
@@ -513,10 +529,15 @@ public sealed class InputHookService : IInputHookService
     private bool HandleMouseUp(Models.MouseButton button, MouseButtonState state,
         MouseButtonBinding binding, Profile profile)
     {
+        // If we didn't track the down event, we shouldn't suppress the up event.
+        // This happens if Alt was pressed AFTER the mouse button was already down.
+        if (!state.DownTick.HasValue)
+        {
+            return false;
+        }
+
         // Calculate hold duration
-        var elapsedMs = state.DownTick.HasValue
-            ? (Stopwatch.GetTimestamp() - state.DownTick.Value) * TickToMilliseconds
-            : 0.0;
+        var elapsedMs = (Stopwatch.GetTimestamp() - state.DownTick.Value) * TickToMilliseconds;
 
         state.DownTick = null;
 
