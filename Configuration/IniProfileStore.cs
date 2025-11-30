@@ -149,6 +149,8 @@ public sealed class IniProfileStore : IProfileStore
         {
             var profile = ProfileFactory.CreateColorProfile();
             profile.SourcePath = path;
+            // Ensure default is enabled
+            profile.ColorSettings.IsEnabled = true;
             SerializeColorProfile(profile).Save(path);
             return profile;
         }
@@ -157,6 +159,9 @@ public sealed class IniProfileStore : IProfileStore
         var profileInstance = ProfileFactory.CreateColorProfile();
         profileInstance.SourcePath = path;
         profileInstance.IsEnabled = document.GetBoolean("Profile", "Enabled", true);
+        
+        // Default to enabled for global color profile
+        profileInstance.ColorSettings.IsEnabled = true;
         DeserializeColorSettings(document, profileInstance.ColorSettings);
 
         return profileInstance;
@@ -178,6 +183,7 @@ public sealed class IniProfileStore : IProfileStore
         DeserializeCombinedMappings(document, profile.CombinedMappings);
         DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
         DeserializeCapsLock(document, profile.CapsLock);
+        DeserializeColorSettings(document, profile.ColorSettings);
 
         return profile;
     }
@@ -297,6 +303,7 @@ public sealed class IniProfileStore : IProfileStore
 
     private static void DeserializeColorSettings(IniDocument document, ColorSettings settings)
     {
+        settings.IsEnabled = document.GetBoolean("Color", "Enabled", settings.IsEnabled);
         settings.SelectedDisplayId = document.GetString("Color", "SelectedDisplay", settings.SelectedDisplayId);
         settings.ClearProfiles();
 
@@ -371,6 +378,17 @@ public sealed class IniProfileStore : IProfileStore
         document.SetEnum("CapsLock", "Mode", capsLock.Mode);
         document.SetKey("CapsLock", "RemapTarget", capsLock.RemapTarget);
 
+        var color = profile.ColorSettings;
+        document.SetBoolean("Color", "Enabled", color.IsEnabled);
+        document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
+
+        document.RemoveSection("ColorDisplays");
+        foreach (var pair in color.DisplayProfiles)
+        {
+            var value = $"{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
+            document.SetString("ColorDisplays", pair.Key, value);
+        }
+
         return document;
     }
 
@@ -380,6 +398,7 @@ public sealed class IniProfileStore : IProfileStore
         document.SetBoolean("Profile", "Enabled", profile.IsEnabled);
 
         var color = profile.ColorSettings;
+        document.SetBoolean("Color", "Enabled", color.IsEnabled);
         document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
 
         document.RemoveSection("ColorDisplays");

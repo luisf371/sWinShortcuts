@@ -52,7 +52,7 @@ public sealed class ProfileViewModel : ViewModelBase
             AttachLauncherEntry(launcher);
         }
 
-        ColorSettings = new ColorSettingsViewModel(Model.ColorSettings, displayService, colorControlService);
+        ColorSettings = new ColorSettingsViewModel(Model.ColorSettings, displayService, colorControlService, Model.IsColorProfile);
         ColorSettings.Changed += (_, _) => OnProfileChanged();
 
         _name = Model.Name;
@@ -475,6 +475,7 @@ public sealed class ProfileViewModel : ViewModelBase
             Model.WindowsLauncher.IsEnabled = WindowsLauncherEnabled;
             Model.Executable = Executable;
             Model.ColorSettings.SelectedDisplayId = ColorSettings.SelectedDisplayId;
+            Model.ColorSettings.IsEnabled = ColorSettings.IsEnabled;
 
             Model.CombinedMappings.IsEnabled = CombinedKeyMappingsEnabled;
             Model.CombinedMappings.Mappings.Clear();

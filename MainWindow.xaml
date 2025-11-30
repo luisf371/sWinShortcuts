@@ -714,139 +714,153 @@
                                     </GroupBox>
                                 </StackPanel>
 
-                                <StackPanel Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfTrue}}">
-                                    <TextBlock Text="Monitor" Margin="0,0,0,4" />
-                                    <ComboBox ItemsSource="{Binding ColorSettings.Displays}"
-                                              SelectedItem="{Binding ColorSettings.SelectedDisplay}"
-                                              DisplayMemberPath="Name"
-                                              Margin="0,0,0,12" />
-                                    <TextBlock Text="Adjust NVIDIA color controls for the selected monitor."
-                                               Margin="0,0,0,12"
-                                               Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                                <GroupBox Padding="16" Margin="0,0,0,8">
+                                    <GroupBox.Header>
+                                        <StackPanel Orientation="Horizontal">
+                                            <CheckBox Content="Color Settings"
+                                                      IsChecked="{Binding ColorSettings.IsEnabled}"
+                                                      Margin="0"
+                                                      VerticalAlignment="Center" />
+                                            <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                       ToolTip="Adjust display color settings (NVIDIA only). For game profiles, these settings apply when the game is active."
+                                                       ToolTipService.InitialShowDelay="0"
+                                                       ToolTipService.Placement="Right" />
+                                        </StackPanel>
+                                    </GroupBox.Header>
+                                    <StackPanel Margin="0,8,0,0"
+                                                IsEnabled="{Binding ColorSettings.IsEnabled}"
+                                                Tag="{Binding ColorSettings.IsEnabled}"
+                                                Style="{StaticResource FeatureToggleContentStyle}">
+                                        <TextBlock Text="Monitor" Margin="0,0,0,4" />
+                                        <ComboBox ItemsSource="{Binding ColorSettings.Displays}"
+                                                  SelectedItem="{Binding ColorSettings.SelectedDisplay}"
+                                                  DisplayMemberPath="Name"
+                                                  Margin="0,0,0,12" />
+                                        
+                                        <StackPanel IsEnabled="{Binding ColorSettings.HasDisplaySelection}">
+                                            <Grid Margin="0,0,0,10">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Brightness" VerticalAlignment="Center" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <Slider Value="{Binding ColorSettings.Brightness, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="0"
+                                                            Maximum="100"
+                                                            TickFrequency="1"
+                                                            IsSnapToTickEnabled="True"
+                                                            Width="240"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Text="{Binding ColorSettings.Brightness, StringFormat='{}{0}%'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </StackPanel>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ColorSettings.ResetBrightnessCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
 
-                                    <StackPanel IsEnabled="{Binding ColorSettings.HasDisplaySelection}">
-                                        <Grid Margin="0,0,0,10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="140" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Brightness" VerticalAlignment="Center" />
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                                <Slider Value="{Binding ColorSettings.Brightness, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="0"
-                                                        Maximum="100"
-                                                        TickFrequency="1"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="240"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding ColorSettings.Brightness, StringFormat='{}{0}%'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="60"
-                                                           TextAlignment="Left"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                            </StackPanel>
-                                            <Button Grid.Column="2"
-                                                    Content="Reset"
-                                                    Command="{Binding ColorSettings.ResetBrightnessCommand}"
-                                                    Width="70"
-                                                    HorizontalAlignment="Right" />
-                                        </Grid>
+                                            <Grid Margin="0,0,0,10">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Contrast" VerticalAlignment="Center" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <Slider Value="{Binding ColorSettings.Contrast, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="0"
+                                                            Maximum="100"
+                                                            TickFrequency="1"
+                                                            IsSnapToTickEnabled="True"
+                                                            Width="240"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Text="{Binding ColorSettings.Contrast, StringFormat='{}{0}%'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </StackPanel>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ColorSettings.ResetContrastCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
 
-                                        <Grid Margin="0,0,0,10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="140" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Contrast" VerticalAlignment="Center" />
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                                <Slider Value="{Binding ColorSettings.Contrast, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="0"
-                                                        Maximum="100"
-                                                        TickFrequency="1"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="240"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding ColorSettings.Contrast, StringFormat='{}{0}%'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="60"
-                                                           TextAlignment="Left"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                            </StackPanel>
-                                            <Button Grid.Column="2"
-                                                    Content="Reset"
-                                                    Command="{Binding ColorSettings.ResetContrastCommand}"
-                                                    Width="70"
-                                                    HorizontalAlignment="Right" />
-                                        </Grid>
+                                            <Grid Margin="0,0,0,10">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Gamma" VerticalAlignment="Center" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <Slider Value="{Binding ColorSettings.Gamma, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="0.5"
+                                                            Maximum="3"
+                                                            TickFrequency="0.05"
+                                                            IsSnapToTickEnabled="True"
+                                                            Width="240"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Text="{Binding ColorSettings.Gamma, StringFormat='{}{0:F2}'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                                Foreground="{StaticResource AccentBrush}"
+                                                                FontWeight="SemiBold" />
+                                                </StackPanel>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ColorSettings.ResetGammaCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
 
-                                        <Grid Margin="0,0,0,10">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="140" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Gamma" VerticalAlignment="Center" />
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                                <Slider Value="{Binding ColorSettings.Gamma, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="0.5"
-                                                        Maximum="3"
-                                                        TickFrequency="0.05"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="240"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding ColorSettings.Gamma, StringFormat='{}{0:F2}'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="60"
-                                                           TextAlignment="Left"
-                                                            Foreground="{StaticResource AccentBrush}"
-                                                            FontWeight="SemiBold" />
-                                            </StackPanel>
-                                            <Button Grid.Column="2"
-                                                    Content="Reset"
-                                                    Command="{Binding ColorSettings.ResetGammaCommand}"
-                                                    Width="70"
-                                                    HorizontalAlignment="Right" />
-                                        </Grid>
+                                            <Grid Margin="0,0,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <Slider Value="{Binding ColorSettings.DigitalVibrance, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="50"
+                                                            Maximum="100"
+                                                            TickFrequency="1"
+                                                            IsSnapToTickEnabled="True"
+                                                            Width="240"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Text="{Binding ColorSettings.DigitalVibrance, StringFormat='{}{0}%'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </StackPanel>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ColorSettings.ResetDigitalVibranceCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
+                                        </StackPanel>
 
-                                        <Grid Margin="0,0,0,0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="140" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                                <Slider Value="{Binding ColorSettings.DigitalVibrance, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="50"
-                                                        Maximum="100"
-                                                        TickFrequency="1"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="240"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding ColorSettings.DigitalVibrance, StringFormat='{}{0}%'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="60"
-                                                           TextAlignment="Left"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                            </StackPanel>
-                                            <Button Grid.Column="2"
-                                                    Content="Reset"
-                                                    Command="{Binding ColorSettings.ResetDigitalVibranceCommand}"
-                                                    Width="70"
-                                                    HorizontalAlignment="Right" />
-                                        </Grid>
+                                        <TextBlock Text="No displays detected."
+                                                   Foreground="{StaticResource AccentBrush}"
+                                                   Visibility="{Binding ColorSettings.HasDisplaySelection, Converter={StaticResource VisibleIfFalse}}"
+                                                   Margin="0,8,0,0" />
                                     </StackPanel>
-
-                                    <TextBlock Text="No displays detected."
-                                               Foreground="{StaticResource AccentBrush}"
-                                               Visibility="{Binding ColorSettings.HasDisplaySelection, Converter={StaticResource VisibleIfFalse}}"
-                                               Margin="0,8,0,0" />
-                                </StackPanel>
+                                </GroupBox>
                             </StackPanel>
                         </StackPanel>
                         </DataTemplate>

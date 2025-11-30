@@ -13,8 +13,10 @@ public sealed class ColorSettingsViewModel : ViewModelBase
     private readonly ColorSettings _model;
     private readonly IColorControlService _colorService;
     private readonly ObservableCollection<DisplayInfo> _displays = [];
+    private readonly bool _allowLiveUpdates;
     private bool _suppressUpdates;
     private DisplayInfo? _selectedDisplay;
+    private bool _isEnabled;
     private int _brightness = DisplayColorProfile.DefaultBrightness;
     private int _contrast = DisplayColorProfile.DefaultContrast;
     private double _gamma = DisplayColorProfile.DefaultGamma;
@@ -22,11 +24,12 @@ public sealed class ColorSettingsViewModel : ViewModelBase
 
     public event EventHandler? Changed;
 
-    public ColorSettingsViewModel(ColorSettings model, IDisplayService displayService, IColorControlService colorService)
+    public ColorSettingsViewModel(ColorSettings model, IDisplayService displayService, IColorControlService colorService, bool allowLiveUpdates = false)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         ArgumentNullException.ThrowIfNull(displayService);
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
+        _allowLiveUpdates = allowLiveUpdates;
 
         foreach (var display in displayService.GetDisplays())
         {
@@ -39,6 +42,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase
         ResetDigitalVibranceCommand = new RelayCommand(() => DigitalVibrance = DisplayColorProfile.DefaultDigitalVibrance);
 
         _suppressUpdates = true;
+        IsEnabled = _model.IsEnabled;
         SelectedDisplay = ResolveInitialSelection(_model.SelectedDisplayId);
         if (_selectedDisplay is null && _displays.Count > 0)
         {
@@ -62,6 +66,23 @@ public sealed class ColorSettingsViewModel : ViewModelBase
     }
 
     public ObservableCollection<DisplayInfo> Displays => _displays;
+
+    public bool IsEnabled
+    {
+        get => _isEnabled;
+        set
+        {
+            if (SetProperty(ref _isEnabled, value))
+            {
+                if (!_suppressUpdates)
+                {
+                    _model.IsEnabled = value;
+                    // Apply if enabling, or maybe re-apply logic handles it
+                    Changed?.Invoke(this, EventArgs.Empty);
+                }
+            }
+        }
+    }
 
     public DisplayInfo? SelectedDisplay
     {
@@ -199,7 +220,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase
 
     private void ApplyToHardware()
     {
-        if (_selectedDisplay is null)
+        if (_selectedDisplay is null || !_allowLiveUpdates)
         {
             return;
         }

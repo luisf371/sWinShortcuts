@@ -7,6 +7,8 @@ public sealed class ColorSettings
 {
     private readonly Dictionary<string, DisplayColorProfile> _displayProfiles = new(StringComparer.OrdinalIgnoreCase);
 
+    public bool IsEnabled { get; set; } = false;
+
     public string SelectedDisplayId { get; set; } = string.Empty;
 
     public IReadOnlyDictionary<string, DisplayColorProfile> DisplayProfiles => _displayProfiles;
