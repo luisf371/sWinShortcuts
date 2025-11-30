@@ -1,7 +1,7 @@
 <Window x:Class="sWinShortcuts.Views.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Settings" Width="380" Height="220"
+        Title="Settings" Width="380" Height="260"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{DynamicResource BackgroundElevatedBrush}">
@@ -27,7 +27,19 @@
                       Content="Start as administrator"
                       IsChecked="{Binding StartAsAdmin, Mode=TwoWay}"
                       IsEnabled="{Binding CanChooseAdmin}"
-                      Margin="24,0,0,0"
+                      Margin="24,0,0,8"
+                      Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+            
+            <Separator Margin="0,8,0,8" Background="{DynamicResource BorderBrush}"/>
+            
+            <TextBlock Text="Troubleshooting"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,8"
+                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <CheckBox Content="Enable Debug Logging"
+                      IsChecked="{Binding EnableDebugLogging, Mode=TwoWay}"
+                      Margin="0,0,0,8"
                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
         </StackPanel>
 

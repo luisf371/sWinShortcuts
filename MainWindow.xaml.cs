@@ -13,6 +13,7 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private readonly Services.IStartupService _startupService;
+    private readonly Services.ILoggerService _logger;
     private readonly string _settingsPath;
     private bool _isLoaded;
     private bool _allowClose;
@@ -24,23 +25,35 @@ public partial class MainWindow : Window
     private WindowState _previousWindowState = WindowState.Normal;
     private const int WM_NCLBUTTONDBLCLK = 0x00A3; // Non-client double-click message
 
-    public MainWindow(MainViewModel viewModel, Services.IStartupService startupService)
+    public MainWindow(MainViewModel viewModel, Services.IStartupService startupService, Services.ILoggerService logger)
     {
         InitializeComponent();
         DataContext = _viewModel = viewModel;
         _startupService = startupService;
+        _logger = logger;
         Loaded += OnLoaded;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var rootDirectory = Path.Combine(appData, "sWinShortcuts");
         _settingsPath = Path.Combine(rootDirectory, "sWinShortcuts.ini");
+        
+        // Initialize logger state from settings
+        try
+        {
+             var ini = IniDocument.Load(_settingsPath);
+             _logger.IsEnabled = ini.GetValue("App", "EnableDebugLogging") == "true";
+        }
+        catch
+        {
+             // ignore
+        }
 
         LoadWindowState();
         
         // Add logging for mouse events
         this.MouseLeftButtonDown += (s, e) =>
-            System.Diagnostics.Debug.WriteLine($"MouseLeftButtonDown at: X={e.GetPosition(this).X}, Y={e.GetPosition(this).Y}, ClickCount={e.ClickCount}");
+            _logger.Log($"MouseLeftButtonDown at: X={e.GetPosition(this).X}, Y={e.GetPosition(this).Y}, ClickCount={e.ClickCount}");
             
         // Add logging for window state changes
         this.StateChanged += OnWindowStateChanged;
@@ -172,7 +185,7 @@ public partial class MainWindow : Window
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        var wnd = new Views.SettingsWindow(_startupService)
+        var wnd = new Views.SettingsWindow(_startupService, _logger)
         {
             Owner = this
         };
@@ -207,17 +220,17 @@ public partial class MainWindow : Window
     {
         // Check if the double-click is within the title bar area
         var position = e.GetPosition(this);
-        System.Diagnostics.Debug.WriteLine($"Double-click detected at position: X={position.X}, Y={position.Y}");
+        _logger.Log($"Double-click detected at position: X={position.X}, Y={position.Y}");
         
         if (position.Y <= 32) // Title bar height is 32
         {
-            System.Diagnostics.Debug.WriteLine("Double-click within title bar area - preventing maximize");
+            _logger.Log("Double-click within title bar area - preventing maximize");
             // Prevent double-click from maximizing the window
             e.Handled = true;
             return;
         }
         
-        System.Diagnostics.Debug.WriteLine("Double-click outside title bar area - allowing default behavior");
+        _logger.Log("Double-click outside title bar area - allowing default behavior");
         // Allow default behavior for clicks outside title bar
         base.OnMouseDoubleClick(e);
     }
@@ -225,11 +238,11 @@ public partial class MainWindow : Window
     private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         var position = e.GetPosition(this);
-        System.Diagnostics.Debug.WriteLine($"TitleBar_MouseLeftButtonDown at: X={position.X}, Y={position.Y}, ClickCount={e.ClickCount}");
+        _logger.Log($"TitleBar_MouseLeftButtonDown at: X={position.X}, Y={position.Y}, ClickCount={e.ClickCount}");
         
         if (e.ClickCount == 2)
         {
-            System.Diagnostics.Debug.WriteLine("Double-click detected on title bar - preventing maximize");
+            _logger.Log("Double-click detected on title bar - preventing maximize");
             e.Handled = true;
         }
     }
@@ -252,7 +265,7 @@ public partial class MainWindow : Window
         // Intercept non-client double-click messages (title bar double-clicks)
         if (msg == WM_NCLBUTTONDBLCLK)
         {
-            System.Diagnostics.Debug.WriteLine("Intercepted WM_NCLBUTTONDBLCLK - preventing maximize");
+            _logger.Log("Intercepted WM_NCLBUTTONDBLCLK - preventing maximize");
             handled = true;
             return IntPtr.Zero;
         }
@@ -293,7 +306,7 @@ public partial class MainWindow : Window
 
     private void OnWindowStateChanged(object? sender, EventArgs e)
     {
-        System.Diagnostics.Debug.WriteLine($"Window state changed to: {WindowState}");
+        _logger.Log($"Window state changed to: {WindowState}");
 
         if (WindowState == WindowState.Minimized && !_isMinimizingToTray)
         {

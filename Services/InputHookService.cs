@@ -22,14 +22,8 @@ namespace sWinShortcuts.Services;
 /// </summary>
 public sealed class InputHookService : IInputHookService
 {
-    // ==================== CONFIGURATION ====================
-    
-    /// <summary>
-    /// Enable debug logging (off by default for production performance).
-    /// Set to true during development/troubleshooting.
-    /// </summary>
-    private const bool ENABLE_DEBUG_LOGGING = false;
-    
+    private readonly ILoggerService _logger;
+
     // ==================== TIMING CONFIGURATION ====================
     
     // Alt+Mouse Hold Detection
@@ -113,50 +107,11 @@ public sealed class InputHookService : IInputHookService
     
     // Performance metrics
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
-    private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "sWinShortcuts_Input_Debug.log");
-    
-    // Logging queue (off hot path, only used if ENABLE_DEBUG_LOGGING is true)
-    private static readonly BlockingCollection<string>? _logQueue = 
-        ENABLE_DEBUG_LOGGING ? new BlockingCollection<string>(new ConcurrentQueue<string>(), 1000) : null;
-    private static readonly CancellationTokenSource? _logCancellation = 
-        ENABLE_DEBUG_LOGGING ? new CancellationTokenSource() : null;
-    
-    static InputHookService()
-    {
-        if (!ENABLE_DEBUG_LOGGING || _logQueue == null || _logCancellation == null)
-        {
-            return;
-        }
-        
-        // Background logging thread (never blocks input processing)
-        Task.Run(() =>
-        {
-            var buffer = new List<string>(100);
-            while (!_logCancellation.Token.IsCancellationRequested)
-            {
-                try
-                {
-                    buffer.Clear();
-                    while (buffer.Count < 100 && _logQueue.TryTake(out var msg, 50))
-                    {
-                        buffer.Add(msg);
-                    }
-                    
-                    if (buffer.Count > 0)
-                    {
-                        File.AppendAllLines(LogPath, buffer);
-                    }
-                }
-                catch
-                {
-                    // Swallow logging errors
-                }
-            }
-        }, _logCancellation.Token);
-    }
 
-    public InputHookService()
+    public InputHookService(ILoggerService logger)
     {
+        _logger = logger;
+
         // Initialize hold breath timer (pre-allocated, reused throughout lifetime)
         _holdBreathTimer = new System.Threading.Timer(_ =>
         {
@@ -303,14 +258,6 @@ public sealed class InputHookService : IInputHookService
         Stop();
         _random.Dispose();
         _holdBreathTimer.Dispose();
-        
-#pragma warning disable CS0162 // Unreachable code detected - intentional based on ENABLE_DEBUG_LOGGING const
-        if (ENABLE_DEBUG_LOGGING)
-        {
-            _logQueue?.CompleteAdding();
-            _logCancellation?.Cancel();
-        }
-#pragma warning restore CS0162
     }
 
     // ==================== KEYBOARD HOOK ====================
@@ -478,14 +425,6 @@ public sealed class InputHookService : IInputHookService
         if (binding.HoldKey.HasValue)
         {
             var holdKey = binding.HoldKey.Value;
-            //    var baseThreshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
-            //    
-            //    // Add anti-cheat jitter
-            //    var rng = _random.Value!;
-            //    var jitter = rng.Next(ALT_MOUSE_HOLD_JITTER_MIN_MS, ALT_MOUSE_HOLD_JITTER_MAX_MS + 1);
-            //    var threshold = baseThreshold + jitter;
-
-            //    LogDebug($"[{button}] Hold timer: base={baseThreshold}ms, jitter=+{jitter}ms, total={threshold}ms");
             // Deterministic threshold (no jitter)
             var threshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
             LogDebug($"[{button}] Hold timer: {threshold}ms");
@@ -785,7 +724,7 @@ public sealed class InputHookService : IInputHookService
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ForceCapsLockState(bool enabled)
+    private void ForceCapsLockState(bool enabled)
     {
         // Check current Caps Lock state
         bool currentlyOn = IsCapsLockOn();
@@ -1037,11 +976,11 @@ public sealed class InputHookService : IInputHookService
         return true;
     }
 
-    private static void LaunchProcess(LauncherBinding binding)
+    private void LaunchProcess(LauncherBinding binding)
     {
         try
         {
-            ProcessLauncher.Launch(binding.Path, binding.Arguments, binding.RunAsAdmin);
+            ProcessLauncher.Launch(binding.Path, binding.Arguments, binding.RunAsAdmin, _logger);
             
             LogDebug($"Launch successful: {binding.Path}");
         }
@@ -1087,7 +1026,7 @@ public sealed class InputHookService : IInputHookService
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void SendKey(Key key, bool isKeyDown, bool bypassHook = true)
+    private void SendKey(Key key, bool isKeyDown, bool bypassHook = true)
     {
         var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
         if (virtualKey == 0)
@@ -1128,7 +1067,7 @@ public sealed class InputHookService : IInputHookService
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsExtendedKey(Key key)
+    private bool IsExtendedKey(Key key)
     {
         return key is Key.RightAlt or Key.RightCtrl or Key.Insert or Key.Delete or 
                       Key.Home or Key.End or Key.PageUp or Key.PageDown or 
@@ -1220,24 +1159,8 @@ public sealed class InputHookService : IInputHookService
     // ==================== LOGGING ====================
     
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void LogDebug(string message)
+    private void LogDebug(string message)
     {
-        if (!ENABLE_DEBUG_LOGGING || _logQueue == null)
-        {
-            return;
-        }
-        
-        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-        var threadId = Environment.CurrentManagedThreadId;
-        var entry = $"[{timestamp}] [T{threadId:D3}] {message}";
-        
-        // Non-blocking enqueue
-        _logQueue.TryAdd(entry);
+        _logger.Log(message);
     }
 }
-
-
-
-
-
-

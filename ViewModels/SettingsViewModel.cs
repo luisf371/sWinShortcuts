@@ -1,12 +1,15 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using sWinShortcuts.Services;
 
 namespace sWinShortcuts.ViewModels;
 
-public sealed class SettingsViewModel : INotifyPropertyChanged
+public sealed class SettingsViewModel(ILoggerService loggerService) : INotifyPropertyChanged
 {
+    private readonly ILoggerService _loggerService = loggerService;
     private bool _startWithWindows;
     private bool _startAsAdmin;
+    private bool _enableDebugLogging;
 
     public bool StartWithWindows
     {
@@ -34,6 +37,20 @@ public sealed class SettingsViewModel : INotifyPropertyChanged
             if (_startAsAdmin != value)
             {
                 _startAsAdmin = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool EnableDebugLogging
+    {
+        get => _enableDebugLogging;
+        set
+        {
+            if (_enableDebugLogging != value)
+            {
+                _enableDebugLogging = value;
+                _loggerService.IsEnabled = value;
                 OnPropertyChanged();
             }
         }

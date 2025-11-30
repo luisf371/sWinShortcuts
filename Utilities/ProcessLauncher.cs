@@ -3,13 +3,14 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Security.Principal;
+using sWinShortcuts.Services;
 using sWinShortcuts.Interop;
 
 namespace sWinShortcuts.Utilities;
 
 public static class ProcessLauncher
 {
-    public static void Launch(string path, string arguments, bool runAsAdmin)
+    public static void Launch(string path, string arguments, bool runAsAdmin, ILoggerService? logger = null)
     {
         bool isElevated = IsRunningAsAdmin();
 
@@ -19,12 +20,12 @@ public static class ProcessLauncher
         {
             try
             {
-                LaunchAsDesktopUser(path, arguments);
+                LaunchAsDesktopUser(path, arguments, logger);
                 return;
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Failed to launch as desktop user: {ex.Message}");
+                logger?.Log($"Failed to launch as desktop user: {ex.Message}");
                 // CRITICAL: Do NOT fall back to standard launch if de-elevation fails.
                 // That would result in running as Admin against the user's wishes.
                 throw new InvalidOperationException("Failed to launch application as limited user from admin context.", ex);
@@ -46,7 +47,7 @@ public static class ProcessLauncher
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Failed to launch process: {ex.Message}");
+            logger?.Log($"Failed to launch process: {ex.Message}");
             throw;
         }
     }
@@ -58,7 +59,7 @@ public static class ProcessLauncher
         return principal.IsInRole(WindowsBuiltInRole.Administrator);
     }
 
-    private static void LaunchAsDesktopUser(string path, string arguments)
+    private static void LaunchAsDesktopUser(string path, string arguments, ILoggerService? logger)
     {
         string resolvedPath = ResolvePath(path);
 
@@ -75,7 +76,7 @@ public static class ProcessLauncher
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Fallback explorer launch failed: {ex.Message}");
+                logger?.Log($"Fallback explorer launch failed: {ex.Message}");
                 // Fall through to COM method if this fails for some reason.
             }
         }

@@ -10,15 +10,16 @@ namespace sWinShortcuts.Views;
 public partial class SettingsWindow : Window
 {
     private readonly IStartupService _startupService;
-    private readonly SettingsViewModel _vm = new();
+    private readonly SettingsViewModel _vm;
 
     // Reuse the same INI storage path pattern used by MainWindow
     private readonly string _settingsPath;
 
-    public SettingsWindow(IStartupService startupService)
+    public SettingsWindow(IStartupService startupService, ILoggerService loggerService)
     {
         InitializeComponent();
         _startupService = startupService;
+        _vm = new SettingsViewModel(loggerService);
         DataContext = _vm;
 
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -34,6 +35,16 @@ public partial class SettingsWindow : Window
         var state = _startupService.GetState();
         _vm.StartWithWindows = state.StartWithWindows;
         _vm.StartAsAdmin = state.StartAsAdmin;
+        
+        try
+        {
+            var ini = IniDocument.Load(_settingsPath);
+            _vm.EnableDebugLogging = ini.GetValue("App", "EnableDebugLogging") == "true";
+        }
+        catch
+        {
+            _vm.EnableDebugLogging = false;
+        }
     }
 
     private void SaveIni(SettingsViewModel vm)
@@ -43,6 +54,7 @@ public partial class SettingsWindow : Window
             var ini = IniDocument.Load(_settingsPath);
             ini.SetValue("App", "StartWithWindows", vm.StartWithWindows ? "true" : "false");
             ini.SetValue("App", "StartAsAdmin", vm.StartAsAdmin ? "true" : "false");
+            ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
             ini.Save(_settingsPath);
         }
         catch

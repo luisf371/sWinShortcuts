@@ -36,6 +36,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IStartupService, StartupService>();
         services.AddSingleton<IDisplayService, DisplayService>();
         services.AddSingleton<IColorControlService, NvidiaColorControlService>();
+        services.AddSingleton<ILoggerService, FileLoggerService>();
         services.AddHostedService<ProfileActivationService>();
         services.AddSingleton<IDialogService, DialogService>();
         services.AddSingleton<MainViewModel>();
