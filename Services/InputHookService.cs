@@ -23,6 +23,7 @@ namespace sWinShortcuts.Services;
 public sealed class InputHookService : IInputHookService
 {
     private readonly ILoggerService _logger;
+    private bool IsDebugEnabled => _logger.IsEnabled;
 
     // ==================== TIMING CONFIGURATION ====================
     
@@ -418,8 +419,11 @@ public sealed class InputHookService : IInputHookService
         // Atomically arm the state machine
         Interlocked.Exchange(ref state.TimerState, TIMER_ARMED);
 
-        LogDebug($"[{button}] DOWN - Tap={binding.TapKey}, Hold={binding.HoldKey}, " +
-                 $"Threshold={profile.AltMouse.HoldThresholdMilliseconds}ms");
+        if (IsDebugEnabled)
+        {
+            LogDebug($"[{button}] DOWN - Tap={binding.TapKey}, Hold={binding.HoldKey}, " +
+                     $"Threshold={profile.AltMouse.HoldThresholdMilliseconds}ms");
+        }
 
         // Schedule hold timer if configured
         if (binding.HoldKey.HasValue)
@@ -427,7 +431,7 @@ public sealed class InputHookService : IInputHookService
             var holdKey = binding.HoldKey.Value;
             // Deterministic threshold (no jitter)
             var threshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
-            LogDebug($"[{button}] Hold timer: {threshold}ms");
+            if (IsDebugEnabled) LogDebug($"[{button}] Hold timer: {threshold}ms");
 
             // Only capture the state reference (not runtime flags)
             var stateRef = state;
@@ -439,24 +443,24 @@ public sealed class InputHookService : IInputHookService
                 // These are read at execution time, not captured at scheduling time
                 if (!_isRunning)
                 {
-                    LogDebug($"[{button}] Hold timer blocked - service stopped");
+                    if (IsDebugEnabled) LogDebug($"[{button}] Hold timer blocked - service stopped");
                     return;
                 }
                 
                 if (!_altPressed)
                 {
-                    LogDebug($"[{button}] Hold timer blocked - Alt released");
+                    if (IsDebugEnabled) LogDebug($"[{button}] Hold timer blocked - Alt released");
                     return;
                 }
 
                 // ✅ Atomic state check: only fire if still ARMED
                 if (Interlocked.CompareExchange(ref stateRef.TimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
                 {
-                    LogDebug($"[{button}] Hold timer blocked - state changed (cancelled or already fired)");
+                    if (IsDebugEnabled) LogDebug($"[{button}] Hold timer blocked - state changed (cancelled or already fired)");
                     return;
                 }
 
-                LogDebug($"[{button}] Hold timer FIRED - sending {holdKey}");
+                if (IsDebugEnabled) LogDebug($"[{button}] Hold timer FIRED - sending {holdKey}");
                 FireTapKey(holdKey);
             };
         }
@@ -488,23 +492,23 @@ public sealed class InputHookService : IInputHookService
         // Cancel timer after reading state (prevents overwriting TIMER_FIRED)
         state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
 
-        LogDebug($"[{button}] UP - Elapsed={elapsedMs:F1}ms, Threshold={threshold}ms, State={finalState}");
+        if (IsDebugEnabled) LogDebug($"[{button}] UP - Elapsed={elapsedMs:F1}ms, Threshold={threshold}ms, State={finalState}");
 
         if (finalState == TIMER_FIRED)
         {
             // Timer already sent the hold key - don't send again
-            LogDebug($"[{button}] Hold was triggered by timer (not re-triggering)");
+            if (IsDebugEnabled) LogDebug($"[{button}] Hold was triggered by timer (not re-triggering)");
         }
         else if (binding.HoldKey.HasValue && elapsedMs >= threshold)
         {
             // We beat the timer, but threshold was met - send hold key
-            LogDebug($"[{button}] Hold threshold met manually");
+            if (IsDebugEnabled) LogDebug($"[{button}] Hold threshold met manually");
             FireTapKey(binding.HoldKey.Value);
         }
         else if (binding.TapKey.HasValue)
         {
             // Quick tap - send tap key
-            LogDebug($"[{button}] Quick tap");
+            if (IsDebugEnabled) LogDebug($"[{button}] Quick tap");
             FireTapKey(binding.TapKey.Value);
         }
 
@@ -550,7 +554,17 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        var entry = profile.CombinedMappings.Mappings.FirstOrDefault(m => m.SourceKey == sourceKey.Value);
+        // Optimization: Use manual loop instead of LINQ to avoid allocation on every key press
+        CombinedMappingEntry? entry = null;
+        foreach (var m in profile.CombinedMappings.Mappings)
+        {
+            if (m.SourceKey == sourceKey.Value)
+            {
+                entry = m;
+                break;
+            }
+        }
+
         if (entry is null)
         {
             return false;
@@ -581,7 +595,7 @@ public sealed class InputHookService : IInputHookService
             _activeCombinedOverrides[sourceKey.Value] = new CombinedOverrideState { TargetKey = targetKey, SuppressOriginal = suppressOriginal, RightClickOnly = requiresRightClick };
 
             SendKey(targetKey, true);
-            LogDebug($"Combined mapping: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
+            if (IsDebugEnabled) LogDebug($"Combined mapping: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
             
             return suppressOriginal;
         }
@@ -591,7 +605,7 @@ public sealed class InputHookService : IInputHookService
             if (_activeCombinedOverrides.Remove(sourceKey.Value, out var state))
             {
                 SendKey(state.TargetKey, false);
-                LogDebug($"Combined mapping released: {sourceKey.Value}");
+                if (IsDebugEnabled) LogDebug($"Combined mapping released: {sourceKey.Value}");
                 return state.SuppressOriginal;
             }
         }

@@ -359,9 +359,23 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private void QueueAutoSave(ProfileViewModel viewModel)
+    private CancellationTokenSource? _saveCts;
+
+    private async void QueueAutoSave(ProfileViewModel viewModel)
     {
-        _ = SaveProfileInternalAsync(viewModel);
+        _saveCts?.Cancel();
+        _saveCts = new CancellationTokenSource();
+        var token = _saveCts.Token;
+
+        try
+        {
+            await Task.Delay(500, token);
+            await SaveProfileInternalAsync(viewModel);
+        }
+        catch (OperationCanceledException)
+        {
+            // Debounced
+        }
     }
 
     private async Task SaveProfileInternalAsync(ProfileViewModel viewModel)
