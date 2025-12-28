@@ -58,6 +58,8 @@ public sealed class ProfileViewModel : ViewModelBase
         _name = Model.Name;
         _isEnabled = Model.IsEnabled;
         _executable = Model.Executable;
+
+        UpdateSelectableKeys();
     }
 
     public event EventHandler? ProfileChanged;
@@ -308,8 +310,7 @@ public sealed class ProfileViewModel : ViewModelBase
 
         CombinedMappings.Add(combined);
         SelectedCombinedMapping = combined;
-        OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
-        OnProfileChanged();
+        // OnCombinedMappingsChanged will fire and update keys
     }
 
     public void RemoveCombinedMapping(CombinedMappingEntryViewModel? entry)
@@ -325,8 +326,7 @@ public sealed class ProfileViewModel : ViewModelBase
             {
                 SelectedCombinedMapping = CombinedMappings.LastOrDefault();
             }
-            OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
-            OnProfileChanged();
+            // OnCombinedMappingsChanged will fire and update keys
         }
     }
 
@@ -334,8 +334,7 @@ public sealed class ProfileViewModel : ViewModelBase
     {
         if (CombinedMappings.Count == 0) return;
         CombinedMappings.Clear();
-        OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
-        OnProfileChanged();
+        // OnCombinedMappingsChanged will fire and update keys
     }
 
     public void AddAltMouseBinding()
@@ -394,6 +393,7 @@ public sealed class ProfileViewModel : ViewModelBase
                 DetachCombinedVm(m);
             }
         }
+        UpdateSelectableKeys();
         OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
         OnProfileChanged();
     }
@@ -412,10 +412,27 @@ public sealed class ProfileViewModel : ViewModelBase
     {
         if (e.PropertyName == nameof(CombinedMappingEntryViewModel.SourceKey))
         {
+            UpdateSelectableKeys();
             OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
         }
         // Persist and notify engine immediately on any mapping change
         OnProfileChanged();
+    }
+
+    private void UpdateSelectableKeys()
+    {
+        var allUsed = CombinedMappings.Select(m => m.SourceKey).ToHashSet();
+        
+        foreach (var vm in CombinedMappings)
+        {
+            // For each row, allowed keys are:
+            // 1. Keys not used by anyone
+            // 2. OR the key used by THIS row (so it can keep its own selection)
+            var allowed = _keyOptions
+                .Where(k => !allUsed.Contains(k) || k == vm.SourceKey);
+            
+            vm.SelectableSourceKeys = KeyCatalog.SortKeys(allowed).ToList();
+        }
     }
 
     private void OnWindowsLaunchersChanged(object? sender, NotifyCollectionChangedEventArgs e)

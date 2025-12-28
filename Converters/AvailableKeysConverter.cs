@@ -18,16 +18,23 @@ public sealed class AvailableKeysConverter : IMultiValueConverter
         if (values[0] is not IEnumerable<Key> availableKeys)
             return new List<Key>();
 
-        // current selected SourceKey
+        // Handle UnsetValue or null
+        if (values[1] == System.Windows.DependencyProperty.UnsetValue || values[1] is null)
+            return availableKeys.ToList();
+
         if (values[1] is not Key currentKey)
             return availableKeys.ToList();
 
-        // Include the current key in the list even if it's filtered out
         var result = availableKeys.ToList();
+        
+        // Ensure the current key is present
         if (!result.Contains(currentKey))
         {
-            result.Insert(0, currentKey);
+            result.Add(currentKey);
         }
+
+        // Sort to maintain stable index positions (fixes UI alternating selection bug)
+        result.Sort();
 
         return result;
     }

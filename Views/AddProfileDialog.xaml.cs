@@ -95,7 +95,7 @@ public partial class AddProfileDialog : Window
         DialogResult = false;
     }
 
-    private void OnShowProcessesClick(object sender, RoutedEventArgs e)
+    private async void OnShowProcessesClick(object sender, RoutedEventArgs e)
     {
         if (sender is not WpfButton button)
         {
@@ -106,32 +106,77 @@ public partial class AddProfileDialog : Window
         {
             PlacementTarget = button,
             Placement = PlacementMode.Bottom,
-            StaysOpen = false
+            StaysOpen = false,
+            MaxHeight = 400
         };
 
-        var processes = GetRunningExecutables();
-        if (processes.Count == 0)
+        // Add placeholder while loading
+        var loadingItem = new MenuItem { Header = "Loading...", IsEnabled = false };
+        menu.Items.Add(loadingItem);
+        menu.IsOpen = true;
+
+        try
         {
-            menu.Items.Add(new MenuItem
+            // Run process fetching on background thread
+            var processes = await System.Threading.Tasks.Task.Run(() =>
             {
-                Header = "No processes available",
-                IsEnabled = false
-            });
-        }
-        else
-        {
-            foreach (var entry in processes)
-            {
-                var menuItem = new MenuItem
+                var list = new List<ProcessEntry>();
+                foreach (var p in Process.GetProcesses())
                 {
-                    Header = $"{entry.Executable} ({FormatMemory(entry.WorkingSet)})"
-                };
-                menuItem.Click += (_, _) => ExecutableTextBox.Text = NormalizeExecutable(entry.Executable);
-                menu.Items.Add(menuItem);
+                    using (p)
+                    {
+                        // Optimization: Use ProcessName directly instead of MainModule.FileName
+                        // MainModule is very slow and often fails due to permissions.
+                        var name = p.ProcessName;
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+                        
+                        // Heuristic: filter out obvious system/background noise if desired,
+                        // but for now we just show everything non-empty.
+                        
+                        long memory = 0;
+                        try { memory = p.WorkingSet64; } catch { /* ignore */ }
+                        
+                        list.Add(new ProcessEntry($"{name}.exe", memory));
+                    }
+                }
+                
+                // Group by name to remove duplicates (e.g. multiple chrome.exe processes)
+                // and pick the one with highest memory usage to display.
+                return list
+                    .GroupBy(x => x.Executable)
+                    .Select(g => new ProcessEntry(g.Key, g.Sum(x => x.WorkingSet)))
+                    .OrderByDescending(x => x.WorkingSet)
+                    .ToList();
+            });
+
+            menu.Items.Clear();
+
+            if (processes.Count == 0)
+            {
+                menu.Items.Add(new MenuItem
+                {
+                    Header = "No processes available",
+                    IsEnabled = false
+                });
+            }
+            else
+            {
+                foreach (var entry in processes)
+                {
+                    var menuItem = new MenuItem
+                    {
+                        Header = $"{entry.Executable} ({FormatMemory(entry.WorkingSet)})"
+                    };
+                    menuItem.Click += (_, _) => ExecutableTextBox.Text = NormalizeExecutable(entry.Executable);
+                    menu.Items.Add(menuItem);
+                }
             }
         }
-
-        menu.IsOpen = true;
+        catch (Exception ex)
+        {
+            menu.Items.Clear();
+            menu.Items.Add(new MenuItem { Header = $"Error: {ex.Message}", IsEnabled = false });
+        }
     }
 
     private static string NormalizeExecutable(string? value)
@@ -143,64 +188,6 @@ public partial class AddProfileDialog : Window
 
         var fileName = Path.GetFileName(value.Trim());
         return fileName?.Trim() ?? string.Empty;
-    }
-
-    private static IReadOnlyList<ProcessEntry> GetRunningExecutables()
-    {
-        return Process.GetProcesses()
-            .Select(CreateProcessEntry)
-            .OfType<ProcessEntry>()
-            .OrderByDescending(entry => entry.WorkingSet)
-            .ToList();
-    }
-
-    private static ProcessEntry? CreateProcessEntry(Process process)
-    {
-        string? executable = TryGetExecutableName(process);
-        if (string.IsNullOrWhiteSpace(executable))
-        {
-            return null;
-        }
-
-        long workingSet;
-        try
-        {
-            workingSet = process.WorkingSet64;
-        }
-        catch (InvalidOperationException)
-        {
-            return null;
-        }
-
-        return new ProcessEntry(executable, workingSet);
-    }
-
-    private static string? TryGetExecutableName(Process process)
-    {
-        try
-        {
-            var path = process.MainModule?.FileName;
-            if (!string.IsNullOrWhiteSpace(path))
-            {
-                return Path.GetFileName(path);
-            }
-        }
-        catch (Win32Exception)
-        {
-            // Access denied. Fallback to process name.
-        }
-        catch (InvalidOperationException)
-        {
-            return null;
-        }
-
-        var name = process.ProcessName;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return null;
-        }
-
-        return $"{name}.exe";
     }
 
     private static string FormatMemory(long bytes)

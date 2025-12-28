@@ -34,7 +34,7 @@ public sealed partial class MainViewModel : ViewModelBase
         _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorControlService = colorControlService ?? throw new ArgumentNullException(nameof(colorControlService));
-        _keyOptionsWithNone = new[] { Key.None }.Concat(_keyOptions).ToArray();
+        _keyOptionsWithNone = KeyCatalog.SortKeys(new[] { Key.None }.Concat(_keyOptions)).ToArray();
         Profiles = new ReadOnlyObservableCollection<ProfileViewModel>(_profiles);
 
         _profileManager.ProfileAdded += OnProfileAdded;

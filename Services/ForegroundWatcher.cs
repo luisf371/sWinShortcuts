@@ -95,17 +95,7 @@ public sealed class ForegroundWatcher : IForegroundWatcher
             }
 
             using var process = Process.GetProcessById((int)processId);
-            var name = process.ProcessName;
-            try
-            {
-                name = process.MainModule?.FileName ?? name;
-            }
-            catch
-            {
-                // Access denied or x86/x64 mismatch; fall back to process name.
-            }
-
-            return name;
+            return process.ProcessName;
         }
         catch
         {

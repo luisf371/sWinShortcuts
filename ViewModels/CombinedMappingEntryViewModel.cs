@@ -28,6 +28,13 @@ public sealed partial class CombinedMappingEntryViewModel : ViewModelBase
     [ObservableProperty]
     private bool rightClickOnly;
 
+    private System.Collections.Generic.IEnumerable<Key> _selectableSourceKeys = new System.Collections.Generic.List<Key>();
+    public System.Collections.Generic.IEnumerable<Key> SelectableSourceKeys
+    {
+        get => _selectableSourceKeys;
+        set => SetProperty(ref _selectableSourceKeys, value);
+    }
+
     partial void OnSourceKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);
 
     partial void OnTargetKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);

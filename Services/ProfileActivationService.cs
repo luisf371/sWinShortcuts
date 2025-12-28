@@ -58,23 +58,27 @@ public sealed class ProfileActivationService : IHostedService
 
     private void OnForegroundChanged(object? sender, ForegroundChangedEventArgs e)
     {
-        var profile = _profileManager.FindByExecutable(e.ProcessName);
-        
-        ApplyColorProfile(profile);
-
-        if (profile is null)
+        // Offload to a background thread to prevent blocking the hook/UI thread
+        Task.Run(() =>
         {
-            _inputHookService.DeactivateProfile();
-            return;
-        }
+            var profile = _profileManager.FindByExecutable(e.ProcessName);
 
-        if (!profile.IsEnabled)
-        {
-            _inputHookService.DeactivateProfile();
-            return;
-        }
+            ApplyColorProfile(profile);
 
-        _inputHookService.ActivateProfile(profile);
+            if (profile is null)
+            {
+                _inputHookService.DeactivateProfile();
+                return;
+            }
+
+            if (!profile.IsEnabled)
+            {
+                _inputHookService.DeactivateProfile();
+                return;
+            }
+
+            _inputHookService.ActivateProfile(profile);
+        });
     }
 
     private void ApplyColorProfile(Profile? activeProfile)

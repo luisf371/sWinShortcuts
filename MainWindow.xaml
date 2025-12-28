@@ -339,14 +339,9 @@
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <ComboBox SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          ItemsSource="{Binding SelectableSourceKeys}"
                                                                           IsSynchronizedWithCurrentItem="False"
                                                                           behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemsSource>
-                                                                        <MultiBinding Converter="{StaticResource AvailableKeysConverter}" UpdateSourceTrigger="PropertyChanged">
-                                                                            <Binding Path="DataContext.SelectedProfile.AvailableCombinedSourceKeys" ElementName="RootWindow" Mode="OneWay" />
-                                                                            <Binding Path="SourceKey" Mode="OneWay" />
-                                                                        </MultiBinding>
-                                                                    </ComboBox.ItemsSource>
                                                                     <ComboBox.ItemTemplate>
                                                                         <DataTemplate>
                                                                             <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />

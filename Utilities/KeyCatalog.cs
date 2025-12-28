@@ -13,6 +13,32 @@ public static class KeyCatalog
 
     public static IReadOnlyList<Key> GetNumpadKeys() => NumpadKeys;
 
+    public static IEnumerable<Key> SortKeys(IEnumerable<Key> keys)
+    {
+        return keys.OrderBy(GetSortPriority).ThenBy(k => k.ToString());
+    }
+
+    private static int GetSortPriority(Key key)
+    {
+        // Alphabet A-Z: Priority 0
+        if (key >= Key.A && key <= Key.Z) return 0;
+        
+        // Numbers 0-9: Priority 1
+        if (key >= Key.D0 && key <= Key.D9) return 1;
+        
+        // Function keys F1-F12: Priority 2
+        if (key >= Key.F1 && key <= Key.F12) return 2;
+        
+        // Numpad: Priority 3
+        if (key >= Key.NumPad0 && key <= Key.Divide) return 3;
+
+        // None: Priority 99 (bottom)
+        if (key == Key.None) return 99;
+
+        // Everything else: Priority 10
+        return 10;
+    }
+
     private static IReadOnlyList<Key> BuildCommonKeys()
     {
         var keys = new List<Key>();
@@ -64,6 +90,6 @@ public static class KeyCatalog
             Key.OemQuestion      // / ?
         });
 
-        return keys.Distinct().ToArray();
+        return SortKeys(keys.Distinct()).ToArray();
     }
 }
