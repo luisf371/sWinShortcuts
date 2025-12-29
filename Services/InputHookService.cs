@@ -1091,12 +1091,32 @@ public sealed class InputHookService : IInputHookService
 
         private void ReleaseRightClickOverrides()
     {
-        var toRelease = _activeCombinedOverrides.Where(kvp => kvp.Value.RightClickOnly).ToList();
-        foreach (var (key, state) in toRelease)
+        if (_activeCombinedOverrides.Count == 0)
         {
-            SendKey(state.TargetKey, false);
-            LogDebug($"Force-release right-click override key: {key}");
-            _activeCombinedOverrides.Remove(key);
+            return;
+        }
+
+        List<Key>? keysToRemove = null;
+
+        foreach (var kvp in _activeCombinedOverrides)
+        {
+            if (kvp.Value.RightClickOnly)
+            {
+                keysToRemove ??= new List<Key>();
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        if (keysToRemove != null)
+        {
+            foreach (var key in keysToRemove)
+            {
+                if (_activeCombinedOverrides.Remove(key, out var state))
+                {
+                    SendKey(state.TargetKey, false);
+                    if (IsDebugEnabled) LogDebug($"Force-release right-click override key: {key}");
+                }
+            }
         }
     }
 
