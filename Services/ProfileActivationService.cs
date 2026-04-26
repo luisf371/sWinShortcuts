@@ -86,6 +86,7 @@ public sealed class ProfileActivationService : IHostedService
         ColorSettings? settingsToApply = null;
 
         // 1. Try active profile's color settings
+        // Check if profile is active AND the Master Color Toggle is ON
         if (activeProfile is not null && activeProfile.IsEnabled && activeProfile.ColorSettings.IsEnabled)
         {
             settingsToApply = activeProfile.ColorSettings;
@@ -94,25 +95,48 @@ public sealed class ProfileActivationService : IHostedService
         else
         {
             var globalColorProfile = _profileManager.ColorProfile;
-            // The global profile itself might be disabled (in the list), or its ColorSettings.IsEnabled might be false
-            // (though we default it to true). The user requirement says:
-            // "color profile will be the profile used for Windows and any non-profile apps, if disabled, it simply wont revert back"
             if (globalColorProfile is not null && globalColorProfile.IsEnabled && globalColorProfile.ColorSettings.IsEnabled)
             {
                 settingsToApply = globalColorProfile.ColorSettings;
             }
         }
 
-        if (settingsToApply is not null)
+        // 3. Apply settings for ALL detected displays
+        foreach (var display in _displayService.GetDisplays())
         {
-            var displayId = settingsToApply.SelectedDisplayId;
-            if (!string.IsNullOrEmpty(displayId) && settingsToApply.DisplayProfiles.TryGetValue(displayId, out var displayProfile))
+            DisplayColorProfile? displayProfileToApply = null;
+
+            if (settingsToApply is not null)
             {
-                var display = _displayService.GetDisplays().FirstOrDefault(d => d.Id == displayId);
-                if (display is not null)
+                // Try to find custom settings for this display
+                if (settingsToApply.DisplayProfiles.TryGetValue(display.Id, out var existingProfile))
                 {
-                    _colorControlService.Apply(display, displayProfile);
+                    // Only use if the individual monitor toggle is ON
+                    if (existingProfile.IsEnabled)
+                    {
+                        displayProfileToApply = existingProfile;
+                    }
                 }
+            }
+
+            // If we have a profile to apply, apply it.
+            // If NOT (settingsToApply was null, OR no profile for this monitor, OR individual toggle OFF), apply DEFAULTS (Revert).
+            if (displayProfileToApply is not null)
+            {
+                _colorControlService.Apply(display, displayProfileToApply);
+            }
+            else
+            {
+                // Revert to default neutral values
+                _colorControlService.Apply(display, new DisplayColorProfile
+                {
+                    DisplayId = display.Id,
+                    IsEnabled = false,
+                    Brightness = DisplayColorProfile.DefaultBrightness,
+                    Contrast = DisplayColorProfile.DefaultContrast,
+                    Gamma = DisplayColorProfile.DefaultGamma,
+                    DigitalVibrance = DisplayColorProfile.DefaultDigitalVibrance
+                });
             }
         }
     }

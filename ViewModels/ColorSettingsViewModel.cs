@@ -1,72 +1,78 @@
 using System;
 using System.Collections.ObjectModel;
-using System.Linq;
-using System.Windows.Input;
-using CommunityToolkit.Mvvm.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 
 namespace sWinShortcuts.ViewModels;
 
+/// <summary>
+/// ViewModel for the Color Settings section.
+/// Manages the master enable toggle and a collection of per-display ViewModels.
+/// </summary>
 public sealed class ColorSettingsViewModel : ViewModelBase
 {
     private readonly ColorSettings _model;
     private readonly IColorControlService _colorService;
-    private readonly ObservableCollection<DisplayInfo> _displays = [];
+    private readonly IDisplayService _displayService;
     private readonly bool _allowLiveUpdates;
-    private bool _suppressUpdates;
-    private DisplayInfo? _selectedDisplay;
     private bool _isEnabled;
-    private int _brightness = DisplayColorProfile.DefaultBrightness;
-    private int _contrast = DisplayColorProfile.DefaultContrast;
-    private double _gamma = DisplayColorProfile.DefaultGamma;
-    private int _digitalVibrance = DisplayColorProfile.DefaultDigitalVibrance;
 
     public event EventHandler? Changed;
 
-    public ColorSettingsViewModel(ColorSettings model, IDisplayService displayService, IColorControlService colorService, bool allowLiveUpdates = false)
+    public ColorSettingsViewModel(
+        ColorSettings model,
+        IDisplayService displayService,
+        IColorControlService colorService,
+        bool allowLiveUpdates = false,
+        Func<bool>? parentEnabledCheck = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
-        ArgumentNullException.ThrowIfNull(displayService);
+        _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
         _allowLiveUpdates = allowLiveUpdates;
 
-        foreach (var display in displayService.GetDisplays())
-        {
-            _displays.Add(display);
-        }
+        _isEnabled = model.IsEnabled;
 
-        ResetBrightnessCommand = new RelayCommand(() => Brightness = DisplayColorProfile.DefaultBrightness);
-        ResetContrastCommand = new RelayCommand(() => Contrast = DisplayColorProfile.DefaultContrast);
-        ResetGammaCommand = new RelayCommand(() => Gamma = DisplayColorProfile.DefaultGamma);
-        ResetDigitalVibranceCommand = new RelayCommand(() => DigitalVibrance = DisplayColorProfile.DefaultDigitalVibrance);
+        // Create a ViewModel for each detected display
+        foreach (var display in _displayService.GetDisplays())
+        {
+            var profile = _model.GetOrCreateProfile(display.Id);
+            var displayVm = new DisplayColorSettingsViewModel(
+                display,
+                profile,
+                _colorService,
+                () => IsEnabled && (parentEnabledCheck?.Invoke() ?? true),
+                _allowLiveUpdates);
 
-        _suppressUpdates = true;
-        IsEnabled = _model.IsEnabled;
-        SelectedDisplay = ResolveInitialSelection(_model.SelectedDisplayId);
-        if (_selectedDisplay is null && _displays.Count > 0)
-        {
-            SelectedDisplay = _displays[0];
-        }
-        _suppressUpdates = false;
-
-        if (_model.SelectedDisplayId == string.Empty && _selectedDisplay is not null)
-        {
-            _model.SelectedDisplayId = _selectedDisplay.Id;
-        }
-
-        if (_selectedDisplay is not null)
-        {
-            LoadDisplayProfile(_selectedDisplay);
-        }
-        else
-        {
-            LoadDisplayProfile(null);
+            displayVm.Changed += OnDisplayChanged;
+            DisplayViewModels.Add(displayVm);
         }
     }
 
-    public ObservableCollection<DisplayInfo> Displays => _displays;
+    /// <summary>
+    /// Force updates the master enabled state logic (used when parent profile toggle changes)
+    /// </summary>
+    public void RefreshMasterEnabledState()
+    {
+        foreach (var displayVm in DisplayViewModels)
+        {
+            displayVm.NotifyMasterEnabledChanged();
+        }
+    }
 
+    /// <summary>
+    /// Collection of per-display ViewModels
+    /// </summary>
+    public ObservableCollection<DisplayColorSettingsViewModel> DisplayViewModels { get; } = [];
+
+    /// <summary>
+    /// Whether any displays are available
+    /// </summary>
+    public bool HasDisplays => DisplayViewModels.Count > 0;
+
+    /// <summary>
+    /// Master toggle for all color settings
+    /// </summary>
     public bool IsEnabled
     {
         get => _isEnabled;
@@ -74,164 +80,21 @@ public sealed class ColorSettingsViewModel : ViewModelBase
         {
             if (SetProperty(ref _isEnabled, value))
             {
-                if (!_suppressUpdates)
+                _model.IsEnabled = value;
+
+                // Notify all display VMs so they can update their AreControlsEnabled
+                foreach (var displayVm in DisplayViewModels)
                 {
-                    _model.IsEnabled = value;
-                    // Apply if enabling, or maybe re-apply logic handles it
-                    Changed?.Invoke(this, EventArgs.Empty);
+                    displayVm.NotifyMasterEnabledChanged();
                 }
+
+                Changed?.Invoke(this, EventArgs.Empty);
             }
         }
     }
 
-    public DisplayInfo? SelectedDisplay
+    private void OnDisplayChanged(object? sender, EventArgs e)
     {
-        get => _selectedDisplay;
-        set
-        {
-            if (SetProperty(ref _selectedDisplay, value))
-            {
-                LoadDisplayProfile(value);
-                OnPropertyChanged(nameof(HasDisplaySelection));
-
-                if (!_suppressUpdates)
-                {
-                    _model.SelectedDisplayId = value?.Id ?? string.Empty;
-                    ApplyToHardware();
-                    Changed?.Invoke(this, EventArgs.Empty);
-                }
-            }
-        }
-    }
-
-    public bool HasDisplaySelection => _selectedDisplay is not null;
-
-    public int Brightness
-    {
-        get => _brightness;
-        set
-        {
-            var clamped = ClampPercent(value);
-            if (SetProperty(ref _brightness, clamped))
-            {
-                UpdateCurrentProfile(p => p.Brightness = clamped);
-                ApplyToHardware();
-            }
-        }
-    }
-
-    public int Contrast
-    {
-        get => _contrast;
-        set
-        {
-            var clamped = ClampPercent(value);
-            if (SetProperty(ref _contrast, clamped))
-            {
-                UpdateCurrentProfile(p => p.Contrast = clamped);
-                ApplyToHardware();
-            }
-        }
-    }
-
-    public double Gamma
-    {
-        get => _gamma;
-        set
-        {
-            var clamped = ClampGamma(value);
-            if (SetProperty(ref _gamma, clamped))
-            {
-                UpdateCurrentProfile(p => p.Gamma = clamped);
-                ApplyToHardware();
-            }
-        }
-    }
-
-    public int DigitalVibrance
-    {
-        get => _digitalVibrance;
-        set
-        {
-            var clamped = ClampDigitalVibrance(value);
-            if (SetProperty(ref _digitalVibrance, clamped))
-            {
-                UpdateCurrentProfile(p => p.DigitalVibrance = clamped);
-                ApplyToHardware();
-            }
-        }
-    }
-
-    public string SelectedDisplayId => SelectedDisplay?.Id ?? string.Empty;
-
-    public ICommand ResetBrightnessCommand { get; }
-
-    public ICommand ResetContrastCommand { get; }
-
-    public ICommand ResetGammaCommand { get; }
-
-    public ICommand ResetDigitalVibranceCommand { get; }
-
-    private void LoadDisplayProfile(DisplayInfo? display)
-    {
-        var profile = display is null
-            ? new DisplayColorProfile()
-            : _model.GetOrCreateProfile(display.Id);
-
-        _brightness = ClampPercent(profile.Brightness);
-        _contrast = ClampPercent(profile.Contrast);
-        _gamma = ClampGamma(profile.Gamma);
-        _digitalVibrance = ClampDigitalVibrance(profile.DigitalVibrance);
-
-        OnPropertyChanged(nameof(Brightness));
-        OnPropertyChanged(nameof(Contrast));
-        OnPropertyChanged(nameof(Gamma));
-        OnPropertyChanged(nameof(DigitalVibrance));
-    }
-
-    private void UpdateCurrentProfile(Action<DisplayColorProfile> updater)
-    {
-        if (_suppressUpdates || _selectedDisplay is null)
-        {
-            return;
-        }
-
-        var profile = _model.GetOrCreateProfile(_selectedDisplay.Id);
-        updater(profile);
-        Changed?.Invoke(this, EventArgs.Empty);
-    }
-
-    private DisplayInfo? ResolveInitialSelection(string storedDisplayId)
-    {
-        if (string.IsNullOrWhiteSpace(storedDisplayId))
-        {
-            return _displays.FirstOrDefault();
-        }
-
-        return _displays.FirstOrDefault(d =>
-            string.Equals(d.Id, storedDisplayId, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
-
-    private static int ClampDigitalVibrance(int value) => Math.Clamp(value, DisplayColorProfile.DefaultDigitalVibrance, 100);
-
-    private static double ClampGamma(double value) => Math.Clamp(value, 0.5, 3.0);
-
-    private void ApplyToHardware()
-    {
-        if (_selectedDisplay is null || !_allowLiveUpdates)
-        {
-            return;
-        }
-
-        _colorService.Apply(_selectedDisplay, new DisplayColorProfile
-        {
-            DisplayId = _selectedDisplay.Id,
-            Brightness = _brightness,
-            Contrast = _contrast,
-            Gamma = _gamma,
-            DigitalVibrance = _digitalVibrance
-        });
+        Changed?.Invoke(this, e);
     }
 }

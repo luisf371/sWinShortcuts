@@ -304,23 +304,51 @@ public sealed class IniProfileStore : IProfileStore
     private static void DeserializeColorSettings(IniDocument document, ColorSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("Color", "Enabled", settings.IsEnabled);
+#pragma warning disable CS0618 // Type or member is obsolete
         settings.SelectedDisplayId = document.GetString("Color", "SelectedDisplay", settings.SelectedDisplayId);
+#pragma warning restore CS0618
         settings.ClearProfiles();
 
         var section = document.GetSection("ColorDisplays");
         foreach (var pair in section)
         {
             var parts = pair.Value.Split('|');
-            var brightness = ParsePercentage(parts, 0, DisplayColorProfile.DefaultBrightness);
-            var contrast = ParsePercentage(parts, 1, DisplayColorProfile.DefaultContrast);
-            var gamma = parts.Length > 2 && double.TryParse(parts[2], NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGamma)
+            
+            // Detect format: new format has 5 fields (IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance)
+            // Old format has 4 fields (Brightness|Contrast|Gamma|DigitalVibrance)
+            bool isEnabled;
+            int brightnessIndex, contrastIndex, gammaIndex, vibranceIndex;
+            
+            if (parts.Length >= 5)
+            {
+                // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
+                isEnabled = parts[0] == "1" || string.Equals(parts[0], "true", StringComparison.OrdinalIgnoreCase);
+                brightnessIndex = 1;
+                contrastIndex = 2;
+                gammaIndex = 3;
+                vibranceIndex = 4;
+            }
+            else
+            {
+                // Old format: Brightness|Contrast|Gamma|DigitalVibrance (defaults to enabled)
+                isEnabled = true;
+                brightnessIndex = 0;
+                contrastIndex = 1;
+                gammaIndex = 2;
+                vibranceIndex = 3;
+            }
+
+            var brightness = ParsePercentage(parts, brightnessIndex, DisplayColorProfile.DefaultBrightness);
+            var contrast = ParsePercentage(parts, contrastIndex, DisplayColorProfile.DefaultContrast);
+            var gamma = parts.Length > gammaIndex && double.TryParse(parts[gammaIndex], NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGamma)
                 ? parsedGamma
                 : DisplayColorProfile.DefaultGamma;
-            var vibrance = ClampDigitalVibrance(ParsePercentage(parts, 3, DisplayColorProfile.DefaultDigitalVibrance));
+            var vibrance = ClampDigitalVibrance(ParsePercentage(parts, vibranceIndex, DisplayColorProfile.DefaultDigitalVibrance));
 
             var entry = new DisplayColorProfile
             {
                 DisplayId = pair.Key,
+                IsEnabled = isEnabled,
                 Brightness = brightness,
                 Contrast = contrast,
                 Gamma = ClampGamma(gamma),
@@ -380,12 +408,17 @@ public sealed class IniProfileStore : IProfileStore
 
         var color = profile.ColorSettings;
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
+        // Note: SelectedDisplayId is deprecated but kept for backward compatibility
+#pragma warning disable CS0618 // Type or member is obsolete
         document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
+#pragma warning restore CS0618
 
         document.RemoveSection("ColorDisplays");
         foreach (var pair in color.DisplayProfiles)
         {
-            var value = $"{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
+            // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
+            var isEnabledStr = pair.Value.IsEnabled ? "1" : "0";
+            var value = $"{isEnabledStr}|{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
             document.SetString("ColorDisplays", pair.Key, value);
         }
 
@@ -399,12 +432,17 @@ public sealed class IniProfileStore : IProfileStore
 
         var color = profile.ColorSettings;
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
+        // Note: SelectedDisplayId is deprecated but kept for backward compatibility
+#pragma warning disable CS0618 // Type or member is obsolete
         document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
+#pragma warning restore CS0618
 
         document.RemoveSection("ColorDisplays");
         foreach (var pair in color.DisplayProfiles)
         {
-            var value = $"{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
+            // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
+            var isEnabledStr = pair.Value.IsEnabled ? "1" : "0";
+            var value = $"{isEnabledStr}|{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
             document.SetString("ColorDisplays", pair.Key, value);
         }
 

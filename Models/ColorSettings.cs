@@ -9,6 +9,8 @@ public sealed class ColorSettings
 
     public bool IsEnabled { get; set; } = false;
 
+    // Legacy property kept for backward compatibility during INI migration
+    [Obsolete("Use per-display IsEnabled instead")]
     public string SelectedDisplayId { get; set; } = string.Empty;
 
     public IReadOnlyDictionary<string, DisplayColorProfile> DisplayProfiles => _displayProfiles;
@@ -52,6 +54,11 @@ public sealed class DisplayColorProfile
     public const int DefaultDigitalVibrance = 50;
 
     public string DisplayId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Whether this individual display's color settings are enabled.
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
 
     public int Brightness { get; set; } = DefaultBrightness;
 

@@ -1,81 +1,76 @@
-# sWinShortcuts
+<!-- ![Project Banner](path/to/image.png) -->
 
-Low-level Windows keyboard and mouse remapper with per-application profiles and a WPF front-end.
+![License](https://img.shields.io/badge/license-Unspecified-lightgrey)
+![Language](https://img.shields.io/badge/language-C%23-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-green)
+
+## Intro
+
+sWinShortcuts is a high-performance Windows utility designed to enhance productivity through low-level keyboard and mouse remapping. It provides a robust framework for creating application-specific profiles that automate complex gestures and system-level adjustments with minimal latency.
+
+## Key Features
+
+- **Application-Aware Profiles**: Automatically activates custom configurations based on the currently focused executable.
+- **Low-Level Input Hooks**: Utilizes `WH_KEYBOARD_LL` and `WH_MOUSE_LL` for precise, system-wide input interception and remapping.
+- **Display Color Management**: Per-profile control of brightness, contrast, gamma, and NVIDIA Digital Vibrance.
+- **Advanced Alt+Mouse Gestures**: Enables complex action mapping to mouse buttons when combined with the Alt modifier.
+- **Process De-elevation**: Unique capability to launch desktop-level applications from an elevated service context.
+- **Anti-Cheat Humanization**: Incorporates randomized timing jitter and RNG warmup to simulate natural human input patterns.
+
+## Quick Start
+
+### Prerequisites
+- .NET 8.0 SDK
+- Windows 10/11
+
+### Installation and Execution
+1. Clone the repository.
+2. Build the project using the .NET CLI:
+   ```powershell
+   dotnet build sWinShortcuts.csproj
+   ```
+3. Run the application:
+   ```powershell
+   dotnet run --project sWinShortcuts.csproj
+   ```
+   *The application will start minimized to the system tray.*
+
+### Running Tests
+To execute the test suite:
+```powershell
+dotnet test Tests/Tests.csproj
+```
 
 ## Overview
-sWinShortcuts keeps a lightweight background service that watches the active foreground window and swaps keyboard or mouse behavior based on the profile that matches the focused process. It is aimed at power users who want macOS-style navigation on Windows, custom right-button chords, or quick application launchers without running a heavyweight automation suite.
 
-## Features
-- **Per-app profiles** – Bind different behaviors to each executable; optional global “Windows” profile acts as fallback.
-- **Alt+Mouse remapping** – Map Alt+Click/Tap/Hold gestures to keyboard keys (e.g., Alt+Right drag → `Ctrl+Wheel`).
-- **Right-button overrides** – Convert right-button + key chords into other key presses or suppress the original key.
-- **Caps Lock modes** – Toggle, disable, remap to another key, or enable “momentary Shift”.
-- **Windows launcher grid** – Use the numpad (or other keys) as global launchers with optional admin elevation.
-- **Tray integration** – Runs minimized with notify-icon status and quick access to the main window.
-- **Profile persistence** – Stores settings as INI files under `%APPDATA%\sWinShortcuts\Profiles`.
+sWinShortcuts is built on .NET 8 using the WPF framework for its user interface and WinForms for system tray integration. The architecture follows the MVVM pattern, leveraging `CommunityToolkit.Mvvm` for state management and `Microsoft.Extensions.Hosting` for dependency injection. 
 
-## How It Works
-- `ProfileActivationService` wires together the long-running services: it starts the foreground watcher, installs the low-level hooks, and keeps the tray icon in sync.
-- `ForegroundWatcher` listens for `EVENT_SYSTEM_FOREGROUND`; when a window changes it resolves the owning process and asks `ProfileManager` for a matching profile.
-- `ProfileManager` loads/saves profile objects using the `IniProfileStore`, enforcing uniqueness on profile names and executables.
-- `InputHookService` installs global `WH_KEYBOARD_LL` and `WH_MOUSE_LL` hooks. It interprets events, applies Alt+mouse bindings, right-button overrides, Caps Lock modes, and synthesizes input via `SendInput`.
-- The WPF UI (MVVM via `CommunityToolkit.Mvvm`) presents profile editors (`MainViewModel`, `ProfileViewModel`) that manipulate model objects and auto-save on change.
+Technical highlights include:
+- **Hot-Path Optimization**: The `InputHookService` is designed for zero-allocation execution to ensure stability during high-frequency input events.
+- **Native Interop**: Centralized P/Invoke management through `NativeMethods.cs` for direct interaction with Windows APIs (User32, Gdi32) and NVAPI.
+- **Persistence Layer**: Custom INI-based storage system for profiles, ensuring human-readable configuration files located in `%APPDATA%\sWinShortcuts\`.
 
-## Getting Started
-### Prerequisites
-- Windows 10/11 with desktop experience (hooks rely on `user32.dll`).
-- .NET 8 SDK (version specified by `sWinShortcuts.csproj`).
-- Build tools that support WPF (`UseWPF` is enabled).
+## FAQ
 
-### Build
-```powershell
-pwsh -NoLogo -Command "dotnet build sWinShortcuts/sWinShortcuts.csproj"
-```
+**Q: Why does sWinShortcuts require Administrator privileges?**  
+**A:** The application must run with high integrity to capture and remap input across all windows, including those already running as Administrator, and to interact with low-level system hooks.
 
-### Run
-```powershell
-pwsh -NoLogo -Command "dotnet run --project sWinShortcuts/sWinShortcuts.csproj"
-```
+**Q: Is it safe to use in competitive games?**  
+**A:** While sWinShortcuts employs humanization techniques like randomized jitter, any global hook application is technically visible to anti-cheat systems. Use it at your own discretion.
 
-The app starts minimized to the tray on launch. Double-click the tray icon (or choose **Open**) to show the main window.
+**Q: How does the "Launch as Desktop User" feature work?**  
+**A:** This feature utilizes a COM Shell Dispatch technique to request the Explorer process (the desktop user) to launch an application, preventing the child process from inheriting elevated privileges.
 
-## Usage Highlights
-- **Windows Profile:** Acts as the global defaults (e.g., numpad launchers, Caps Lock mode); cannot be deleted.
-- **Custom Profiles:** Assign an executable path (full path or name) and toggle features per profile.
-- **Alt Mouse Bindings:** Configure tap vs. hold behavior per mouse button and assign target keys.
-- **Right Mouse Overrides:** Specify source keys paired with the right button; optionally suppress the original key press.
-- **Caps Lock:** Choose between normal toggle, disabling, momentary Shift, or remapping to another key.
-- **Launchers:** Map keys (default numpad set) to file paths with optional command-line arguments and elevation.
+**Q: Can I edit profiles manually without the UI?**  
+**A:** Yes. Profiles are stored as standard `.ini` files in `%APPDATA%\sWinShortcuts\Profiles\`. You can modify these files directly and restart the application to apply changes.
 
-## Data & Configuration
-- Profiles live as INI files in `%APPDATA%\sWinShortcuts\Profiles`.
-- The global “Windows” profile is stored as `%APPDATA%\sWinShortcuts\Win.ini`.
-- The alt-mouse hook writes diagnostics to `%TEMP%\sWinShortcuts_AltMouse_Debug.log` when events occur.
-
-## Performance & Footprint
-- The app installs a single keyboard and mouse hook, and a foreground window event hook. In steady state, CPU usage remains near idle because work only happens on actual input events or window changes.
-- Memory footprint is similar to other WPF tray apps (~tens of MB) due to the .NET 8 runtime and WPF stack.
-- Disk I/O is minimal; configuration persists on change and hook debugging appends small log entries.
-- Resource spikes can occur if custom bindings trigger bursts of synthesized input, but the logic throttles key sends with short sleeps to avoid flooding.
-- Compared to full automation suites (AutoHotkey, PowerToys), sWinShortcuts is lightweight: no scripting engine, no polling loops, and limited background threads (mostly hosted services and dispatcher).
-
-## Architecture Notes
-- Built as a single WPF project targeting `net8.0-windows`, using `Microsoft.Extensions.Hosting` to compose services.
-- Services are registered in `App.xaml.cs` (dependency injection) and kept alive by the generic host.
-- MVVM layers (`ViewModels`, `Models`, `Services`) cleanly separate UI concerns from hook logic.
-- Native interop is isolated in `Interop/NativeMethods.cs`, keeping P/Invoke calls centralized.
-
-## Limitations & Considerations
-- Requires foreground detection permission; some protected processes may not expose their module path.
-- Hooks run at the process level; running other global hook tools may lead to conflicts.
-- Running elevated is optional, but launching elevated apps from the tray may prompt UAC.
-- The diagnostics log can grow over time; consider pruning `%TEMP%\sWinShortcuts_AltMouse_Debug.log` if needed.
-
-## Contributing
-1. Fork the repo and create a branch.
-2. Install the .NET 8 SDK and ensure WPF workloads are available.
-3. Run `dotnet build` before submitting PRs; add tests or repro steps for hook-related changes.
-4. Keep hooks efficient—avoid long-running work inside low-level callbacks.
+**Q: What happens if my hardware does not support NVIDIA Digital Vibrance?**  
+**A:** The application includes a graceful fallback system. It will continue to apply standard Windows Gamma Ramps while silently skipping NVIDIA-specific calls on unsupported hardware.
 
 ## License
-_Add your preferred license here (none specified in the current repository)._
+
+Unspecified
+
+## AI Disclosure
+
+This project utilizes AI assistance for code generation, documentation, and architectural optimization to ensure high-quality standards and efficient development cycles.

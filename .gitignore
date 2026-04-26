@@ -1,3 +1,5 @@
+.delete
+
 # .NET / C# build output
 bin/
 obj/
@@ -11,3 +13,13 @@ obj/
 
 #Local BK files
 *.bk
+
+# Others
+.sisyphus/
+.claude/
+.Jules/
+.jules/
+.tmp/
+.serena/
+Internal_Doc/
+Docs/

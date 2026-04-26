@@ -52,7 +52,13 @@ public sealed class ProfileViewModel : ViewModelBase
             AttachLauncherEntry(launcher);
         }
 
-        ColorSettings = new ColorSettingsViewModel(Model.ColorSettings, displayService, colorControlService, Model.IsColorProfile);
+        ColorSettings = new ColorSettingsViewModel(
+            Model.ColorSettings,
+            displayService,
+            colorControlService,
+            Model.IsColorProfile,
+            parentEnabledCheck: Model.IsColorProfile ? () => IsEnabled : null);
+
         ColorSettings.Changed += (_, _) => OnProfileChanged();
 
         _name = Model.Name;
@@ -109,6 +115,13 @@ public sealed class ProfileViewModel : ViewModelBase
             {
                 Model.IsEnabled = value;
                 OnProfileChanged();
+
+                if (IsColorProfile)
+                {
+                    // For the dedicated Color Profile, this sidebar toggle acts as the Master Switch.
+                    // We must notify the color settings to re-evaluate (revert to defaults if disabled).
+                    ColorSettings.RefreshMasterEnabledState();
+                }
             }
         }
     }
@@ -491,7 +504,6 @@ public sealed class ProfileViewModel : ViewModelBase
             Model.CapsLock.RemapTarget = CapsLockRemapKey;
             Model.WindowsLauncher.IsEnabled = WindowsLauncherEnabled;
             Model.Executable = Executable;
-            Model.ColorSettings.SelectedDisplayId = ColorSettings.SelectedDisplayId;
             Model.ColorSettings.IsEnabled = ColorSettings.IsEnabled;
 
             Model.CombinedMappings.IsEnabled = CombinedKeyMappingsEnabled;
