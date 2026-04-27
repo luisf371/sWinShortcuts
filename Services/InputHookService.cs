@@ -1,7 +1,5 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -80,6 +78,7 @@ public sealed class InputHookService : IInputHookService
         { Models.MouseButton.XButton2, new MouseButtonState() }
     };
     
+    private readonly object _combinedOverridesLock = new();
     private readonly Dictionary<Key, CombinedOverrideState> _activeCombinedOverrides = new();
     
     // Profile state
@@ -581,20 +580,35 @@ public sealed class InputHookService : IInputHookService
                 return false;
             }
 
-            if (_activeCombinedOverrides.ContainsKey(sourceKey.Value))
-            {
-                return suppressOriginal;
-            }
-
             // Safety: do nothing if mapping is a no-op (source == target)
             if (targetKey == sourceKey.Value)
             {
                 return false;
             }
 
-            _activeCombinedOverrides[sourceKey.Value] = new CombinedOverrideState { TargetKey = targetKey, SuppressOriginal = suppressOriginal, RightClickOnly = requiresRightClick };
+            var newState = new CombinedOverrideState
+            {
+                TargetKey = targetKey,
+                SuppressOriginal = suppressOriginal,
+                RightClickOnly = requiresRightClick
+            };
+
+            lock (_combinedOverridesLock)
+            {
+                if (_activeCombinedOverrides.ContainsKey(sourceKey.Value))
+                {
+                    return suppressOriginal;
+                }
+
+                _activeCombinedOverrides[sourceKey.Value] = newState;
+            }
 
             SendKey(targetKey, true);
+            if (!IsCombinedOverrideActive(sourceKey.Value, newState))
+            {
+                SendKey(targetKey, false);
+            }
+
             if (IsDebugEnabled) LogDebug($"Combined mapping: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
             
             return suppressOriginal;
@@ -602,7 +616,13 @@ public sealed class InputHookService : IInputHookService
 
         if (isKeyUp)
         {
-            if (_activeCombinedOverrides.Remove(sourceKey.Value, out var state))
+            CombinedOverrideState? state;
+            lock (_combinedOverridesLock)
+            {
+                _activeCombinedOverrides.Remove(sourceKey.Value, out state);
+            }
+
+            if (state is not null)
             {
                 SendKey(state.TargetKey, false);
                 if (IsDebugEnabled) LogDebug($"Combined mapping released: {sourceKey.Value}");
@@ -1089,49 +1109,77 @@ public sealed class InputHookService : IInputHookService
                       Key.NumLock or Key.PrintScreen or Key.Divide;
     }
 
-        private void ReleaseRightClickOverrides()
+    private bool IsCombinedOverrideActive(Key sourceKey, CombinedOverrideState expectedState)
     {
-        if (_activeCombinedOverrides.Count == 0)
+        lock (_combinedOverridesLock)
         {
-            return;
+            return _activeCombinedOverrides.TryGetValue(sourceKey, out var currentState) &&
+                   ReferenceEquals(currentState, expectedState);
         }
+    }
 
-        List<Key>? keysToRemove = null;
+    private void ReleaseRightClickOverrides()
+    {
+        List<KeyValuePair<Key, CombinedOverrideState>>? overridesToRelease = null;
 
-        foreach (var kvp in _activeCombinedOverrides)
+        lock (_combinedOverridesLock)
         {
-            if (kvp.Value.RightClickOnly)
+            if (_activeCombinedOverrides.Count == 0)
             {
-                keysToRemove ??= new List<Key>();
-                keysToRemove.Add(kvp.Key);
+                return;
             }
-        }
 
-        if (keysToRemove != null)
-        {
-            foreach (var key in keysToRemove)
+            foreach (var kvp in _activeCombinedOverrides)
             {
-                if (_activeCombinedOverrides.Remove(key, out var state))
+                if (kvp.Value.RightClickOnly)
                 {
-                    SendKey(state.TargetKey, false);
-                    if (IsDebugEnabled) LogDebug($"Force-release right-click override key: {key}");
+                    overridesToRelease ??= new List<KeyValuePair<Key, CombinedOverrideState>>();
+                    overridesToRelease.Add(kvp);
                 }
             }
+
+            if (overridesToRelease is null)
+            {
+                return;
+            }
+
+            foreach (var kvp in overridesToRelease)
+            {
+                _activeCombinedOverrides.Remove(kvp.Key);
+            }
+        }
+
+        foreach (var (key, state) in overridesToRelease)
+        {
+            SendKey(state.TargetKey, false);
+            if (IsDebugEnabled) LogDebug($"Force-release right-click override key: {key}");
         }
     }
 
     private void ReleaseAllOverrides()
     {
-        if (_activeCombinedOverrides.Count == 0)
+        List<KeyValuePair<Key, CombinedOverrideState>>? overridesToRelease;
+
+        lock (_combinedOverridesLock)
         {
-            return;
+            if (_activeCombinedOverrides.Count == 0)
+            {
+                return;
+            }
+
+            overridesToRelease = new List<KeyValuePair<Key, CombinedOverrideState>>(_activeCombinedOverrides.Count);
+            foreach (var kvp in _activeCombinedOverrides)
+            {
+                overridesToRelease.Add(kvp);
+            }
+
+            _activeCombinedOverrides.Clear();
         }
 
-        foreach (var (key, state) in _activeCombinedOverrides.ToList())
+        foreach (var (key, state) in overridesToRelease)
         {
             SendKey(state.TargetKey, false);
             LogDebug($"Force-release combined override key: {key} -> {state.TargetKey}");
-            _activeCombinedOverrides.Remove(key);
         }
     }
 // ==================== STATE MANAGEMENT ====================
