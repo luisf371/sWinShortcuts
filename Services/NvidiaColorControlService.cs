@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
 
@@ -17,6 +19,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
 
     private readonly ILoggerService _logger;
     private readonly object _sync = new();
+    private readonly Dictionary<string, IntPtr> _handleCache = new(StringComparer.OrdinalIgnoreCase);
     private bool _nvapiInitialized;
     private bool _nvapiAvailableChecked;
 
@@ -24,6 +27,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
     {
         _logger = logger;
         NvApiNative.Logger = logger;
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
 
     public bool Apply(DisplayInfo display, DisplayColorProfile profile)
@@ -31,18 +35,21 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         ArgumentNullException.ThrowIfNull(display);
         ArgumentNullException.ThrowIfNull(profile);
 
-        var attempted = false;
+        lock (_sync)
+        {
+            var attempted = false;
 
-        _logger.Log($@"[Color][NVAPI] Apply requested for display '{display.DeviceName}' (Id='{display.Id}').
+            _logger.Log($@"[Color][NVAPI] Apply requested for display '{display.DeviceName}' (Id='{display.Id}').
                         Brightness={profile.Brightness}, Contrast={profile.Contrast}, Gamma={profile.Gamma}, DigitalVibrance={profile.DigitalVibrance}");
 
-        // Apply gamma ramp as a baseline so brightness/contrast/gamma always work, even without NVAPI.
-        attempted |= TryApplyGammaRampToDevice(profile, display.DeviceName);
+            // Apply gamma ramp as a baseline so brightness/contrast/gamma always work, even without NVAPI.
+            attempted |= TryApplyGammaRampToDevice(profile, display.DeviceName);
 
-        // Try digital vibrance via NVAPI; if NVAPI isn't available this silently fails.
-        attempted |= TryApplyNvapiDvc(display, profile);
+            // Try digital vibrance via NVAPI; if NVAPI isn't available this silently fails.
+            attempted |= TryApplyNvapiDvc(display, profile);
 
-        return attempted;
+            return attempted;
+        }
     }
 
     private bool TryApplyGammaRamp(DisplayColorProfile profile)
@@ -127,8 +134,19 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         var targetHandle = FindDisplayHandle(display.DeviceName);
         if (targetHandle != IntPtr.Zero)
         {
-            _logger.Log($"[Color][NVAPI] Using matched display handle for '{display.DeviceName}'.");
-            return ApplyDvc(targetHandle, profile);
+            if (ApplyDvc(targetHandle, profile))
+            {
+                return true;
+            }
+
+            EvictCachedHandle(display.DeviceName);
+            var refreshedHandle = FindDisplayHandle(display.DeviceName);
+            if (refreshedHandle != IntPtr.Zero && refreshedHandle != targetHandle)
+            {
+                return ApplyDvc(refreshedHandle, profile);
+            }
+
+            return false;
         }
 
         // Fallback: try all handles if we couldn't map the device
@@ -192,7 +210,6 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         {
             if (_nvapiInitialized)
             {
-                _logger.Log("[Color][NVAPI] NvAPI already initialized.");
                 return true;
             }
 
@@ -223,9 +240,19 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
     private IntPtr FindDisplayHandle(string deviceName)
     {
         // deviceName usually looks like "\\.\DISPLAY1"
-        var normalized = (deviceName ?? string.Empty).Replace(@"\\.\", string.Empty, StringComparison.OrdinalIgnoreCase);
+        var cacheKey = deviceName ?? string.Empty;
+        var normalized = cacheKey.Replace(@"\\.\", string.Empty, StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return IntPtr.Zero;
+        }
 
-        _logger.Log($"[Color][NVAPI] Resolving NVAPI display handle for device '{deviceName}' (normalized='{normalized}').");
+        if (_handleCache.TryGetValue(cacheKey, out var cachedHandle))
+        {
+            return cachedHandle;
+        }
+
+        _logger.Log($"[Color][NVAPI] Resolving NVAPI display handle for device '{cacheKey}' (normalized='{normalized}').");
 
         for (int i = 0; ; i++)
         {
@@ -253,28 +280,51 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
             var name = nameBuilder.ToString();
             if (name.Contains(normalized, StringComparison.OrdinalIgnoreCase))
             {
-                _logger.Log($"[Color][NVAPI] Matched NVAPI display handle index {i} for device '{deviceName}' with NV name '{name}'.");
+                _logger.Log($"[Color][NVAPI] Matched NVAPI display handle index {i} for device '{cacheKey}' with NV name '{name}'.");
+                _handleCache[cacheKey] = handle;
                 return handle;
             }
 
-            _logger.Log($"[Color][NVAPI] NV display handle index {i} has name '{name}', does not match '{normalized}'.");
         }
 
-        _logger.Log("[Color][NVAPI] No matching NVAPI display handle found for device '{deviceName}'.");
+        _logger.Log($"[Color][NVAPI] No matching NVAPI display handle found for device '{cacheKey}'.");
         return IntPtr.Zero;
+    }
+
+    private void EvictCachedHandle(string deviceName)
+    {
+        if (!string.IsNullOrWhiteSpace(deviceName))
+        {
+            _handleCache.Remove(deviceName);
+        }
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        lock (_sync)
+        {
+            _handleCache.Clear();
+        }
     }
 
     public void Dispose()
     {
-        if (_nvapiInitialized)
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+
+        lock (_sync)
         {
-            try
+            _handleCache.Clear();
+
+            if (_nvapiInitialized)
             {
-                NvApiNative.NvAPI_Unload();
-            }
-            catch
-            {
-                // ignore
+                try
+                {
+                    NvApiNative.NvAPI_Unload();
+                }
+                catch
+                {
+                    // ignore
+                }
             }
         }
     }
