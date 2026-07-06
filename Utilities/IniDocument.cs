@@ -142,8 +142,35 @@ public sealed class IniDocument
             builder.AppendLine();
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, builder.ToString().TrimEnd() + Environment.NewLine);
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var content = builder.ToString().TrimEnd() + Environment.NewLine;
+
+        // Atomic write: a crash/power-loss/AV mid-write must not truncate the real profile file. Write a
+        // UNIQUE sibling temp file first (unique so two app instances saving the same INI don't clobber
+        // each other's temp), then atomically replace the target (same directory = same volume).
+        var tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.WriteAllText(tempPath, content);
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Replace(tempPath, path, null);
+            }
+            else
+            {
+                File.Move(tempPath, path);
+            }
+        }
+        catch
+        {
+            try { File.Delete(tempPath); } catch { /* best effort cleanup */ }
+            throw;
+        }
     }
 
     private void EnsureSection(string section)

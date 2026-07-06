@@ -9,13 +9,15 @@ namespace sWinShortcuts.ViewModels;
 /// ViewModel for the Color Settings section.
 /// Manages the master enable toggle and a collection of per-display ViewModels.
 /// </summary>
-public sealed class ColorSettingsViewModel : ViewModelBase
+public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
 {
     private readonly ColorSettings _model;
     private readonly IColorControlService _colorService;
     private readonly IDisplayService _displayService;
     private readonly bool _allowLiveUpdates;
+    private readonly Func<bool>? _parentEnabledCheck;
     private bool _isEnabled;
+    private bool _disposed;
 
     public event EventHandler? Changed;
 
@@ -30,10 +32,19 @@ public sealed class ColorSettingsViewModel : ViewModelBase
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
         _allowLiveUpdates = allowLiveUpdates;
+        _parentEnabledCheck = parentEnabledCheck;
 
         _isEnabled = model.IsEnabled;
 
-        // Create a ViewModel for each detected display
+        BuildDisplayViewModels();
+
+        // Rebuild when monitors are hot-plugged/removed. DisplayService is a singleton that outlives
+        // this (transient) VM, so we MUST unsubscribe in Dispose or the handler leaks.
+        _displayService.DisplaysChanged += OnDisplaysChanged;
+    }
+
+    private void BuildDisplayViewModels()
+    {
         foreach (var display in _displayService.GetDisplays())
         {
             var profile = _model.GetOrCreateProfile(display.Id);
@@ -41,12 +52,49 @@ public sealed class ColorSettingsViewModel : ViewModelBase
                 display,
                 profile,
                 _colorService,
-                () => IsEnabled && (parentEnabledCheck?.Invoke() ?? true),
+                () => IsEnabled && (_parentEnabledCheck?.Invoke() ?? true),
                 _allowLiveUpdates);
 
             displayVm.Changed += OnDisplayChanged;
             DisplayViewModels.Add(displayVm);
         }
+    }
+
+    private void OnDisplaysChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.InvokeAsync(RebuildDisplayViewModels);
+            return;
+        }
+
+        RebuildDisplayViewModels();
+    }
+
+    private void RebuildDisplayViewModels()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        foreach (var displayVm in DisplayViewModels)
+        {
+            displayVm.Changed -= OnDisplayChanged;
+            displayVm.Dispose();
+        }
+
+        DisplayViewModels.Clear();
+        BuildDisplayViewModels();
+
+        // Reflect the possibly-changed master state on the rebuilt rows.
+        foreach (var displayVm in DisplayViewModels)
+        {
+            displayVm.NotifyMasterEnabledChanged();
+        }
+
+        OnPropertyChanged(nameof(HasDisplays));
     }
 
     /// <summary>
@@ -96,5 +144,22 @@ public sealed class ColorSettingsViewModel : ViewModelBase
     private void OnDisplayChanged(object? sender, EventArgs e)
     {
         Changed?.Invoke(this, e);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _displayService.DisplaysChanged -= OnDisplaysChanged;
+
+        foreach (var displayVm in DisplayViewModels)
+        {
+            displayVm.Changed -= OnDisplayChanged;
+            displayVm.Dispose();
+        }
     }
 }

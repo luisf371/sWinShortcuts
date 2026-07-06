@@ -24,16 +24,21 @@ public class ProfileActivationServiceDeduplicationTests
             new FakeInputHookService(),
             new FakeSystemTrayService(),
             colorControl,
-            displayService);
+            displayService,
+            new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => colorControl.AppliedProfiles.Count == 1);
+        await Task.Delay(100);
+
+        // C1: a cold start with all color features disabled must NOT touch the hardware at all
+        // (writing an identity gamma ramp / DVC level 0 would wipe ICC/Night Light/NVCP calibration).
+        Assert.Empty(colorControl.AppliedProfiles);
 
         foregroundWatcher.RaiseForegroundChanged("unknown.exe");
         foregroundWatcher.RaiseForegroundChanged("unknown.exe");
         await Task.Delay(100);
 
-        Assert.Single(colorControl.AppliedProfiles);
+        Assert.Empty(colorControl.AppliedProfiles);
 
         await service.StopAsync(CancellationToken.None);
     }

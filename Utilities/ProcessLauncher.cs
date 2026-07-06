@@ -69,9 +69,16 @@ public static class ProcessLauncher
         {
             try
             {
+                // Use the absolute Windows-dir explorer.exe (not a bare name resolved via PATH) — this runs
+                // from an elevated context, so a PATH-order hijack must not be possible.
+                var windowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                var explorerPath = string.IsNullOrEmpty(windowsDir)
+                    ? "explorer.exe"
+                    : System.IO.Path.Combine(windowsDir, "explorer.exe");
+
                 // We wrap the path in quotes to handle spaces correctly.
                 // Explorer will execute the default action for the file (usually running it).
-                Process.Start("explorer.exe", $"\"{resolvedPath}\"");
+                Process.Start(explorerPath, $"\"{resolvedPath}\"");
                 return;
             }
             catch (Exception ex)

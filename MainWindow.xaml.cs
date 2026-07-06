@@ -34,6 +34,13 @@ public partial class MainWindow : Window
         Loaded += OnLoaded;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
+        // OS shutdown/restart must persist the REAL state, not route through MinimizeToTray (which would
+        // flip StartMinimized on). See OnSessionEnding (S5).
+        if (System.Windows.Application.Current is not null)
+        {
+            System.Windows.Application.Current.SessionEnding += OnSessionEnding;
+        }
+
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var rootDirectory = Path.Combine(appData, "sWinShortcuts");
         _settingsPath = Path.Combine(rootDirectory, "sWinShortcuts.ini");
@@ -127,12 +134,22 @@ public partial class MainWindow : Window
             
             if (double.TryParse(left, out var l) && double.TryParse(top, out var t))
             {
-                // Validate position is on screen
-                if (l >= 0 && t >= 0 && l < SystemParameters.VirtualScreenWidth && t < SystemParameters.VirtualScreenHeight)
+                // Validate against the ORIGIN-AWARE virtual desktop so a window on a monitor left of /
+                // above the primary (negative coords) still restores; otherwise center it.
+                var vsLeft = SystemParameters.VirtualScreenLeft;
+                var vsTop = SystemParameters.VirtualScreenTop;
+                var vsRight = vsLeft + SystemParameters.VirtualScreenWidth;
+                var vsBottom = vsTop + SystemParameters.VirtualScreenHeight;
+
+                if (WindowRestore.IntersectsVirtualDesktop(l, t, Width, Height, vsLeft, vsTop, vsRight, vsBottom))
                 {
                     Left = l;
                     Top = t;
                     WindowStartupLocation = WindowStartupLocation.Manual;
+                }
+                else
+                {
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen;
                 }
             }
 
@@ -351,6 +368,19 @@ public partial class MainWindow : Window
         Close();
     }
 
+    private void OnSessionEnding(object? sender, System.Windows.SessionEndingCancelEventArgs e)
+    {
+        // Persist the user's real preference (StartMinimized as-is) and allow the forced close to proceed
+        // WITHOUT the tray path. Guarded by _allowClose so it can't double-run with the normal close path.
+        if (_allowClose)
+        {
+            return;
+        }
+
+        _allowClose = true;
+        SaveWindowState();
+    }
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (!string.Equals(e.PropertyName, nameof(MainViewModel.SelectedProfile), StringComparison.Ordinal))
@@ -393,7 +423,10 @@ public partial class MainWindow : Window
 
     private void ApplySharedSettings(IniDocument ini)
     {
-        ini.SetValue("App", "LastProfile", string.IsNullOrWhiteSpace(_lastProfileName) ? null : _lastProfileName);
+        // Prefer the live selected-profile name so a rename (same instance, no selection change) is not
+        // persisted stale (§7/M2); fall back to the cached name when nothing is selected.
+        var currentName = _viewModel.SelectedProfile?.Name ?? _lastProfileName;
+        ini.SetValue("App", "LastProfile", string.IsNullOrWhiteSpace(currentName) ? null : currentName);
         ini.SetValue("Window", "StartMinimized", _startMinimized ? "true" : "false");
     }
 }

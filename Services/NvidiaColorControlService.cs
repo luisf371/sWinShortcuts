@@ -30,29 +30,36 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
 
-    public bool Apply(DisplayInfo display, DisplayColorProfile profile)
+    public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)
     {
         ArgumentNullException.ThrowIfNull(display);
         ArgumentNullException.ThrowIfNull(profile);
 
         lock (_sync)
         {
-            var attempted = false;
-
             _logger.Log($@"[Color][NVAPI] Apply requested for display '{display.DeviceName}' (Id='{display.Id}').
                         Brightness={profile.Brightness}, Contrast={profile.Contrast}, Gamma={profile.Gamma}, DigitalVibrance={profile.DigitalVibrance}");
 
-            // Apply gamma ramp as a baseline so brightness/contrast/gamma always work, even without NVAPI.
-            attempted |= TryApplyGammaRampToDevice(profile, display.DeviceName);
+            // Gamma ramp baseline (works even without NVAPI); digital vibrance via NVAPI (best effort).
+            var gamma = TryApplyGammaRampToDevice(profile, display.DeviceName);
+            var dvc = TryApplyNvapiDvc(display, profile);
 
-            // Try digital vibrance via NVAPI; if NVAPI isn't available this silently fails.
-            attempted |= TryApplyNvapiDvc(display, profile);
+            // Any genuine (retry-worthy) failure wins so the orchestrator does NOT dedup and will retry.
+            if (gamma == ColorApplyOutcome.Failed || dvc == ColorApplyOutcome.Failed)
+            {
+                return ColorApplyOutcome.Failed;
+            }
 
-            return attempted;
+            if (gamma == ColorApplyOutcome.Applied || dvc == ColorApplyOutcome.Applied)
+            {
+                return ColorApplyOutcome.Applied;
+            }
+
+            return ColorApplyOutcome.Skipped;
         }
     }
 
-    private bool TryApplyGammaRamp(DisplayColorProfile profile)
+    private ColorApplyOutcome TryApplyGammaRamp(DisplayColorProfile profile)
     {
         return TryApplyGammaRampToDevice(profile, null);
     }
@@ -82,7 +89,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         return ramp;
     }
 
-    private bool TryApplyGammaRampToDevice(DisplayColorProfile profile, string? deviceName)
+    private ColorApplyOutcome TryApplyGammaRampToDevice(DisplayColorProfile profile, string? deviceName)
     {
         IntPtr hdc = IntPtr.Zero;
         var createdDc = false;
@@ -91,21 +98,32 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
             if (!string.IsNullOrWhiteSpace(deviceName))
             {
                 hdc = NativeMethods.CreateDC(null, deviceName, null, IntPtr.Zero);
-                createdDc = hdc != IntPtr.Zero;
-            }
+                if (hdc == IntPtr.Zero)
+                {
+                    // Fail closed: a named per-display gamma apply must affect ONLY that display. If its DC
+                    // can't be created (e.g. monitor unplugged mid-plan) do NOT fall back to GetDC(NULL)
+                    // (the primary/desktop DC). Treat as a deliberate skip (not a retry-worthy failure).
+                    _logger.Log($"[Color] CreateDC failed for device '{deviceName}'; skipping gamma apply (fail-closed).");
+                    return ColorApplyOutcome.Skipped;
+                }
 
-            if (hdc == IntPtr.Zero)
+                createdDc = true;
+            }
+            else
             {
+                // Only the unnamed (whole-desktop) overload legitimately targets the primary DC.
                 hdc = NativeMethods.GetDC(IntPtr.Zero);
             }
 
             if (hdc == IntPtr.Zero)
             {
-                return false;
+                return ColorApplyOutcome.Skipped;
             }
 
             var ramp = BuildGammaRamp(profile);
-            return NativeMethods.SetDeviceGammaRamp(hdc, ref ramp);
+            return NativeMethods.SetDeviceGammaRamp(hdc, ref ramp)
+                ? ColorApplyOutcome.Applied
+                : ColorApplyOutcome.Failed;
         }
         finally
         {
@@ -123,12 +141,13 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         }
     }
 
-    private bool TryApplyNvapiDvc(DisplayInfo display, DisplayColorProfile profile)
+    private ColorApplyOutcome TryApplyNvapiDvc(DisplayInfo display, DisplayColorProfile profile)
     {
         if (!EnsureNvapi())
         {
+            // NVAPI absent (e.g. non-NVIDIA GPU) — a deliberate skip, not a retry-worthy failure.
             _logger.Log("[Color][NVAPI] NvAPI is not available; skipping digital vibrance.");
-            return false;
+            return ColorApplyOutcome.Skipped;
         }
 
         var targetHandle = FindDisplayHandle(display.DeviceName);
@@ -136,21 +155,22 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         {
             if (ApplyDvc(targetHandle, profile))
             {
-                return true;
+                return ColorApplyOutcome.Applied;
             }
 
             EvictCachedHandle(display.DeviceName);
             var refreshedHandle = FindDisplayHandle(display.DeviceName);
             if (refreshedHandle != IntPtr.Zero && refreshedHandle != targetHandle)
             {
-                return ApplyDvc(refreshedHandle, profile);
+                return ApplyDvc(refreshedHandle, profile) ? ColorApplyOutcome.Applied : ColorApplyOutcome.Failed;
             }
 
-            return false;
+            // NVAPI is available and the handle was mapped, but SetLevel failed -> retry-worthy.
+            return ColorApplyOutcome.Failed;
         }
 
-        // Fallback: try all handles if we couldn't map the device
-        var success = false;
+        // Could not map the device to a specific handle. Enumerate all NV display handles once.
+        var handles = new List<IntPtr>();
         for (int i = 0; ; i++)
         {
             var status = NvApiNative.NvAPI_EnumNvidiaDisplayHandle(i, out var handle);
@@ -162,20 +182,31 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
 
             if (status != NvApiNative.NVAPI_OK || handle == IntPtr.Zero)
             {
-                _logger.Log($"[Color][NVAPI] NvAPI_EnumNvidiaDisplayHandle({{i}}) failed or returned null handle. Status={{status}} Handle={{handle}}.");
+                _logger.Log($"[Color][NVAPI] NvAPI_EnumNvidiaDisplayHandle({i}) failed or returned null handle. Status={status} Handle={handle}.");
                 continue;
             }
 
-            _logger.Log($"[Color][NVAPI] Trying DVC apply on enumerated handle index {i}.");
-            success |= ApplyDvc(handle, profile);
+            handles.Add(handle);
         }
 
-        if (!success)
+        if (handles.Count == 1)
         {
-            _logger.Log("[Color][NVAPI] Digital vibrance apply via NVAPI did not succeed on any handle.");
+            // Unambiguous single NV display: name matching sometimes legitimately fails (e.g. Optimus),
+            // so applying to the only handle is correct and cannot hit the wrong monitor.
+            _logger.Log("[Color][NVAPI] Applying DVC to the single enumerated NV display handle.");
+            return ApplyDvc(handles[0], profile) ? ColorApplyOutcome.Applied : ColorApplyOutcome.Failed;
         }
 
-        return success;
+        if (handles.Count > 1)
+        {
+            // C4: multiple displays and no name match — do NOT broadcast this display's level to every
+            // handle (that clobbers every monitor's vibrance). Skip (not a retry-worthy failure).
+            _logger.Log($"[Color][NVAPI] Could not map device '{display.DeviceName}' to an NV handle among {handles.Count} displays; skipping DVC to avoid affecting the wrong monitor.");
+            return ColorApplyOutcome.Skipped;
+        }
+
+        _logger.Log("[Color][NVAPI] Digital vibrance apply via NVAPI did not succeed on any handle.");
+        return ColorApplyOutcome.Skipped;
     }
 
     private bool ApplyDvc(IntPtr displayHandle, DisplayColorProfile profile)
@@ -186,7 +217,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         var setStatus = NvApiNative.NvAPI_DVC_SetLevel(displayHandle, 0, nvLevel);
         if (setStatus != NvApiNative.NVAPI_OK)
         {
-            _logger.Log($"[Color][NVAPI] NvAPI_DVC_SetLevel failed. Status={{setStatus}}.");
+            _logger.Log($"[Color][NVAPI] NvAPI_DVC_SetLevel failed. Status={setStatus}.");
         }
         else
         {
@@ -225,7 +256,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
             {
                 var status = NvApiNative.NvAPI_Initialize();
                 _nvapiInitialized = status == NvApiNative.NVAPI_OK;
-                _logger.Log($"[Color][NVAPI] NvAPI_Initialize called. Status={{status}}, Initialized={_nvapiInitialized}.");
+                _logger.Log($"[Color][NVAPI] NvAPI_Initialize called. Status={status}, Initialized={_nvapiInitialized}.");
             }
             catch
             {
@@ -265,7 +296,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
 
             if (status != NvApiNative.NVAPI_OK || handle == IntPtr.Zero)
             {
-                _logger.Log($"[Color][NVAPI] NvAPI_EnumNvidiaDisplayHandle({{i}}) failed or returned null handle while resolving. Status={{status}} Handle={{handle}}.");
+                _logger.Log($"[Color][NVAPI] NvAPI_EnumNvidiaDisplayHandle({i}) failed or returned null handle while resolving. Status={status} Handle={handle}.");
                 continue;
             }
 
@@ -273,7 +304,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
             var nameStatus = NvApiNative.NvAPI_GetAssociatedDisplayName(handle, nameBuilder);
             if (nameStatus != NvApiNative.NVAPI_OK)
             {
-                _logger.Log($"[Color][NVAPI] NvAPI_GetAssociatedDisplayName({{i}}) failed. Status={{nameStatus}}.");
+                _logger.Log($"[Color][NVAPI] NvAPI_GetAssociatedDisplayName({i}) failed. Status={nameStatus}.");
                 continue;
             }
 
@@ -399,17 +430,17 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
                 }
                 catch (DllNotFoundException ex)
                 {
-                    Log($"[Color][NVAPI] DllNotFoundException: {{ex.Message}}");
+                    Log($"[Color][NVAPI] DllNotFoundException: {ex.Message}");
                     _initialize = null;
                 }
                 catch (EntryPointNotFoundException ex)
                 {
-                    Log($"[Color][NVAPI] EntryPointNotFoundException: {{ex.Message}}");
+                    Log($"[Color][NVAPI] EntryPointNotFoundException: {ex.Message}");
                     _initialize = null;
                 }
                 catch (Exception ex)
                 {
-                    Log($"[Color][NVAPI] Unexpected exception loading functions: {{ex}}");
+                    Log($"[Color][NVAPI] Unexpected exception loading functions: {ex}");
                     _initialize = null;
                 }
 
@@ -428,12 +459,12 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
             }
             catch (DllNotFoundException ex)
             {
-                Log($"[Color][NVAPI] NvAPI library not found while querying 0x{{functionId:X8}}: {{ex.Message}}");
+                Log($"[Color][NVAPI] NvAPI library not found while querying 0x{functionId:X8}: {ex.Message}");
                 return IntPtr.Zero;
             }
             catch (EntryPointNotFoundException ex)
             {
-                Log($"[Color][NVAPI] NvAPI query failed for 0x{{functionId:X8}}: {{ex.Message}}");
+                Log($"[Color][NVAPI] NvAPI query failed for 0x{functionId:X8}: {ex.Message}");
                 return IntPtr.Zero;
             }
         }
@@ -443,7 +474,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
             var ptr = QueryInterface(id);
             if (ptr == IntPtr.Zero)
             {
-                Log($"[Color][NVAPI] Failed to get delegate for function ID 0x{{id:X8}} ({{typeof(T).Name}}).");
+                Log($"[Color][NVAPI] Failed to get delegate for function ID 0x{id:X8} ({typeof(T).Name}).");
                 return null;
             }
 

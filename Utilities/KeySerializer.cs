@@ -24,6 +24,16 @@ public static class KeySerializer
             return null;
         }
 
+        // A bare single digit means the top-row key (D0..D9), NOT the numeric enum value: "5" would
+        // otherwise parse via Enum.TryParse as the enum member 5 (Key.Clear). Handle it first.
+        if (trimmed.Length == 1 && char.IsDigit(trimmed[0]))
+        {
+            if (Enum.TryParse<Key>($"D{trimmed[0]}", true, out var digitKey))
+            {
+                return digitKey;
+            }
+        }
+
         if (Enum.TryParse<Key>(trimmed, true, out var parsed))
         {
             return parsed;
@@ -32,15 +42,6 @@ public static class KeySerializer
         if (trimmed.Length == 1)
         {
             var ch = trimmed[0];
-
-            if (char.IsDigit(ch))
-            {
-                var keyName = $"D{ch}";
-                if (Enum.TryParse<Key>(keyName, true, out parsed))
-                {
-                    return parsed;
-                }
-            }
 
             if (char.IsLetter(ch))
             {

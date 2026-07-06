@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Tasks;
 using Microsoft.Win32;
 
 namespace sWinShortcuts.Services;
@@ -26,9 +27,19 @@ public sealed class StartupService : IStartupService
         {
             if (!startWithWindows)
             {
-                // Disable both methods
-                TryDisableScheduledTask(out _);
+                // Disable both methods. Surface a scheduled-task delete failure (e.g. an unelevated
+                // attempt to remove a HIGHEST task returns Access Denied) instead of silently leaving
+                // the elevated autostart running.
+                var okTask = TryDisableScheduledTask(out var taskErr);
                 DisableRunKey();
+                if (!okTask)
+                {
+                    errorMessage = string.IsNullOrWhiteSpace(taskErr)
+                        ? "Failed to remove the elevated startup task. Administrator rights are required to change it."
+                        : taskErr;
+                    return false;
+                }
+
                 return true;
             }
 
@@ -111,18 +122,8 @@ public sealed class StartupService : IStartupService
     {
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "schtasks.exe",
-                Arguments = $"/Query /TN \"{TaskName}\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi)!;
-            proc.WaitForExit(3000);
-            return proc.ExitCode == 0;
+            return RunSchtasks($"/Query /TN \"{TaskName}\"", 3000, out var exitCode, out _, out _)
+                && exitCode == 0;
         }
         catch
         {
@@ -139,28 +140,19 @@ public sealed class StartupService : IStartupService
             TryDisableScheduledTask(out _);
 
             var exe = GetExecutablePath();
-            var quotedExe = '"' + exe + '"';
 
-            var psi = new ProcessStartInfo
+            if (!RunSchtasks(BuildCreateArguments(TaskName, exe), 8000, out var exitCode, out var stdOut, out var stdErr))
             {
-                FileName = "schtasks.exe",
-                Arguments = $"/Create /F /RL HIGHEST /SC ONLOGON /TN \"{TaskName}\" /TR {quotedExe}",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
+                error = "Timed out creating the startup task.";
+                return false;
+            }
 
-            using var proc = Process.Start(psi)!;
-            var stdErr = proc.StandardError.ReadToEnd();
-            var stdOut = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(8000);
-
-            if (proc.ExitCode != 0)
+            if (exitCode != 0)
             {
                 error = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
                 return false;
             }
+
             return true;
         }
         catch (Exception ex)
@@ -175,19 +167,24 @@ public sealed class StartupService : IStartupService
         error = null;
         try
         {
-            var psi = new ProcessStartInfo
+            // Absent → idempotent success. Only if it exists do we care whether the delete truly worked.
+            if (!IsScheduledTaskEnabled())
             {
-                FileName = "schtasks.exe",
-                Arguments = $"/Delete /F /TN \"{TaskName}\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
+                return true;
+            }
 
-            using var proc = Process.Start(psi)!;
-            // If the task doesn't exist, schtasks returns non-zero; treat as success
-            proc.WaitForExit(5000);
+            if (!RunSchtasks($"/Delete /F /TN \"{TaskName}\"", 5000, out var exitCode, out var stdOut, out var stdErr))
+            {
+                error = "Timed out removing the startup task.";
+                return false;
+            }
+
+            if (exitCode != 0)
+            {
+                error = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
+                return false;
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -195,6 +192,82 @@ public sealed class StartupService : IStartupService
             error = ex.Message;
             return false;
         }
+    }
+
+    // Runs schtasks reading stdout/stderr CONCURRENTLY (avoids the redirected-pipe deadlock where the
+    // child blocks filling one stream while we drain the other). Returns false on timeout after killing.
+    private static bool RunSchtasks(string arguments, int timeoutMs, out int exitCode, out string stdOut, out string stdErr)
+    {
+        exitCode = -1;
+        stdOut = string.Empty;
+        stdErr = string.Empty;
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = GetSchtasksPath(),
+            Arguments = arguments,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        using var proc = Process.Start(psi);
+        if (proc is null)
+        {
+            return false;
+        }
+
+        var outTask = proc.StandardOutput.ReadToEndAsync();
+        var errTask = proc.StandardError.ReadToEndAsync();
+
+        if (!proc.WaitForExit(timeoutMs))
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            try { proc.WaitForExit(2000); } catch { /* best effort */ }
+            // Do NOT block on the read tasks here — if Kill failed / streams never closed, GetResult would
+            // hang forever. Take only whatever already completed.
+            stdOut = CompletedOrEmpty(outTask);
+            stdErr = CompletedOrEmpty(errTask);
+            return false;
+        }
+
+        // Process exited: streams are at EOF, so these complete promptly.
+        stdOut = SafeResult(outTask);
+        stdErr = SafeResult(errTask);
+        exitCode = proc.ExitCode;
+        return true;
+    }
+
+    private static string CompletedOrEmpty(Task<string> task)
+        => task.IsCompletedSuccessfully ? task.Result : string.Empty;
+
+    private static string SafeResult(Task<string> task)
+    {
+        try
+        {
+            return task.GetAwaiter().GetResult();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    // 14.6: invoke schtasks by absolute path to avoid a PATH-order hijack of this elevated launch.
+    private static string GetSchtasksPath()
+    {
+        var system = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        var candidate = Path.Combine(system, "schtasks.exe");
+        return File.Exists(candidate) ? candidate : "schtasks.exe";
+    }
+
+    // S2: the /TR action needs escaped inner quotes ("\"path\"") so CommandLineToArgvW preserves a
+    // space-containing install path (e.g. "C:\Program Files\..."); a single quote layer is stripped and
+    // the action resolves to "C:\Program".
+    internal static string BuildCreateArguments(string taskName, string exe)
+    {
+        return $"/Create /F /RL HIGHEST /SC ONLOGON /TN \"{taskName}\" /TR \"\\\"{exe}\\\"\"";
     }
 }
 

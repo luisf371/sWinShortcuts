@@ -9,6 +9,9 @@ namespace sWinShortcuts.Services;
 
 public sealed class FileLoggerService : ILoggerService, IDisposable
 {
+    private const int MaxQueuedEntries = 20_000;      // bound memory during high-frequency hook logging
+    private const long MaxLogBytes = 5 * 1024 * 1024; // rotate at 5 MB to bound disk usage
+
     private readonly string _logPath;
     private readonly BlockingCollection<string> _logQueue;
     private readonly CancellationTokenSource _cancellation;
@@ -22,7 +25,8 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
         Directory.CreateDirectory(rootDirectory);
         _logPath = Path.Combine(rootDirectory, "debug.log");
 
-        _logQueue = new BlockingCollection<string>(new ConcurrentQueue<string>());
+        // Bounded: Log() uses TryAdd, so once full it drops newest entries instead of growing unbounded.
+        _logQueue = new BlockingCollection<string>(new ConcurrentQueue<string>(), MaxQueuedEntries);
         _cancellation = new CancellationTokenSource();
         
         // Start background writer
@@ -77,6 +81,7 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
 
                 if (buffer.Count > 0)
                 {
+                    RotateIfNeeded();
                     await File.AppendAllLinesAsync(_logPath, buffer, _cancellation.Token).ConfigureAwait(false);
                     buffer.Clear();
                 }
@@ -89,7 +94,17 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
             {
                 // Ignore file IO errors
                 buffer.Clear(); // Prevent buffer from growing indefinitely on persistent error
-                await Task.Delay(1000, _cancellation.Token);
+
+                // S7: if shutdown cancels during the IO-error backoff, break to the final drain instead
+                // of letting the OCE propagate out of ProcessQueue (which would skip the final flush).
+                try
+                {
+                    await Task.Delay(1000, _cancellation.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
 
@@ -112,9 +127,41 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
         }
     }
 
+    private void RotateIfNeeded()
+    {
+        try
+        {
+            var info = new FileInfo(_logPath);
+            if (info.Exists && info.Length > MaxLogBytes)
+            {
+                var archive = _logPath + ".1";
+                if (File.Exists(archive))
+                {
+                    File.Delete(archive);
+                }
+
+                File.Move(_logPath, archive);
+            }
+        }
+        catch
+        {
+            // Ignore rotation failures — logging must never throw.
+        }
+    }
+
     public void Dispose()
     {
-        _cancellation.Cancel();
+        // Fully exception-safe: a throw here must not prevent another container-disposed singleton
+        // (e.g. SystemTrayService) from cleaning up (§14.5).
+        try
+        {
+            _cancellation.Cancel();
+        }
+        catch
+        {
+            // Ignore
+        }
+
         try
         {
             _writeTask.Wait(2000);
@@ -123,8 +170,23 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
         {
             // Ignore
         }
-        
-        _cancellation.Dispose();
-        _logQueue.Dispose();
+
+        try
+        {
+            _cancellation.Dispose();
+        }
+        catch
+        {
+            // Ignore
+        }
+
+        try
+        {
+            _logQueue.Dispose();
+        }
+        catch
+        {
+            // Ignore
+        }
     }
 }

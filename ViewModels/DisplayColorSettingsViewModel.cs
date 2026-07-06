@@ -10,13 +10,14 @@ namespace sWinShortcuts.ViewModels;
 /// ViewModel for a single display's color settings.
 /// Each monitor gets its own instance with independent sliders.
 /// </summary>
-public sealed class DisplayColorSettingsViewModel : ViewModelBase
+public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 {
     private readonly DisplayColorProfile _profile;
     private readonly DisplayInfo _displayInfo;
     private readonly IColorControlService _colorService;
     private readonly Func<bool> _isMasterEnabled;
     private readonly bool _allowLiveUpdates;
+    private System.Windows.Threading.DispatcherTimer? _applyDebounceTimer;
 
     private bool _isEnabled;
     private int _brightness;
@@ -224,6 +225,41 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase
             return;
         }
 
+        // C9: debounce the synchronous GDI/NvAPI write so dragging a slider doesn't fire one hardware
+        // apply per tick. The _profile.* field write already happened in the setter (persistence stays
+        // immediate); only the hardware apply is coalesced, and the trailing value is always applied.
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
+        {
+            ApplyToHardwareNow();
+            return;
+        }
+
+        if (_applyDebounceTimer is null)
+        {
+            _applyDebounceTimer = new System.Windows.Threading.DispatcherTimer(
+                System.Windows.Threading.DispatcherPriority.Normal, dispatcher)
+            {
+                Interval = TimeSpan.FromMilliseconds(40)
+            };
+            _applyDebounceTimer.Tick += (_, _) =>
+            {
+                _applyDebounceTimer!.Stop();
+                ApplyToHardwareNow();
+            };
+        }
+
+        _applyDebounceTimer.Stop();
+        _applyDebounceTimer.Start();
+    }
+
+    private void ApplyToHardwareNow()
+    {
+        if (!_allowLiveUpdates || !_isMasterEnabled() || !_isEnabled)
+        {
+            return;
+        }
+
         _colorService.Apply(_displayInfo, new DisplayColorProfile
         {
             DisplayId = _displayInfo.Id,
@@ -233,6 +269,12 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase
             Gamma = _gamma,
             DigitalVibrance = _digitalVibrance
         });
+    }
+
+    public void Dispose()
+    {
+        _applyDebounceTimer?.Stop();
+        _applyDebounceTimer = null;
     }
 
     private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);

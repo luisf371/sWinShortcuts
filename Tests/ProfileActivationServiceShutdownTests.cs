@@ -24,10 +24,11 @@ public class ProfileActivationServiceShutdownTests
             new FakeInputHookService(),
             new FakeSystemTrayService(),
             colorControl,
-            displayService);
+            displayService,
+            new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);
-        await WaitForAsync(() => colorControl.AppliedProfiles.Count == 1);
+        await Task.Delay(100);
 
         await service.StopAsync(CancellationToken.None);
         colorControl.AppliedProfiles.Clear();

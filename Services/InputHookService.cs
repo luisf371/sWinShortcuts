@@ -80,6 +80,9 @@ public sealed class InputHookService : IInputHookService
     
     private readonly object _combinedOverridesLock = new();
     private readonly Dictionary<Key, CombinedOverrideState> _activeCombinedOverrides = new();
+    // Maintained under _combinedOverridesLock on every add/remove; lets the H2 key-up release skip the
+    // lock entirely when no overrides are active (the common case on every key-up).
+    private volatile int _activeCombinedOverrideCount;
     
     // Profile state
     private volatile Profile? _activeProfile;
@@ -87,13 +90,20 @@ public sealed class InputHookService : IInputHookService
     
     // Runtime flags (volatile for lock-free reads)
     private volatile bool _isRunning;
+    private volatile bool _disposed;
     private volatile bool _altPressed;
     private volatile bool _rightButtonPressed;
     
     // CapsLock state
     private int _capsShiftEngaged;
     private Key? _capsRemappedKey;
-    
+
+    // Per-key "already launched while held" latch. Prevents typematic auto-repeat from spawning a
+    // launcher process on every repeated WM_KEYDOWN. Guarded by its own lock because ReleaseAllState()
+    // (Clear) runs on the activation-worker POOL thread while the keyboard hook thread does Add/Remove.
+    private readonly HashSet<Key> _heldLauncherKeys = new();
+    private readonly object _heldLauncherKeysLock = new();
+
     // Hold-breath state (lock-free)
     private int _holdBreathState = HOLDBREATH_IDLE;
     private readonly System.Threading.Timer _holdBreathTimer;
@@ -107,6 +117,10 @@ public sealed class InputHookService : IInputHookService
     
     // Performance metrics
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
+
+    // Tolerance for the hold-timer elapsed-time guard. Windows timers fire on-time or late, never
+    // meaningfully early, so a callback firing more than this many ms early is a stale queued elapse.
+    private const double HOLD_FIRE_TOLERANCE_MS = 2.0;
 
     public InputHookService(ILoggerService logger)
     {
@@ -159,8 +173,25 @@ public sealed class InputHookService : IInputHookService
 
             if (_keyboardHookHandle == IntPtr.Zero || _mouseHookHandle == IntPtr.Zero)
             {
-                Stop();
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to install input hooks");
+                // Capture the error BEFORE unhooking (UnhookWindowsHookEx clobbers GetLastWin32Error).
+                var err = Marshal.GetLastWin32Error();
+
+                if (_keyboardHookHandle != IntPtr.Zero)
+                {
+                    NativeMethods.UnhookWindowsHookEx(_keyboardHookHandle);
+                    _keyboardHookHandle = IntPtr.Zero;
+                }
+
+                if (_mouseHookHandle != IntPtr.Zero)
+                {
+                    NativeMethods.UnhookWindowsHookEx(_mouseHookHandle);
+                    _mouseHookHandle = IntPtr.Zero;
+                }
+
+                _keyboardProc = null;
+                _mouseProc = null;
+
+                throw new Win32Exception(err, "Failed to install input hooks");
             }
 
             _isRunning = true;
@@ -255,8 +286,12 @@ public sealed class InputHookService : IInputHookService
 
     public void Dispose()
     {
+        // Set first so any pool work item racing shutdown becomes a no-op instead of touching
+        // torn-down state. ReleaseAllState() (via Stop) releases held keys before we get here.
+        _disposed = true;
         Stop();
-        _random.Dispose();
+        // Deliberately do NOT dispose _random: queued FireTapKey/hold-breath work items may still
+        // deref _random.Value on a pool thread; ThreadLocal<Random> holds no unmanaged resources.
         _holdBreathTimer.Dispose();
     }
 
@@ -295,7 +330,7 @@ public sealed class InputHookService : IInputHookService
 
         if (!handled)
         {
-            handled = HandleWindowsLauncher(vkCode, isKeyDown);
+            handled = HandleWindowsLauncher(vkCode, isKeyDown, isKeyUp);
         }
 
         return handled 
@@ -321,23 +356,35 @@ public sealed class InputHookService : IInputHookService
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
 
-        // Track right button state (lock-free)
+        // Track right button state (lock-free). Keep _rightButtonPressed = true HERE — CombinedMappings'
+        // RightClickOnly gate reads it — but decide hold-breath AFTER HandleAltMouse (H6).
         if (message == NativeMethods.WM_RBUTTONDOWN)
         {
             _rightButtonPressed = true;
-            HandleRightClickHoldBreathDown();
         }
         else if (message == NativeMethods.WM_RBUTTONUP)
         {
             _rightButtonPressed = false;
             ReleaseRightClickOverrides();
-            HandleRightClickHoldBreathUp();
         }
 
         var handled = HandleAltMouse(message, data.mouseData);
 
-        return handled 
-            ? (IntPtr)1 
+        // H6: only arm hold-breath for a genuine right-click, not one suppressed as an Alt+Right binding.
+        if (message == NativeMethods.WM_RBUTTONDOWN)
+        {
+            if (!handled)
+            {
+                HandleRightClickHoldBreathDown();
+            }
+        }
+        else if (message == NativeMethods.WM_RBUTTONUP)
+        {
+            HandleRightClickHoldBreathUp();
+        }
+
+        return handled
+            ? (IntPtr)1
             : NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
     }
 
@@ -429,26 +476,39 @@ public sealed class InputHookService : IInputHookService
         {
             var holdKey = binding.HoldKey.Value;
             // Deterministic threshold (no jitter)
-            var threshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
-            if (IsDebugEnabled) LogDebug($"[{button}] Hold timer: {threshold}ms");
+            var holdThreshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
+            if (IsDebugEnabled) LogDebug($"[{button}] Hold timer: {holdThreshold}ms");
 
-            // Only capture the state reference (not runtime flags)
+            // Only capture the state reference (not runtime flags). Capture the down-tick as a local
+            // long so the callback can measure real elapsed time (and avoid a torn nullable read).
             var stateRef = state;
+            var downTickAtArm = state.DownTick!.Value;
 
-            state.HoldTimer.Change(threshold, Timeout.Infinite);
+            // Assign the callback BEFORE arming the timer: the shared timer root re-reads the HoldCallback
+            // FIELD at fire time, so a stale elapse from a previous press would otherwise run the newest
+            // closure. The elapsed-time guard below is what actually rejects that stale firing.
             state.HoldCallback = _ =>
             {
-                // ✅ CRITICAL FIX: Check CURRENT runtime state via volatile fields
-                // These are read at execution time, not captured at scheduling time
+                // ✅ Check CURRENT runtime state via volatile fields (read at execution, not scheduling).
                 if (!_isRunning)
                 {
                     if (IsDebugEnabled) LogDebug($"[{button}] Hold timer blocked - service stopped");
                     return;
                 }
-                
+
                 if (!_altPressed)
                 {
                     if (IsDebugEnabled) LogDebug($"[{button}] Hold timer blocked - Alt released");
+                    return;
+                }
+
+                // ✅ H3: reject a stale/premature firing. An elapse queued by a PREVIOUS press carries an
+                // earlier down-tick; if the real elapsed time is below threshold this is not a genuine hold,
+                // so no-op WITHOUT flipping to FIRED (otherwise the current quick tap would be suppressed).
+                var elapsedMs = (Stopwatch.GetTimestamp() - downTickAtArm) * TickToMilliseconds;
+                if (elapsedMs < holdThreshold - HOLD_FIRE_TOLERANCE_MS)
+                {
+                    if (IsDebugEnabled) LogDebug($"[{button}] Hold timer rejected - stale/premature ({elapsedMs:0}ms < {holdThreshold}ms)");
                     return;
                 }
 
@@ -462,6 +522,8 @@ public sealed class InputHookService : IInputHookService
                 if (IsDebugEnabled) LogDebug($"[{button}] Hold timer FIRED - sending {holdKey}");
                 FireTapKey(holdKey);
             };
+
+            state.HoldTimer.Change(holdThreshold, Timeout.Infinite); // arm AFTER assigning the callback
         }
 
         return true;
@@ -541,13 +603,35 @@ public sealed class InputHookService : IInputHookService
     
     private bool HandleCombinedMappings(int vkCode, bool isKeyDown, bool isKeyUp)
     {
+        var sourceKey = KeyInteropUtilities.FromVirtualKey(vkCode);
+
+        // H2: release by held source key at the TOP, before any enable/entry guard. If the mapping was
+        // disabled or the row deleted while its source key was held, this still removes the override and
+        // releases the injected target key so it can't stick system-wide. The count fast-path skips the
+        // lock entirely when no overrides are active (relies on the single-threaded keyboard hook, §2).
+        if (isKeyUp && sourceKey is not null && _activeCombinedOverrideCount > 0)
+        {
+            CombinedOverrideState? held;
+            lock (_combinedOverridesLock)
+            {
+                _activeCombinedOverrides.Remove(sourceKey.Value, out held);
+                _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
+            }
+
+            if (held is not null)
+            {
+                SendKey(held.TargetKey, false);
+                if (IsDebugEnabled) LogDebug($"Combined mapping released: {sourceKey.Value}");
+                return held.SuppressOriginal;
+            }
+        }
+
         var profile = _activeProfile;
         if (profile is null || !profile.CombinedMappings.IsEnabled)
         {
             return false;
         }
 
-        var sourceKey = KeyInteropUtilities.FromVirtualKey(vkCode);
         if (sourceKey is null)
         {
             return false;
@@ -601,6 +685,7 @@ public sealed class InputHookService : IInputHookService
                 }
 
                 _activeCombinedOverrides[sourceKey.Value] = newState;
+                _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
             }
 
             SendKey(targetKey, true);
@@ -610,26 +695,11 @@ public sealed class InputHookService : IInputHookService
             }
 
             if (IsDebugEnabled) LogDebug($"Combined mapping: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
-            
+
             return suppressOriginal;
         }
 
-        if (isKeyUp)
-        {
-            CombinedOverrideState? state;
-            lock (_combinedOverridesLock)
-            {
-                _activeCombinedOverrides.Remove(sourceKey.Value, out state);
-            }
-
-            if (state is not null)
-            {
-                SendKey(state.TargetKey, false);
-                if (IsDebugEnabled) LogDebug($"Combined mapping released: {sourceKey.Value}");
-                return state.SuppressOriginal;
-            }
-        }
-
+        // Key-up release is handled at the top of this method (H2), before the enable/entry guards.
         return false;
     }
 
@@ -826,7 +896,7 @@ public sealed class InputHookService : IInputHookService
             : 0;
         var totalDelay = baseDelay + jitter;
 
-        LogDebug($"HoldBreath DOWN: base={baseDelay}ms, jitter=+{jitter}ms, total={totalDelay}ms, warmup={warmupCalls}");
+        if (IsDebugEnabled) LogDebug($"HoldBreath DOWN: base={baseDelay}ms, jitter=+{jitter}ms, total={totalDelay}ms, warmup={warmupCalls}");
 
         // Atomically transition: * → PENDING
         Interlocked.Exchange(ref _holdBreathState, HOLDBREATH_PENDING);
@@ -907,6 +977,11 @@ public sealed class InputHookService : IInputHookService
             // Fire tap asynchronously (don't block hook)
             ThreadPool.QueueUserWorkItem(_ =>
             {
+                if (_disposed)
+                {
+                    return;
+                }
+
                 var rng = _random.Value!;
                 
                 // Warmup to prevent pattern detection
@@ -969,10 +1044,31 @@ public sealed class InputHookService : IInputHookService
 
     // ==================== WINDOWS LAUNCHER ====================
     
-    private bool HandleWindowsLauncher(int vkCode, bool isKeyDown)
+    private bool HandleWindowsLauncher(int vkCode, bool isKeyDown, bool isKeyUp)
     {
         var profile = _windowsProfile;
-        if (profile is null || !profile.WindowsLauncher.IsEnabled || !isKeyDown)
+        if (profile is null || !profile.WindowsLauncher.IsEnabled)
+        {
+            return false;
+        }
+
+        var key = KeyInteropUtilities.FromVirtualKey(vkCode);
+        if (key is null)
+        {
+            return false;
+        }
+
+        // On key-up, clear the latch. Suppress the lone up iff we latched its down, so the foreground app
+        // never receives a stray key-up for a hotkey we consumed.
+        if (isKeyUp)
+        {
+            lock (_heldLauncherKeysLock)
+            {
+                return _heldLauncherKeys.Remove(key.Value);
+            }
+        }
+
+        if (!isKeyDown)
         {
             return false;
         }
@@ -986,12 +1082,6 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        var key = KeyInteropUtilities.FromVirtualKey(vkCode);
-        if (key is null)
-        {
-            return false;
-        }
-
         if (!profile.WindowsLauncher.Launchers.TryGetValue(key.Value, out var binding))
         {
             return false;
@@ -1000,6 +1090,17 @@ public sealed class InputHookService : IInputHookService
         if (string.IsNullOrWhiteSpace(binding.Path))
         {
             return false;
+        }
+
+        // H1: launch only on the FIRST key-down of a physical press. Typematic auto-repeat re-delivers
+        // WM_KEYDOWN; the latch ensures exactly one launch until the key is released, while still
+        // suppressing the repeats.
+        lock (_heldLauncherKeysLock)
+        {
+            if (!_heldLauncherKeys.Add(key.Value))
+            {
+                return true;
+            }
         }
 
         LogDebug($"WindowsLauncher: Win+{key.Value} → {binding.Path}");
@@ -1032,6 +1133,11 @@ public sealed class InputHookService : IInputHookService
         // Fire on ThreadPool to avoid blocking hook callback
         ThreadPool.QueueUserWorkItem(_ =>
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             var rng = _random.Value!;
             
             // Warmup RNG to break thread-reuse patterns (anti-cheat)
@@ -1055,12 +1161,12 @@ public sealed class InputHookService : IInputHookService
             Thread.Sleep(duration);
             SendKey(key, false);
             
-            LogDebug($"FireTapKey: {key}, duration={duration}ms, warmup={warmupCalls}");
+            if (IsDebugEnabled) LogDebug($"FireTapKey: {key}, duration={duration}ms, warmup={warmupCalls}");
         });
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void SendKey(Key key, bool isKeyDown, bool bypassHook = true)
+    private void SendKey(Key key, bool isKeyDown)
     {
         var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
         if (virtualKey == 0)
@@ -1087,7 +1193,8 @@ public sealed class InputHookService : IInputHookService
                     wScan = (ushort)NativeMethods.MapVirtualKey(virtualKey, 0),
                     dwFlags = flags,
                     time = 0,
-                    dwExtraInfo = bypassHook ? NativeMethods.INPUT_IGNORE : IntPtr.Zero
+                    // Always tag injected input so our own hook ignores it (LLKHF_INJECTED + INPUT_IGNORE).
+                    dwExtraInfo = NativeMethods.INPUT_IGNORE
                 }
             }
         };
@@ -1147,6 +1254,8 @@ public sealed class InputHookService : IInputHookService
             {
                 _activeCombinedOverrides.Remove(kvp.Key);
             }
+
+            _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
         }
 
         foreach (var (key, state) in overridesToRelease)
@@ -1174,6 +1283,7 @@ public sealed class InputHookService : IInputHookService
             }
 
             _activeCombinedOverrides.Clear();
+            _activeCombinedOverrideCount = 0;
         }
 
         foreach (var (key, state) in overridesToRelease)
@@ -1191,7 +1301,11 @@ public sealed class InputHookService : IInputHookService
         ResetMouseStates();
         ReleaseCapsState();
         ReleaseHoldBreathState();
-        
+        lock (_heldLauncherKeysLock)
+        {
+            _heldLauncherKeys.Clear();
+        }
+
         _altPressed = false;
         _rightButtonPressed = false;
         

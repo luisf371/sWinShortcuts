@@ -28,6 +28,13 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IColorControlService _colorControlService;
     private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
 
+    // Autosave is debounced PER ProfileViewModel instance (stable across rename) so editing profile B
+    // can never cancel profile A's pending save. _saveSync guards both maps (touched from the UI thread,
+    // pool continuations, and the exit flush).
+    private readonly object _saveSync = new();
+    private readonly Dictionary<ProfileViewModel, CancellationTokenSource> _debounce = [];
+    private readonly HashSet<ProfileViewModel> _dirty = [];
+
     public MainViewModel(IProfileManager profileManager, IDialogService dialogService, IDisplayService displayService, IColorControlService colorControlService)
     {
         _profileManager = profileManager ?? throw new ArgumentNullException(nameof(profileManager));
@@ -213,7 +220,7 @@ public sealed partial class MainViewModel : ViewModelBase
     private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
 
     [RelayCommand(CanExecute = nameof(CanModifyProfile))]
-    private void ModifyProfile()
+    private async Task ModifyProfile()
     {
         var selected = SelectedProfile;
         if (selected is null)
@@ -260,10 +267,23 @@ public sealed partial class MainViewModel : ViewModelBase
                 }
             }
 
-            // Update both name and executable
-            if (!string.IsNullOrWhiteSpace(newName))
+            // Rename goes through the manager so file identity (SourcePath) is preserved and the same
+            // Profile instance is kept (no clobber, no lost selection). Executable edits keep normal autosave.
+            var nameChanged = !string.IsNullOrWhiteSpace(newName) &&
+                !string.Equals(newName, selected.Name, StringComparison.Ordinal);
+
+            if (nameChanged)
             {
-                selected.Name = newName;
+                try
+                {
+                    await _profileManager.RenameProfileAsync(selected.Model, newName);
+                    selected.RefreshNameFromModel();
+                }
+                catch (Exception ex)
+                {
+                    _dialogService.ShowError(ex.Message, "Unable to modify profile");
+                    continue;
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(newExecutable))
@@ -338,6 +358,20 @@ public sealed partial class MainViewModel : ViewModelBase
     {
         viewModel.ProfileChanged -= OnProfileChanged;
         viewModel.PropertyChanged -= OnProfilePropertyChanged;
+
+        // Drop any pending save so an edit-then-remove doesn't later hit the manager's "not managed" throw.
+        lock (_saveSync)
+        {
+            _dirty.Remove(viewModel);
+            if (_debounce.Remove(viewModel, out var cts))
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+        }
+
+        // Unsubscribe the color VM from the singleton IDisplayService.DisplaysChanged (C7 leak guard).
+        viewModel.Dispose();
     }
 
     private void OnProfileChanged(object? sender, EventArgs e)
@@ -359,22 +393,74 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private CancellationTokenSource? _saveCts;
-
-    private async void QueueAutoSave(ProfileViewModel viewModel)
+    private void QueueAutoSave(ProfileViewModel viewModel)
     {
-        _saveCts?.Cancel();
-        _saveCts = new CancellationTokenSource();
-        var token = _saveCts.Token;
+        CancellationToken token;
+        lock (_saveSync)
+        {
+            _dirty.Add(viewModel);
+            if (_debounce.Remove(viewModel, out var existing))
+            {
+                existing.Cancel();
+                existing.Dispose();
+            }
 
+            var cts = new CancellationTokenSource();
+            _debounce[viewModel] = cts;
+            token = cts.Token;
+        }
+
+        _ = DebouncedSaveAsync(viewModel, token);
+    }
+
+    private async Task DebouncedSaveAsync(ProfileViewModel viewModel, CancellationToken token)
+    {
         try
         {
-            await Task.Delay(500, token);
-            await SaveProfileInternalAsync(viewModel);
+            await Task.Delay(500, token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            // Debounced
+            return;
+        }
+
+        await SaveIfDirtyAsync(viewModel).ConfigureAwait(false);
+    }
+
+    private async Task SaveIfDirtyAsync(ProfileViewModel viewModel)
+    {
+        lock (_saveSync)
+        {
+            // Whoever removes it first (the debounce timer or the flush) owns the save; the other no-ops.
+            if (!_dirty.Remove(viewModel))
+            {
+                return;
+            }
+
+            if (_debounce.Remove(viewModel, out var cts))
+            {
+                cts.Dispose();
+            }
+        }
+
+        await SaveProfileInternalAsync(viewModel).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Persists every profile with a pending debounced edit immediately (no 500 ms wait).
+    /// Call on application exit / session ending so in-flight edits are never lost.
+    /// </summary>
+    public async Task FlushPendingSavesAsync()
+    {
+        ProfileViewModel[] pending;
+        lock (_saveSync)
+        {
+            pending = [.. _dirty];
+        }
+
+        foreach (var viewModel in pending)
+        {
+            await SaveIfDirtyAsync(viewModel).ConfigureAwait(false);
         }
     }
 
@@ -395,14 +481,5 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private static string NormalizeExecutable(string? executable)
-    {
-        if (string.IsNullOrWhiteSpace(executable))
-        {
-            return string.Empty;
-        }
-
-        var fileName = Path.GetFileNameWithoutExtension(executable);
-        return fileName?.Trim().ToLowerInvariant() ?? string.Empty;
-    }
+    private static string NormalizeExecutable(string? executable) => ExecutableName.Normalize(executable);
 }

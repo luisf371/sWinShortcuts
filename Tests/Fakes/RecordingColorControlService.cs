@@ -7,7 +7,7 @@ public sealed class RecordingColorControlService : IColorControlService
 {
     public List<AppliedColorProfile> AppliedProfiles { get; } = [];
 
-    public bool Apply(DisplayInfo display, DisplayColorProfile profile)
+    public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)
     {
         AppliedProfiles.Add(new AppliedColorProfile(
             display,
@@ -21,7 +21,7 @@ public sealed class RecordingColorControlService : IColorControlService
                 DigitalVibrance = profile.DigitalVibrance
             }));
 
-        return true;
+        return ColorApplyOutcome.Applied;
     }
 }
 

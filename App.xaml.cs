@@ -48,19 +48,55 @@ public partial class App : System.Windows.Application
         services.AddSingleton<MainWindow>();
     }
 
-    private async void OnExit(object sender, System.Windows.ExitEventArgs e)
+    private void OnExit(object sender, System.Windows.ExitEventArgs e)
     {
-        if (_host is null)
+        try
         {
-            return;
-        }
+            if (_host is not null)
+            {
+                // Flush pending profile edits BEFORE stopping services so no debounced edit is lost (M1).
+                try
+                {
+                    var mainViewModel = _host.Services.GetService<MainViewModel>();
+                    if (mainViewModel is not null)
+                    {
+                        var flushed = Task.Run(() => mainViewModel.FlushPendingSavesAsync()).Wait(TimeSpan.FromSeconds(3));
+                        if (!flushed)
+                        {
+                            LogCrash("OnExit.Flush", new TimeoutException("FlushPendingSavesAsync did not complete within 3s; some edits may be unsaved."));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogCrash("OnExit.Flush", ex);
+                }
 
-        using (_host)
+                // StopAsync OFF the dispatcher (avoids the sync-over-async deadlock). Dispose ON the
+                // dispatcher (this thread) in finally so the tray icon is removed on its creating thread
+                // and disposal is always reached even if StopAsync timed out or threw (§14.5).
+                try
+                {
+                    var stopped = Task.Run(() => _host.StopAsync(TimeSpan.FromSeconds(2))).Wait(TimeSpan.FromSeconds(5));
+                    if (!stopped)
+                    {
+                        LogCrash("OnExit.Stop", new TimeoutException("Host StopAsync did not complete within 5s; disposing anyway."));
+                    }
+                }
+                finally
+                {
+                    _host.Dispose();
+                }
+            }
+        }
+        catch (Exception ex)
         {
-            await _host.StopAsync(TimeSpan.FromSeconds(2));
+            LogCrash("OnExit", ex);
         }
-
-        UnregisterExceptionHandlers();
+        finally
+        {
+            UnregisterExceptionHandlers();
+        }
     }
 
     private void RegisterExceptionHandlers()

@@ -1,5 +1,5 @@
 using System;
-using System.IO;
+using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.Models;
 
@@ -44,14 +44,5 @@ public sealed class Profile
     public bool IsColorProfile =>
         string.Equals(Name, ProfileConstants.ColorProfileName, StringComparison.OrdinalIgnoreCase);
 
-    private static string NormalizeExecutable(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var fileName = Path.GetFileNameWithoutExtension(value);
-        return fileName?.Trim().ToLowerInvariant() ?? string.Empty;
-    }
+    private static string NormalizeExecutable(string? value) => ExecutableName.Normalize(value);
 }

@@ -365,12 +365,16 @@ public sealed class DisplayService : IDisplayService, IDisposable
         return string.Empty;
     }
 
+    public event EventHandler? DisplaysChanged;
+
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
         lock (_lock)
         {
             _cachedDisplays = null;
         }
+
+        DisplaysChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void Dispose()

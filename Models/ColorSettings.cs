@@ -6,6 +6,7 @@ namespace sWinShortcuts.Models;
 public sealed class ColorSettings
 {
     private readonly Dictionary<string, DisplayColorProfile> _displayProfiles = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _sync = new();
 
     public bool IsEnabled { get; set; } = false;
 
@@ -13,23 +14,43 @@ public sealed class ColorSettings
     [Obsolete("Use per-display IsEnabled instead")]
     public string SelectedDisplayId { get; set; } = string.Empty;
 
-    public IReadOnlyDictionary<string, DisplayColorProfile> DisplayProfiles => _displayProfiles;
+    /// <summary>
+    /// Returns a point-in-time snapshot of the per-display profiles. The returned dictionary is a
+    /// fresh copy (value references shared), so it is safe to enumerate from any thread while the
+    /// UI thread mutates the underlying store via <see cref="GetOrCreateProfile"/>/<see cref="SetProfile"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, DisplayColorProfile> DisplayProfiles => SnapshotProfiles();
+
+    public IReadOnlyDictionary<string, DisplayColorProfile> SnapshotProfiles()
+    {
+        lock (_sync)
+        {
+            return new Dictionary<string, DisplayColorProfile>(_displayProfiles, StringComparer.OrdinalIgnoreCase);
+        }
+    }
 
     public DisplayColorProfile GetOrCreateProfile(string displayId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(displayId);
 
-        if (_displayProfiles.TryGetValue(displayId, out var existing))
+        lock (_sync)
         {
-            return existing;
-        }
+            if (_displayProfiles.TryGetValue(displayId, out var existing))
+            {
+                return existing;
+            }
 
-        var created = new DisplayColorProfile
-        {
-            DisplayId = displayId
-        };
-        _displayProfiles[displayId] = created;
-        return created;
+            // A never-configured display must start DISABLED: the activation worker treats an enabled
+            // per-display profile (even with neutral defaults) as "apply", which would write an identity
+            // gamma ramp / DVC 0 and wipe calibration (C1). The user enables it explicitly to opt in.
+            var created = new DisplayColorProfile
+            {
+                DisplayId = displayId,
+                IsEnabled = false
+            };
+            _displayProfiles[displayId] = created;
+            return created;
+        }
     }
 
     public void SetProfile(DisplayColorProfile profile)
@@ -37,12 +58,18 @@ public sealed class ColorSettings
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(profile.DisplayId);
 
-        _displayProfiles[profile.DisplayId] = profile;
+        lock (_sync)
+        {
+            _displayProfiles[profile.DisplayId] = profile;
+        }
     }
 
     public void ClearProfiles()
     {
-        _displayProfiles.Clear();
+        lock (_sync)
+        {
+            _displayProfiles.Clear();
+        }
     }
 }
 

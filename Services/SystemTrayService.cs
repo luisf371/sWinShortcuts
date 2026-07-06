@@ -97,7 +97,37 @@ public sealed class SystemTrayService : ISystemTrayService
             ? $"Active profile: {profileName}"
             : "Idle";
 
-        _notifyIcon.Text = $"sWinShortcuts - {status}";
+        var text = $"sWinShortcuts - {status}";
+
+        // NotifyIcon.Text has a hard 63-char limit (WinForms throws above it); clamp defensively.
+        if (text.Length > 63)
+        {
+            text = text[..60] + "...";
+        }
+
+        SetTrayText(text);
+    }
+
+    // Called from the background activation worker; WinForms tray objects are thread-affine, so marshal
+    // the mutation onto the UI dispatcher.
+    private void SetTrayText(string text)
+    {
+        var dispatcher = _application.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.InvokeAsync(() => SetTrayTextCore(text));
+            return;
+        }
+
+        SetTrayTextCore(text);
+    }
+
+    private void SetTrayTextCore(string text)
+    {
+        if (_notifyIcon is not null)
+        {
+            _notifyIcon.Text = text;
+        }
     }
 
     public void Dispose()
@@ -109,15 +139,30 @@ public sealed class SystemTrayService : ISystemTrayService
 
         _disposed = true;
 
-        if (_notifyIcon != null)
+        // Exception-safe: a throw here must not skip another singleton's cleanup at shutdown (§14.5).
+        try
         {
-            _notifyIcon.Visible = false;
-            _notifyIcon.Dispose();
-            _notifyIcon = null;
+            if (_notifyIcon != null)
+            {
+                _notifyIcon.Visible = false;
+                _notifyIcon.Dispose();
+                _notifyIcon = null;
+            }
+        }
+        catch
+        {
+            // Ignore tray-icon teardown failures.
         }
 
-        _customIcon?.Dispose();
-        _customIcon = null;
+        try
+        {
+            _customIcon?.Dispose();
+            _customIcon = null;
+        }
+        catch
+        {
+            // Ignore icon teardown failures.
+        }
     }
 
     private void ShowMainWindow()

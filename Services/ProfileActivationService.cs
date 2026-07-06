@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Win32;
 using sWinShortcuts.Models;
 
 namespace sWinShortcuts.Services;
@@ -18,6 +19,7 @@ public sealed class ProfileActivationService : IHostedService
     private readonly ISystemTrayService _systemTrayService;
     private readonly IColorControlService _colorControlService;
     private readonly IDisplayService _displayService;
+    private readonly ILoggerService _logger;
     private readonly Channel<string?> _foregroundChanges =
         Channel.CreateBounded<string?>(new BoundedChannelOptions(1)
         {
@@ -32,13 +34,20 @@ public sealed class ProfileActivationService : IHostedService
     private ColorPlan _lastAppliedColorPlan = ColorPlan.Empty;
     private bool _initialEventFired;
 
+    // Set by the resume/display-change handlers; consumed by the worker so a forced re-apply routes
+    // through the same C1 plan-diff (a resume while color is disabled therefore never wipes calibration).
+    private int _forceReapply;
+    private volatile string? _lastProcessName;
+    private bool _reapplyHandlersRegistered;
+
     public ProfileActivationService(
         IProfileManager profileManager,
         IForegroundWatcher foregroundWatcher,
         IInputHookService inputHookService,
         ISystemTrayService systemTrayService,
         IColorControlService colorControlService,
-        IDisplayService displayService)
+        IDisplayService displayService,
+        ILoggerService logger)
     {
         _profileManager = profileManager;
         _foregroundWatcher = foregroundWatcher;
@@ -46,34 +55,76 @@ public sealed class ProfileActivationService : IHostedService
         _systemTrayService = systemTrayService;
         _colorControlService = colorControlService;
         _displayService = displayService;
+        _logger = logger;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         await _profileManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
-        _inputHookService.SetWindowsProfile(_profileManager.WindowsProfile);
-        _inputHookService.Start();
-
-        _foregroundWorkerCancellation = new CancellationTokenSource();
-        _foregroundWorkerTask = Task.Run(
-            () => ProcessForegroundChangesAsync(_foregroundWorkerCancellation.Token),
-            CancellationToken.None);
-
-        _foregroundWatcher.ForegroundChanged += OnForegroundChanged;
-        _inputHookService.ActiveProfileChanged += OnActiveProfileChanged;
-        _foregroundWatcher.Start();
-
-        if (!_initialEventFired)
+        try
         {
-            _foregroundChanges.Writer.TryWrite(null);
+            _inputHookService.SetWindowsProfile(_profileManager.WindowsProfile);
+            _inputHookService.Start();
+
+            _foregroundWorkerCancellation = new CancellationTokenSource();
+            _foregroundWorkerTask = Task.Run(
+                () => ProcessForegroundChangesAsync(_foregroundWorkerCancellation.Token),
+                CancellationToken.None);
+
+            _foregroundWatcher.ForegroundChanged += OnForegroundChanged;
+            _inputHookService.ActiveProfileChanged += OnActiveProfileChanged;
+            SystemEvents.DisplaySettingsChanged += OnReapplyRequested;
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            _reapplyHandlersRegistered = true;
+            _foregroundWatcher.Start();
+
+            if (!_initialEventFired)
+            {
+                _foregroundChanges.Writer.TryWrite(null);
+            }
         }
+        catch
+        {
+            // A failure after the first side effect must not leave hooks / static SystemEvents handlers /
+            // worker state dangling until process exit. Tear down what we set up, then rethrow.
+            CleanupAfterFailedStart();
+            throw;
+        }
+    }
+
+    private void CleanupAfterFailedStart()
+    {
+        try { _foregroundWatcher.ForegroundChanged -= OnForegroundChanged; } catch { /* best effort */ }
+        try { _inputHookService.ActiveProfileChanged -= OnActiveProfileChanged; } catch { /* best effort */ }
+
+        if (_reapplyHandlersRegistered)
+        {
+            try { SystemEvents.DisplaySettingsChanged -= OnReapplyRequested; } catch { /* best effort */ }
+            try { SystemEvents.PowerModeChanged -= OnPowerModeChanged; } catch { /* best effort */ }
+            _reapplyHandlersRegistered = false;
+        }
+
+        try { _foregroundWatcher.Stop(); } catch { /* best effort */ }
+        _foregroundChanges.Writer.TryComplete();
+        _foregroundWorkerCancellation?.Cancel();
+        try { _inputHookService.Stop(); } catch { /* best effort */ }
+
+        _foregroundWorkerCancellation?.Dispose();
+        _foregroundWorkerCancellation = null;
+        _foregroundWorkerTask = null;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         _foregroundWatcher.ForegroundChanged -= OnForegroundChanged;
         _inputHookService.ActiveProfileChanged -= OnActiveProfileChanged;
+        if (_reapplyHandlersRegistered)
+        {
+            SystemEvents.DisplaySettingsChanged -= OnReapplyRequested;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            _reapplyHandlersRegistered = false;
+        }
         _foregroundWatcher.Stop();
         _foregroundChanges.Writer.TryComplete();
         _foregroundWorkerCancellation?.Cancel();
@@ -101,14 +152,44 @@ public sealed class ProfileActivationService : IHostedService
     private void OnForegroundChanged(object? sender, ForegroundChangedEventArgs e)
     {
         _initialEventFired = true;
+        // Record the newest foreground app on arrival (NOT at end-of-processing) so a resume/display
+        // re-apply enqueues the genuinely-current app, never a previously-processed one (§14.2).
+        _lastProcessName = e.ProcessName;
         _foregroundChanges.Writer.TryWrite(e.ProcessName);
+    }
+
+    private void OnReapplyRequested(object? sender, EventArgs e)
+    {
+        // Handler only touches an Interlocked flag + a thread-safe channel write; _lastAppliedColorPlan
+        // stays owned by the worker thread.
+        Interlocked.Exchange(ref _forceReapply, 1);
+        _foregroundChanges.Writer.TryWrite(_lastProcessName);
+    }
+
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume)
+        {
+            OnReapplyRequested(sender, EventArgs.Empty);
+        }
     }
 
     private async Task ProcessForegroundChangesAsync(CancellationToken cancellationToken)
     {
         await foreach (var processName in _foregroundChanges.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
-            ProcessForegroundChange(processName);
+            try
+            {
+                ProcessForegroundChange(processName);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"[Color] ProcessForegroundChange failed: {ex}");
+            }
         }
     }
 
@@ -121,10 +202,15 @@ public sealed class ProfileActivationService : IHostedService
         var displays = _displayService.GetDisplays();
         var plan = BuildColorPlan(profile, displays, _profileManager);
 
-        if (!_lastAppliedColorPlan.Equals(plan))
+        var force = Interlocked.Exchange(ref _forceReapply, 0) == 1;
+        if (force || !_lastAppliedColorPlan.Equals(plan))
         {
-            ApplyColorPlan(plan, displays);
-            _lastAppliedColorPlan = plan;
+            // Advance the dedup baseline ONLY when every enabled display actually applied (§14.1):
+            // a failed enabled apply stays un-deduped and retries on the next foreground/resume event.
+            if (ApplyColorPlan(plan, _lastAppliedColorPlan, displays))
+            {
+                _lastAppliedColorPlan = plan;
+            }
         }
 
         if (profile is { IsEnabled: true })
@@ -146,9 +232,10 @@ public sealed class ProfileActivationService : IHostedService
         ArgumentNullException.ThrowIfNull(profileManager);
 
         var settingsToApply = ResolveColorSettings(activeProfile, profileManager);
+        var profiles = settingsToApply?.SnapshotProfiles();
         var plans = displays
             .OrderBy(display => display.Id, StringComparer.OrdinalIgnoreCase)
-            .Select(display => BuildDisplayColorPlan(display.Id, settingsToApply))
+            .Select(display => BuildDisplayColorPlan(display.Id, profiles))
             .ToImmutableArray();
 
         return plans.IsEmpty ? ColorPlan.Empty : new ColorPlan(plans);
@@ -170,10 +257,12 @@ public sealed class ProfileActivationService : IHostedService
         return null;
     }
 
-    private static DisplayColorPlan BuildDisplayColorPlan(string displayId, ColorSettings? settingsToApply)
+    private static DisplayColorPlan BuildDisplayColorPlan(
+        string displayId,
+        IReadOnlyDictionary<string, DisplayColorProfile>? profiles)
     {
-        if (settingsToApply is not null &&
-            settingsToApply.DisplayProfiles.TryGetValue(displayId, out var existingProfile) &&
+        if (profiles is not null &&
+            profiles.TryGetValue(displayId, out var existingProfile) &&
             existingProfile.IsEnabled)
         {
             return new DisplayColorPlan(
@@ -194,17 +283,31 @@ public sealed class ProfileActivationService : IHostedService
             DisplayColorProfile.DefaultDigitalVibrance);
     }
 
-    private void ApplyColorPlan(ColorPlan plan, IReadOnlyList<DisplayInfo> displays)
+    private bool ApplyColorPlan(ColorPlan plan, ColorPlan previous, IReadOnlyList<DisplayInfo> displays)
     {
+        var allApplied = true;
+
         foreach (var displayPlan in plan.Displays)
         {
-            var display = FindDisplay(displayPlan.DisplayId, displays);
-            if (display is null)
+            var prior = FindDisplayPlan(previous, displayPlan.DisplayId);
+
+            // C1: a display that is disabled now AND was disabled/absent before was never applied, so
+            // leave its hardware (ICC/Night Light/NVCP vibrance) untouched. Enabled-now and the
+            // enabled->disabled restore transition both fall through and DO apply.
+            if (!displayPlan.IsEnabled && (prior is null || !prior.IsEnabled))
             {
                 continue;
             }
 
-            _colorControlService.Apply(display, new DisplayColorProfile
+            var display = FindDisplay(displayPlan.DisplayId, displays);
+            if (display is null)
+            {
+                // Wanted to apply/restore but the hardware isn't present — don't dedup; retry later.
+                allApplied = false;
+                continue;
+            }
+
+            var outcome = _colorControlService.Apply(display, new DisplayColorProfile
             {
                 DisplayId = displayPlan.DisplayId,
                 IsEnabled = displayPlan.IsEnabled,
@@ -213,7 +316,29 @@ public sealed class ProfileActivationService : IHostedService
                 Gamma = displayPlan.Gamma,
                 DigitalVibrance = displayPlan.DigitalVibrance
             });
+
+            // Only a genuine transient failure blocks dedup; deliberate skips (NVAPI unavailable,
+            // fail-closed CreateDC, unmappable DVC) count as applied to avoid a per-event retry storm.
+            if (outcome == ColorApplyOutcome.Failed)
+            {
+                allApplied = false;
+            }
         }
+
+        return allApplied;
+    }
+
+    private static DisplayColorPlan? FindDisplayPlan(ColorPlan plan, string displayId)
+    {
+        foreach (var displayPlan in plan.Displays)
+        {
+            if (string.Equals(displayPlan.DisplayId, displayId, StringComparison.OrdinalIgnoreCase))
+            {
+                return displayPlan;
+            }
+        }
+
+        return null;
     }
 
     private static DisplayInfo? FindDisplay(string displayId, IReadOnlyList<DisplayInfo> displays)

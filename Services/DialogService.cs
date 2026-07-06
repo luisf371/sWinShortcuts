@@ -63,6 +63,18 @@ public sealed class DialogService : IDialogService
 
     public void ShowError(string message, string title)
     {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.InvokeAsync(() => ShowErrorCore(message, title));
+            return;
+        }
+
+        ShowErrorCore(message, title);
+    }
+
+    private static void ShowErrorCore(string message, string title)
+    {
         System.Windows.MessageBox.Show(System.Windows.Application.Current?.MainWindow, message, title, MessageBoxButton.OK, MessageBoxImage.Error);
     }
 

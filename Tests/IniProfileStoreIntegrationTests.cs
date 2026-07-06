@@ -18,7 +18,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
 
     public IniProfileStoreIntegrationTests()
     {
-        _store = new IniProfileStore();
+        _store = new IniProfileStore(new Tests.Fakes.NullLoggerService());
     }
 
     public void Dispose()

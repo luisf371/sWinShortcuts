@@ -10,7 +10,7 @@ using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.ViewModels;
 
-public sealed class ProfileViewModel : ViewModelBase
+public sealed class ProfileViewModel : ViewModelBase, IDisposable
 {
     private readonly IReadOnlyList<Key> _keyOptions;
     private bool _isSyncing;
@@ -390,6 +390,15 @@ public sealed class ProfileViewModel : ViewModelBase
         OnProfileChanged();
     }
 
+    /// <summary>
+    /// Syncs the displayed name from the model after an external rename (via the manager) WITHOUT
+    /// re-triggering the Name setter's autosave — the manager already persisted the rename.
+    /// </summary>
+    public void RefreshNameFromModel()
+    {
+        SetProperty(ref _name, Model.Name, nameof(Name));
+    }
+
     private void OnCombinedMappingsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         if (e.NewItems is not null)
@@ -482,6 +491,11 @@ public sealed class ProfileViewModel : ViewModelBase
     private void OnChildChanged(object? sender, EventArgs e)
     {
         OnProfileChanged();
+    }
+
+    public void Dispose()
+    {
+        ColorSettings.Dispose();
     }
 
     private void OnProfileChanged()

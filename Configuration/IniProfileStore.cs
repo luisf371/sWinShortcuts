@@ -18,9 +18,11 @@ public sealed class IniProfileStore : IProfileStore
     private readonly string _profilesDirectory;
     private readonly string _windowsProfilePath;
     private readonly string _colorProfilePath;
+    private readonly Services.ILoggerService? _logger;
 
-    public IniProfileStore()
+    public IniProfileStore(Services.ILoggerService? logger = null)
     {
+        _logger = logger;
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         _rootDirectory = Path.Combine(appData, "sWinShortcuts");
         _profilesDirectory = Path.Combine(_rootDirectory, ProfileConstants.ProfilesDirectoryName);
@@ -50,9 +52,12 @@ public sealed class IniProfileStore : IProfileStore
                 var profile = LoadProfile(file);
                 profiles.Add(profile);
             }
-            catch
+            catch (Exception ex)
             {
-                // Skip invalid profile files.
+                // Don't let one malformed/partially-migrated file drop silently. Log the path + error so a
+                // parse/migration failure is diagnosable (a user reporting "my settings vanished" now has a
+                // trace). The file is left in place — never destroyed — so a transient lock is recoverable.
+                _logger?.Log($"[Profile] Failed to load '{file}': {ex}");
             }
         }
 
@@ -255,34 +260,93 @@ public sealed class IniProfileStore : IProfileStore
                     HoldKey = middleHold
                 };
             }
+
+            // Legacy master also wrote [AltMouse.Button4]/[AltMouse.Button5] -> XButton1(4)/XButton2(5).
+            var button4Tap = document.GetKey("AltMouse.Button4", "Tap");
+            var button4Hold = document.GetKey("AltMouse.Button4", "Hold");
+            if (button4Tap.HasValue || button4Hold.HasValue)
+            {
+                settings.Bindings[Models.MouseButton.XButton1] = new MouseButtonBinding
+                {
+                    TapKey = button4Tap,
+                    HoldKey = button4Hold
+                };
+            }
+
+            var button5Tap = document.GetKey("AltMouse.Button5", "Tap");
+            var button5Hold = document.GetKey("AltMouse.Button5", "Hold");
+            if (button5Tap.HasValue || button5Hold.HasValue)
+            {
+                settings.Bindings[Models.MouseButton.XButton2] = new MouseButtonBinding
+                {
+                    TapKey = button5Tap,
+                    HoldKey = button5Hold
+                };
+            }
         }
     }
 
     private static void DeserializeCombinedMappings(IniDocument document, CombinedMappingsSettings settings)
     {
-        settings.IsEnabled = document.GetBoolean("KeyMappings", "Enabled", settings.IsEnabled);
-
         settings.Mappings.Clear();
-        var section = document.GetSection("KeyMappingsOverrides");
-        foreach (var pair in section)
+
+        var overrides = document.GetSection("KeyMappingsOverrides");
+
+        // Prefer the current format. A branch profile always writes [KeyMappings] Enabled=…;
+        // a legacy master INI never has it, so its absence (with no overrides) means "try legacy".
+        if (document.GetSection("KeyMappings").Any() || overrides.Any())
         {
-            var source = KeySerializer.Deserialize(pair.Key);
-            if (source is null) continue;
+            settings.IsEnabled = document.GetBoolean("KeyMappings", "Enabled", settings.IsEnabled);
 
-            var parts = pair.Value.Split('|');
-            var target = parts.Length > 0 ? KeySerializer.Deserialize(parts[0]) : null;
-            if (target is null) continue;
-
-            var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var sVal) ? sVal : true;
-            var rightClick = parts.Length > 2 && bool.TryParse(parts[2], out var rVal) ? rVal : false;
-
-            settings.Mappings.Add(new CombinedMappingEntry
+            foreach (var pair in overrides)
             {
-                SourceKey = source.Value,
-                TargetKey = target.Value,
-                SuppressOriginalKey = suppress,
-                RightClickOnly = rightClick
-            });
+                var source = KeySerializer.Deserialize(pair.Key);
+                if (source is null) continue;
+
+                var parts = pair.Value.Split('|');
+                var target = parts.Length > 0 ? KeySerializer.Deserialize(parts[0]) : null;
+                if (target is null) continue;
+
+                var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var sVal) ? sVal : true;
+                var rightClick = parts.Length > 2 && bool.TryParse(parts[2], out var rVal) ? rVal : false;
+
+                settings.Mappings.Add(new CombinedMappingEntry
+                {
+                    SourceKey = source.Value,
+                    TargetKey = target.Value,
+                    SuppressOriginalKey = suppress,
+                    RightClickOnly = rightClick
+                });
+            }
+
+            return;
+        }
+
+        // Legacy master migration: [RightMouse] Enabled/SuppressOriginal + [RightMouseOverrides] Src=Tgt.
+        // Each legacy override fired only while RMB was held with a single global SuppressOriginal flag,
+        // which is exactly CombinedMappingEntry { RightClickOnly = true, SuppressOriginalKey = <global> }.
+        var legacyOverrides = document.GetSection("RightMouseOverrides");
+        if (document.GetSection("RightMouse").Any() || legacyOverrides.Any())
+        {
+            settings.IsEnabled = document.GetBoolean("RightMouse", "Enabled", settings.IsEnabled);
+            var suppress = document.GetBoolean("RightMouse", "SuppressOriginal", true);
+
+            foreach (var pair in legacyOverrides)
+            {
+                var source = KeySerializer.Deserialize(pair.Key);
+                if (source is null) continue;
+
+                var target = KeySerializer.Deserialize(pair.Value);
+                if (target is null) continue;
+
+                settings.Mappings.Add(new CombinedMappingEntry
+                {
+                    SourceKey = source.Value,
+                    TargetKey = target.Value,
+                    SuppressOriginalKey = suppress,
+                    RightClickOnly = true
+                });
+            }
         }
     }
 
@@ -297,7 +361,14 @@ public sealed class IniProfileStore : IProfileStore
     private static void DeserializeCapsLock(IniDocument document, CapsLockSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("CapsLock", "Enabled", settings.IsEnabled);
-        settings.Mode = document.GetEnum("CapsLock", "Mode", settings.Mode);
+
+        // Migration: legacy master stored CapsLockMode.MomentaryShift (renamed to Hold, same value=2).
+        // Old INIs persist the NAME, so Enum.TryParse fails and would silently reset to Normal.
+        var rawMode = document.GetString("CapsLock", "Mode", string.Empty);
+        settings.Mode = string.Equals(rawMode, "MomentaryShift", StringComparison.OrdinalIgnoreCase)
+            ? CapsLockMode.Hold
+            : document.GetEnum("CapsLock", "Mode", settings.Mode);
+
         settings.RemapTarget = document.GetKey("CapsLock", "RemapTarget");
     }
 
@@ -406,21 +477,7 @@ public sealed class IniProfileStore : IProfileStore
         document.SetEnum("CapsLock", "Mode", capsLock.Mode);
         document.SetKey("CapsLock", "RemapTarget", capsLock.RemapTarget);
 
-        var color = profile.ColorSettings;
-        document.SetBoolean("Color", "Enabled", color.IsEnabled);
-        // Note: SelectedDisplayId is deprecated but kept for backward compatibility
-#pragma warning disable CS0618 // Type or member is obsolete
-        document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
-#pragma warning restore CS0618
-
-        document.RemoveSection("ColorDisplays");
-        foreach (var pair in color.DisplayProfiles)
-        {
-            // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
-            var isEnabledStr = pair.Value.IsEnabled ? "1" : "0";
-            var value = $"{isEnabledStr}|{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
-            document.SetString("ColorDisplays", pair.Key, value);
-        }
+        WriteColorSection(document, profile.ColorSettings);
 
         return document;
     }
@@ -430,7 +487,16 @@ public sealed class IniProfileStore : IProfileStore
         var document = new IniDocument();
         document.SetBoolean("Profile", "Enabled", profile.IsEnabled);
 
-        var color = profile.ColorSettings;
+        WriteColorSection(document, profile.ColorSettings);
+
+        return document;
+    }
+
+    // Single source of truth for the [Color]/[ColorDisplays] block so SerializeProfile and
+    // SerializeColorProfile produce byte-identical output. Enumerates a snapshot (C3 §14.3) so a
+    // concurrent UI/hot-plug mutation cannot throw "collection was modified" while autosave runs.
+    private static void WriteColorSection(IniDocument document, ColorSettings color)
+    {
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
         // Note: SelectedDisplayId is deprecated but kept for backward compatibility
 #pragma warning disable CS0618 // Type or member is obsolete
@@ -438,15 +504,13 @@ public sealed class IniProfileStore : IProfileStore
 #pragma warning restore CS0618
 
         document.RemoveSection("ColorDisplays");
-        foreach (var pair in color.DisplayProfiles)
+        foreach (var pair in color.SnapshotProfiles())
         {
             // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
             var isEnabledStr = pair.Value.IsEnabled ? "1" : "0";
             var value = $"{isEnabledStr}|{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
             document.SetString("ColorDisplays", pair.Key, value);
         }
-
-        return document;
     }
 
     private static IniDocument SerializeWindowsProfile(Profile profile)
@@ -490,13 +554,22 @@ public sealed class IniProfileStore : IProfileStore
 
     private string DetermineProfilePath(Profile profile)
     {
+        // An established profile keeps writing to its own file, independent of its display name.
         if (!string.IsNullOrWhiteSpace(profile.SourcePath))
         {
             return profile.SourcePath;
         }
 
+        // First save of a genuinely new profile: never resolve onto an existing file, otherwise a
+        // reused name (e.g. after a rename) would clobber another profile's .ini.
         var sanitized = SanitizeFileName(profile.Name);
-        return Path.Combine(_profilesDirectory, $"{sanitized}.ini");
+        var candidate = Path.Combine(_profilesDirectory, $"{sanitized}.ini");
+        for (var n = 2; File.Exists(candidate); n++)
+        {
+            candidate = Path.Combine(_profilesDirectory, $"{sanitized} ({n}).ini");
+        }
+
+        return candidate;
     }
 
     private static string SanitizeFileName(string name)

@@ -13,7 +13,9 @@ public static class KeyInteropUtilities
 
         try
         {
-            return KeyInterop.KeyFromVirtualKey(virtualKey);
+            var key = KeyInterop.KeyFromVirtualKey(virtualKey);
+            // Treat an unmapped virtual key as "no key" (null), consistent with Deserialize("None") => null.
+            return key == Key.None ? null : key;
         }
         catch
         {

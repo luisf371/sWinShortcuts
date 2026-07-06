@@ -1,0 +1,32 @@
+- **Overall risk: Medium-High.** The recent fixes cover many earlier data-loss/color issues, but there are still real lifecycle and threading hazards in the active code.
+- **Highest-risk areas:** background activation reading mutable profile state, tray updates from the wrong thread, and startup/process calls that can hang the UI.
+- **Validation:** ran `git status`, `git diff --stat`, targeted diffs/reads, `rg` sweeps, and `git diff --check` (only line-ending warnings; no whitespace errors). I did not run build/tests.
+
+**Executive Summary**
+
+Current working tree scope includes **27 modified files** and **6 untracked files**. The code is moving in the right direction, especially around color-plan deduplication, profile rename identity, INI migrations, and input-hook cleanup. The remaining risk is mostly from **cross-thread access introduced by the activation worker** and **persistence/process lifetime edge cases**.
+
+No Critical issues found. I would fix the two High findings before shipping.
+
+**Findings**
+
+| Severity | file:line | Issue | Impact | Recommendation |
+|---|---:|---|---|---|
+| **High** | `ProfileManager.cs:230` | `FindByExecutable()` enumerates `_profiles` without `_gate`, while add/remove mutate the same `List<Profile>` under `_gate` at `ProfileManager.cs:122` and `ProfileManager.cs:150`. It is called from the background activation worker at `ProfileActivationService.cs:168`. | Foreground changes can race with profile add/remove and throw during activation. The worker catches/logs at `ProfileActivationService.cs:157`, so that event silently fails to activate/deactivate correctly. | Make read APIs thread-safe: return immutable snapshots, guard `FindByExecutable`/`WindowsProfile`/`ColorProfile` with the same synchronization, or store profiles in an immutable array swapped under the gate. |
+| **High** | `SystemTrayService.cs:100` | `NotifyIcon.Text` is updated directly from `ProfileActivationService.OnActiveProfileChanged()` at `ProfileActivationService.cs:327`; that event is raised by `InputHookService.ActivateProfile()` at `InputHookService.cs:252`, on the background activation worker path. | WinForms tray objects are UI/thread-affine. Cross-thread updates can throw or leave tray state stale; the worker-level catch masks the failure after activation already changed. Long profile names can also exceed `NotifyIcon.Text` limits. | Marshal all tray mutations through the WPF dispatcher inside `SystemTrayService.UpdateStatus()`, and truncate tooltip text to the supported length. |
+| **Medium** | `NvidiaColorControlService.cs:46` | `Apply()` returns success if **either** gamma or NVAPI DVC succeeds (`attempted |= ...`), but `ProfileActivationService.cs:178` uses that boolean to advance the dedupe baseline. | If gamma succeeds but digital vibrance fails transiently, the plan is treated as applied and DVC will not retry until another plan change/forced event. | Return a richer result, or treat enabled DVC failure as non-applied while still deduping deliberate “NVAPI unavailable” cases to avoid retry storms. |
+| **Medium** | `StartupService.cs:164` | `TryEnableScheduledTask()` reads `StandardError.ReadToEnd()` and then `StandardOutput.ReadToEnd()` before `WaitForExit()`. Same pattern in delete at `StartupService.cs:205`. | Classic redirected-pipe deadlock risk if the child fills the other stream. This runs from settings flow, so the UI can hang. | Read stdout/stderr concurrently with `ReadToEndAsync()`, await `WaitForExitAsync()` with timeout, and kill the process on timeout. |
+| **Medium** | `IniDocument.cs:151` | INI saves use direct `File.WriteAllText()` to the final file. | Crash, power loss, AV interference, or disk-full during save can truncate/corrupt profiles, including autosave writes and migration saves. | Write to a temp file in the same directory, flush, then `File.Replace()` or atomic move with backup. |
+| **Medium** | `IniProfileStore.cs:53` | Invalid profile files are swallowed with a bare `catch` and skipped. | A malformed/migrating profile disappears from the UI with no user-visible warning or diagnostic; users may think settings were deleted. | Log the file path/error, quarantine bad files, and surface a non-fatal warning in the UI or debug log. |
+| **Medium** | `ProfileActivationService.cs:65` | `StartAsync()` starts input hooks/workers and registers events before `ForegroundWatcher.Start()` at `ProfileActivationService.cs:78`, but has no unwind path if later startup throws. | A startup failure after partial initialization can leave hooks, static `SystemEvents` handlers, or worker state alive until process exit. | Wrap startup after the first side effect in `try/catch` and call the same cleanup path as `StopAsync()` before rethrowing. |
+| **Low** | `App.xaml.cs:63` | Exit flush uses `Wait(TimeSpan.FromSeconds(3))` but ignores the returned `false`; same pattern for host stop at `App.xaml.cs:76`. | Slow disk/native shutdown can continue while `_host.Dispose()` runs, risking lost final saves or disposal races. | Check timeout results, log them, and avoid disposing until stop completes or cancellation is explicitly handled. |
+| **Low** | `FileLoggerService.cs:25` | Logging queue is unbounded and log file has no rotation; every enabled log call enqueues at `FileLoggerService.cs:50`. | Enabling debug logging during high-frequency hook activity can grow memory and disk usage without limit. | Use a bounded channel/drop policy and size-based log rotation. |
+| **Low** | `ProcessLauncher.cs:74` | Elevated de-elevation fallback launches bare `explorer.exe`. | Lower hardening risk: executable resolution depends on search behavior rather than an absolute system path. | Use `%WINDIR%\explorer.exe` / `%SystemRoot%\explorer.exe`, or prefer the COM shell path consistently. |
+
+**Prioritized Quick Wins**
+
+1. **Make `ProfileManager` reads thread-safe** around `FindByExecutable`, `ColorProfile`, and `WindowsProfile`. This is the most likely correctness bug under normal foreground changes plus profile edits.
+2. **Marshal tray updates in `SystemTrayService.UpdateStatus()`** and clamp tooltip length. Small change, high confidence, removes a cross-thread UI hazard.
+3. **Fix `StartupService` process stream handling** with concurrent async reads and timeout/kill behavior.
+4. **Make INI writes atomic** in `IniDocument.Save()` before relying further on autosave/migration.
+5. **Add logging/quarantine for invalid profile INIs** so migration or parse failures are recoverable instead of silent.
