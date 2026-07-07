@@ -368,7 +368,22 @@ public sealed class InputHookService : IInputHookService
         // Track Alt key state (lock-free)
         if (vkCode is 0xA4 or 0xA5 or 0x12)  // VK_LMENU, VK_RMENU, VK_MENU
         {
-            _altPressed = isKeyDown;
+            if (isKeyDown)
+            {
+                _altPressed = true;
+            }
+            else if (isKeyUp)
+            {
+                // Releasing one Alt must not clear the flag while the OTHER Alt is still held.
+                // Query only the sibling key: from inside an LL hook the released key itself may
+                // not yet be reflected in the async key state.
+                _altPressed = vkCode switch
+                {
+                    0xA4 => (NativeMethods.GetAsyncKeyState(0xA5) & 0x8000) != 0,
+                    0xA5 => (NativeMethods.GetAsyncKeyState(0xA4) & 0x8000) != 0,
+                    _ => false // generic VK_MENU up: LL hooks deliver L/R codes, treat as full release
+                };
+            }
         }
 
         // Handle features in priority order
@@ -1221,6 +1236,12 @@ public sealed class InputHookService : IInputHookService
             }
         }
 
+        // The shell never sees any key while Win is held (we consume the whole chord), so a bare
+        // Win press+release would pop the Start menu right after the launch and steal focus.
+        // Inject one benign tagged dummy-key event on the first latch so the shell marks the
+        // chord as used (same technique as PowerToys/AutoHotkey).
+        SendDummyKeyEvent();
+
         // Snapshot the binding on the hook thread (serialized with UI edits) so the pool-thread
         // launch can't read a half-edited Path/Arguments/RunAsAdmin combination.
         var path = binding.Path;
@@ -1349,6 +1370,30 @@ public sealed class InputHookService : IInputHookService
         {
             LogDebug($"SendKey FAILED: {key} ({(isKeyDown ? "DOWN" : "UP")}) - SendInput returned 0, VK=0x{virtualKey:X2}");
         }
+    }
+
+    // Sends a single key-up for the unassigned virtual key 0xFF, tagged INPUT_IGNORE. Apps and
+    // games cannot observe it as a real key; the shell only uses it to mark the current Win chord
+    // as used, which suppresses the Start menu after a consumed Win+<key> hotkey.
+    private static void SendDummyKeyEvent()
+    {
+        var input = new NativeMethods.INPUT
+        {
+            type = NativeMethods.InputType.INPUT_KEYBOARD,
+            U = new NativeMethods.InputUnion
+            {
+                ki = new NativeMethods.KEYBDINPUT
+                {
+                    wVk = 0xFF,
+                    wScan = 0,
+                    dwFlags = NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP,
+                    time = 0,
+                    dwExtraInfo = NativeMethods.INPUT_IGNORE
+                }
+            }
+        };
+
+        NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

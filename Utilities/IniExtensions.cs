@@ -63,7 +63,11 @@ public static class IniExtensions
             return defaultValue;
         }
 
-        return Enum.TryParse(value, true, out TEnum result) ? result : defaultValue;
+        // Enum.TryParse accepts undefined numeric values ("7" -> (CapsLockMode)7); reject those so
+        // a hand-edited/corrupt config degrades to the default instead of an undefined member.
+        return Enum.TryParse(value, true, out TEnum result) && Enum.IsDefined(typeof(TEnum), result)
+            ? result
+            : defaultValue;
     }
 
     public static Key? GetKey(this IniDocument doc, string section, string key)

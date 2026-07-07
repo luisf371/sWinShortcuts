@@ -60,10 +60,18 @@ public sealed class StartupService : IStartupService
             }
             else
             {
-                // Use Run key
+                // Remove any leftover elevated task BEFORE enabling the Run key: with both
+                // mechanisms active the app launches twice, one still elevated against the user's
+                // new choice. Failing here leaves the previous state untouched and surfaces it.
+                if (!TryDisableScheduledTask(out var taskErr))
+                {
+                    errorMessage = string.IsNullOrWhiteSpace(taskErr)
+                        ? "Failed to remove the elevated startup task. Administrator rights are required to change it."
+                        : taskErr;
+                    return false;
+                }
+
                 EnableRunKey();
-                // Ensure scheduled task is removed
-                TryDisableScheduledTask(out _);
                 return true;
             }
         }

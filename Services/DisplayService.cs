@@ -185,10 +185,6 @@ public sealed class DisplayService : IDisplayService, IDisposable
 
     private static string GetAnyMatchingEdidName(RegistryKey displayKey, string adapterDeviceName)
     {
-        // Extract display number (e.g., "1" from "\\.\DISPLAY1")
-        var displayNum = adapterDeviceName.Replace(@"\\.\DISPLAY", "", StringComparison.OrdinalIgnoreCase);
-        var displayIndex = int.TryParse(displayNum, out var idx) ? idx - 1 : -1;
-
         var foundDisplays = new List<string>();
 
         foreach (var monitorKeyName in displayKey.GetSubKeyNames())
@@ -215,10 +211,13 @@ public sealed class DisplayService : IDisplayService, IDisposable
             }
         }
 
-        // Return the display at the matching index if we have enough displays
-        if (displayIndex >= 0 && displayIndex < foundDisplays.Count)
+        // Only trust the fallback when it is unambiguous (exactly one EDID present): registry
+        // enumeration order has no stable relationship to \\.\DISPLAYn, so index-guessing across
+        // multiple monitors can label a display with another monitor's name. Ambiguous → let the
+        // caller fall back to the EnumDisplayDevices name.
+        if (foundDisplays.Count == 1)
         {
-            return foundDisplays[displayIndex];
+            return foundDisplays[0];
         }
 
         return string.Empty;

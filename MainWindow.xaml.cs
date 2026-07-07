@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private string? _startupProfileName;
     private string? _lastProfileName;
     private WindowState _previousWindowState = WindowState.Normal;
+    private System.Windows.Threading.DispatcherTimer? _windowStateSaveTimer;
     private const int WM_NCLBUTTONDBLCLK = 0x00A3; // Non-client double-click message
 
     public MainWindow(MainViewModel viewModel, Services.IStartupService startupService, Services.ILoggerService logger)
@@ -167,6 +168,9 @@ public partial class MainWindow : Window
 
     private void SaveWindowState()
     {
+        // An immediate save supersedes any pending debounced one.
+        _windowStateSaveTimer?.Stop();
+
         UpdateSettings(ini =>
         {
             // Save normal bounds even when maximized
@@ -224,13 +228,35 @@ public partial class MainWindow : Window
     private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         if (_isLoaded && WindowState == WindowState.Normal)
-            SaveWindowState();
+            QueueWindowStateSave();
     }
 
     private void Window_LocationChanged(object sender, EventArgs e)
     {
         if (_isLoaded && WindowState == WindowState.Normal)
-            SaveWindowState();
+            QueueWindowStateSave();
+    }
+
+    // Dragging/resizing fires SizeChanged/LocationChanged once per tick; a synchronous full-file
+    // INI load+rewrite each tick is a UI-thread write storm. Trailing debounce instead — the
+    // explicit saves on Closing/ExitFromTray/SessionEnding remain immediate and cancel the timer.
+    private void QueueWindowStateSave()
+    {
+        if (_windowStateSaveTimer is null)
+        {
+            _windowStateSaveTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(500)
+            };
+            _windowStateSaveTimer.Tick += (_, _) =>
+            {
+                _windowStateSaveTimer!.Stop();
+                SaveWindowState();
+            };
+        }
+
+        _windowStateSaveTimer.Stop();
+        _windowStateSaveTimer.Start();
     }
 
     protected override void OnMouseDoubleClick(System.Windows.Input.MouseButtonEventArgs e)
