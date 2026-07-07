@@ -61,17 +61,22 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
 
     private async Task ProcessQueue()
     {
+        // Capture the token once: Dispose() waits only 2s for this task before disposing the CTS, so
+        // a writer stuck in slow IO would otherwise fault on its next _cancellation.Token property
+        // access (the loop condition sits outside the try). A captured token stays valid after the
+        // source is disposed.
+        var token = _cancellation.Token;
         var buffer = new List<string>();
-        
-        while (!_cancellation.Token.IsCancellationRequested)
+
+        while (!token.IsCancellationRequested)
         {
             try
             {
                 // Wait for item or timeout
-                if (_logQueue.TryTake(out var item, 1000, _cancellation.Token))
+                if (_logQueue.TryTake(out var item, 1000, token))
                 {
                     buffer.Add(item);
-                    
+
                     // Drain available items up to a limit
                     while (buffer.Count < 100 && _logQueue.TryTake(out var next))
                     {
@@ -82,7 +87,7 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
                 if (buffer.Count > 0)
                 {
                     RotateIfNeeded();
-                    await File.AppendAllLinesAsync(_logPath, buffer, _cancellation.Token).ConfigureAwait(false);
+                    await File.AppendAllLinesAsync(_logPath, buffer, token).ConfigureAwait(false);
                     buffer.Clear();
                 }
             }
@@ -99,7 +104,7 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
                 // of letting the OCE propagate out of ProcessQueue (which would skip the final flush).
                 try
                 {
-                    await Task.Delay(1000, _cancellation.Token).ConfigureAwait(false);
+                    await Task.Delay(1000, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {

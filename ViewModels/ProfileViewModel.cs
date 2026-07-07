@@ -521,10 +521,13 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.ColorSettings.IsEnabled = ColorSettings.IsEnabled;
 
             Model.CombinedMappings.IsEnabled = CombinedKeyMappingsEnabled;
-            Model.CombinedMappings.Mappings.Clear();
+
+            // Build-and-swap, never Clear+Add in place: the pool-thread autosave serializer and the
+            // hook thread enumerate this list concurrently with UI edits.
+            var mappings = new List<CombinedMappingEntry>(CombinedMappings.Count);
             foreach (var vm in CombinedMappings)
             {
-                Model.CombinedMappings.Mappings.Add(new CombinedMappingEntry
+                mappings.Add(new CombinedMappingEntry
                 {
                     SourceKey = vm.SourceKey,
                     TargetKey = vm.TargetKey,
@@ -532,6 +535,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
                     RightClickOnly = vm.RightClickOnly
                 });
             }
+
+            Model.CombinedMappings.Mappings = mappings;
         }
         finally
         {

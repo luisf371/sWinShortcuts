@@ -25,7 +25,24 @@ public sealed class ColorSettings
     {
         lock (_sync)
         {
-            return new Dictionary<string, DisplayColorProfile>(_displayProfiles, StringComparer.OrdinalIgnoreCase);
+            // Deep copy: the values are mutable and the UI writes them live (slider drags), so the
+            // activation worker / INI serializer get value copies, not shared references — a shared
+            // reference could later be read as a plan mixing pre- and post-edit fields.
+            var snapshot = new Dictionary<string, DisplayColorProfile>(_displayProfiles.Count, StringComparer.OrdinalIgnoreCase);
+            foreach (var (id, profile) in _displayProfiles)
+            {
+                snapshot[id] = new DisplayColorProfile
+                {
+                    DisplayId = profile.DisplayId,
+                    IsEnabled = profile.IsEnabled,
+                    Brightness = profile.Brightness,
+                    Contrast = profile.Contrast,
+                    Gamma = profile.Gamma,
+                    DigitalVibrance = profile.DigitalVibrance
+                };
+            }
+
+            return snapshot;
         }
     }
 

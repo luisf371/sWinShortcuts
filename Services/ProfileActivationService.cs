@@ -32,7 +32,9 @@ public sealed class ProfileActivationService : IHostedService
     private CancellationTokenSource? _foregroundWorkerCancellation;
     private Task? _foregroundWorkerTask;
     private ColorPlan _lastAppliedColorPlan = ColorPlan.Empty;
-    private bool _initialEventFired;
+    // Volatile: written by the ForegroundChanged handler, read in StartAsync. Today the initial event
+    // fires synchronously on the starting thread, but the handler also runs from the WinEvent pump.
+    private volatile bool _initialEventFired;
 
     // Set by the resume/display-change handlers; consumed by the worker so a forced re-apply routes
     // through the same C1 plan-diff (a resume while color is disabled therefore never wipes calibration).

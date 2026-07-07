@@ -100,15 +100,18 @@ public sealed class AltMouseViewModel : ViewModelBase
 
     private void SyncToModel()
     {
-        _model.Bindings.Clear();
+        // Build-and-swap, never Clear+rebuild in place: the pool-thread autosave serializer and the
+        // hook thread read this dictionary concurrently with UI edits.
+        var bindings = new System.Collections.Generic.Dictionary<MouseButton, MouseButtonBinding>();
         foreach (var entry in Bindings)
         {
-            var binding = new MouseButtonBinding
+            bindings[entry.Button] = new MouseButtonBinding
             {
                 TapKey = entry.TapKey == System.Windows.Input.Key.None ? null : entry.TapKey,
                 HoldKey = entry.HoldKey == System.Windows.Input.Key.None ? null : entry.HoldKey
             };
-            _model.Bindings[entry.Button] = binding;
         }
+
+        _model.Bindings = bindings;
     }
 }

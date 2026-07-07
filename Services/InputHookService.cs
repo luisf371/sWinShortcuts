@@ -90,8 +90,12 @@ public sealed class InputHookService : IInputHookService
     private volatile bool _altPressed;
     private volatile bool _rightButtonPressed;
     
-    // CapsLock state
-    private int _capsShiftEngaged;
+    // CapsLock state. Guarded by _capsLockStateLock: the hook thread engages/remaps while
+    // ReleaseCapsState runs on the activation worker or SystemEvents thread, and the injected DOWN
+    // must never be reorderable with its recorded release (same proven pattern as _holdBreathLock;
+    // caps events occur at human frequency, so the lock costs nothing on the hot path).
+    private readonly object _capsLockStateLock = new();
+    private bool _capsShiftEngaged;
     private Key? _capsRemappedKey;
 
     // Per-key "already launched while held" latch. Prevents typematic auto-repeat from spawning a
@@ -99,6 +103,19 @@ public sealed class InputHookService : IInputHookService
     // (Clear) runs on the activation-worker POOL thread while the keyboard hook thread does Add/Remove.
     private readonly HashSet<Key> _heldLauncherKeys = new();
     private readonly object _heldLauncherKeysLock = new();
+
+    // Keys mid-flight inside an untracked tap (FireTapKey / hold-breath toggle): DOWN sent, UP pending
+    // on a pool thread ~20-55ms later. Tracked so ReleaseAllState (profile switch, session switch,
+    // Stop) can force the UP — otherwise a shutdown landing inside that window would leave the key
+    // stuck system-wide with the hooks already gone. List, not set: two overlapping taps of the same
+    // key keep one entry per pending UP.
+    private readonly object _transientTapLock = new();
+    private readonly List<Key> _transientTapKeys = new();
+
+    // Bumped by ReleaseAllState under _transientTapLock. A tap worker captures the epoch when it is
+    // QUEUED and bails if it changed by the time it runs: a tap queued before a profile/session
+    // release boundary must not inject after it (the drain above only covers taps already mid-flight).
+    private volatile int _tapReleaseEpoch;
 
     // Hold-breath state. All fields below are guarded by _holdBreathLock. Every hold-breath event
     // (arm, fire, cancel, release) already paid this lock for Timer.Change, and events occur at
@@ -223,8 +240,13 @@ public sealed class InputHookService : IInputHookService
                 _mouseHookHandle = IntPtr.Zero;
             }
 
-            ReleaseAllState();
+            // Flip the running flag BEFORE releasing state: an in-flight hook callback that already
+            // passed its entry check re-validates _isRunning under the subsystem locks, so it can no
+            // longer inject AFTER ReleaseAllState ran — with the hooks gone, nothing would ever
+            // release such a key and it would stay stuck system-wide beyond process exit.
             _isRunning = false;
+
+            ReleaseAllState();
 
             LogDebug("InputHookService stopped");
         }
@@ -446,10 +468,9 @@ public sealed class InputHookService : IInputHookService
             // If Alt is released, we normally don't handle the event.
             // However, if we have stale state (DownTick) from a previous "Alt+Down" that wasn't completed,
             // we must clear it now to prevent it from interfering with future clicks.
-            if (isUp && state.DownTick.HasValue)
+            if (isUp && Interlocked.Exchange(ref state.DownTick, 0L) != 0L)
             {
                 LogDebug($"[{button}] Stale state cleared (Alt released)");
-                state.DownTick = null;
                 CancelHoldTimer(state);
                 Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
             }
@@ -484,8 +505,9 @@ public sealed class InputHookService : IInputHookService
         // Cancel any pending timer
         CancelHoldTimer(state);
 
-        // Record timestamp
-        state.DownTick = Stopwatch.GetTimestamp();
+        // Record timestamp (Interlocked — ResetMouseStates clears it from another thread)
+        var downTick = Stopwatch.GetTimestamp();
+        Interlocked.Exchange(ref state.DownTick, downTick);
 
         // Atomically arm the state machine
         Interlocked.Exchange(ref state.TimerState, TIMER_ARMED);
@@ -505,9 +527,9 @@ public sealed class InputHookService : IInputHookService
             if (IsDebugEnabled) LogDebug($"[{button}] Hold timer: {holdThreshold}ms");
 
             // Only capture the state reference (not runtime flags). Capture the down-tick as a local
-            // long so the callback can measure real elapsed time (and avoid a torn nullable read).
+            // long so the callback can measure the real elapsed time of THIS press.
             var stateRef = state;
-            var downTickAtArm = state.DownTick!.Value;
+            var downTickAtArm = downTick;
 
             // Assign the callback BEFORE arming the timer: the shared timer root re-reads the HoldCallback
             // FIELD at fire time, so a stale elapse from a previous press would otherwise run the newest
@@ -560,15 +582,17 @@ public sealed class InputHookService : IInputHookService
     {
         // If we didn't track the down event, we shouldn't suppress the up event.
         // This happens if Alt was pressed AFTER the mouse button was already down.
-        if (!state.DownTick.HasValue)
+        // Exchange atomically claims the down: ResetMouseStates (activation worker) can otherwise
+        // clear the field between a has-value check and its read, which would throw inside the
+        // mouse hook callback and crash the process.
+        var downTick = Interlocked.Exchange(ref state.DownTick, 0L);
+        if (downTick == 0L)
         {
             return false;
         }
 
         // Calculate hold duration
-        var elapsedMs = (Stopwatch.GetTimestamp() - state.DownTick.Value) * TickToMilliseconds;
-
-        state.DownTick = null;
+        var elapsedMs = (Stopwatch.GetTimestamp() - downTick) * TickToMilliseconds;
 
         var threshold = profile.AltMouse.HoldThresholdMilliseconds;
 
@@ -704,6 +728,13 @@ public sealed class InputHookService : IInputHookService
 
             lock (_combinedOverridesLock)
             {
+                // Re-check under the lock: Stop() flips _isRunning before ReleaseAllOverrides, so an
+                // in-flight callback can't add + inject a key that nothing would ever release.
+                if (!_isRunning)
+                {
+                    return false;
+                }
+
                 if (_activeCombinedOverrides.ContainsKey(sourceKey.Value))
                 {
                     return suppressOriginal;
@@ -754,15 +785,22 @@ public sealed class InputHookService : IInputHookService
                 return true;
 
             case CapsLockMode.Hold:
-                if (isKeyDown && Interlocked.CompareExchange(ref _capsShiftEngaged, 1, 0) == 0)
+                lock (_capsLockStateLock)
                 {
-                    ForceCapsLockState(true);
-                    LogDebug("CapsLock → FORCED ON (Hold mode)");
-                }
-                else if (isKeyUp && Interlocked.CompareExchange(ref _capsShiftEngaged, 0, 1) == 1)
-                {
-                    ForceCapsLockState(false);
-                    LogDebug("CapsLock → FORCED OFF (Hold mode)");
+                    // _isRunning re-check under the lock: an in-flight callback racing Stop() must
+                    // not toggle CapsLock after ReleaseCapsState already ran.
+                    if (isKeyDown && !_capsShiftEngaged && _isRunning)
+                    {
+                        _capsShiftEngaged = true;
+                        ForceCapsLockState(true);
+                        LogDebug("CapsLock → FORCED ON (Hold mode)");
+                    }
+                    else if (isKeyUp && _capsShiftEngaged)
+                    {
+                        _capsShiftEngaged = false;
+                        ForceCapsLockState(false);
+                        LogDebug("CapsLock → FORCED OFF (Hold mode)");
+                    }
                 }
                 return true;
 
@@ -773,17 +811,34 @@ public sealed class InputHookService : IInputHookService
                     return true;
                 }
 
-                if (isKeyDown)
+                lock (_capsLockStateLock)
                 {
-                    _capsRemappedKey = target;
-                    SendKey(target.Value, true);
-                    LogDebug($"CapsLock → {target.Value} DOWN (Remap mode)");
-                }
-                else if (isKeyUp && _capsRemappedKey.HasValue)
-                {
-                    SendKey(_capsRemappedKey.Value, false);
-                    LogDebug($"CapsLock → {_capsRemappedKey.Value} UP (Remap mode)");
-                    _capsRemappedKey = null;
+                    if (isKeyDown)
+                    {
+                        // A repeat after the remap target changed would overwrite the recorded key
+                        // and orphan the previously injected one — release it before injecting anew.
+                        if (_capsRemappedKey is { } previous && previous != target.Value)
+                        {
+                            SendKey(previous, false);
+                            _capsRemappedKey = null;
+                            LogDebug($"CapsLock remap retarget: released {previous}");
+                        }
+
+                        // _isRunning re-check under the lock (see Hold mode above): never inject a
+                        // DOWN that a completed Stop() can no longer pair with a release.
+                        if (_isRunning)
+                        {
+                            _capsRemappedKey = target;
+                            SendKey(target.Value, true);
+                            LogDebug($"CapsLock → {target.Value} DOWN (Remap mode)");
+                        }
+                    }
+                    else if (isKeyUp && _capsRemappedKey.HasValue)
+                    {
+                        SendKey(_capsRemappedKey.Value, false);
+                        LogDebug($"CapsLock → {_capsRemappedKey.Value} UP (Remap mode)");
+                        _capsRemappedKey = null;
+                    }
                 }
                 return true;
 
@@ -821,28 +876,33 @@ public sealed class InputHookService : IInputHookService
 
     private void ReleaseCapsState()
     {
-        if (Interlocked.CompareExchange(ref _capsShiftEngaged, 0, 1) == 1)
+        lock (_capsLockStateLock)
         {
-            // Check if we're in Hold mode
-            var settings = GetEffectiveCapsLockSettings();
-            if (settings is { IsEnabled: true, Mode: CapsLockMode.Hold })
+            if (_capsShiftEngaged)
             {
-                ForceCapsLockState(false);
-                LogDebug("Force-release CapsLock (Hold → OFF)");
-            }
-            else
-            {
-                // Legacy Shift emulation path (if mode was changed during hold)
-                SendKey(Key.LeftShift, false);
-                LogDebug("Force-release CapsLock Shift");
-            }
-        }
+                _capsShiftEngaged = false;
 
-        if (_capsRemappedKey.HasValue)
-        {
-            SendKey(_capsRemappedKey.Value, false);
-            LogDebug($"Force-release CapsLock remap: {_capsRemappedKey.Value}");
-            _capsRemappedKey = null;
+                // Check if we're in Hold mode
+                var settings = GetEffectiveCapsLockSettings();
+                if (settings is { IsEnabled: true, Mode: CapsLockMode.Hold })
+                {
+                    ForceCapsLockState(false);
+                    LogDebug("Force-release CapsLock (Hold → OFF)");
+                }
+                else
+                {
+                    // Legacy Shift emulation path (if mode was changed during hold)
+                    SendKey(Key.LeftShift, false);
+                    LogDebug("Force-release CapsLock Shift");
+                }
+            }
+
+            if (_capsRemappedKey.HasValue)
+            {
+                SendKey(_capsRemappedKey.Value, false);
+                LogDebug($"Force-release CapsLock remap: {_capsRemappedKey.Value}");
+                _capsRemappedKey = null;
+            }
         }
     }
 
@@ -926,6 +986,14 @@ public sealed class InputHookService : IInputHookService
             // press's key down; release it before starting a new cycle so it can never stay stuck.
             ReleaseInjectedHoldBreathKeyLocked();
 
+            // After Dispose the shared timer is gone — touching it would throw inside the hook
+            // callback. The orphan release above still ran; nothing new may be armed.
+            if (_disposed)
+            {
+                _holdBreathPending = false;
+                return;
+            }
+
             _holdBreathPending = true;
             // Snapshot settings: the UI mutates the live settings object in place, and the release
             // must pair with exactly the key that was pressed.
@@ -953,7 +1021,10 @@ public sealed class InputHookService : IInputHookService
         lock (_holdBreathLock)
         {
             _holdBreathPending = false;
-            _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            if (!_disposed)
+            {
+                _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            }
             ReleaseInjectedHoldBreathKeyLocked();
         }
     }
@@ -1013,8 +1084,9 @@ public sealed class InputHookService : IInputHookService
         {
             var key = _holdBreathArmedKey;
 
-            // Fire tap asynchronously (don't block hook). The down+up pair is self-contained and
-            // nothing is recorded, so a toggle tap cannot strand a key.
+            // Fire tap asynchronously (don't block hook). The mid-flight key is tracked in
+            // _transientTapKeys so a release path can force the UP if shutdown lands inside the tap.
+            var epochAtQueue = _tapReleaseEpoch;
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 if (_disposed)
@@ -1031,13 +1103,31 @@ public sealed class InputHookService : IInputHookService
                     rng.Next();
                 }
 
-                SendKey(key, true);
+                lock (_transientTapLock)
+                {
+                    // Under the lock so the DOWN can never land after ReleaseAllState drained the
+                    // list; the epoch check drops a tap that was queued before a release boundary.
+                    if (_disposed || !_isRunning || epochAtQueue != _tapReleaseEpoch)
+                    {
+                        return;
+                    }
+
+                    _transientTapKeys.Add(key);
+                    SendKey(key, true);
+                }
 
                 // Human-like key press duration (20-30ms)
                 var duration = rng.Next(20, 31);
                 Thread.Sleep(duration);
 
-                SendKey(key, false);
+                lock (_transientTapLock)
+                {
+                    // If a release path already forced the UP (and removed the entry), don't double-send.
+                    if (_transientTapKeys.Remove(key))
+                    {
+                        SendKey(key, false);
+                    }
+                }
 
                 LogDebug($"HoldBreath toggle tap complete: duration={duration}ms");
             });
@@ -1062,7 +1152,10 @@ public sealed class InputHookService : IInputHookService
         lock (_holdBreathLock)
         {
             _holdBreathPending = false;
-            _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            if (!_disposed)
+            {
+                _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            }
             ReleaseInjectedHoldBreathKeyLocked();
         }
     }
@@ -1128,25 +1221,31 @@ public sealed class InputHookService : IInputHookService
             }
         }
 
-        LogDebug($"WindowsLauncher: Win+{key.Value} → {binding.Path}");
+        // Snapshot the binding on the hook thread (serialized with UI edits) so the pool-thread
+        // launch can't read a half-edited Path/Arguments/RunAsAdmin combination.
+        var path = binding.Path;
+        var arguments = binding.Arguments;
+        var runAsAdmin = binding.RunAsAdmin;
+
+        LogDebug($"WindowsLauncher: Win+{key.Value} → {path}");
 
         // Launch asynchronously (don't block hook)
-        ThreadPool.QueueUserWorkItem(_ => LaunchProcess(binding));
+        ThreadPool.QueueUserWorkItem(_ => LaunchProcess(path, arguments, runAsAdmin));
 
         return true;
     }
 
-    private void LaunchProcess(LauncherBinding binding)
+    private void LaunchProcess(string path, string arguments, bool runAsAdmin)
     {
         try
         {
-            ProcessLauncher.Launch(binding.Path, binding.Arguments, binding.RunAsAdmin, _logger);
-            
-            LogDebug($"Launch successful: {binding.Path}");
+            ProcessLauncher.Launch(path, arguments, runAsAdmin, _logger);
+
+            LogDebug($"Launch successful: {path}");
         }
         catch (Exception ex)
         {
-            LogDebug($"Launch failed: {binding.Path} - {ex.Message}");
+            LogDebug($"Launch failed: {path} - {ex.Message}");
         }
     }
 
@@ -1156,6 +1255,7 @@ public sealed class InputHookService : IInputHookService
     private void FireTapKey(Key key)
     {
         // Fire on ThreadPool to avoid blocking hook callback
+        var epochAtQueue = _tapReleaseEpoch;
         ThreadPool.QueueUserWorkItem(_ =>
         {
             if (_disposed)
@@ -1164,16 +1264,27 @@ public sealed class InputHookService : IInputHookService
             }
 
             var rng = _random.Value!;
-            
+
             // Warmup RNG to break thread-reuse patterns (anti-cheat)
             var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
             for (int i = 0; i < warmupCalls; i++)
             {
                 rng.Next();
             }
-            
-            SendKey(key, true);
-            
+
+            lock (_transientTapLock)
+            {
+                // Under the lock so the DOWN can never land after ReleaseAllState drained the
+                // list; the epoch check drops a tap that was queued before a release boundary.
+                if (_disposed || !_isRunning || epochAtQueue != _tapReleaseEpoch)
+                {
+                    return;
+                }
+
+                _transientTapKeys.Add(key);
+                SendKey(key, true);
+            }
+
             // Human-like key press duration with jitter
             var duration = rng.Next(KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS + 1);
 
@@ -1184,8 +1295,16 @@ public sealed class InputHookService : IInputHookService
             //    Thread.SpinWait(1000);  // ~10-50μs per iteration
             //}
             Thread.Sleep(duration);
-            SendKey(key, false);
-            
+
+            lock (_transientTapLock)
+            {
+                // If a release path already forced the UP (and removed the entry), don't double-send.
+                if (_transientTapKeys.Remove(key))
+                {
+                    SendKey(key, false);
+                }
+            }
+
             if (IsDebugEnabled) LogDebug($"FireTapKey: {key}, duration={duration}ms, warmup={warmupCalls}");
         });
     }
@@ -1326,6 +1445,23 @@ public sealed class InputHookService : IInputHookService
         ResetMouseStates();
         ReleaseCapsState();
         ReleaseHoldBreathState();
+
+        // Force-complete untracked taps mid-flight (DOWN sent, UP pending on a pool thread). The tap
+        // worker skips its own UP when its entry is gone, so this never double-sends. The epoch bump
+        // additionally invalidates taps queued before this boundary but not yet started.
+        lock (_transientTapLock)
+        {
+            _tapReleaseEpoch++;
+
+            foreach (var key in _transientTapKeys)
+            {
+                SendKey(key, false);
+                LogDebug($"Force-release transient tap key: {key}");
+            }
+
+            _transientTapKeys.Clear();
+        }
+
         lock (_heldLauncherKeysLock)
         {
             _heldLauncherKeys.Clear();
@@ -1343,7 +1479,7 @@ public sealed class InputHookService : IInputHookService
         {
             CancelHoldTimer(state);
             Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
-            state.DownTick = null;
+            Interlocked.Exchange(ref state.DownTick, 0L);
             
             LogDebug($"Reset mouse state: {button}");
         }
@@ -1356,8 +1492,11 @@ public sealed class InputHookService : IInputHookService
         // Atomic state machine
         public int TimerState = TIMER_IDLE;
         
-        // Timestamp tracking
-        public long? DownTick;
+        // Down timestamp; 0 = not tracked (Stopwatch.GetTimestamp() is never 0). Accessed via
+        // Interlocked because ResetMouseStates clears it from the activation-worker/SystemEvents
+        // threads while the mouse hook reads and writes it — a torn Nullable<long> here could
+        // fabricate a huge elapsed time and inject a phantom hold key.
+        public long DownTick;
         
         // Pre-allocated timer (reused for every click)
         public readonly System.Threading.Timer HoldTimer;
