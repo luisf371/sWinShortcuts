@@ -327,6 +327,21 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private void OnProfileAdded(object? sender, Profile profile)
     {
+        // The manager raises this from a pool continuation when its gate was contended (e.g. a
+        // debounced autosave holding it): _profiles is UI-bound, so mutate it only on the dispatcher.
+        // A null dispatcher (unit tests) runs inline.
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.InvokeAsync(() => OnProfileAddedCore(profile));
+            return;
+        }
+
+        OnProfileAddedCore(profile);
+    }
+
+    private void OnProfileAddedCore(Profile profile)
+    {
         var viewModel = new ProfileViewModel(profile, _displayService, _colorControlService, _keyOptions);
         AttachProfile(viewModel);
         _profiles.Add(viewModel);
@@ -334,6 +349,19 @@ public sealed partial class MainViewModel : ViewModelBase
     }
 
     private void OnProfileRemoved(object? sender, Profile profile)
+    {
+        // Same dispatcher marshal as OnProfileAdded (see there).
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.InvokeAsync(() => OnProfileRemovedCore(profile));
+            return;
+        }
+
+        OnProfileRemovedCore(profile);
+    }
+
+    private void OnProfileRemovedCore(Profile profile)
     {
         var existing = _profiles.FirstOrDefault(p => ReferenceEquals(p.Model, profile));
         if (existing is null)
