@@ -355,7 +355,9 @@ public sealed class IniProfileStore : IProfileStore
         settings.IsEnabled = document.GetBoolean("RightClickHoldBreath", "Enabled", settings.IsEnabled);
         settings.HoldBreathKey = document.GetKey("RightClickHoldBreath", "Key") ?? settings.HoldBreathKey;
         settings.Mode = document.GetEnum("RightClickHoldBreath", "Mode", settings.Mode);
-        settings.DelayMilliseconds = Math.Max(5, document.GetInt32("RightClickHoldBreath", "Delay", settings.DelayMilliseconds));
+        // 0 is a designed value (fully synchronous, jitter-free activation) selectable in the UI —
+        // clamping to 5 here silently re-enabled the jitter path on the next launch.
+        settings.DelayMilliseconds = Math.Max(0, document.GetInt32("RightClickHoldBreath", "Delay", settings.DelayMilliseconds));
     }
 
     private static void DeserializeCapsLock(IniDocument document, CapsLockSettings settings)
