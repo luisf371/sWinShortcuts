@@ -25,11 +25,7 @@ public sealed class InputHookService : IInputHookService
     private bool IsDebugEnabled => _logger.IsEnabled;
 
     // ==================== TIMING CONFIGURATION ====================
-    
-    // Alt+Mouse Hold Detection
-    private const int ALT_MOUSE_HOLD_JITTER_MIN_MS = 5;
-    private const int ALT_MOUSE_HOLD_JITTER_MAX_MS = 10;
-    
+
     // Key Press Duration (human-like variance)
     private const int KEY_PRESS_DURATION_MIN_MS = 31;
     private const int KEY_PRESS_DURATION_MAX_MS = 53;
@@ -37,7 +33,11 @@ public sealed class InputHookService : IInputHookService
     // Hold Breath Activation Jitter
     private const int HOLD_BREATH_JITTER_MIN_MS = 15;
     private const int HOLD_BREATH_JITTER_MAX_MS = 36;
-    
+
+    // Hold Breath Toggle-mode tap duration (P6: hoisted out of the old inline worker)
+    private const int HOLD_BREATH_TAP_DURATION_MIN_MS = 20;
+    private const int HOLD_BREATH_TAP_DURATION_MAX_MS = 30;
+
     // RNG Warmup (breaks thread-reuse patterns for anti-cheat)
     private const int RNG_WARMUP_MIN_CALLS = 1;
     private const int RNG_WARMUP_MAX_CALLS = 5;
@@ -109,6 +109,9 @@ public sealed class InputHookService : IInputHookService
     // Stop) can force the UP — otherwise a shutdown landing inside that window would leave the key
     // stuck system-wide with the hooks already gone. List, not set: two overlapping taps of the same
     // key keep one entry per pending UP.
+    // LOCK ORDER (I5, P6): may be taken while _holdBreathLock is already held (the Toggle-mode tap
+    // calls FireTapKey from inside ActivateHoldBreathLocked) — one-way nesting _holdBreathLock ->
+    // _transientTapLock ONLY. Never acquire _holdBreathLock while already holding this lock.
     private readonly object _transientTapLock = new();
     private readonly List<Key> _transientTapKeys = new();
 
@@ -121,6 +124,10 @@ public sealed class InputHookService : IInputHookService
     // (arm, fire, cancel, release) already paid this lock for Timer.Change, and events occur at
     // human click frequency — so guarding the whole state machine including the SendInput calls
     // costs nothing extra while guaranteeing the UP release can never overtake the DOWN press.
+    // LOCK ORDER (I5, P6): the Toggle-mode tap path calls FireTapKey (which takes _transientTapLock)
+    // while this lock is held — one-way nesting _holdBreathLock -> _transientTapLock ONLY. Safe
+    // because ReleaseAllState takes the two locks sequentially, never nested, and the tap worker
+    // only ever takes _transientTapLock alone. Never acquire this lock while holding _transientTapLock.
     private readonly object _holdBreathLock = new();
     private readonly System.Threading.Timer _holdBreathTimer;
     private bool _holdBreathPending;
@@ -135,9 +142,52 @@ public sealed class InputHookService : IInputHookService
     private NativeMethods.LowLevelMouseProc? _mouseProc;
     private IntPtr _keyboardHookHandle = IntPtr.Zero;
     private IntPtr _mouseHookHandle = IntPtr.Zero;
-    
+
+    // P7: true iff timeBeginPeriod(1) succeeded in Start() and has not yet been paired with
+    // timeEndPeriod(1). winmm requires matched calls; guarded by _profileLock (Start/Stop only).
+    private bool _timerResolutionRaised;
+
+    // P8: liveness ticks, Volatile.Write as the FIRST statement of each hook callback — any
+    // invocation (including a filtered-out mouse move) proves that hook is still alive. Initialized
+    // right after install so a freshly-started idle app can never look stale. Read by the watchdog
+    // from a different thread, hence Volatile rather than plain fields.
+    private long _lastKeyboardEventTick;
+    private long _lastMouseEventTick;
+
+    // P8 fail-open swap-window flags: while a hook re-install is in flight, its callback passes
+    // every event straight to CallNextHookEx with ZERO side effects instead of relying on overlap
+    // idempotency — MouseCallback's button-state tracking and hold-breath arm/release are NOT
+    // idempotent across a double-processed event (a duplicate WM_RBUTTONDOWN would re-arm hold-breath
+    // with a fresh jitter sample). Set/cleared inside the dispatcher-marshaled re-install continuation
+    // (see WatchdogTick); read on the hook thread — same thread in practice, kept volatile regardless.
+    private volatile bool _keyboardReplacementInProgress;
+    private volatile bool _mouseReplacementInProgress;
+
+    // P8: captured in Start() so the watchdog can marshal a re-install back onto the thread that
+    // owns the hooks — SetWindowsHookEx callbacks are only pumped on the thread that installed them,
+    // never a pool thread. _canReinstallHooks false means Start() ran off a message-pumping thread
+    // (already-broken setup); the watchdog still detects and logs, but re-install stays disabled.
+    private System.Windows.Threading.Dispatcher? _hookDispatcher;
+    private bool _canReinstallHooks;
+
+    private System.Threading.Timer? _hookWatchdogTimer;
+
+    // P8: only ONE re-install freshness check may be queued on _hookDispatcher at a time. A stalled
+    // dispatcher must not accumulate stale reinstall work — WatchdogTick claims this with
+    // CompareExchange(1, 0) before queuing; the queued closure clears it in a finally (see
+    // WatchdogTick) so a resumed dispatcher re-evaluates freshness once, not once per missed period.
+    private int _reinstallCheckPending;
+
+    // P8 watchdog thresholds/period.
+    private const int WATCHDOG_PERIOD_MS = 10_000;
+    private const double WATCHDOG_STALE_HOOK_THRESHOLD_MS = 30_000;
+    private const uint WATCHDOG_FRESH_INPUT_THRESHOLD_MS = 2_000;
+
     // Performance metrics
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
+
+    // Cached once: Marshal.SizeOf<T>() is not free, and every SendInput call needs it.
+    private static readonly int InputStructSize = Marshal.SizeOf<NativeMethods.INPUT>();
 
     // Tolerance for the hold-timer elapsed-time guard. Windows timers fire on-time or late, never
     // meaningfully early, so a callback firing more than this many ms early is a stale queued elapse.
@@ -162,6 +212,18 @@ public sealed class InputHookService : IInputHookService
             if (_isRunning)
             {
                 return;
+            }
+
+            // P8: hooks are (re-)installed only from a message-pumping thread — SetWindowsHookEx
+            // delivers WH_*_LL callbacks via the installing thread's message loop, never a pool
+            // thread. Capture it once here so the watchdog can marshal a later re-install back onto
+            // this exact thread; if the check fails, Start() itself is already on a broken thread
+            // (detection can still log, but re-install would be unsafe, so it stays disabled).
+            _hookDispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            _canReinstallHooks = SynchronizationContext.Current is System.Windows.Threading.DispatcherSynchronizationContext;
+            if (!_canReinstallHooks)
+            {
+                LogDebug("ERROR: InputHookService.Start() is not running on a dispatcher-pumped thread; hook-loss watchdog re-install is disabled (detection still logs)");
             }
 
             _keyboardProc = KeyboardCallback;
@@ -208,9 +270,81 @@ public sealed class InputHookService : IInputHookService
                 throw new Win32Exception(err, "Failed to install input hooks");
             }
 
-            // Recover from a desktop switch that swallows the button-up (lock screen, logoff):
-            // without this, an injected hold-breath key would stay down until the next click.
-            SystemEvents.SessionSwitch += OnSessionSwitch;
+            // P8: any invocation proves a hook alive; initialize both ticks now so a freshly-started
+            // idle app is never mistaken for stale by the watchdog before its first real event.
+            var startTick = Stopwatch.GetTimestamp();
+            Volatile.Write(ref _lastKeyboardEventTick, startTick);
+            Volatile.Write(ref _lastMouseEventTick, startTick);
+
+            // P7: request 1ms timer resolution while hooks are live. Win11 silently ignores
+            // resolution requests from hidden/minimized-window processes (this app's tray state
+            // while gaming) unless the process first opts out of power throttling for timers —
+            // control-bit set + state-bit clear = "always honor this process's requested
+            // resolution." Best-effort: SetProcessInformation fails pre-Win11 (ignored, logged at
+            // debug); timeBeginPeriod success is remembered so later failures/Stop() can pair it.
+            try
+            {
+                var throttleState = new NativeMethods.PROCESS_POWER_THROTTLING_STATE
+                {
+                    Version = 1,
+                    ControlMask = NativeMethods.PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+                    StateMask = 0
+                };
+                if (!NativeMethods.SetProcessInformation(NativeMethods.GetCurrentProcess(),
+                        NativeMethods.ProcessPowerThrottling, ref throttleState,
+                        (uint)Marshal.SizeOf<NativeMethods.PROCESS_POWER_THROTTLING_STATE>()))
+                {
+                    LogDebug($"SetProcessInformation(IGNORE_TIMER_RESOLUTION) failed (pre-Win11?): 0x{Marshal.GetLastWin32Error():X}");
+                }
+
+                _timerResolutionRaised = NativeMethods.timeBeginPeriod(1) == 0; // TIMERR_NOERROR
+                if (!_timerResolutionRaised)
+                {
+                    LogDebug("timeBeginPeriod(1) failed to raise timer resolution");
+                }
+
+                // Recover from a desktop switch that swallows the button-up (lock screen, logoff):
+                // without this, an injected hold-breath key would stay down until the next click.
+                SystemEvents.SessionSwitch += OnSessionSwitch;
+
+                // P8: hook-loss watchdog. 10s period is coarse on purpose — this only needs to catch
+                // the rare silent hook removal (UI stall > LowLevelHooksTimeout), not run hot.
+                _hookWatchdogTimer = new System.Threading.Timer(_ => WatchdogTick(), null, WATCHDOG_PERIOD_MS, WATCHDOG_PERIOD_MS);
+            }
+            catch
+            {
+                // Full rollback before rethrow: _isRunning is still false here, so Stop() will never
+                // run to unhook — and a retried Start() would otherwise stack a second pair of LL
+                // hooks on top of these. Mirrors the hook-install-failure branch above.
+                _hookWatchdogTimer?.Dispose();
+                _hookWatchdogTimer = null;
+
+                SystemEvents.SessionSwitch -= OnSessionSwitch;
+
+                // Pairing discipline: a later Start() step must not leave timeBeginPeriod unmatched.
+                if (_timerResolutionRaised)
+                {
+                    NativeMethods.timeEndPeriod(1);
+                    _timerResolutionRaised = false;
+                }
+
+                if (_keyboardHookHandle != IntPtr.Zero)
+                {
+                    NativeMethods.UnhookWindowsHookEx(_keyboardHookHandle);
+                    _keyboardHookHandle = IntPtr.Zero;
+                }
+
+                if (_mouseHookHandle != IntPtr.Zero)
+                {
+                    NativeMethods.UnhookWindowsHookEx(_mouseHookHandle);
+                    _mouseHookHandle = IntPtr.Zero;
+                }
+
+                _keyboardProc = null;
+                _mouseProc = null;
+
+                throw;
+            }
 
             _isRunning = true;
             LogDebug("InputHookService started");
@@ -225,6 +359,9 @@ public sealed class InputHookService : IInputHookService
             {
                 return;
             }
+
+            _hookWatchdogTimer?.Dispose();
+            _hookWatchdogTimer = null;
 
             SystemEvents.SessionSwitch -= OnSessionSwitch;
 
@@ -247,6 +384,14 @@ public sealed class InputHookService : IInputHookService
             _isRunning = false;
 
             ReleaseAllState();
+
+            // P7 pairing: winmm requires matched Begin/End calls. Stop() is already idempotent via
+            // the _isRunning guard above, so this fires exactly once per successful Start().
+            if (_timerResolutionRaised)
+            {
+                NativeMethods.timeEndPeriod(1);
+                _timerResolutionRaised = false;
+            }
 
             LogDebug("InputHookService stopped");
         }
@@ -274,6 +419,204 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    // ==================== HOOK-LOSS WATCHDOG (P8) ====================
+
+    // Windows (Win7+) silently removes an LL hook whose callback exceeds LowLevelHooksTimeout (HKCU,
+    // ~300ms class default, hard-capped 1000ms since Win10 1709) — no notification, no recovery
+    // without this. Detection runs on the timer thread (cheap, lock-free reads); the actual
+    // re-install is marshaled onto _hookDispatcher and takes _profileLock, same as every other
+    // lifecycle mutation.
+    private void WatchdogTick()
+    {
+        if (!_isRunning)
+        {
+            return;
+        }
+
+        if (!TryGetHookFreshness(out var systemInputAgeMs, out var keyboardIdleMs, out var mouseIdleMs))
+        {
+            return; // best-effort; try again next period
+        }
+
+        var reinstallKeyboard = ShouldReinstallHook(keyboardIdleMs, systemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS);
+        var reinstallMouse = ShouldReinstallHook(mouseIdleMs, systemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS);
+
+        if (!reinstallKeyboard && !reinstallMouse)
+        {
+            return;
+        }
+
+        LogDebug($"Watchdog: possible silent hook loss (keyboard={reinstallKeyboard}, mouse={reinstallMouse}, systemInputAge={systemInputAgeMs}ms)");
+
+        if (!_canReinstallHooks || _hookDispatcher is null)
+        {
+            LogDebug("Watchdog: re-install is disabled (hooks were not installed on a dispatcher-pumped thread) — detection only");
+            return;
+        }
+
+        // Only one re-install check may be queued at a time (see _reinstallCheckPending) — otherwise
+        // a stalled dispatcher accumulates one stale closure per missed 10s period, and every one of
+        // them would reinstall + ReleaseAllState even after the first already fixed the hook.
+        if (Interlocked.CompareExchange(ref _reinstallCheckPending, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _hookDispatcher.InvokeAsync(() =>
+        {
+            try
+            {
+                lock (_profileLock)
+                {
+                    if (!_isRunning)
+                    {
+                        return;
+                    }
+
+                    // This closure may have sat queued on a stalled dispatcher — exactly the scenario
+                    // the pending-guard exists for — so the booleans captured above can be stale by
+                    // now. Recompute freshness and only reinstall hooks that are STILL stale.
+                    if (!TryGetHookFreshness(out var freshSystemInputAgeMs, out var freshKeyboardIdleMs, out var freshMouseIdleMs))
+                    {
+                        return; // best-effort; the periodic tick will retry
+                    }
+
+                    if (ShouldReinstallHook(freshKeyboardIdleMs, freshSystemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS))
+                    {
+                        ReinstallKeyboardHookLocked();
+                    }
+
+                    if (ShouldReinstallHook(freshMouseIdleMs, freshSystemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS))
+                    {
+                        ReinstallMouseHookLocked();
+                    }
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _reinstallCheckPending, 0);
+            }
+        });
+    }
+
+    // Shared by WatchdogTick's preliminary check and its dispatcher-marshaled recheck: system-wide
+    // input age (GetLastInputInfo) plus each hook's idle time from its liveness tick. Returns false
+    // if GetLastInputInfo fails (best-effort; caller retries next period).
+    private bool TryGetHookFreshness(out uint systemInputAgeMs, out double keyboardIdleMs, out double mouseIdleMs)
+    {
+        var lii = new NativeMethods.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<NativeMethods.LASTINPUTINFO>() };
+        if (!NativeMethods.GetLastInputInfo(ref lii))
+        {
+            systemInputAgeMs = 0;
+            keyboardIdleMs = 0;
+            mouseIdleMs = 0;
+            return false;
+        }
+
+        // Both operands are in the 32-bit Environment.TickCount domain; unchecked uint subtraction
+        // survives wraparound (~49.7 days).
+        systemInputAgeMs = unchecked((uint)Environment.TickCount - lii.dwTime);
+
+        var nowTicks = Stopwatch.GetTimestamp();
+        keyboardIdleMs = (nowTicks - Volatile.Read(ref _lastKeyboardEventTick)) * TickToMilliseconds;
+        mouseIdleMs = (nowTicks - Volatile.Read(ref _lastMouseEventTick)) * TickToMilliseconds;
+        return true;
+    }
+
+    // Pure decision function (P8, unit-tested): a hook is presumed silently removed when the system
+    // is receiving fresh input but that specific hook has not seen an event in a long time. If system
+    // input is ALSO stale (e.g. lock screen), "hook died" is indistinguishable from "nobody is
+    // providing input" — don't reinstall.
+    internal static bool ShouldReinstallHook(double hookIdleMs, uint systemInputAgeMs, double staleHookThresholdMs, uint freshInputThresholdMs)
+    {
+        return systemInputAgeMs < freshInputThresholdMs && hookIdleMs > staleHookThresholdMs;
+    }
+
+    // Must run on _hookDispatcher, under _profileLock, with _isRunning already re-checked by the
+    // caller. Install-new-before-unhook-old with a fail-open swap window (see
+    // _keyboardReplacementInProgress declaration): both registrations would invoke the SAME kept-alive
+    // delegate and LL callbacks receive no registration identity, so overlap idempotency alone is not
+    // enough — MouseCallback's side effects are non-suppressing.
+    private void ReinstallKeyboardHookLocked()
+    {
+        _keyboardReplacementInProgress = true;
+
+        var user32Handle = NativeMethods.LoadLibrary("user32.dll");
+        if (user32Handle == IntPtr.Zero)
+        {
+            _keyboardReplacementInProgress = false;
+            LogDebug($"Watchdog: keyboard hook re-install failed to load user32.dll (0x{Marshal.GetLastWin32Error():X})");
+            return;
+        }
+
+        // _isRunning re-checked by the caller guarantees _keyboardProc was assigned in Start() and
+        // never reset (only the Start()-failure path nulls it, which never sets _isRunning true).
+        var newHandle = NativeMethods.SetWindowsHookEx(NativeMethods.WH_KEYBOARD_LL, _keyboardProc!, user32Handle, 0);
+        if (newHandle == IntPtr.Zero)
+        {
+            // Fail open: keep the existing (possibly-dead) handle and do NOT stamp the liveness
+            // tick — a false positive can never lose a live hook; the watchdog retries next period.
+            var err = Marshal.GetLastWin32Error();
+            _keyboardReplacementInProgress = false;
+            LogDebug($"ERROR: Watchdog keyboard hook re-install FAILED (0x{err:X}); keeping existing handle, retrying next period");
+            return;
+        }
+
+        var oldHandle = _keyboardHookHandle;
+        NativeMethods.UnhookWindowsHookEx(oldHandle); // ignore result: handle may already be dead
+        _keyboardHookHandle = newHandle;
+        LogDebug("WARNING: Watchdog re-installed a silently-removed keyboard hook");
+
+        // Missed-release safety: a hook that died mid-press has missed physical UPs (e.g. a combined
+        // override never released). Reuse the proven release path — same as a profile switch —
+        // rather than reconstruct partial state; this also cleans up anything that passed through
+        // unprocessed during the fail-open window above. The desktop is NOT going away here (unlike
+        // Stop()/OnSessionSwitch), so re-derive afterward (P9) — a physically-held Alt/RMB must not
+        // end up inert just because a false-positive watchdog refresh ran.
+        ReleaseAllState();
+        RederivePhysicalModifierState();
+
+        Volatile.Write(ref _lastKeyboardEventTick, Stopwatch.GetTimestamp());
+        _keyboardReplacementInProgress = false;
+    }
+
+    // See ReinstallKeyboardHookLocked — identical sequence, independent hook/flag/handle (per-hook
+    // independence: a stall kills only the hook that had an event pending).
+    private void ReinstallMouseHookLocked()
+    {
+        _mouseReplacementInProgress = true;
+
+        var user32Handle = NativeMethods.LoadLibrary("user32.dll");
+        if (user32Handle == IntPtr.Zero)
+        {
+            _mouseReplacementInProgress = false;
+            LogDebug($"Watchdog: mouse hook re-install failed to load user32.dll (0x{Marshal.GetLastWin32Error():X})");
+            return;
+        }
+
+        var newHandle = NativeMethods.SetWindowsHookEx(NativeMethods.WH_MOUSE_LL, _mouseProc!, user32Handle, 0);
+        if (newHandle == IntPtr.Zero)
+        {
+            var err = Marshal.GetLastWin32Error();
+            _mouseReplacementInProgress = false;
+            LogDebug($"ERROR: Watchdog mouse hook re-install FAILED (0x{err:X}); keeping existing handle, retrying next period");
+            return;
+        }
+
+        var oldHandle = _mouseHookHandle;
+        NativeMethods.UnhookWindowsHookEx(oldHandle);
+        _mouseHookHandle = newHandle;
+        LogDebug("WARNING: Watchdog re-installed a silently-removed mouse hook");
+
+        // Missed-release safety + re-derive (see ReinstallKeyboardHookLocked): the desktop is NOT
+        // going away here, so a physically-held Alt/RMB must not end up inert after this refresh.
+        ReleaseAllState();
+        RederivePhysicalModifierState();
+
+        Volatile.Write(ref _lastMouseEventTick, Stopwatch.GetTimestamp());
+        _mouseReplacementInProgress = false;
+    }
+
     public void ActivateProfile(Profile profile)
     {
         ArgumentNullException.ThrowIfNull(profile);
@@ -291,8 +634,9 @@ public sealed class InputHookService : IInputHookService
             }
 
             ReleaseAllState();
+            RederivePhysicalModifierState();
             _activeProfile = profile;
-            
+
             LogDebug($"Profile activated: {profile.Name}");
         }
 
@@ -302,7 +646,7 @@ public sealed class InputHookService : IInputHookService
     public void DeactivateProfile()
     {
         Profile? previous;
-        
+
         lock (_profileLock)
         {
             previous = _activeProfile;
@@ -312,8 +656,9 @@ public sealed class InputHookService : IInputHookService
             }
 
             ReleaseAllState();
+            RederivePhysicalModifierState();
             _activeProfile = null;
-            
+
             LogDebug("Profile deactivated");
         }
 
@@ -346,13 +691,31 @@ public sealed class InputHookService : IInputHookService
     
     private IntPtr KeyboardCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
+        // P8: any invocation proves the hook alive; must be the FIRST statement, before every guard.
+        Volatile.Write(ref _lastKeyboardEventTick, Stopwatch.GetTimestamp());
+
+        // P8 fail-open swap window: while a re-install is in flight for THIS hook, pass everything
+        // through with zero side effects (see _keyboardReplacementInProgress declaration).
+        if (_keyboardReplacementInProgress)
+        {
+            return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
+        }
+
         if (nCode < 0 || !_isRunning)
         {
             return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
 
         var message = (int)wParam;
-        var data = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
+
+        // P5: unsafe by-value read instead of Marshal.PtrToStructure<T> (which boxes on .NET 8).
+        // KBDLLHOOKSTRUCT is blittable (uint/enum-uint/IntPtr); the copy is taken before
+        // CallNextHookEx, so lifetime is safe. Unsafe code confined to this one read.
+        NativeMethods.KBDLLHOOKSTRUCT data;
+        unsafe
+        {
+            data = *(NativeMethods.KBDLLHOOKSTRUCT*)lParam;
+        }
 
         // Ignore injected events from our own SendInput calls
         if ((data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 || 
@@ -404,13 +767,41 @@ public sealed class InputHookService : IInputHookService
     
     private IntPtr MouseCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
+        // P8: any invocation proves the hook alive; must be the FIRST statement, before every guard
+        // including the P5 message-type early-out below (moves still count as liveness).
+        Volatile.Write(ref _lastMouseEventTick, Stopwatch.GetTimestamp());
+
+        // P8 fail-open swap window: while a re-install is in flight for THIS hook, pass everything
+        // through with zero side effects (see _mouseReplacementInProgress declaration).
+        if (_mouseReplacementInProgress)
+        {
+            return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
+        }
+
         if (nCode < 0 || !_isRunning)
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
 
         var message = (int)wParam;
-        var data = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
+
+        // P5: moves (up to 8 kHz on gaming mice) and wheel exit here, BEFORE lParam is ever touched —
+        // only these 8 button messages matter to us, and Marshal.PtrToStructure<T> boxes on .NET 8.
+        if (message is not (NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP or
+                             NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP or
+                             NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP or
+                             NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP))
+        {
+            return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
+        }
+
+        // Unsafe by-value read instead of Marshal.PtrToStructure<T> (see KeyboardCallback). Unsafe
+        // code confined to this one read.
+        NativeMethods.MSLLHOOKSTRUCT data;
+        unsafe
+        {
+            data = *(NativeMethods.MSLLHOOKSTRUCT*)lParam;
+        }
 
         // Ignore injected events
         if ((data.flags & NativeMethods.MouseLlFlags.LLMHF_INJECTED) != 0)
@@ -582,7 +973,7 @@ public sealed class InputHookService : IInputHookService
                 }
 
                 if (IsDebugEnabled) LogDebug($"[{button}] Hold timer FIRED - sending {holdKey}");
-                FireTapKey(holdKey);
+                FireTapKey(holdKey, KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS);
             };
 
             state.HoldTimer.Change(holdThreshold, Timeout.Infinite); // arm AFTER assigning the callback
@@ -628,13 +1019,13 @@ public sealed class InputHookService : IInputHookService
         {
             // We beat the timer, but threshold was met - send hold key
             if (IsDebugEnabled) LogDebug($"[{button}] Hold threshold met manually");
-            FireTapKey(binding.HoldKey.Value);
+            FireTapKey(binding.HoldKey.Value, KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS);
         }
         else if (binding.TapKey.HasValue)
         {
             // Quick tap - send tap key
             if (IsDebugEnabled) LogDebug($"[{button}] Quick tap");
-            FireTapKey(binding.TapKey.Value);
+            FireTapKey(binding.TapKey.Value, KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS);
         }
 
         // Consume the release
@@ -936,9 +1327,10 @@ public sealed class InputHookService : IInputHookService
         // Only toggle if state doesn't match desired state
         if (currentlyOn != enabled)
         {
-            // Send Caps Lock key tap to toggle it (down + up)
-            // Using VK code directly for Caps Lock (0x14)
-            var input = new NativeMethods.INPUT
+            // Send Caps Lock key tap to toggle it (down + up). Using VK code directly for Caps
+            // Lock (0x14). Batched as ONE SendInput(2, ...) call: an atomic down/up pair can no
+            // longer be interleaved with other injected input from elsewhere in the process.
+            var down = new NativeMethods.INPUT
             {
                 type = NativeMethods.InputType.INPUT_KEYBOARD,
                 U = new NativeMethods.InputUnion
@@ -953,14 +1345,12 @@ public sealed class InputHookService : IInputHookService
                     }
                 }
             };
-            
-            // Send key down
-            NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
-            
-            // Send key up
-            input.U.ki.dwFlags = NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP;
-            NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
-            
+
+            var up = down;
+            up.U.ki.dwFlags = NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP;
+
+            NativeMethods.SendInput(2, new[] { down, up }, InputStructSize);
+
             LogDebug($"ForceCapsLockState: Toggled Caps Lock {(enabled ? "ON" : "OFF")}");
         }
     }
@@ -1097,55 +1487,10 @@ public sealed class InputHookService : IInputHookService
         }
         else if (_holdBreathArmedMode == HoldBreathMode.Toggle)
         {
-            var key = _holdBreathArmedKey;
-
-            // Fire tap asynchronously (don't block hook). The mid-flight key is tracked in
-            // _transientTapKeys so a release path can force the UP if shutdown lands inside the tap.
-            var epochAtQueue = _tapReleaseEpoch;
-            ThreadPool.QueueUserWorkItem(_ =>
-            {
-                if (_disposed)
-                {
-                    return;
-                }
-
-                var rng = _random.Value!;
-
-                // Warmup to prevent pattern detection
-                var warmup = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
-                for (int i = 0; i < warmup; i++)
-                {
-                    rng.Next();
-                }
-
-                lock (_transientTapLock)
-                {
-                    // Under the lock so the DOWN can never land after ReleaseAllState drained the
-                    // list; the epoch check drops a tap that was queued before a release boundary.
-                    if (_disposed || !_isRunning || epochAtQueue != _tapReleaseEpoch)
-                    {
-                        return;
-                    }
-
-                    _transientTapKeys.Add(key);
-                    SendKey(key, true);
-                }
-
-                // Human-like key press duration (20-30ms)
-                var duration = rng.Next(20, 31);
-                Thread.Sleep(duration);
-
-                lock (_transientTapLock)
-                {
-                    // If a release path already forced the UP (and removed the entry), don't double-send.
-                    if (_transientTapKeys.Remove(key))
-                    {
-                        SendKey(key, false);
-                    }
-                }
-
-                LogDebug($"HoldBreath toggle tap complete: duration={duration}ms");
-            });
+            // P6: DOWN happens synchronously right here (we already hold _holdBreathLock), which is
+            // the documented _holdBreathLock -> _transientTapLock nesting (see both lock declarations).
+            // Only duration + UP defer to the pool, same as every other FireTapKey call site.
+            FireTapKey(_holdBreathArmedKey, HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS);
         }
     }
 
@@ -1206,21 +1551,24 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        // Check if Windows key is pressed
-        bool winPressed = (NativeMethods.GetAsyncKeyState(KeyInteropUtilities.ToVirtualKey(Key.LWin)) & 0x8000) != 0 ||
-                          (NativeMethods.GetAsyncKeyState(KeyInteropUtilities.ToVirtualKey(Key.RWin)) & 0x8000) != 0;
-
-        if (!winPressed)
-        {
-            return false;
-        }
-
+        // P3: cheap dictionary/null checks first — saves 2 GetAsyncKeyState syscalls on every
+        // unhandled keydown while a launcher profile is enabled. Pure conjunction, so reordering
+        // against the Win-key check below cannot change the truth table.
         if (!profile.WindowsLauncher.Launchers.TryGetValue(key.Value, out var binding))
         {
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(binding.Path))
+        {
+            return false;
+        }
+
+        // Check if Windows key is pressed
+        bool winPressed = (NativeMethods.GetAsyncKeyState(KeyInteropUtilities.ToVirtualKey(Key.LWin)) & 0x8000) != 0 ||
+                          (NativeMethods.GetAsyncKeyState(KeyInteropUtilities.ToVirtualKey(Key.RWin)) & 0x8000) != 0;
+
+        if (!winPressed)
         {
             return false;
         }
@@ -1272,18 +1620,32 @@ public sealed class InputHookService : IInputHookService
 
     // ==================== KEY INJECTION ====================
     
+    // P6: DOWN is synchronous and takes place on the CALLER's thread (hook thread, or a hold-breath
+    // timer thread already holding _holdBreathLock) — deterministic, ordered ahead of whatever the
+    // user does next. Only the human-like duration + UP defer to the pool. Parameterized so Alt+Mouse
+    // (31-53ms) and hold-breath Toggle (20-31ms) share one implementation with unchanged distributions.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void FireTapKey(Key key)
+    private void FireTapKey(Key key, int minDurationMs, int maxDurationMs)
     {
-        // Fire on ThreadPool to avoid blocking hook callback
-        var epochAtQueue = _tapReleaseEpoch;
-        ThreadPool.QueueUserWorkItem(_ =>
+        var epochAtCall = _tapReleaseEpoch;
+        lock (_transientTapLock)
         {
-            if (_disposed)
+            // Under the lock so the DOWN can never land after ReleaseAllState drained the list; the
+            // epoch check drops a tap that was decided before a release boundary. For hook-thread
+            // callers this is near-vacuous (the hook thread can't interleave with itself); for
+            // timer-fired holds it still closes the decision->injection gap against a concurrent
+            // ReleaseAllState.
+            if (_disposed || !_isRunning || epochAtCall != _tapReleaseEpoch)
             {
                 return;
             }
 
+            _transientTapKeys.Add(key);
+            SendKey(key, true);
+        }
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
             var rng = _random.Value!;
 
             // Warmup RNG to break thread-reuse patterns (anti-cheat)
@@ -1293,33 +1655,15 @@ public sealed class InputHookService : IInputHookService
                 rng.Next();
             }
 
-            lock (_transientTapLock)
-            {
-                // Under the lock so the DOWN can never land after ReleaseAllState drained the
-                // list; the epoch check drops a tap that was queued before a release boundary.
-                if (_disposed || !_isRunning || epochAtQueue != _tapReleaseEpoch)
-                {
-                    return;
-                }
-
-                _transientTapKeys.Add(key);
-                SendKey(key, true);
-            }
-
             // Human-like key press duration with jitter
-            var duration = rng.Next(KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS + 1);
-
-            //// High-resolution wait (more accurate than Thread.Sleep for <50ms)
-            //var sw = Stopwatch.StartNew();
-            //while (sw.ElapsedMilliseconds < duration)
-            //{
-            //    Thread.SpinWait(1000);  // ~10-50μs per iteration
-            //}
+            var duration = rng.Next(minDurationMs, maxDurationMs + 1);
             Thread.Sleep(duration);
 
             lock (_transientTapLock)
             {
                 // If a release path already forced the UP (and removed the entry), don't double-send.
+                // No epoch/_disposed/_isRunning check needed here (I3): once the DOWN landed, the UP
+                // is unconditional — the Remove-guard alone is sufficient to prevent a double-send.
                 if (_transientTapKeys.Remove(key))
                 {
                     SendKey(key, false);
@@ -1364,8 +1708,8 @@ public sealed class InputHookService : IInputHookService
             }
         };
 
-        var result = NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
-        
+        var result = NativeMethods.SendInput(1, new[] { input }, InputStructSize);
+
         if (result == 0)
         {
             LogDebug($"SendKey FAILED: {key} ({(isKeyDown ? "DOWN" : "UP")}) - SendInput returned 0, VK=0x{virtualKey:X2}");
@@ -1393,16 +1737,18 @@ public sealed class InputHookService : IInputHookService
             }
         };
 
-        NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
+        NativeMethods.SendInput(1, new[] { input }, InputStructSize);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsExtendedKey(Key key)
     {
-        return key is Key.RightAlt or Key.RightCtrl or Key.Insert or Key.Delete or 
-                      Key.Home or Key.End or Key.PageUp or Key.PageDown or 
-                      Key.Up or Key.Down or Key.Left or Key.Right or 
-                      Key.NumLock or Key.PrintScreen or Key.Divide;
+        // P4: Key.Apps (VK_APPS / 0x5D, the context-menu key) is E0-extended; KeyCatalog offers it
+        // as a mappable target, so scan-code-reading games need the flag to see the right physical key.
+        return key is Key.RightAlt or Key.RightCtrl or Key.Insert or Key.Delete or
+                      Key.Home or Key.End or Key.PageUp or Key.PageDown or
+                      Key.Up or Key.Down or Key.Left or Key.Right or
+                      Key.NumLock or Key.PrintScreen or Key.Divide or Key.Apps;
     }
 
     private bool IsCombinedOverrideActive(Key sourceKey, CombinedOverrideState expectedState)
@@ -1514,8 +1860,30 @@ public sealed class InputHookService : IInputHookService
 
         _altPressed = false;
         _rightButtonPressed = false;
-        
+
         LogDebug("All state released");
+    }
+
+    // P9: ReleaseAllState() above force-clears both flags unconditionally, which is correct for
+    // Stop()/OnSessionSwitch (the desktop itself is going away). Called ONLY from
+    // ActivateProfile/DeactivateProfile, immediately after ReleaseAllState() and still inside
+    // _profileLock: re-derives what the user is STILL physically holding across the switch so
+    // AltMouse / RightClickOnly combined mappings don't go inert until the user releases and
+    // re-presses. Re-deriving _rightButtonPressed=true does NOT re-arm hold-breath (arming only
+    // happens on a real WM_RBUTTONDOWN) — it only lets RightClickOnly mappings work immediately,
+    // which matches physical reality.
+    private void RederivePhysicalModifierState()
+    {
+        _altPressed = (NativeMethods.GetAsyncKeyState(0xA4) & 0x8000) != 0 ||   // VK_LMENU
+                      (NativeMethods.GetAsyncKeyState(0xA5) & 0x8000) != 0;    // VK_RMENU
+
+        // GetAsyncKeyState reports the PHYSICAL button; the LL hook's WM_RBUTTONDOWN reports the
+        // LOGICAL (post-swap) button. Query whichever physical VK currently maps to "right" so this
+        // stays consistent with what HandleAltMouse/HandleCombinedMappings actually see on the hook.
+        var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
+            ? NativeMethods.VK_LBUTTON
+            : NativeMethods.VK_RBUTTON;
+        _rightButtonPressed = (NativeMethods.GetAsyncKeyState(physicalRightVk) & 0x8000) != 0;
     }
 
     private void ResetMouseStates()

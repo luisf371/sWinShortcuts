@@ -25,7 +25,16 @@ internal static class NativeMethods
     internal const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
     internal const int VK_CAPITAL = 0x14;
+    internal const int VK_LBUTTON = 0x01;
+    internal const int VK_RBUTTON = 0x02;
     internal static readonly IntPtr INPUT_IGNORE = new(12345);
+
+    // P9: GetAsyncKeyState reports PHYSICAL mouse buttons, unlike the LL hook's WM_RBUTTONDOWN which
+    // reports the LOGICAL (post-swap) button — SM_SWAPBUTTON tells which physical VK maps to "right".
+    internal const int SM_SWAPBUTTON = 23;
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetrics(int nIndex);
 
     internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
     internal delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -67,6 +76,20 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool UnhookWindowsHookEx(IntPtr hhk);
 
+    // P8: system-wide last-input timestamp for the hook-loss watchdog (GetLastInputInfo's dwTime is
+    // in the same 32-bit Environment.TickCount domain — callers must diff with unchecked((uint)...)
+    // subtraction to survive wraparound).
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
     [DllImport("user32.dll")]
     internal static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -91,6 +114,38 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     internal static extern IntPtr LoadLibrary(string lpFileName);
+
+    // P7: request/release 1ms timer resolution while hooks are live. winmm requires matched
+    // timeBeginPeriod/timeEndPeriod calls (see InputHookService Start()/Stop() pairing discipline).
+    [DllImport("winmm.dll")]
+    internal static extern uint timeBeginPeriod(uint uPeriod);
+
+    [DllImport("winmm.dll")]
+    internal static extern uint timeEndPeriod(uint uPeriod);
+
+    [DllImport("kernel32.dll")]
+    internal static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetProcessInformation(IntPtr hProcess, int processInformationClass,
+        ref PROCESS_POWER_THROTTLING_STATE processInformation, uint processInformationSize);
+
+    // PROCESS_INFORMATION_CLASS.ProcessPowerThrottling — the only member this app uses.
+    internal const int ProcessPowerThrottling = 4;
+
+    // Win11 opt-out: control-bit set + state-bit clear = "always honor this process's requested
+    // timer resolution, even while occluded/minimized." SetProcessInformation fails gracefully
+    // (returns FALSE) on pre-Win11 systems that don't recognize this control mask.
+    internal const uint PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION = 0x4;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PROCESS_POWER_THROTTLING_STATE
+    {
+        public uint Version;
+        public uint ControlMask;
+        public uint StateMask;
+    }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern bool EnumDisplayDevices(string? lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
