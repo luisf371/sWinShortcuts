@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using Microsoft.Win32;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
@@ -46,11 +47,6 @@ public sealed class InputHookService : IInputHookService
     private const int TIMER_ARMED = 1;
     private const int TIMER_FIRED = 2;
     private const int TIMER_CANCELLED = 3;
-    
-    private const int HOLDBREATH_IDLE = 0;
-    private const int HOLDBREATH_PENDING = 1;
-    private const int HOLDBREATH_ACTIVE = 2;
-    private const int HOLDBREATH_CANCELLED = 3;
 
     // ==================== FIELDS ====================
     
@@ -104,10 +100,18 @@ public sealed class InputHookService : IInputHookService
     private readonly HashSet<Key> _heldLauncherKeys = new();
     private readonly object _heldLauncherKeysLock = new();
 
-    // Hold-breath state (lock-free)
-    private int _holdBreathState = HOLDBREATH_IDLE;
+    // Hold-breath state. All fields below are guarded by _holdBreathLock. Every hold-breath event
+    // (arm, fire, cancel, release) already paid this lock for Timer.Change, and events occur at
+    // human click frequency — so guarding the whole state machine including the SendInput calls
+    // costs nothing extra while guaranteeing the UP release can never overtake the DOWN press.
+    private readonly object _holdBreathLock = new();
     private readonly System.Threading.Timer _holdBreathTimer;
-    private readonly object _holdBreathTimerLock = new();
+    private bool _holdBreathPending;
+    private Key? _holdBreathInjectedKey;    // key sent DOWN in Hold mode and not yet released
+    private Key _holdBreathArmedKey;        // settings snapshot at arm time (UI mutates settings in place)
+    private HoldBreathMode _holdBreathArmedMode;
+    private long _holdBreathArmedTick;      // arm timestamp for the stale-fire guard
+    private int _holdBreathArmedDelayMs;
     
     // Hook handles
     private NativeMethods.LowLevelKeyboardProc? _keyboardProc;
@@ -127,14 +131,7 @@ public sealed class InputHookService : IInputHookService
         _logger = logger;
 
         // Initialize hold breath timer (pre-allocated, reused throughout lifetime)
-        _holdBreathTimer = new System.Threading.Timer(_ =>
-        {
-            var profile = _activeProfile;
-            if (profile?.RightClickHoldBreath.IsEnabled == true)
-            {
-                ActivateHoldBreath(profile.RightClickHoldBreath);
-            }
-        }, null, Timeout.Infinite, Timeout.Infinite);
+        _holdBreathTimer = new System.Threading.Timer(_ => OnHoldBreathTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     public event EventHandler<Profile?>? ActiveProfileChanged;
@@ -194,6 +191,10 @@ public sealed class InputHookService : IInputHookService
                 throw new Win32Exception(err, "Failed to install input hooks");
             }
 
+            // Recover from a desktop switch that swallows the button-up (lock screen, logoff):
+            // without this, an injected hold-breath key would stay down until the next click.
+            SystemEvents.SessionSwitch += OnSessionSwitch;
+
             _isRunning = true;
             LogDebug("InputHookService started");
         }
@@ -207,6 +208,8 @@ public sealed class InputHookService : IInputHookService
             {
                 return;
             }
+
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
 
             if (_keyboardHookHandle != IntPtr.Zero)
             {
@@ -222,8 +225,30 @@ public sealed class InputHookService : IInputHookService
 
             ReleaseAllState();
             _isRunning = false;
-            
+
             LogDebug("InputHookService stopped");
+        }
+    }
+
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        // When the desktop switches away mid-press, the low-level hook never sees the button-up,
+        // which would leave injected keys (hold-breath, combined overrides) stuck down.
+        if (e.Reason is not (SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff or
+                             SessionSwitchReason.ConsoleDisconnect or SessionSwitchReason.RemoteDisconnect))
+        {
+            return;
+        }
+
+        lock (_profileLock)
+        {
+            if (!_isRunning)
+            {
+                return;
+            }
+
+            ReleaseAllState();
+            LogDebug($"Session switch ({e.Reason}): released all injected state");
         }
     }
 
@@ -865,8 +890,8 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    // ==================== HOLD BREATH HANDLING (LOCK-FREE) ====================
-    
+    // ==================== HOLD BREATH HANDLING ====================
+
     private void HandleRightClickHoldBreathDown()
     {
         var profile = _activeProfile;
@@ -875,106 +900,121 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
-        // Cancel any pending activation
-        CancelHoldBreathDelay();
-
         var settings = profile.RightClickHoldBreath;
         var baseDelay = Math.Max(0, settings.DelayMilliseconds);
-        
+
         // Add human-like jitter using thread-local RNG with warmup
         var rng = _random.Value!;
-        
+
         // Warmup RNG to break thread-reuse patterns (anti-cheat protection)
         var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
         for (int i = 0; i < warmupCalls; i++)
         {
             rng.Next();
         }
-        
-        var jitter = baseDelay > 0 
-            ? rng.Next(HOLD_BREATH_JITTER_MIN_MS, HOLD_BREATH_JITTER_MAX_MS + 1) 
+
+        var jitter = baseDelay > 0
+            ? rng.Next(HOLD_BREATH_JITTER_MIN_MS, HOLD_BREATH_JITTER_MAX_MS + 1)
             : 0;
         var totalDelay = baseDelay + jitter;
 
         if (IsDebugEnabled) LogDebug($"HoldBreath DOWN: base={baseDelay}ms, jitter=+{jitter}ms, total={totalDelay}ms, warmup={warmupCalls}");
 
-        // Atomically transition: * → PENDING
-        Interlocked.Exchange(ref _holdBreathState, HOLDBREATH_PENDING);
-
-        if (totalDelay > 0)
+        lock (_holdBreathLock)
         {
-            // Schedule delayed activation
-            lock (_holdBreathTimerLock)
+            // A missed WM_RBUTTONUP (hook timeout, UAC secure desktop, Win+L) can leave the previous
+            // press's key down; release it before starting a new cycle so it can never stay stuck.
+            ReleaseInjectedHoldBreathKeyLocked();
+
+            _holdBreathPending = true;
+            // Snapshot settings: the UI mutates the live settings object in place, and the release
+            // must pair with exactly the key that was pressed.
+            _holdBreathArmedKey = settings.HoldBreathKey;
+            _holdBreathArmedMode = settings.Mode;
+
+            if (totalDelay > 0)
             {
+                _holdBreathArmedTick = Stopwatch.GetTimestamp();
+                _holdBreathArmedDelayMs = totalDelay;
                 _holdBreathTimer.Change(totalDelay, Timeout.Infinite);
             }
-        }
-        else
-        {
-            // Immediate activation (check current state, not captured)
-            if (_isRunning && _rightButtonPressed)
+            else if (_isRunning && _rightButtonPressed)
             {
-                ActivateHoldBreath(settings);
+                // Immediate activation, synchronous on the hook thread
+                ActivateHoldBreathLocked();
             }
         }
     }
 
     private void HandleRightClickHoldBreathUp()
     {
-        // Cancel pending activation
-        CancelHoldBreathDelay();
-
-        var profile = _activeProfile;
-        if (profile is null || !profile.RightClickHoldBreath.IsEnabled)
+        // No profile/IsEnabled gate here: the release must pair with whatever was actually
+        // injected, even if settings changed or the profile switched mid-hold.
+        lock (_holdBreathLock)
         {
-            return;
-        }
-
-        LogDebug("HoldBreath UP");
-
-        // Atomically check and deactivate: ACTIVE → IDLE
-        if (Interlocked.CompareExchange(ref _holdBreathState, HOLDBREATH_IDLE, HOLDBREATH_ACTIVE) == HOLDBREATH_ACTIVE)
-        {
-            if (profile.RightClickHoldBreath.Mode == HoldBreathMode.Hold)
-            {
-                SendKey(profile.RightClickHoldBreath.HoldBreathKey, false);
-                LogDebug($"HoldBreath released: {profile.RightClickHoldBreath.HoldBreathKey}");
-            }
-        }
-        else
-        {
-            // Wasn't active, just ensure we're idle
-            Interlocked.CompareExchange(ref _holdBreathState, HOLDBREATH_IDLE, HOLDBREATH_PENDING);
-            LogDebug("HoldBreath UP (was not active)");
+            _holdBreathPending = false;
+            _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            ReleaseInjectedHoldBreathKeyLocked();
         }
     }
 
-    private void ActivateHoldBreath(RightClickHoldBreathSettings settings)
+    private void OnHoldBreathTimerFired()
     {
-        // ✅ CRITICAL FIX: Check CURRENT state, not captured values
-        if (!_isRunning)
+        lock (_holdBreathLock)
         {
-            LogDebug("HoldBreath activation blocked - service stopped");
-            return;
-        }
-        
+            if (!_holdBreathPending || !_isRunning)
+            {
+                return;
+            }
 
-        // Atomically activate: PENDING → ACTIVE
-        if (Interlocked.CompareExchange(ref _holdBreathState, HOLDBREATH_ACTIVE, HOLDBREATH_PENDING) != HOLDBREATH_PENDING)
-        {
-            LogDebug("HoldBreath activation blocked - state changed (cancelled or already active)");
-            return;
-        }
+            // Timer.Change cannot recall an already-dispatched callback, so a cancel followed by an
+            // immediate re-arm can be followed by the PREVIOUS press's elapse. Timers fire on-time
+            // or late, never meaningfully early — an early fire is that stale elapse.
+            var elapsedMs = (Stopwatch.GetTimestamp() - _holdBreathArmedTick) * TickToMilliseconds;
+            if (elapsedMs < _holdBreathArmedDelayMs - HOLD_FIRE_TOLERANCE_MS)
+            {
+                if (IsDebugEnabled) LogDebug($"HoldBreath stale timer fire ignored: elapsed={elapsedMs:F1}ms of {_holdBreathArmedDelayMs}ms");
+                return;
+            }
 
-        LogDebug($"HoldBreath ACTIVATED: mode={settings.Mode}, key={settings.HoldBreathKey}");
+            // Button already up (its WM_RBUTTONUP is in flight but hasn't reached our lock yet):
+            // activating now would inject a pointless phantom tap.
+            if (!_rightButtonPressed)
+            {
+                _holdBreathPending = false;
+                return;
+            }
 
-        if (settings.Mode == HoldBreathMode.Hold)
-        {
-            SendKey(settings.HoldBreathKey, true);
+            var profile = _activeProfile;
+            if (profile?.RightClickHoldBreath.IsEnabled != true)
+            {
+                _holdBreathPending = false;
+                return;
+            }
+
+            ActivateHoldBreathLocked();
         }
-        else if (settings.Mode == HoldBreathMode.Toggle)
+    }
+
+    // Must be called while holding _holdBreathLock. Injecting the DOWN inside the lock is what
+    // guarantees the UP handler's release can never be reordered before this press lands.
+    private void ActivateHoldBreathLocked()
+    {
+        _holdBreathPending = false;
+
+        if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey}");
+
+        if (_holdBreathArmedMode == HoldBreathMode.Hold)
         {
-            // Fire tap asynchronously (don't block hook)
+            SendKey(_holdBreathArmedKey, true);
+            _holdBreathInjectedKey = _holdBreathArmedKey;
+        }
+        else if (_holdBreathArmedMode == HoldBreathMode.Toggle)
+        {
+            var key = _holdBreathArmedKey;
+
+            // Fire tap asynchronously (don't block hook). The down+up pair is self-contained and
+            // nothing is recorded, so a toggle tap cannot strand a key.
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 if (_disposed)
@@ -983,62 +1023,47 @@ public sealed class InputHookService : IInputHookService
                 }
 
                 var rng = _random.Value!;
-                
+
                 // Warmup to prevent pattern detection
                 var warmup = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
                 for (int i = 0; i < warmup; i++)
                 {
                     rng.Next();
                 }
-                
-                SendKey(settings.HoldBreathKey, true);
-                
+
+                SendKey(key, true);
+
                 // Human-like key press duration (20-30ms)
                 var duration = rng.Next(20, 31);
                 Thread.Sleep(duration);
-                
-                SendKey(settings.HoldBreathKey, false);
-                
+
+                SendKey(key, false);
+
                 LogDebug($"HoldBreath toggle tap complete: duration={duration}ms");
             });
-
-            // Reset state immediately for toggle
-            Interlocked.CompareExchange(ref _holdBreathState, HOLDBREATH_IDLE, HOLDBREATH_ACTIVE);
         }
     }
 
-    private void CancelHoldBreathDelay()
+    // Must be called while holding _holdBreathLock.
+    private void ReleaseInjectedHoldBreathKeyLocked()
     {
-        // Atomically cancel: PENDING → CANCELLED
-        var previous = Interlocked.CompareExchange(ref _holdBreathState, HOLDBREATH_CANCELLED, HOLDBREATH_PENDING);
-
-        // Disable timer
-        lock (_holdBreathTimerLock)
+        if (_holdBreathInjectedKey is { } key)
         {
-            _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        }
-
-        // If we cancelled PENDING, reset to IDLE
-        if (previous == HOLDBREATH_PENDING)
-        {
-            Interlocked.CompareExchange(ref _holdBreathState, HOLDBREATH_IDLE, HOLDBREATH_CANCELLED);
+            SendKey(key, false);
+            _holdBreathInjectedKey = null;
+            if (IsDebugEnabled) LogDebug($"HoldBreath released: {key}");
         }
     }
 
     private void ReleaseHoldBreathState()
     {
-        CancelHoldBreathDelay();
-
-        // Force release if active
-        if (Interlocked.Exchange(ref _holdBreathState, HOLDBREATH_IDLE) == HOLDBREATH_ACTIVE)
+        // Unconditional: releases the recorded injected key, so it works even if the feature was
+        // disabled, the key was rebound, or the profile changed while the key was held.
+        lock (_holdBreathLock)
         {
-            var profile = _activeProfile;
-            if (profile?.RightClickHoldBreath.IsEnabled == true &&
-                profile.RightClickHoldBreath.Mode == HoldBreathMode.Hold)
-            {
-                SendKey(profile.RightClickHoldBreath.HoldBreathKey, false);
-                LogDebug("Force-release HoldBreath key");
-            }
+            _holdBreathPending = false;
+            _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            ReleaseInjectedHoldBreathKeyLocked();
         }
     }
 
