@@ -15,11 +15,11 @@ public partial class SettingsWindow : Window
     // Reuse the same INI storage path pattern used by MainWindow
     private readonly string _settingsPath;
 
-    public SettingsWindow(IStartupService startupService, ILoggerService loggerService)
+    public SettingsWindow(IStartupService startupService, ILoggerService loggerService, IInputHookService inputHookService)
     {
         InitializeComponent();
         _startupService = startupService;
-        _vm = new SettingsViewModel(loggerService);
+        _vm = new SettingsViewModel(loggerService, inputHookService);
         DataContext = _vm;
 
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -40,10 +40,13 @@ public partial class SettingsWindow : Window
         {
             var ini = IniDocument.Load(_settingsPath);
             _vm.EnableDebugLogging = ini.GetValue("App", "EnableDebugLogging") == "true";
+            // Default-on: only the literal "false" disables (missing key = enabled).
+            _vm.HookWatchdogEnabled = ini.GetValue("App", "HookWatchdog") != "false";
         }
         catch
         {
             _vm.EnableDebugLogging = false;
+            _vm.HookWatchdogEnabled = true;
         }
     }
 
@@ -55,6 +58,7 @@ public partial class SettingsWindow : Window
             ini.SetValue("App", "StartWithWindows", vm.StartWithWindows ? "true" : "false");
             ini.SetValue("App", "StartAsAdmin", vm.StartAsAdmin ? "true" : "false");
             ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
+            ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
             ini.Save(_settingsPath);
         }
         catch

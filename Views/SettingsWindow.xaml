@@ -1,7 +1,7 @@
 <Window x:Class="sWinShortcuts.Views.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Settings" Width="380" Height="260"
+        Title="Settings" Width="380" Height="290"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{DynamicResource BackgroundElevatedBrush}">
@@ -39,6 +39,12 @@
 
             <CheckBox Content="Enable Debug Logging"
                       IsChecked="{Binding EnableDebugLogging, Mode=TwoWay}"
+                      Margin="0,0,0,8"
+                      Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <CheckBox Content="Hook-loss watchdog (auto-recover dead hooks)"
+                      IsChecked="{Binding HookWatchdogEnabled, Mode=TwoWay}"
+                      ToolTip="Detects Windows silently removing the input hooks and re-installs them. Disable only to rule it out while troubleshooting."
                       Margin="0,0,0,8"
                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
         </StackPanel>

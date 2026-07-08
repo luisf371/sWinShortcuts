@@ -7,6 +7,8 @@ public sealed class FakeInputHookService : IInputHookService
 {
     public event EventHandler<Profile?>? ActiveProfileChanged;
 
+    public bool HookWatchdogEnabled { get; set; } = true;
+
     public bool IsStarted { get; private set; }
 
     public Profile? WindowsProfile { get; private set; }

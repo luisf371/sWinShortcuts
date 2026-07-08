@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -109,9 +110,10 @@ public sealed class InputHookService : IInputHookService
     // Stop) can force the UP — otherwise a shutdown landing inside that window would leave the key
     // stuck system-wide with the hooks already gone. List, not set: two overlapping taps of the same
     // key keep one entry per pending UP.
-    // LOCK ORDER (I5, P6): may be taken while _holdBreathLock is already held (the Toggle-mode tap
-    // calls FireTapKey from inside ActivateHoldBreathLocked) — one-way nesting _holdBreathLock ->
-    // _transientTapLock ONLY. Never acquire _holdBreathLock while already holding this lock.
+    // LOCK ORDER (I5, P6): historically taken while _holdBreathLock was held (Toggle-mode taps went
+    // through FireTapKey); Toggle now uses the hold-breath injector queue instead, so no call path
+    // nests these locks anymore. The rule stands for future code: if nesting is ever reintroduced,
+    // it must be one-way _holdBreathLock -> _transientTapLock ONLY, and never the reverse.
     private readonly object _transientTapLock = new();
     private readonly List<Key> _transientTapKeys = new();
 
@@ -122,20 +124,31 @@ public sealed class InputHookService : IInputHookService
 
     // Hold-breath state. All fields below are guarded by _holdBreathLock. Every hold-breath event
     // (arm, fire, cancel, release) already paid this lock for Timer.Change, and events occur at
-    // human click frequency — so guarding the whole state machine including the SendInput calls
-    // costs nothing extra while guaranteeing the UP release can never overtake the DOWN press.
-    // LOCK ORDER (I5, P6): the Toggle-mode tap path calls FireTapKey (which takes _transientTapLock)
-    // while this lock is held — one-way nesting _holdBreathLock -> _transientTapLock ONLY. Safe
-    // because ReleaseAllState takes the two locks sequentially, never nested, and the tap worker
-    // only ever takes _transientTapLock alone. Never acquire this lock while holding _transientTapLock.
+    // human click frequency — so guarding the whole state machine costs nothing extra.
+    //
+    // SendInput is deliberately NOT under this lock (measured: an injected event's synchronous trip
+    // through a stalled foreign LL hook can take ~300ms = LowLevelHooksTimeout; holding the lock
+    // across it blocked the WM_RBUTTONUP handler INSIDE the mouse hook and froze all pointer input
+    // for the duration — the "right-click stutter"). Injection is decided under the lock but
+    // executed by the single FIFO injector thread below, whose ordering guarantees the UP can never
+    // overtake its DOWN — the property the lock used to provide.
     private readonly object _holdBreathLock = new();
     private readonly System.Threading.Timer _holdBreathTimer;
     private bool _holdBreathPending;
-    private Key? _holdBreathInjectedKey;    // key sent DOWN in Hold mode and not yet released
+    private Key? _holdBreathInjectedKey;    // key whose DOWN is enqueued/sent in Hold mode and not yet released
     private Key _holdBreathArmedKey;        // settings snapshot at arm time (UI mutates settings in place)
     private HoldBreathMode _holdBreathArmedMode;
     private long _holdBreathArmedTick;      // arm timestamp for the stale-fire guard
     private int _holdBreathArmedDelayMs;
+
+    // Hold-breath injector: a dedicated thread draining a FIFO queue so no hook callback and no
+    // lock-holding path ever waits on SendInput's foreign-hook dispatch. One consumer = strict FIFO
+    // = every enqueued DOWN is released by the UP enqueued behind it (release paths are
+    // unconditional, so pairing survives profile switches, disable, and Stop's final drain).
+    // PreSleepMs implements the Toggle-mode tap duration between a DOWN and its own UP.
+    private readonly record struct HoldBreathInjection(Key Key, bool IsDown, int PreSleepMs);
+    private BlockingCollection<HoldBreathInjection>? _holdBreathInjectionQueue;
+    private Thread? _holdBreathInjectionThread;
     
     // Hook handles
     private NativeMethods.LowLevelKeyboardProc? _keyboardProc;
@@ -177,6 +190,39 @@ public sealed class InputHookService : IInputHookService
     // CompareExchange(1, 0) before queuing; the queued closure clears it in a finally (see
     // WatchdogTick) so a resumed dispatcher re-evaluates freshness once, not once per missed period.
     private int _reinstallCheckPending;
+
+    // P8 rework: raw-input liveness side channel (see RawInputLivenessSink). Created in Start() on
+    // the dispatcher; null means creation failed and the watchdog degrades to detection-only logging
+    // (a hook idle-vs-dead question can no longer be answered, so it must never guess-reinstall).
+    private RawInputLivenessSink? _rawInputSink;
+
+    // P8 rework: per-device sink-open state. Written ONLY inside WatchdogTick's single-flight
+    // section (_watchdogTickRunning CAS serializes overlapping timer callbacks); volatile because
+    // the dispatcher-marshaled reinstall closure reads them for its freshness recheck.
+    private volatile bool _keyboardSinkOpen;
+    private volatile bool _mouseSinkOpen;
+
+    // P8 rework: reentrancy guard making WatchdogTick a single writer of the sink-open flags —
+    // System.Threading.Timer offers no overlap guarantee, and Interlocked entry/exit fences also
+    // publish the flag writes to the next tick.
+    private int _watchdogTickRunning;
+
+    // Troubleshooting switch (Settings window, [App] HookWatchdog). The timer keeps ticking so the
+    // toggle is live in both directions; a disabled tick only cleans up any open sinks and returns.
+    private volatile bool _hookWatchdogEnabled = true;
+
+    public bool HookWatchdogEnabled
+    {
+        get => _hookWatchdogEnabled;
+        set
+        {
+            if (_hookWatchdogEnabled != value)
+            {
+                _hookWatchdogEnabled = value;
+                LogDebug($"Hook-loss watchdog {(value ? "enabled" : "disabled")} via settings");
+            }
+        }
+    }
 
     // P8 watchdog thresholds/period.
     private const int WATCHDOG_PERIOD_MS = 10_000;
@@ -307,6 +353,33 @@ public sealed class InputHookService : IInputHookService
                 // without this, an injected hold-breath key would stay down until the next click.
                 SystemEvents.SessionSwitch += OnSessionSwitch;
 
+                // P8 rework: per-device liveness side channel for the watchdog. Best-effort — Start()
+                // is on the dispatcher (required: the message-only window must live on the pumped
+                // thread). On failure the watchdog degrades to detection-only logging; hook
+                // installation itself must not fail over a diagnostics channel.
+                try
+                {
+                    _rawInputSink = new RawInputLivenessSink();
+                }
+                catch (Exception ex)
+                {
+                    _rawInputSink = null;
+                    LogDebug($"WARNING: raw-input liveness sink unavailable ({ex.Message}); hook-loss watchdog is detection-only");
+                }
+                _keyboardSinkOpen = false;
+                _mouseSinkOpen = false;
+
+                // Hold-breath injector thread: drains the FIFO injection queue so SendInput's
+                // foreign-hook dispatch (measured up to ~LowLevelHooksTimeout) never runs on a hook
+                // callback or under _holdBreathLock. Background so process exit can never hang on it.
+                _holdBreathInjectionQueue = new BlockingCollection<HoldBreathInjection>();
+                _holdBreathInjectionThread = new Thread(HoldBreathInjectionLoop)
+                {
+                    IsBackground = true,
+                    Name = "HoldBreathInjector"
+                };
+                _holdBreathInjectionThread.Start();
+
                 // P8: hook-loss watchdog. 10s period is coarse on purpose — this only needs to catch
                 // the rare silent hook removal (UI stall > LowLevelHooksTimeout), not run hot.
                 _hookWatchdogTimer = new System.Threading.Timer(_ => WatchdogTick(), null, WATCHDOG_PERIOD_MS, WATCHDOG_PERIOD_MS);
@@ -318,6 +391,13 @@ public sealed class InputHookService : IInputHookService
                 // hooks on top of these. Mirrors the hook-install-failure branch above.
                 _hookWatchdogTimer?.Dispose();
                 _hookWatchdogTimer = null;
+
+                // Ends the injector loop; nothing was enqueued yet (hooks never went live).
+                _holdBreathInjectionQueue?.CompleteAdding();
+                _holdBreathInjectionThread = null;
+
+                _rawInputSink?.Dispose();
+                _rawInputSink = null;
 
                 SystemEvents.SessionSwitch -= OnSessionSwitch;
 
@@ -363,6 +443,15 @@ public sealed class InputHookService : IInputHookService
             _hookWatchdogTimer?.Dispose();
             _hookWatchdogTimer = null;
 
+            // Unregisters any open device sinks from whatever thread Stop() runs on; the message-only
+            // window itself is only destroyed when this is the owning (dispatcher) thread — the
+            // App.OnExit path runs Stop() on a pool thread, where the moribund window is left for
+            // process teardown (see RawInputLivenessSink.Dispose).
+            _rawInputSink?.Dispose();
+            _rawInputSink = null;
+            _keyboardSinkOpen = false;
+            _mouseSinkOpen = false;
+
             SystemEvents.SessionSwitch -= OnSessionSwitch;
 
             if (_keyboardHookHandle != IntPtr.Zero)
@@ -384,6 +473,19 @@ public sealed class InputHookService : IInputHookService
             _isRunning = false;
 
             ReleaseAllState();
+
+            // Drain the hold-breath injector AFTER ReleaseAllState so the release it enqueued still
+            // executes; bounded join because a drain item can be mid-flight through a stalled foreign
+            // hook (~300ms class). Dispose the queue only on a clean join — a still-draining worker
+            // must not have it yanked out from under GetConsumingEnumerable (it exits on its own at
+            // CompleteAdding; the thread is background, so process exit never hangs on it).
+            _holdBreathInjectionQueue?.CompleteAdding();
+            if (_holdBreathInjectionThread is null || _holdBreathInjectionThread.Join(2000))
+            {
+                _holdBreathInjectionQueue?.Dispose();
+            }
+            _holdBreathInjectionQueue = null;
+            _holdBreathInjectionThread = null;
 
             // P7 pairing: winmm requires matched Begin/End calls. Stop() is already idempotent via
             // the _isRunning guard above, so this fires exactly once per successful Start().
@@ -426,6 +528,13 @@ public sealed class InputHookService : IInputHookService
     // without this. Detection runs on the timer thread (cheap, lock-free reads); the actual
     // re-install is marshaled onto _hookDispatcher and takes _profileLock, same as every other
     // lifecycle mutation.
+    //
+    // Two-stage design: "hook quiet 30s while system input is fresh" is only SUSPICION — the fresh
+    // input may be the OTHER device (GetLastInputInfo is global), which is exactly what normal
+    // mouse-only aiming or keyboard-only typing looks like. Suspicion opens a per-device raw-input
+    // sink (RawInputLivenessSink); only raw input for THAT device arriving while its hook stays
+    // silent CONFIRMS loss and triggers a reinstall. A hook event closes the sink (proof of life),
+    // so a healthy system carries zero raw-input traffic.
     private void WatchdogTick()
     {
         if (!_isRunning)
@@ -433,77 +542,179 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
-        if (!TryGetHookFreshness(out var systemInputAgeMs, out var keyboardIdleMs, out var mouseIdleMs))
-        {
-            return; // best-effort; try again next period
-        }
-
-        var reinstallKeyboard = ShouldReinstallHook(keyboardIdleMs, systemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS);
-        var reinstallMouse = ShouldReinstallHook(mouseIdleMs, systemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS);
-
-        if (!reinstallKeyboard && !reinstallMouse)
+        // Single-flight: System.Threading.Timer gives no overlap guarantee, and the sink-open flags
+        // are single-writer state owned by this method (Interlocked entry/exit also fences the flag
+        // writes for the next tick).
+        if (Interlocked.CompareExchange(ref _watchdogTickRunning, 1, 0) != 0)
         {
             return;
         }
 
-        LogDebug($"Watchdog: possible silent hook loss (keyboard={reinstallKeyboard}, mouse={reinstallMouse}, systemInputAge={systemInputAgeMs}ms)");
-
-        if (!_canReinstallHooks || _hookDispatcher is null)
+        try
         {
-            LogDebug("Watchdog: re-install is disabled (hooks were not installed on a dispatcher-pumped thread) — detection only");
-            return;
-        }
-
-        // Only one re-install check may be queued at a time (see _reinstallCheckPending) — otherwise
-        // a stalled dispatcher accumulates one stale closure per missed 10s period, and every one of
-        // them would reinstall + ReleaseAllState even after the first already fixed the hook.
-        if (Interlocked.CompareExchange(ref _reinstallCheckPending, 1, 0) != 0)
-        {
-            return;
-        }
-
-        _hookDispatcher.InvokeAsync(() =>
-        {
-            try
+            if (!_hookWatchdogEnabled)
             {
-                lock (_profileLock)
+                // Disabled mid-suspicion: close any open sinks (inside the single-flight section —
+                // same single-writer discipline as every other sink transition) and stand down.
+                if (_keyboardSinkOpen)
                 {
-                    if (!_isRunning)
-                    {
-                        return;
-                    }
+                    _rawInputSink?.UnregisterKeyboard();
+                    _keyboardSinkOpen = false;
+                    LogDebug("Watchdog disabled: closed keyboard raw-input liveness sink");
+                }
 
-                    // This closure may have sat queued on a stalled dispatcher — exactly the scenario
-                    // the pending-guard exists for — so the booleans captured above can be stale by
-                    // now. Recompute freshness and only reinstall hooks that are STILL stale.
-                    if (!TryGetHookFreshness(out var freshSystemInputAgeMs, out var freshKeyboardIdleMs, out var freshMouseIdleMs))
-                    {
-                        return; // best-effort; the periodic tick will retry
-                    }
+                if (_mouseSinkOpen)
+                {
+                    _rawInputSink?.UnregisterMouse();
+                    _mouseSinkOpen = false;
+                    LogDebug("Watchdog disabled: closed mouse raw-input liveness sink");
+                }
 
-                    if (ShouldReinstallHook(freshKeyboardIdleMs, freshSystemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS))
-                    {
-                        ReinstallKeyboardHookLocked();
-                    }
+                return;
+            }
 
-                    if (ShouldReinstallHook(freshMouseIdleMs, freshSystemInputAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS))
+            if (!TryGetWatchdogAges(out var systemInputAgeMs, out var keyboardIdleMs, out var mouseIdleMs,
+                    out var keyboardRawAgeMs, out var mouseRawAgeMs))
+            {
+                return; // best-effort; try again next period
+            }
+
+            var keyboardAction = DecideWatchdogAction(keyboardIdleMs, systemInputAgeMs, _keyboardSinkOpen,
+                keyboardRawAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS);
+            var mouseAction = DecideWatchdogAction(mouseIdleMs, systemInputAgeMs, _mouseSinkOpen,
+                mouseRawAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS);
+
+            ApplySinkTransition(keyboardAction, isKeyboard: true, keyboardIdleMs);
+            ApplySinkTransition(mouseAction, isKeyboard: false, mouseIdleMs);
+
+            var reinstallKeyboard = keyboardAction == WatchdogAction.Reinstall;
+            var reinstallMouse = mouseAction == WatchdogAction.Reinstall;
+
+            if (!reinstallKeyboard && !reinstallMouse)
+            {
+                return;
+            }
+
+            LogDebug($"Watchdog: hook loss CONFIRMED by raw-input sink (keyboard={reinstallKeyboard}, mouse={reinstallMouse}, " +
+                     $"kbIdle={keyboardIdleMs:F0}ms, mouseIdle={mouseIdleMs:F0}ms, kbRawAge={keyboardRawAgeMs:F0}ms, mouseRawAge={mouseRawAgeMs:F0}ms)");
+
+            if (!_canReinstallHooks || _hookDispatcher is null)
+            {
+                LogDebug("Watchdog: re-install is disabled (hooks were not installed on a dispatcher-pumped thread) — detection only");
+                return;
+            }
+
+            // Only one re-install check may be queued at a time (see _reinstallCheckPending) — otherwise
+            // a stalled dispatcher accumulates one stale closure per missed 10s period, and every one of
+            // them would reinstall + ReleaseAllState even after the first already fixed the hook.
+            if (Interlocked.CompareExchange(ref _reinstallCheckPending, 1, 0) != 0)
+            {
+                return;
+            }
+
+            _hookDispatcher.InvokeAsync(() =>
+            {
+                try
+                {
+                    lock (_profileLock)
                     {
-                        ReinstallMouseHookLocked();
+                        if (!_isRunning || !_hookWatchdogEnabled)
+                        {
+                            return;
+                        }
+
+                        // This closure may have sat queued on a stalled dispatcher — exactly the scenario
+                        // the pending-guard exists for — so the decisions computed above can be stale by
+                        // now. Recompute with CURRENT ticks and only reinstall a hook that is STILL
+                        // silent with its device provably active (any hook event that landed meanwhile
+                        // flips the decision to CloseSink and the reinstall is skipped).
+                        if (!TryGetWatchdogAges(out var freshSystemInputAgeMs, out var freshKeyboardIdleMs,
+                                out var freshMouseIdleMs, out var freshKeyboardRawAgeMs, out var freshMouseRawAgeMs))
+                        {
+                            return; // best-effort; the periodic tick will retry
+                        }
+
+                        if (DecideWatchdogAction(freshKeyboardIdleMs, freshSystemInputAgeMs, _keyboardSinkOpen,
+                                freshKeyboardRawAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS) == WatchdogAction.Reinstall)
+                        {
+                            ReinstallKeyboardHookLocked();
+                        }
+
+                        if (DecideWatchdogAction(freshMouseIdleMs, freshSystemInputAgeMs, _mouseSinkOpen,
+                                freshMouseRawAgeMs, WATCHDOG_STALE_HOOK_THRESHOLD_MS, WATCHDOG_FRESH_INPUT_THRESHOLD_MS) == WatchdogAction.Reinstall)
+                        {
+                            ReinstallMouseHookLocked();
+                        }
                     }
                 }
-            }
-            finally
-            {
-                Volatile.Write(ref _reinstallCheckPending, 0);
-            }
-        });
+                finally
+                {
+                    Volatile.Write(ref _reinstallCheckPending, 0);
+                }
+            });
+        }
+        finally
+        {
+            Volatile.Write(ref _watchdogTickRunning, 0);
+        }
+    }
+
+    // Applies an OpenSink/CloseSink decision. Runs only inside WatchdogTick's single-flight section,
+    // which is what makes the sink-open flags single-writer. Reinstall/None are no-ops here: after a
+    // reinstall the freshly-stamped hook tick makes the NEXT tick close the sink via CloseSink, which
+    // doubles as post-reinstall verification.
+    private void ApplySinkTransition(WatchdogAction action, bool isKeyboard, double hookIdleMs)
+    {
+        var deviceName = isKeyboard ? "keyboard" : "mouse";
+
+        // Snapshot once: Stop() nulls the field concurrently with an in-flight tick (Timer.Dispose
+        // does not wait for running callbacks). The sink's own methods are disposed-guarded, so the
+        // worst case on a captured stale instance is a refused no-op registration.
+        var sink = _rawInputSink;
+
+        switch (action)
+        {
+            case WatchdogAction.OpenSink:
+                if (sink is null)
+                {
+                    // Degraded mode (sink creation failed in Start): idle-vs-dead cannot be answered,
+                    // so never guess-reinstall — log the suspicion and stay put.
+                    LogDebug($"Watchdog: {deviceName} hook quiet {hookIdleMs / 1000:F0}s while system input is fresh — liveness sink unavailable, detection only");
+                    return;
+                }
+
+                if (isKeyboard ? sink.RegisterKeyboard() : sink.RegisterMouse())
+                {
+                    if (isKeyboard) { _keyboardSinkOpen = true; } else { _mouseSinkOpen = true; }
+                    LogDebug($"Watchdog: {deviceName} hook quiet {hookIdleMs / 1000:F0}s while system input is fresh — opened raw-input liveness sink");
+                }
+                else
+                {
+                    LogDebug($"Watchdog: failed to open {deviceName} raw-input sink (0x{Marshal.GetLastWin32Error():X}); retrying next period");
+                }
+                break;
+
+            case WatchdogAction.CloseSink:
+                // Clear the flag even if unregistration fails: a lingering registration only means
+                // harmless tick stamps, and the next OpenSink re-registers the same target anyway.
+                var unregistered = isKeyboard ? sink?.UnregisterKeyboard() : sink?.UnregisterMouse();
+                if (isKeyboard) { _keyboardSinkOpen = false; } else { _mouseSinkOpen = false; }
+                LogDebug($"Watchdog: {deviceName} hook proved alive; closed raw-input liveness sink (unregistered={unregistered})");
+                break;
+        }
     }
 
     // Shared by WatchdogTick's preliminary check and its dispatcher-marshaled recheck: system-wide
-    // input age (GetLastInputInfo) plus each hook's idle time from its liveness tick. Returns false
-    // if GetLastInputInfo fails (best-effort; caller retries next period).
-    private bool TryGetHookFreshness(out uint systemInputAgeMs, out double keyboardIdleMs, out double mouseIdleMs)
+    // input age (GetLastInputInfo), each hook's idle time from its liveness tick, and each device's
+    // raw-input age from the liveness sink (double.MaxValue when the sink is closed, unavailable, or
+    // has seen nothing since it was opened). Returns false if GetLastInputInfo fails (best-effort;
+    // caller retries next period).
+    private bool TryGetWatchdogAges(out uint systemInputAgeMs, out double keyboardIdleMs, out double mouseIdleMs,
+        out double keyboardRawAgeMs, out double mouseRawAgeMs)
     {
+        keyboardRawAgeMs = double.MaxValue;
+        mouseRawAgeMs = double.MaxValue;
+
         var lii = new NativeMethods.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<NativeMethods.LASTINPUTINFO>() };
         if (!NativeMethods.GetLastInputInfo(ref lii))
         {
@@ -520,16 +731,61 @@ public sealed class InputHookService : IInputHookService
         var nowTicks = Stopwatch.GetTimestamp();
         keyboardIdleMs = (nowTicks - Volatile.Read(ref _lastKeyboardEventTick)) * TickToMilliseconds;
         mouseIdleMs = (nowTicks - Volatile.Read(ref _lastMouseEventTick)) * TickToMilliseconds;
+
+        var sink = _rawInputSink;
+        if (sink is not null)
+        {
+            var keyboardRawTick = sink.LastKeyboardRawTick;
+            if (keyboardRawTick != 0)
+            {
+                keyboardRawAgeMs = (nowTicks - keyboardRawTick) * TickToMilliseconds;
+            }
+
+            var mouseRawTick = sink.LastMouseRawTick;
+            if (mouseRawTick != 0)
+            {
+                mouseRawAgeMs = (nowTicks - mouseRawTick) * TickToMilliseconds;
+            }
+        }
+
         return true;
     }
 
-    // Pure decision function (P8, unit-tested): a hook is presumed silently removed when the system
-    // is receiving fresh input but that specific hook has not seen an event in a long time. If system
-    // input is ALSO stale (e.g. lock screen), "hook died" is indistinguishable from "nobody is
-    // providing input" — don't reinstall.
-    internal static bool ShouldReinstallHook(double hookIdleMs, uint systemInputAgeMs, double staleHookThresholdMs, uint freshInputThresholdMs)
+    internal enum WatchdogAction
     {
-        return systemInputAgeMs < freshInputThresholdMs && hookIdleMs > staleHookThresholdMs;
+        None,
+        OpenSink,
+        CloseSink,
+        Reinstall
+    }
+
+    // Pure decision function (P8, unit-tested), two-stage.
+    // Sink closed: "hook quiet past the stale threshold while SOMETHING provides fresh system input"
+    // is only suspicion — GetLastInputInfo is global, so this is indistinguishable from normal
+    // single-device use (mouse-only aiming, keyboard-only typing). Open the per-device sink to find
+    // out; never reinstall on suspicion alone.
+    // Sink open: raw input for THIS device arriving (fresh rawInputAgeMs) while its hook stays
+    // silent is proof the hook was silently removed -> Reinstall. The hook seeing an event again is
+    // proof of life -> CloseSink. A quiet device decides nothing — idle is not death — and the open
+    // sink costs nothing while no events flow.
+    internal static WatchdogAction DecideWatchdogAction(double hookIdleMs, uint systemInputAgeMs, bool sinkOpen,
+        double rawInputAgeMs, double staleHookThresholdMs, uint freshInputThresholdMs)
+    {
+        if (!sinkOpen)
+        {
+            return systemInputAgeMs < freshInputThresholdMs && hookIdleMs > staleHookThresholdMs
+                ? WatchdogAction.OpenSink
+                : WatchdogAction.None;
+        }
+
+        if (hookIdleMs <= staleHookThresholdMs)
+        {
+            return WatchdogAction.CloseSink;
+        }
+
+        return rawInputAgeMs < freshInputThresholdMs
+            ? WatchdogAction.Reinstall
+            : WatchdogAction.None;
     }
 
     // Must run on _hookDispatcher, under _profileLock, with _isRunning already re-checked by the
@@ -1385,8 +1641,13 @@ public sealed class InputHookService : IInputHookService
 
         if (IsDebugEnabled) LogDebug($"HoldBreath DOWN: base={baseDelay}ms, jitter=+{jitter}ms, total={totalDelay}ms, warmup={warmupCalls}");
 
+        // M3 instrumentation: this runs INSIDE the mouse hook callback — any wait for _holdBreathLock
+        // (held by the timer thread across its SendInput) stalls system-wide input delivery.
+        var lockWaitStart = Stopwatch.GetTimestamp();
         lock (_holdBreathLock)
         {
+            LogHoldBreathLockWait("DOWN", lockWaitStart);
+
             // A missed WM_RBUTTONUP (hook timeout, UAC secure desktop, Win+L) can leave the previous
             // press's key down; release it before starting a new cycle so it can never stay stuck.
             ReleaseInjectedHoldBreathKeyLocked();
@@ -1413,7 +1674,8 @@ public sealed class InputHookService : IInputHookService
             }
             else if (_isRunning && _rightButtonPressed)
             {
-                // Immediate activation, synchronous on the hook thread
+                // Immediate activation: the DECISION is synchronous on the hook thread; the
+                // injection itself rides the injector queue, so this cannot stall the hook.
                 ActivateHoldBreathLocked();
             }
         }
@@ -1423,14 +1685,35 @@ public sealed class InputHookService : IInputHookService
     {
         // No profile/IsEnabled gate here: the release must pair with whatever was actually
         // injected, even if settings changed or the profile switched mid-hold.
+        // M3 instrumentation: this runs INSIDE the mouse hook callback — any wait for _holdBreathLock
+        // (held by the timer thread across its SendInput) stalls system-wide input delivery.
+        var lockWaitStart = Stopwatch.GetTimestamp();
         lock (_holdBreathLock)
         {
+            LogHoldBreathLockWait("UP", lockWaitStart);
+
             _holdBreathPending = false;
             if (!_disposed)
             {
                 _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
             }
             ReleaseInjectedHoldBreathKeyLocked();
+        }
+    }
+
+    // M3 instrumentation: the mouse-hook thread waiting >=1ms on _holdBreathLock is direct evidence
+    // of the timer-thread-SendInput contention window; below that it's noise not worth a log line.
+    private void LogHoldBreathLockWait(string site, long lockWaitStart)
+    {
+        if (!IsDebugEnabled)
+        {
+            return;
+        }
+
+        var waitedMs = (Stopwatch.GetTimestamp() - lockWaitStart) * TickToMilliseconds;
+        if (waitedMs >= 1.0)
+        {
+            LogDebug($"HoldBreath {site}: hook thread waited {waitedMs:F1}ms for _holdBreathLock (M3 contention)");
         }
     }
 
@@ -1472,36 +1755,58 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    // Must be called while holding _holdBreathLock. Injecting the DOWN inside the lock is what
-    // guarantees the UP handler's release can never be reordered before this press lands.
+    // Must be called while holding _holdBreathLock. The DOWN is only ENQUEUED here — the injector's
+    // FIFO ordering is what guarantees the UP handler's release (always enqueued behind it) can
+    // never be reordered before the press lands. Nothing slow ever runs under the lock: the
+    // measured ~300ms foreign-hook SendInput stall used to happen right here and froze the pointer
+    // whenever a WM_RBUTTONUP blocked on this lock inside the mouse hook.
     private void ActivateHoldBreathLocked()
     {
         _holdBreathPending = false;
 
-        if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey}");
-
         if (_holdBreathArmedMode == HoldBreathMode.Hold)
         {
-            SendKey(_holdBreathArmedKey, true);
             _holdBreathInjectedKey = _holdBreathArmedKey;
+            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: true, PreSleepMs: 0));
+
+            if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey} (queued)");
         }
         else if (_holdBreathArmedMode == HoldBreathMode.Toggle)
         {
-            // P6: DOWN happens synchronously right here (we already hold _holdBreathLock), which is
-            // the documented _holdBreathLock -> _transientTapLock nesting (see both lock declarations).
-            // Only duration + UP defer to the pool, same as every other FireTapKey call site.
-            FireTapKey(_holdBreathArmedKey, HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS);
+            // Toggle = a self-releasing tap: DOWN now, UP enqueued behind it with a human-like
+            // duration as its pre-sleep. Both ride the injector (FireTapKey previously injected the
+            // DOWN synchronously right here, paying the foreign-hook dispatch under this lock). The
+            // queued UP is unconditional, so no _transientTapKeys tracking is needed on this path —
+            // Stop()'s drain executes it even mid-shutdown.
+            var rng = _random.Value!;
+
+            // Warmup RNG to break thread-reuse patterns (anti-cheat)
+            var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
+            for (int i = 0; i < warmupCalls; i++)
+            {
+                rng.Next();
+            }
+
+            var duration = rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1);
+            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: true, PreSleepMs: 0));
+            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: false, PreSleepMs: duration));
+
+            if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey} (queued tap, duration={duration}ms)");
         }
     }
 
-    // Must be called while holding _holdBreathLock.
+    // Must be called while holding _holdBreathLock. Enqueue-only: the injector's FIFO places this
+    // UP behind its matching DOWN even when that DOWN is still queued or mid-SendInput — and the
+    // mouse hook callback (WM_RBUTTONUP path) returns in microseconds instead of paying the
+    // foreign-hook dispatch (measured 2-15ms typical, ~300ms when a foreign hook stalls).
     private void ReleaseInjectedHoldBreathKeyLocked()
     {
         if (_holdBreathInjectedKey is { } key)
         {
-            SendKey(key, false);
             _holdBreathInjectedKey = null;
-            if (IsDebugEnabled) LogDebug($"HoldBreath released: {key}");
+            EnqueueHoldBreathInjection(new HoldBreathInjection(key, IsDown: false, PreSleepMs: 0));
+
+            if (IsDebugEnabled) LogDebug($"HoldBreath released: {key} (queued)");
         }
     }
 
@@ -1517,6 +1822,89 @@ public sealed class InputHookService : IInputHookService
                 _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
             }
             ReleaseInjectedHoldBreathKeyLocked();
+        }
+    }
+
+    // Enqueue-only; callers may hold _holdBreathLock (Add on an unbounded BlockingCollection never
+    // blocks). The two shutdown races — CompleteAdding or Dispose landing between the null-check and
+    // Add — are swallowed: in both cases Stop() already ran ReleaseAllState-then-drain, so any
+    // recorded key still gets released before the queue closed.
+    private void EnqueueHoldBreathInjection(HoldBreathInjection injection)
+    {
+        var queue = _holdBreathInjectionQueue;
+        if (queue is null)
+        {
+            return;
+        }
+
+        try
+        {
+            queue.Add(injection);
+        }
+        catch (InvalidOperationException)
+        {
+            // CompleteAdding or Dispose raced us (ObjectDisposedException derives from this):
+            // shutting down, and Stop()'s ReleaseAllState-then-drain already handled the release.
+        }
+    }
+
+    // Injector thread body: strict-FIFO single consumer, exits when Stop()/Start-rollback calls
+    // CompleteAdding and the queue drains. Takes NO locks — that is the point: SendInput's
+    // synchronous trip through every process's LL hook chain (measured ~300ms when a foreign hook
+    // stalls, e.g. the game's own hook while its UI opens a context menu) lands here, where it can
+    // stall nothing but the next queued hold-breath injection.
+    private void HoldBreathInjectionLoop()
+    {
+        var queue = _holdBreathInjectionQueue;
+        if (queue is null)
+        {
+            return;
+        }
+
+        try
+        {
+            foreach (var injection in queue.GetConsumingEnumerable())
+            {
+                try
+                {
+                    // Shutdown drain: once CompleteAdding was called (Stop/Start-rollback), any
+                    // still-queued DOWN is stale pre-shutdown work — emitting a NEW press after the
+                    // hooks are gone (or into a later session, if Stop's bounded join timed out and
+                    // this worker outlived it) is never wanted. Releases still execute so recorded
+                    // state always pairs; an UP whose DOWN was skipped is a harmless no-op. The
+                    // queue's terminal state doubles as the per-session drain signal: a fresh
+                    // Start() gets a fresh queue, while this one stays completed forever.
+                    if (injection.IsDown && queue.IsAddingCompleted)
+                    {
+                        if (IsDebugEnabled) LogDebug($"HoldBreath inject DOWN skipped (shutdown drain): {injection.Key}");
+                        continue;
+                    }
+
+                    // Toggle-mode tap duration rides as pre-sleep on the UP entry.
+                    if (injection.PreSleepMs > 0)
+                    {
+                        Thread.Sleep(injection.PreSleepMs);
+                    }
+
+                    var sendStart = Stopwatch.GetTimestamp();
+                    SendKey(injection.Key, injection.IsDown);
+
+                    if (IsDebugEnabled)
+                    {
+                        var sendMs = (Stopwatch.GetTimestamp() - sendStart) * TickToMilliseconds;
+                        LogDebug($"HoldBreath inject {(injection.IsDown ? "DOWN" : "UP")}: {injection.Key}, sendMs={sendMs:F1}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // A dead injector would strand every future hold-breath key; log and keep draining.
+                    LogDebug($"HoldBreath injector error: {ex.Message}");
+                }
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // Stop() disposed the queue after the final item; clean exit.
         }
     }
 

@@ -90,6 +90,80 @@ internal static class NativeMethods
         public uint dwTime;
     }
 
+    // P8 rework: raw-input liveness side channel for the hook-loss watchdog. A suspicion-gated
+    // RIDEV_INPUTSINK registration delivers WM_INPUT for a single device class to a message-only
+    // window, independent of the WH_*_LL hook pipeline — real device input arriving while the
+    // corresponding hook stays silent is direct proof the hook was silently removed.
+    internal const uint WM_INPUT = 0x00FF;
+    internal const uint RIDEV_INPUTSINK = 0x00000100;
+    internal const uint RIDEV_REMOVE = 0x00000001;
+    internal const uint RID_HEADER = 0x10000005;
+    internal const ushort HID_USAGE_PAGE_GENERIC = 0x01;
+    internal const ushort HID_USAGE_GENERIC_MOUSE = 0x02;
+    internal const ushort HID_USAGE_GENERIC_KEYBOARD = 0x06;
+    internal const uint RIM_TYPEMOUSE = 0;
+    internal const uint RIM_TYPEKEYBOARD = 1;
+    internal static readonly IntPtr HWND_MESSAGE = new(-3);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RAWINPUTDEVICE
+    {
+        public ushort usUsagePage;
+        public ushort usUsage;
+        public uint dwFlags;
+        public IntPtr hwndTarget;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RAWINPUTHEADER
+    {
+        public uint dwType;
+        public uint dwSize;
+        public IntPtr hDevice;
+        public IntPtr wParam;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] pRawInputDevices, uint uiNumDevices, uint cbSize);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetRawInputData(IntPtr hRawInput, uint uiCommand, ref RAWINPUTHEADER pData, ref uint pcbSize, uint cbSizeHeader);
+
+    internal delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct WNDCLASS
+    {
+        public uint style;
+        public WndProcDelegate lpfnWndProc;
+        public int cbClsExtra;
+        public int cbWndExtra;
+        public IntPtr hInstance;
+        public IntPtr hIcon;
+        public IntPtr hCursor;
+        public IntPtr hbrBackground;
+        public IntPtr lpszMenuName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpszClassName;
+    }
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern ushort RegisterClassW(ref WNDCLASS lpWndClass);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern IntPtr CreateWindowExW(uint dwExStyle, string lpClassName, string lpWindowName,
+        uint dwStyle, int x, int y, int nWidth, int nHeight, IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DestroyWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr GetModuleHandleW(string? lpModuleName);
+
     [DllImport("user32.dll")]
     internal static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 

@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private readonly MainViewModel _viewModel;
     private readonly Services.IStartupService _startupService;
     private readonly Services.ILoggerService _logger;
+    private readonly Services.IInputHookService _inputHook;
     private readonly string _settingsPath;
     private bool _isLoaded;
     private bool _allowClose;
@@ -26,12 +27,13 @@ public partial class MainWindow : Window
     private System.Windows.Threading.DispatcherTimer? _windowStateSaveTimer;
     private const int WM_NCLBUTTONDBLCLK = 0x00A3; // Non-client double-click message
 
-    public MainWindow(MainViewModel viewModel, Services.IStartupService startupService, Services.ILoggerService logger)
+    public MainWindow(MainViewModel viewModel, Services.IStartupService startupService, Services.ILoggerService logger, Services.IInputHookService inputHook)
     {
         InitializeComponent();
         DataContext = _viewModel = viewModel;
         _startupService = startupService;
         _logger = logger;
+        _inputHook = inputHook;
         Loaded += OnLoaded;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
@@ -46,11 +48,13 @@ public partial class MainWindow : Window
         var rootDirectory = Path.Combine(appData, "sWinShortcuts");
         _settingsPath = Path.Combine(rootDirectory, "sWinShortcuts.ini");
         
-        // Initialize logger state from settings
+        // Initialize logger + watchdog state from settings
         try
         {
              var ini = IniDocument.Load(_settingsPath);
              _logger.IsEnabled = ini.GetValue("App", "EnableDebugLogging") == "true";
+             // Default-on: only the literal "false" disables (missing key = enabled).
+             _inputHook.HookWatchdogEnabled = ini.GetValue("App", "HookWatchdog") != "false";
         }
         catch
         {
@@ -206,7 +210,7 @@ public partial class MainWindow : Window
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
-        var wnd = new Views.SettingsWindow(_startupService, _logger)
+        var wnd = new Views.SettingsWindow(_startupService, _logger, _inputHook)
         {
             Owner = this
         };

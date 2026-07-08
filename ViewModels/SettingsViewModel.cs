@@ -4,12 +4,14 @@ using sWinShortcuts.Services;
 
 namespace sWinShortcuts.ViewModels;
 
-public sealed class SettingsViewModel(ILoggerService loggerService) : INotifyPropertyChanged
+public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookService inputHookService) : INotifyPropertyChanged
 {
     private readonly ILoggerService _loggerService = loggerService;
+    private readonly IInputHookService _inputHookService = inputHookService;
     private bool _startWithWindows;
     private bool _startAsAdmin;
     private bool _enableDebugLogging;
+    private bool _hookWatchdogEnabled = true;
 
     public bool StartWithWindows
     {
@@ -51,6 +53,22 @@ public sealed class SettingsViewModel(ILoggerService loggerService) : INotifyPro
             {
                 _enableDebugLogging = value;
                 _loggerService.IsEnabled = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    // Applies live, same pattern as EnableDebugLogging (the service reacts on its next watchdog
+    // period); persistence happens on Save in SettingsWindow.
+    public bool HookWatchdogEnabled
+    {
+        get => _hookWatchdogEnabled;
+        set
+        {
+            if (_hookWatchdogEnabled != value)
+            {
+                _hookWatchdogEnabled = value;
+                _inputHookService.HookWatchdogEnabled = value;
                 OnPropertyChanged();
             }
         }
