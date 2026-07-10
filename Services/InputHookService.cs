@@ -77,6 +77,10 @@ public sealed class InputHookService : IInputHookService
     
     private readonly object _combinedOverridesLock = new();
     private readonly Dictionary<Key, CombinedOverrideState> _activeCombinedOverrides = new();
+    // F-011: how many active source keys currently drive each TARGET key (guarded by _combinedOverridesLock).
+    // Target DOWN is sent only on 0→1 and target UP only on 1→0, so two sources mapped to one target don't
+    // release it prematurely when the first source is released.
+    private readonly Dictionary<Key, int> _combinedTargetCounts = new();
     // Maintained under _combinedOverridesLock on every add/remove; lets the H2 key-up release skip the
     // lock entirely when no overrides are active (the common case on every key-up).
     private volatile int _activeCombinedOverrideCount;
@@ -104,6 +108,14 @@ public sealed class InputHookService : IInputHookService
     private readonly object _capsLockStateLock = new();
     private bool _capsShiftEngaged;
     private Key? _capsRemappedKey;
+    // F-012 (codex #4): the suppression decision recorded at the Caps key-DOWN, replayed on the matching
+    // key-UP so the UP is suppressed iff the DOWN was — even if the mode/enable changed while Caps was held.
+    private bool _capsDownSuppressed;
+    // codex-final #2: true from the INITIAL physical Caps DOWN until its UP. Typematic auto-repeat re-fires
+    // WM_KEYDOWN while the key is held; without this latch each repeat re-decided suppression and overwrote
+    // _capsDownSuppressed, so a mode/enable change mid-hold desynced the UP from its DOWN — leaking a
+    // physical Caps to Windows (stuck CapsLock) or stranding the injected remap. Latched ONCE per press.
+    private bool _capsPhysicallyDown;
 
     // Per-key "already launched while held" latch. Prevents typematic auto-repeat from spawning a
     // launcher process on every repeated WM_KEYDOWN. Guarded by its own lock because ReleaseAllState()
@@ -594,6 +606,20 @@ public sealed class InputHookService : IInputHookService
                 _mouseProc = null;
 
                 throw;
+            }
+
+            // codex-final #2: a genuine (re)start is the only place to (re)seed the physical-Caps latch — a
+            // mid-hold profile switch / watchdog reinstall keep the hook running and never call Start(), so
+            // they PRESERVE the latch (a held Caps's UP still pairs with its original DOWN). SEED from the
+            // ACTUAL physical key state, NOT blindly to false: if Caps is already held across Stop->Start (or
+            // at initial launch) Windows already received that DOWN, so mark the press in-progress and NOT
+            // suppressed — the carryover repeats + UP then PASS THROUGH and pair with Windows' DOWN instead
+            // of a suppressed orphan UP (= stuck CapsLock). A not-held start seeds false -> next press is
+            // fresh. Hooks are installed above but _isRunning is still false, so no callback is honored yet.
+            lock (_capsLockStateLock)
+            {
+                _capsPhysicallyDown = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CAPITAL) & 0x8000) != 0;
+                _capsDownSuppressed = false;
             }
 
             _isRunning = true;
@@ -1518,16 +1544,24 @@ public sealed class InputHookService : IInputHookService
         if (isKeyUp && sourceKey is not null && _activeCombinedOverrideCount > 0)
         {
             CombinedOverrideState? held;
+            var sendUp = false;
             lock (_combinedOverridesLock)
             {
-                _activeCombinedOverrides.Remove(sourceKey.Value, out held);
+                if (_activeCombinedOverrides.Remove(sourceKey.Value, out held) && held is not null)
+                {
+                    // F-011: only the LAST source driving this target sends its UP.
+                    sendUp = DecrementCombinedTarget(held.TargetKey);
+                }
                 _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
             }
 
             if (held is not null)
             {
-                SendKey(held.TargetKey, false);
-                if (IsDebugEnabled) LogDebug($"Combined mapping released: {sourceKey.Value}");
+                if (sendUp)
+                {
+                    SendKey(held.TargetKey, false);
+                }
+                if (IsDebugEnabled) LogDebug($"Combined mapping released: {sourceKey.Value} (targetUp={sendUp})");
                 return held.SuppressOriginal;
             }
         }
@@ -1586,6 +1620,7 @@ public sealed class InputHookService : IInputHookService
                 RightClickOnly = requiresRightClick
             };
 
+            var sendDown = false;
             lock (_combinedOverridesLock)
             {
                 // Re-check under the lock: Stop() flips _isRunning before ReleaseAllOverrides, so an
@@ -1602,12 +1637,22 @@ public sealed class InputHookService : IInputHookService
 
                 _activeCombinedOverrides[sourceKey.Value] = newState;
                 _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
+
+                // F-011: refcount the target — only the FIRST source to drive it sends its DOWN.
+                var count = _combinedTargetCounts.GetValueOrDefault(targetKey);
+                _combinedTargetCounts[targetKey] = count + 1;
+                sendDown = count == 0;
             }
 
-            SendKey(targetKey, true);
-            if (!IsCombinedOverrideActive(sourceKey.Value, newState))
+            if (sendDown)
             {
-                SendKey(targetKey, false);
+                // codex #2: the old post-DOWN compensation had its own TOCTOU (a release UP landing between
+                // the DOWN and the recheck → double UP). Removed. The residual concurrency race — a
+                // pool-thread release interleaving between this add and the send, reordering DOWN/UP — is a
+                // DOCUMENTED residual: the fully race-free fix routes ALL combined-target emissions through
+                // one ordered injector (F-002, deferred). The common sequential multi-source case (two keys
+                // → one target, released in turn) is correct with the refcount alone.
+                SendKey(targetKey, true);
             }
 
             if (IsDebugEnabled) LogDebug($"Combined mapping: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
@@ -1629,17 +1674,74 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
+        // F-012: on key-up, release any RECORDED caps state FIRST — before consulting the current
+        // enable/mode gates. If the feature was disabled, or the mode/target changed, while Caps was
+        // physically held, this still releases the engaged state (Caps-forced-ON and/or the injected remap
+        // key) by the RECORDED state, so it can never stick. Mirrors the H2 combined-mapping pattern.
+        if (isKeyUp)
+        {
+            lock (_capsLockStateLock)
+            {
+                // Release any RECORDED injected state FIRST — regardless of current mode.
+                if (_capsShiftEngaged)
+                {
+                    _capsShiftEngaged = false;
+                    ForceCapsLockState(false);
+                    LogDebug("CapsLock → FORCED OFF (recorded Hold release)");
+                }
+
+                if (_capsRemappedKey is { } recorded)
+                {
+                    SendKey(recorded, false);
+                    _capsRemappedKey = null;
+                    LogDebug($"CapsLock → {recorded} UP (recorded Remap release)");
+                }
+
+                // Return the PAIRED suppress decision latched at the matching DOWN (codex #4), so the UP's
+                // suppression matches the DOWN's even if the mode/enable changed while held.
+                var suppressUp = _capsDownSuppressed;
+                _capsDownSuppressed = false;
+                _capsPhysicallyDown = false; // codex-final #2: physical press ended — next DOWN re-latches.
+                return suppressUp;
+            }
+        }
+
+        // Key-DOWN: on the INITIAL physical press, decide suppression from CURRENT settings and LATCH it for
+        // EVERY later event of this press (typematic repeats + the matching UP). Repeats must NOT re-decide:
+        // a mode/enable change while Caps is held would otherwise desync the UP from its DOWN — leaking a
+        // physical Caps to Windows (stuck CapsLock) or stranding the injected remap (codex-final #2).
         var settings = GetEffectiveCapsLockSettings();
-        if (settings is not { IsEnabled: true })
+
+        bool suppressDown;
+        bool isInitialPress;
+        lock (_capsLockStateLock)
+        {
+            isInitialPress = !_capsPhysicallyDown;
+            if (isInitialPress)
+            {
+                _capsPhysicallyDown = true;
+                _capsDownSuppressed = settings is { IsEnabled: true } && settings.Mode != CapsLockMode.Normal;
+            }
+
+            suppressDown = _capsDownSuppressed;
+        }
+
+        // Typematic repeat: mirror the latched decision WITHOUT re-running the mode switch. The initial press
+        // already engaged the mode (and injected any remap DOWN, which stays held until the UP releases it);
+        // re-entering the switch here with possibly-changed settings could fire a different mode's action
+        // mid-hold. Trades Remap auto-repeat of the target for a guaranteed matched DOWN/UP pair.
+        if (!isInitialPress)
+        {
+            return suppressDown;
+        }
+
+        if (!suppressDown)
         {
             return false;
         }
 
-        switch (settings.Mode)
+        switch (settings!.Mode)
         {
-            case CapsLockMode.Normal:
-                return false;
-
             case CapsLockMode.Disabled:
                 LogDebug("CapsLock suppressed (Disabled mode)");
                 return true;
@@ -1647,19 +1749,14 @@ public sealed class InputHookService : IInputHookService
             case CapsLockMode.Hold:
                 lock (_capsLockStateLock)
                 {
-                    // _isRunning re-check under the lock: an in-flight callback racing Stop() must
-                    // not toggle CapsLock after ReleaseCapsState already ran.
+                    // _isRunning re-check under the lock: an in-flight callback racing Stop() must not
+                    // toggle CapsLock after ReleaseCapsState already ran. Key-UP release is handled by the
+                    // recorded-state block at the top of this method (F-012).
                     if (isKeyDown && !_capsShiftEngaged && _isRunning)
                     {
                         _capsShiftEngaged = true;
                         ForceCapsLockState(true);
                         LogDebug("CapsLock → FORCED ON (Hold mode)");
-                    }
-                    else if (isKeyUp && _capsShiftEngaged)
-                    {
-                        _capsShiftEngaged = false;
-                        ForceCapsLockState(false);
-                        LogDebug("CapsLock → FORCED OFF (Hold mode)");
                     }
                 }
                 return true;
@@ -1693,12 +1790,7 @@ public sealed class InputHookService : IInputHookService
                             LogDebug($"CapsLock → {target.Value} DOWN (Remap mode)");
                         }
                     }
-                    else if (isKeyUp && _capsRemappedKey.HasValue)
-                    {
-                        SendKey(_capsRemappedKey.Value, false);
-                        LogDebug($"CapsLock → {_capsRemappedKey.Value} UP (Remap mode)");
-                        _capsRemappedKey = null;
-                    }
+                    // Key-UP release is handled by the recorded-state block at the top of this method (F-012).
                 }
                 return true;
 
@@ -1741,20 +1833,11 @@ public sealed class InputHookService : IInputHookService
             if (_capsShiftEngaged)
             {
                 _capsShiftEngaged = false;
-
-                // Check if we're in Hold mode
-                var settings = GetEffectiveCapsLockSettings();
-                if (settings is { IsEnabled: true, Mode: CapsLockMode.Hold })
-                {
-                    ForceCapsLockState(false);
-                    LogDebug("Force-release CapsLock (Hold → OFF)");
-                }
-                else
-                {
-                    // Legacy Shift emulation path (if mode was changed during hold)
-                    SendKey(Key.LeftShift, false);
-                    LogDebug("Force-release CapsLock Shift");
-                }
+                // F-012: ALWAYS the matching Caps-off action. The engaged state is Caps-forced-ON regardless
+                // of what the mode currently says (it may have changed since engage). The old mode-dependent
+                // else sent an unrelated LeftShift UP, which left Caps stuck ON.
+                ForceCapsLockState(false);
+                LogDebug("Force-release CapsLock (forced OFF)");
             }
 
             if (_capsRemappedKey.HasValue)
@@ -1763,6 +1846,13 @@ public sealed class InputHookService : IInputHookService
                 LogDebug($"Force-release CapsLock remap: {_capsRemappedKey.Value}");
                 _capsRemappedKey = null;
             }
+
+            // codex-final #2: do NOT reset _capsPhysicallyDown / _capsDownSuppressed here. ReleaseCapsState
+            // runs on every profile switch AND watchdog reinstall while the hook keeps running and Caps may
+            // still be PHYSICALLY held — clearing the latch there would reclassify the next typematic repeat
+            // as a fresh (suppressed) press whose UP no longer pairs with the original DOWN, leaking a Caps
+            // DOWN to Windows with a suppressed UP = stuck CapsLock. The latch is cleared only in Start()
+            // (the genuine fresh-session boundary; the reinstall path re-hooks WITHOUT calling Start()).
         }
     }
 
@@ -3535,9 +3625,32 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    // F-011: MUST be called under _combinedOverridesLock. Decrements the target's source-refcount; returns
+    // true only on the 1→0 transition (the last source released it), meaning the caller should send the
+    // target's UP. Returns false while another source still holds the target.
+    private bool DecrementCombinedTarget(Key target)
+    {
+        var count = _combinedTargetCounts.GetValueOrDefault(target);
+        if (count == 1)
+        {
+            _combinedTargetCounts.Remove(target); // codex #3: only 1→0 removes and requests the UP
+            return true;
+        }
+
+        if (count <= 0)
+        {
+            // Invariant failure — the target was not tracked; do NOT emit a spurious UP.
+            if (IsDebugEnabled) LogDebug($"Combined target refcount underflow for {target} (count={count})");
+            return false;
+        }
+
+        _combinedTargetCounts[target] = count - 1;
+        return false;
+    }
+
     private void ReleaseRightClickOverrides()
     {
-        List<KeyValuePair<Key, CombinedOverrideState>>? overridesToRelease = null;
+        List<Key>? targetsToRelease = null;
 
         lock (_combinedOverridesLock)
         {
@@ -3546,32 +3659,39 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
+            List<Key>? sourcesToRemove = null;
             foreach (var kvp in _activeCombinedOverrides)
             {
                 if (kvp.Value.RightClickOnly)
                 {
-                    overridesToRelease ??= new List<KeyValuePair<Key, CombinedOverrideState>>();
-                    overridesToRelease.Add(kvp);
+                    (sourcesToRemove ??= new List<Key>()).Add(kvp.Key);
                 }
             }
 
-            if (overridesToRelease is null)
+            if (sourcesToRemove is null)
             {
                 return;
             }
 
-            foreach (var kvp in overridesToRelease)
+            foreach (var source in sourcesToRemove)
             {
-                _activeCombinedOverrides.Remove(kvp.Key);
+                if (_activeCombinedOverrides.Remove(source, out var state) && state is not null &&
+                    DecrementCombinedTarget(state.TargetKey)) // F-011: UP only when the LAST source releases
+                {
+                    (targetsToRelease ??= new List<Key>()).Add(state.TargetKey);
+                }
             }
 
             _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
         }
 
-        foreach (var (key, state) in overridesToRelease)
+        if (targetsToRelease is not null)
         {
-            SendKey(state.TargetKey, false);
-            if (IsDebugEnabled) LogDebug($"Force-release right-click override key: {key}");
+            foreach (var target in targetsToRelease)
+            {
+                SendKey(target, false);
+                if (IsDebugEnabled) LogDebug($"Force-release right-click override target: {target}");
+            }
         }
     }
 
@@ -3583,7 +3703,7 @@ public sealed class InputHookService : IInputHookService
     // physical source key-up finds nothing to release (H2 Remove→false), so it can't double-send.
     private void ReleaseUnsuppressedCombinedOverrides()
     {
-        List<KeyValuePair<Key, CombinedOverrideState>>? overridesToRelease = null;
+        List<Key>? targetsToRelease = null;
 
         lock (_combinedOverridesLock)
         {
@@ -3592,38 +3712,45 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
+            List<Key>? sourcesToRemove = null;
             foreach (var kvp in _activeCombinedOverrides)
             {
                 if (!kvp.Value.SuppressOriginal)
                 {
-                    overridesToRelease ??= new List<KeyValuePair<Key, CombinedOverrideState>>();
-                    overridesToRelease.Add(kvp);
+                    (sourcesToRemove ??= new List<Key>()).Add(kvp.Key);
                 }
             }
 
-            if (overridesToRelease is null)
+            if (sourcesToRemove is null)
             {
                 return;
             }
 
-            foreach (var kvp in overridesToRelease)
+            foreach (var source in sourcesToRemove)
             {
-                _activeCombinedOverrides.Remove(kvp.Key);
+                if (_activeCombinedOverrides.Remove(source, out var state) && state is not null &&
+                    DecrementCombinedTarget(state.TargetKey)) // F-011: UP only when the LAST source releases
+                {
+                    (targetsToRelease ??= new List<Key>()).Add(state.TargetKey);
+                }
             }
 
             _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
         }
 
-        foreach (var (key, state) in overridesToRelease)
+        if (targetsToRelease is not null)
         {
-            EnqueueHoldBreathInjection(new HoldBreathInjection(state.TargetKey, IsDown: false, PreSleepMs: 0));
-            if (IsDebugEnabled) LogDebug($"Advanced-off release un-suppressed override: {key} -> {state.TargetKey} (queued)");
+            foreach (var target in targetsToRelease)
+            {
+                EnqueueHoldBreathInjection(new HoldBreathInjection(target, IsDown: false, PreSleepMs: 0));
+                if (IsDebugEnabled) LogDebug($"Advanced-off release un-suppressed target: {target} (queued)");
+            }
         }
     }
 
     private void ReleaseAllOverrides()
     {
-        List<KeyValuePair<Key, CombinedOverrideState>>? overridesToRelease;
+        List<Key> targetsToRelease;
 
         lock (_combinedOverridesLock)
         {
@@ -3632,20 +3759,17 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
-            overridesToRelease = new List<KeyValuePair<Key, CombinedOverrideState>>(_activeCombinedOverrides.Count);
-            foreach (var kvp in _activeCombinedOverrides)
-            {
-                overridesToRelease.Add(kvp);
-            }
-
+            // F-011: everything is cleared, so every currently-held target reaches 0 → release each once.
+            targetsToRelease = new List<Key>(_combinedTargetCounts.Keys);
             _activeCombinedOverrides.Clear();
+            _combinedTargetCounts.Clear();
             _activeCombinedOverrideCount = 0;
         }
 
-        foreach (var (key, state) in overridesToRelease)
+        foreach (var target in targetsToRelease)
         {
-            SendKey(state.TargetKey, false);
-            LogDebug($"Force-release combined override key: {key} -> {state.TargetKey}");
+            SendKey(target, false);
+            LogDebug($"Force-release combined override target: {target}");
         }
     }
 // ==================== STATE MANAGEMENT ====================

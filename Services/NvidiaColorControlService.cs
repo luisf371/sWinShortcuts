@@ -171,22 +171,28 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
 
         // Could not map the device to a specific handle. Enumerate all NV display handles once.
         var handles = new List<IntPtr>();
-        for (int i = 0; ; i++)
+        for (int i = 0; i < MaxNvDisplayEnum; i++)
         {
             var status = NvApiNative.NvAPI_EnumNvidiaDisplayHandle(i, out var handle);
             if (status == NvApiNative.NVAPI_END_ENUMERATION)
             {
-                _logger.Log("[Color][NVAPI] Reached end of NV display enumeration.");
+                break; // expected terminal condition
+            }
+
+            if (status != NvApiNative.NVAPI_OK)
+            {
+                // F-003: NVIDIA's contract is "enumerate until the function returns an error"; every non-OK,
+                // non-END status (INVALID_ARGUMENT, DEVICE_NOT_FOUND, or a -1 from a missing delegate) is
+                // TERMINAL. This previously 'continue'd and spun the index forever, holding the color lock
+                // and permanently freezing all profile switching.
+                _logger.Log($"[Color][NVAPI] Enumeration stopped at index {i}: Status={status}.");
                 break;
             }
 
-            if (status != NvApiNative.NVAPI_OK || handle == IntPtr.Zero)
+            if (handle != IntPtr.Zero)
             {
-                _logger.Log($"[Color][NVAPI] NvAPI_EnumNvidiaDisplayHandle({i}) failed or returned null handle. Status={status} Handle={handle}.");
-                continue;
+                handles.Add(handle);
             }
-
-            handles.Add(handle);
         }
 
         if (handles.Count == 1)
@@ -268,6 +274,10 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         }
     }
 
+    // F-003: NVIDIA display enumeration has no natural upper bound in the API, and a broken/missing delegate
+    // can return a constant non-terminal status; cap the loop defensively so it can never spin forever.
+    private const int MaxNvDisplayEnum = 64;
+
     private IntPtr FindDisplayHandle(string deviceName)
     {
         // deviceName usually looks like "\\.\DISPLAY1"
@@ -285,19 +295,25 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
 
         _logger.Log($"[Color][NVAPI] Resolving NVAPI display handle for device '{cacheKey}' (normalized='{normalized}').");
 
-        for (int i = 0; ; i++)
+        for (int i = 0; i < MaxNvDisplayEnum; i++)
         {
             var status = NvApiNative.NvAPI_EnumNvidiaDisplayHandle(i, out var handle);
             if (status == NvApiNative.NVAPI_END_ENUMERATION)
             {
-                _logger.Log("[Color][NVAPI] Reached end of NV display enumeration while resolving handle.");
+                break; // expected terminal condition
+            }
+
+            if (status != NvApiNative.NVAPI_OK)
+            {
+                // F-003: any non-OK, non-END enumeration status is terminal (see TryApplyNvapiDvc) — stop
+                // rather than spinning the index forever on a missing delegate / device-not-found.
+                _logger.Log($"[Color][NVAPI] Handle-resolution enumeration stopped at index {i}: Status={status}.");
                 break;
             }
 
-            if (status != NvApiNative.NVAPI_OK || handle == IntPtr.Zero)
+            if (handle == IntPtr.Zero)
             {
-                _logger.Log($"[Color][NVAPI] NvAPI_EnumNvidiaDisplayHandle({i}) failed or returned null handle while resolving. Status={status} Handle={handle}.");
-                continue;
+                continue; // OK status but null handle — skip this index (bounded by the enumeration cap).
             }
 
             var nameBuilder = new StringBuilder(NvApiNative.NVAPI_DEFAULT_STRING_MAX);
@@ -400,6 +416,7 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
 
         private static readonly object _loadSync = new();
         private static bool _functionsLoaded;
+        private static bool _functionsUsable; // F-003: true only if EVERY required DVC delegate resolved.
         private static NvAPI_InitializeDelegate? _initialize;
         private static NvAPI_UnloadDelegate? _unload;
         private static NvAPI_EnumNvidiaDisplayHandleDelegate? _enumDisplay;
@@ -410,14 +427,14 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         {
             if (_functionsLoaded)
             {
-                return _initialize is not null;
+                return _functionsUsable;
             }
 
             lock (_loadSync)
             {
                 if (_functionsLoaded)
                 {
-                    return _initialize is not null;
+                    return _functionsUsable;
                 }
 
                 try
@@ -444,8 +461,24 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
                     _initialize = null;
                 }
 
+                // F-003: the DVC capability needs EVERY delegate in its call chain (initialize -> enumerate
+                // -> resolve name -> set level, plus unload for teardown). If any is missing, fail CLOSED — a
+                // partially-loaded set previously reported success, then NvAPI_EnumNvidiaDisplayHandle
+                // returned -1 at runtime, which the enumeration loop treated as "keep going" -> infinite spin.
+                _functionsUsable =
+                    _initialize is not null &&
+                    _unload is not null &&
+                    _enumDisplay is not null &&
+                    _getDisplayName is not null &&
+                    _dvcSetLevel is not null;
+
+                if (_initialize is not null && !_functionsUsable)
+                {
+                    Log("[Color][NVAPI] NvAPI loaded but a required function is missing; disabling NVAPI DVC.");
+                }
+
                 _functionsLoaded = true;
-                return _initialize is not null;
+                return _functionsUsable;
             }
         }
 

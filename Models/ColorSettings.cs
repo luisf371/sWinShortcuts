@@ -81,6 +81,23 @@ public sealed class ColorSettings
         }
     }
 
+    // F-018: mutate an existing per-display profile UNDER _sync, so a concurrent SnapshotProfiles() (the
+    // activation worker / INI serializer, on another thread) always deep-copies a coherent whole-before or
+    // whole-after value instead of a torn mix of pre/post-edit fields. The UI setters route writes here.
+    public void UpdateProfile(string displayId, Action<DisplayColorProfile> mutate)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayId);
+        ArgumentNullException.ThrowIfNull(mutate);
+
+        lock (_sync)
+        {
+            if (_displayProfiles.TryGetValue(displayId, out var existing))
+            {
+                mutate(existing);
+            }
+        }
+    }
+
     public void ClearProfiles()
     {
         lock (_sync)

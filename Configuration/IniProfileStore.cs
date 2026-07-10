@@ -21,53 +21,146 @@ public sealed class IniProfileStore : IProfileStore
     private readonly Services.ILoggerService? _logger;
 
     public IniProfileStore(Services.ILoggerService? logger = null)
+        : this(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "sWinShortcuts"),
+            logger)
     {
+    }
+
+    // F-021: storage-root seam. Tests pass a unique temp root so they never mutate the real
+    // %APPDATA%\sWinShortcuts, can run in parallel, and clean up deterministically. Production still
+    // resolves AppData via the public ctor above.
+    internal IniProfileStore(string rootDirectory, Services.ILoggerService? logger = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         _logger = logger;
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        _rootDirectory = Path.Combine(appData, "sWinShortcuts");
+        _rootDirectory = rootDirectory;
         _profilesDirectory = Path.Combine(_rootDirectory, ProfileConstants.ProfilesDirectoryName);
         _windowsProfilePath = Path.Combine(_rootDirectory, ProfileConstants.WindowsProfileFileName);
         _colorProfilePath = Path.Combine(_rootDirectory, ProfileConstants.ColorProfileFileName);
 
-        Directory.CreateDirectory(_rootDirectory);
-        Directory.CreateDirectory(_profilesDirectory);
+        // F-008: an inaccessible/redirected AppData must not abort construction (and thus the whole app).
+        // Loads then fall back to in-memory defaults with persistence suspended; the app still starts with
+        // input cleanup + tray. A later save re-attempts directory creation via the atomic INI writer.
+        try
+        {
+            Directory.CreateDirectory(_rootDirectory);
+            Directory.CreateDirectory(_profilesDirectory);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log($"[Profile] Failed to create storage directories under '{_rootDirectory}': {ex}");
+        }
     }
 
     public Task<IReadOnlyList<Profile>> LoadProfilesAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        // F-008: isolate EACH built-in load. Previously both sat in a list initializer, so an unreadable
+        // Win.ini aborted the whole method (and the app) and Color.ini was never even attempted. Now a
+        // failed built-in degrades to in-memory defaults with persistence suspended (so a later autosave
+        // can't overwrite the preserved, possibly transiently-locked source), and the other still loads.
         var profiles = new List<Profile>
         {
-            LoadWindowsProfile(cancellationToken),
-            LoadColorProfile(cancellationToken)
+            LoadBuiltInProfile("Windows", _windowsProfilePath, LoadWindowsProfile, CreateWindowsFallback, cancellationToken),
+            LoadBuiltInProfile("Color", _colorProfilePath, LoadColorProfile, CreateColorFallback, cancellationToken)
         };
 
-        foreach (var file in Directory.EnumerateFiles(_profilesDirectory, "*.ini", SearchOption.TopDirectoryOnly))
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var file in Directory.EnumerateFiles(_profilesDirectory, "*.ini", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            try
-            {
-                var profile = LoadProfile(file);
-                profiles.Add(profile);
+                try
+                {
+                    var profile = LoadProfile(file);
+                    profiles.Add(profile);
+                }
+                catch (Exception ex)
+                {
+                    // Don't let one malformed/partially-migrated file drop silently. Log the path + error so a
+                    // parse/migration failure is diagnosable (a user reporting "my settings vanished" now has a
+                    // trace). The file is left in place — never destroyed — so a transient lock is recoverable.
+                    _logger?.Log($"[Profile] Failed to load '{file}': {ex}");
+                }
             }
-            catch (Exception ex)
-            {
-                // Don't let one malformed/partially-migrated file drop silently. Log the path + error so a
-                // parse/migration failure is diagnosable (a user reporting "my settings vanished" now has a
-                // trace). The file is left in place — never destroyed — so a transient lock is recoverable.
-                _logger?.Log($"[Profile] Failed to load '{file}': {ex}");
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // F-008: a damaged/inaccessible Profiles directory must not abort startup — the built-ins,
+            // input cleanup, and tray still come up. Custom profiles are simply unavailable this run.
+            _logger?.Log($"[Profile] Failed to enumerate profiles directory '{_profilesDirectory}': {ex}");
         }
 
         return Task.FromResult<IReadOnlyList<Profile>>(profiles);
+    }
+
+    // F-008: run one built-in loader in isolation. On any non-cancellation failure, fall back to factory
+    // defaults, tag the source path, and suspend persistence so the unreadable source is preserved.
+    private Profile LoadBuiltInProfile(
+        string label,
+        string path,
+        Func<CancellationToken, Profile> loader,
+        Func<Profile> makeFallback,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 4; // F-008 (codex #5): initial attempt + 3 transient retries.
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return loader(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && (ex is IOException || ex is UnauthorizedAccessException))
+            {
+                // F-008: a transient lock (another instance, an AV scan) is the common built-in-load
+                // failure. Brief backoff then retry BEFORE degrading, so a fleeting lock doesn't force a
+                // read-only degraded session. Runs on the startup thread before the hooks install.
+                System.Threading.Thread.Sleep(100 * attempt);
+            }
+            catch (Exception ex)
+            {
+                _logger?.Log($"[Profile] Failed to load built-in '{label}' profile '{path}': {ex}. Using in-memory defaults; persistence suspended to preserve the on-disk file.");
+                var fallback = makeFallback();
+                fallback.SourcePath = path;
+                fallback.IsPersistenceSuspended = true;
+                return fallback;
+            }
+        }
+    }
+
+    private static Profile CreateWindowsFallback() => ProfileFactory.CreateWindowsProfile();
+
+    private static Profile CreateColorFallback()
+    {
+        var profile = ProfileFactory.CreateColorProfile();
+        profile.ColorSettings.IsEnabled = true;
+        return profile;
     }
 
     public Task SaveProfileAsync(Profile profile, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (profile.IsPersistenceSuspended)
+        {
+            // F-008: this built-in loaded as defaults because its source was unreadable. Refuse to
+            // overwrite the preserved source with defaults, and signal explicitly (NOT silent success) so
+            // the dirty-tracking layer keeps the edit and never reports a false save — a silent success
+            // would clear the dirty flag and lose the change (codex CRITICAL #1).
+            throw new PersistenceSuspendedException(profile.Name);
+        }
 
         var path = profile.IsWindowsProfile
             ? _windowsProfilePath
@@ -103,9 +196,22 @@ public sealed class IniProfileStore : IProfileStore
             path = DetermineProfilePath(profile);
         }
 
-        if (File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path))
         {
+            return Task.CompletedTask;
+        }
+
+        try
+        {
+            // F-015: do NOT gate on File.Exists — it returns false for access/IO errors too, which would
+            // report a FALSE successful delete (manager/UI drop the profile, autosave cancels, and the
+            // surviving INI resurrects next launch). File.Delete is already a no-op for an absent file;
+            // a genuinely locked/denied file throws, which the manager relies on to keep the profile.
             File.Delete(path);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // Parent directory is gone — there is nothing to delete.
         }
 
         return Task.CompletedTask;

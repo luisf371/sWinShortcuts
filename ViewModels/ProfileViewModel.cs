@@ -15,6 +15,11 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     private readonly IReadOnlyList<Key> _keyOptions;
     private bool _isSyncing;
 
+    // F-014/F-015: set by MainViewModel (under its _saveSync) when this VM is detached because its profile
+    // was removed. An in-flight autosave checks this before requeueing so a removed profile is never
+    // re-added to the dirty set (which would otherwise hit the manager's "not managed" throw at exit).
+    public bool IsDetached { get; set; }
+
     public ProfileViewModel(Profile model, IDisplayService displayService, IColorControlService colorControlService, IReadOnlyList<Key>? keyOptions = null)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
@@ -106,6 +111,17 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     }
 
     private bool _isEnabled;
+
+    // F-008: the editor content is bound to this. A persistence-suspended built-in (its source was
+    // unreadable at load) is read-only, so editing is disabled and the grayed content is the persistent
+    // read-only indicator. For every normal profile this equals IsEnabled (unchanged behavior).
+    public bool CanEditContent => IsEnabled && !Model.IsPersistenceSuspended;
+
+    // F-008: a persistence-suspended built-in is fully read-only — even its enable/master checkbox is
+    // disabled, so toggling it can't change live model/color state that autosave would then silently drop.
+    // Static (suspension is set once at load).
+    public bool CanToggleEnabled => !Model.IsPersistenceSuspended;
+
     public bool IsEnabled
     {
         get => _isEnabled;
@@ -114,6 +130,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             if (SetProperty(ref _isEnabled, value))
             {
                 Model.IsEnabled = value;
+                OnPropertyChanged(nameof(CanEditContent));
                 OnProfileChanged();
 
                 if (IsColorProfile)

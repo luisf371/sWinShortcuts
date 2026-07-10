@@ -276,6 +276,7 @@
                             <StackPanel Margin="0">
                                 <CheckBox Margin="0,0,0,8"
                                           IsChecked="{Binding IsEnabled}"
+                                          IsEnabled="{Binding CanToggleEnabled}"
                                           VerticalAlignment="Center"
                                           HorizontalAlignment="Left"
                                           VerticalContentAlignment="Center"
@@ -287,7 +288,7 @@
                                                VerticalAlignment="Center" />
                                 </CheckBox>
 
-                                <StackPanel IsEnabled="{Binding IsEnabled}"
+                                <StackPanel IsEnabled="{Binding CanEditContent}"
                                             Style="{StaticResource DisabledContentShadeStyle}">
                                     <StackPanel Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <StackPanel Margin="0,0,0,8"
@@ -299,7 +300,13 @@
                                                     DockPanel.Dock="Right"
                                                     Margin="8,0,0,0"
                                                     Width="100" />
-                                            <TextBox Text="{Binding Executable, UpdateSourceTrigger=PropertyChanged}" />
+                                            <!-- F-017: display-only. The inline PropertyChanged binding
+                                                 let unvalidated (empty / non-.exe / duplicate) targets
+                                                 persist straight to the model on every keystroke. All
+                                                 executable edits now go through the validated Modify flow. -->
+                                            <TextBox Text="{Binding Executable, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     ToolTip="Use Modify to change the target executable (validated)." />
                                         </DockPanel>
                                     </StackPanel>
 

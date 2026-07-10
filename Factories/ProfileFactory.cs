@@ -24,6 +24,7 @@ public static class ProfileFactory
     {
         var profile = new Profile
         {
+            Kind = ProfileKind.Windows,
             Name = ProfileConstants.WindowsProfileName,
             Executable = string.Empty,
             IsEnabled = true
@@ -41,6 +42,7 @@ public static class ProfileFactory
     {
         var profile = new Profile
         {
+            Kind = ProfileKind.Custom,
             Name = name,
             Executable = executable,
             IsEnabled = true
@@ -54,6 +56,7 @@ public static class ProfileFactory
     {
         var profile = new Profile
         {
+            Kind = ProfileKind.Color,
             Name = ProfileConstants.ColorProfileName,
             Executable = string.Empty,
             IsEnabled = true

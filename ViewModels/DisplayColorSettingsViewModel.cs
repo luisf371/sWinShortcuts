@@ -13,6 +13,7 @@ namespace sWinShortcuts.ViewModels;
 public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 {
     private readonly DisplayColorProfile _profile;
+    private readonly ColorSettings _colorSettings;
     private readonly DisplayInfo _displayInfo;
     private readonly IColorControlService _colorService;
     private readonly Func<bool> _isMasterEnabled;
@@ -30,12 +31,14 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
     public DisplayColorSettingsViewModel(
         DisplayInfo displayInfo,
         DisplayColorProfile profile,
+        ColorSettings colorSettings,
         IColorControlService colorService,
         Func<bool> isMasterEnabled,
         bool allowLiveUpdates = false)
     {
         _displayInfo = displayInfo ?? throw new ArgumentNullException(nameof(displayInfo));
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
+        _colorSettings = colorSettings ?? throw new ArgumentNullException(nameof(colorSettings));
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
         _isMasterEnabled = isMasterEnabled ?? throw new ArgumentNullException(nameof(isMasterEnabled));
         _allowLiveUpdates = allowLiveUpdates;
@@ -80,7 +83,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
         {
             if (SetProperty(ref _isEnabled, value))
             {
-                _profile.IsEnabled = value;
+                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.IsEnabled = value); // F-018: under _sync
                 OnPropertyChanged(nameof(AreControlsEnabled));
                 
                 // When toggled OFF: revert to default colors
@@ -104,7 +107,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampPercent(value);
             if (SetProperty(ref _brightness, clamped))
             {
-                _profile.Brightness = clamped;
+                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.Brightness = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }
@@ -119,7 +122,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampPercent(value);
             if (SetProperty(ref _contrast, clamped))
             {
-                _profile.Contrast = clamped;
+                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.Contrast = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }
@@ -134,7 +137,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampGamma(value);
             if (SetProperty(ref _gamma, clamped))
             {
-                _profile.Gamma = clamped;
+                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.Gamma = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }
@@ -149,7 +152,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampDigitalVibrance(value);
             if (SetProperty(ref _digitalVibrance, clamped))
             {
-                _profile.DigitalVibrance = clamped;
+                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.DigitalVibrance = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }
@@ -169,6 +172,15 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
     {
         OnPropertyChanged(nameof(AreControlsEnabled));
         ApplyToHardwareOrRevert();
+    }
+
+    // F-006: UI-state ONLY — refresh whether the sliders are enabled, with NO hardware side effect. Used by
+    // a display-list rebuild (hot-plug): re-enumerating monitors must not write a neutral gamma/DVC to
+    // displays the user never opted into. Topology re-apply for owned displays is handled by
+    // ProfileActivationService's DisplaySettingsChanged handler (its plan-diff skips never-owned displays).
+    public void NotifyControlsEnabledChanged()
+    {
+        OnPropertyChanged(nameof(AreControlsEnabled));
     }
 
     private void ResetAll()

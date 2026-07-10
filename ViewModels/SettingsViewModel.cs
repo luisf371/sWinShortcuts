@@ -13,6 +13,8 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     private bool _enableDebugLogging;
     private bool _hookWatchdogEnabled = true;
     private bool _advancedModeEnabled;
+    private bool _isStartupLoaded;
+    private bool _isSaving;
 
     public bool StartWithWindows
     {
@@ -91,7 +93,46 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         }
     }
 
-    public bool CanChooseAdmin => StartWithWindows;
+    // F-016: the startup checkbox state loads async off the dispatcher (schtasks GetState). Until it loads,
+    // the startup controls AND Save are disabled so a premature Save can't apply/delete a startup task from
+    // unknown state. While a save runs, the same controls are disabled so their values can't change mid-apply.
+    public bool IsStartupLoaded
+    {
+        get => _isStartupLoaded;
+        set
+        {
+            if (_isStartupLoaded != value)
+            {
+                _isStartupLoaded = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(CanEditStartup));
+                OnPropertyChanged(nameof(CanChooseAdmin));
+                OnPropertyChanged(nameof(CanSave));
+            }
+        }
+    }
+
+    public bool IsSaving
+    {
+        get => _isSaving;
+        set
+        {
+            if (_isSaving != value)
+            {
+                _isSaving = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(CanEditStartup));
+                OnPropertyChanged(nameof(CanChooseAdmin));
+                OnPropertyChanged(nameof(CanSave));
+            }
+        }
+    }
+
+    public bool CanEditStartup => IsStartupLoaded && !IsSaving;
+
+    public bool CanSave => IsStartupLoaded && !IsSaving;
+
+    public bool CanChooseAdmin => IsStartupLoaded && !IsSaving && StartWithWindows;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? name = null)

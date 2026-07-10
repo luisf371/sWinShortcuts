@@ -42,11 +42,26 @@ public sealed class Profile
 
     public string SourcePath { get; set; } = string.Empty;
 
-    public bool IsWindowsProfile =>
-        string.Equals(Name, ProfileConstants.WindowsProfileName, StringComparison.OrdinalIgnoreCase);
+    // F-008: set when this profile's on-disk source could not be read at load, so its in-memory state is
+    // factory defaults. Persisting would overwrite the preserved (possibly transiently-locked) source
+    // with those defaults, so IniProfileStore.SaveProfileAsync skips it while this flag is set.
+    public bool IsPersistenceSuspended { get; set; }
 
-    public bool IsColorProfile =>
-        string.Equals(Name, ProfileConstants.ColorProfileName, StringComparison.OrdinalIgnoreCase);
+    // F-007: built-in identity is an IMMUTABLE kind assigned at the load origin / factory, NOT derived
+    // from the mutable display Name. A custom INI declaring Name="Windows"/"Color Settings" therefore
+    // stays Custom and can never route its save/delete onto Win.ini/Color.ini or bypass deletion guards.
+    public ProfileKind Kind { get; init; } = ProfileKind.Custom;
+
+    public bool IsWindowsProfile => Kind == ProfileKind.Windows;
+
+    public bool IsColorProfile => Kind == ProfileKind.Color;
 
     private static string NormalizeExecutable(string? value) => ExecutableName.Normalize(value);
+}
+
+public enum ProfileKind
+{
+    Custom,
+    Windows,
+    Color
 }

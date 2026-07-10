@@ -31,6 +31,9 @@ public sealed class ProfileActivationService : IHostedService
     private Profile? _activeProfile;
     private CancellationTokenSource? _foregroundWorkerCancellation;
     private Task? _foregroundWorkerTask;
+    // F-010: set at the START of StopAsync; the worker checks it before every side effect so a late-returning
+    // (uncancelable) native color call can't activate input / touch the tray after shutdown has begun.
+    private volatile bool _stopping;
     private ColorPlan _lastAppliedColorPlan = ColorPlan.Empty;
     // Volatile: written by the ForegroundChanged handler, read in StartAsync. Today the initial event
     // fires synchronously on the starting thread, but the handler also runs from the WinEvent pump.
@@ -119,6 +122,9 @@ public sealed class ProfileActivationService : IHostedService
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        // F-010: signal the worker to make any in-flight/late foreground change side-effect-free — a native
+        // color call that can't be canceled must not activate input or touch the tray after we stop below.
+        _stopping = true;
         _foregroundWatcher.ForegroundChanged -= OnForegroundChanged;
         _inputHookService.ActiveProfileChanged -= OnActiveProfileChanged;
         if (_reapplyHandlersRegistered)
@@ -202,6 +208,11 @@ public sealed class ProfileActivationService : IHostedService
 
     private void ProcessForegroundChange(string? processName)
     {
+        if (_stopping)
+        {
+            return; // F-010: shutdown began — don't start new activation/color work.
+        }
+
         var profile = string.IsNullOrWhiteSpace(processName)
             ? null
             : _profileManager.FindByExecutable(processName);
@@ -219,7 +230,7 @@ public sealed class ProfileActivationService : IHostedService
         var plan = BuildColorPlan(profile, displays, _profileManager);
 
         var force = Interlocked.Exchange(ref _forceReapply, 0) == 1;
-        if (force || !_lastAppliedColorPlan.Equals(plan))
+        if (!_stopping && (force || !_lastAppliedColorPlan.Equals(plan))) // F-010: skip color once stopping
         {
             // Advance the dedup baseline ONLY when every enabled display actually applied (§14.1):
             // a failed enabled apply stays un-deduped and retries on the next foreground/resume event.
@@ -227,6 +238,11 @@ public sealed class ProfileActivationService : IHostedService
             {
                 _lastAppliedColorPlan = plan;
             }
+        }
+
+        if (_stopping)
+        {
+            return; // F-010: StopAsync began during the (possibly slow) color apply — don't touch input/tray.
         }
 
         if (profile is { IsEnabled: true })

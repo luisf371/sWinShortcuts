@@ -51,6 +51,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
             var displayVm = new DisplayColorSettingsViewModel(
                 display,
                 profile,
+                _model,
                 _colorService,
                 () => IsEnabled && (_parentEnabledCheck?.Invoke() ?? true),
                 _allowLiveUpdates);
@@ -88,10 +89,13 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         DisplayViewModels.Clear();
         BuildDisplayViewModels();
 
-        // Reflect the possibly-changed master state on the rebuilt rows.
+        // F-006: a rebuild is a topology change, not a user toggle — refresh the UI enabled-state ONLY.
+        // The old NotifyMasterEnabledChanged() also wrote hardware, pushing a neutral gamma/DVC to disabled
+        // displays the user never opted into. Owned displays are re-applied by ProfileActivationService's
+        // DisplaySettingsChanged handler (whose plan-diff leaves never-owned displays untouched).
         foreach (var displayVm in DisplayViewModels)
         {
-            displayVm.NotifyMasterEnabledChanged();
+            displayVm.NotifyControlsEnabledChanged();
         }
 
         OnPropertyChanged(nameof(HasDisplays));

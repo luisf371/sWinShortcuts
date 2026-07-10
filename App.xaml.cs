@@ -76,10 +76,16 @@ public partial class App : System.Windows.Application
                     var mainViewModel = _host.Services.GetService<MainViewModel>();
                     if (mainViewModel is not null)
                     {
-                        var flushed = Task.Run(() => mainViewModel.FlushPendingSavesAsync()).Wait(TimeSpan.FromSeconds(3));
-                        if (!flushed)
+                        var flushTask = Task.Run(() => mainViewModel.FlushPendingSavesAsync());
+                        if (!flushTask.Wait(TimeSpan.FromSeconds(3)))
                         {
                             LogCrash("OnExit.Flush", new TimeoutException("FlushPendingSavesAsync did not complete within 3s; some edits may be unsaved."));
+                        }
+                        else if (flushTask.Result > 0)
+                        {
+                            // F-014: the flush completed but could not persist every edit (e.g. a locked
+                            // file). Report it rather than exiting as if everything saved.
+                            LogCrash("OnExit.Flush", new InvalidOperationException($"{flushTask.Result} profile edit(s) could not be saved before exit."));
                         }
                     }
                 }

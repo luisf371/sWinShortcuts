@@ -121,11 +121,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException($"Profile named '{name}' already exists.");
             }
 
-            if (!string.IsNullOrWhiteSpace(profile.NormalizedExecutable) &&
-                _profiles.Any(p => string.Equals(p.NormalizedExecutable, profile.NormalizedExecutable, StringComparison.OrdinalIgnoreCase)))
-            {
-                throw new InvalidOperationException($"Profile for executable '{executable}' already exists.");
-            }
+            ValidateCustomProfile(profile);
 
             await _store.SaveProfileAsync(profile, cancellationToken).ConfigureAwait(false);
             _profiles.Add(profile);
@@ -157,15 +153,19 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException("The Color Settings profile cannot be removed.");
             }
 
-            if (_profiles.Remove(profile))
-            {
-                RebuildSnapshot();
-                await _store.DeleteProfileAsync(profile, cancellationToken).ConfigureAwait(false);
-            }
-            else
+            if (!_profiles.Contains(profile))
             {
                 return;
             }
+
+            // F-015: delete durably FIRST. If this throws (locked file / denied access), the manager's
+            // list and snapshot stay intact — the profile remains managed and visible, the caller
+            // surfaces the error, and a restart can't resurrect a profile the UI was told is gone. Only
+            // after the file is actually gone do we mutate in-memory state and raise ProfileRemoved
+            // (which is what cancels the pending autosave, so that too happens only on success).
+            await _store.DeleteProfileAsync(profile, cancellationToken).ConfigureAwait(false);
+            _profiles.Remove(profile);
+            RebuildSnapshot();
         }
         finally
         {
@@ -206,6 +206,10 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
             {
                 throw new InvalidOperationException($"A profile named '{trimmed}' already exists.");
             }
+
+            // F-017: a rename persists the WHOLE profile; validate the executable too so a legacy/invalid
+            // exe can't be re-persisted through the rename path (codex #9). Runs before the name mutation.
+            ValidateCustomProfile(profile);
 
             // Keep the SAME Profile instance (preserves selection + autosave keying) and write back to
             // its existing SourcePath, so the rename can never clobber another profile's file. Roll the
@@ -263,11 +267,43 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException($"A profile named '{profile.Name}' already exists.");
             }
 
+            // F-017: executable validation is centralized so EVERY persistence path (inline edit, Modify
+            // dialog, Add, programmatic) is protected, not just the Modify dialog.
+            ValidateCustomProfile(profile);
+
             await _store.SaveProfileAsync(profile, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    // F-017: single executable-validation used by every custom-profile persistence entry point (Add +
+    // Save). Built-ins carry no executable and are exempt. A custom profile must target a non-empty, .exe,
+    // and unique-by-normalized-name executable — empty never activates, non-.exe is rejected by policy,
+    // and a duplicate is shadowed by list order. (Rename is name-only and does not touch the executable.)
+    private void ValidateCustomProfile(Profile profile)
+    {
+        if (profile.Kind != ProfileKind.Custom)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.NormalizedExecutable))
+        {
+            throw new InvalidOperationException("This profile must target an executable.");
+        }
+
+        if (!profile.Executable.TrimEnd().EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The target must be an .exe executable.");
+        }
+
+        if (_profiles.Any(p => !ReferenceEquals(p, profile) &&
+                               string.Equals(p.NormalizedExecutable, profile.NormalizedExecutable, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException($"A profile for executable '{profile.Executable}' already exists.");
         }
     }
 

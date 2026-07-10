@@ -1,4 +1,5 @@
 using Xunit;
+using System.IO;
 using System.Windows.Input;
 using sWinShortcuts.Configuration;
 using sWinShortcuts.Factories;
@@ -13,28 +14,112 @@ namespace Tests;
 /// </summary>
 public class IniProfileStoreIntegrationTests : IDisposable
 {
+    private readonly string _root;
     private readonly IniProfileStore _store;
     private readonly List<Profile> _createdProfiles = [];
 
     public IniProfileStoreIntegrationTests()
     {
-        _store = new IniProfileStore(new Tests.Fakes.NullLoggerService());
+        // F-021: unique temp root per test instance (xUnit constructs one instance per test method),
+        // so these tests are hermetic and parallel-safe and never touch the user's real AppData.
+        _root = Path.Combine(Path.GetTempPath(), "sWinShortcutsTests", Guid.NewGuid().ToString("N"));
+        _store = new IniProfileStore(_root, new Tests.Fakes.NullLoggerService());
     }
 
     public void Dispose()
     {
-        // Cleanup: delete any profiles we created
-        foreach (var profile in _createdProfiles)
+        // Single recursive delete of the temp root. Fail visibly if it can't complete rather than
+        // swallowing — a leaked/locked temp dir is a real signal, not something to hide.
+        if (Directory.Exists(_root))
         {
-            try
-            {
-                _store.DeleteProfileAsync(profile, CancellationToken.None).Wait();
-            }
-            catch
-            {
-                // Ignore cleanup errors
-            }
+            Directory.Delete(_root, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task ReservedNameCustomFile_StaysCustom_AndCannotClobberWindowsIni()
+    {
+        // F-007: a custom INI declaring a reserved Name must load as Custom (immutable Kind from load
+        // origin), keep its own SourcePath, and never route its save onto Win.ini.
+        var profilesDir = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDir);
+        File.WriteAllText(
+            Path.Combine(profilesDir, "Reserved.ini"),
+            "[Profile]\nName=Windows\nExecutable=reserved.exe\nEnabled=true\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+
+        var winIniPath = Path.Combine(_root, "Win.ini");
+        var winIniBefore = File.ReadAllText(winIniPath);
+
+        var custom = profiles.Single(p =>
+            string.Equals(p.NormalizedExecutable, "reserved", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProfileKind.Custom, custom.Kind);
+        Assert.False(custom.IsWindowsProfile);
+        Assert.EndsWith("Reserved.ini", custom.SourcePath);
+
+        // Saving the reserved-named custom profile must write ONLY its own file, never Win.ini.
+        await _store.SaveProfileAsync(custom, CancellationToken.None);
+
+        Assert.Equal(winIniBefore, File.ReadAllText(winIniPath));
+        Assert.EndsWith("Reserved.ini", custom.SourcePath);
+    }
+
+    [Fact]
+    public async Task BuiltInLoadFailure_DegradesToDefaults_AndSuspendsPersistence()
+    {
+        // F-008: an unreadable built-in must NOT abort startup. Occupy Win.ini's path with a directory so
+        // its load fails, then assert: the Windows profile still loads (defaults, persistence suspended),
+        // the OTHER built-in (Color) loads normally, and saving the suspended profile is refused rather
+        // than overwriting the preserved path with defaults.
+        Directory.CreateDirectory(Path.Combine(_root, "Win.ini"));
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+
+        var windows = profiles.Single(p => p.IsWindowsProfile);
+        var color = profiles.Single(p => p.IsColorProfile);
+        Assert.True(windows.IsPersistenceSuspended);
+        Assert.False(color.IsPersistenceSuspended);
+
+        await Assert.ThrowsAsync<PersistenceSuspendedException>(
+            () => _store.SaveProfileAsync(windows, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ReservedColorName_CustomFile_StaysCustom_AndCannotClobberColorIni()
+    {
+        // F-007: the OTHER reserved name ("Color Settings") gets the same protection as "Windows".
+        var profilesDir = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDir);
+        File.WriteAllText(
+            Path.Combine(profilesDir, "Reserved.ini"),
+            "[Profile]\nName=Color Settings\nExecutable=reservedcolor.exe\nEnabled=true\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var colorIniPath = Path.Combine(_root, "Color.ini");
+        var colorIniBefore = File.ReadAllText(colorIniPath);
+
+        var custom = profiles.Single(p =>
+            string.Equals(p.NormalizedExecutable, "reservedcolor", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ProfileKind.Custom, custom.Kind);
+        Assert.False(custom.IsColorProfile);
+
+        await _store.SaveProfileAsync(custom, CancellationToken.None);
+        Assert.Equal(colorIniBefore, File.ReadAllText(colorIniPath));
+    }
+
+    [Fact]
+    public async Task ColorBuiltInLoadFailure_DegradesIndependently_WindowsStillLoads()
+    {
+        // F-008: each built-in is isolated — a failed Color.ini must not prevent Win.ini from loading.
+        Directory.CreateDirectory(Path.Combine(_root, "Color.ini"));
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+
+        var windows = profiles.Single(p => p.IsWindowsProfile);
+        var color = profiles.Single(p => p.IsColorProfile);
+        Assert.False(windows.IsPersistenceSuspended); // the other built-in loaded normally
+        Assert.True(color.IsPersistenceSuspended);
     }
 
     [Fact]

@@ -1,0 +1,44 @@
+# F-022: Windows CI gate — Release build + full test run + dependency advisory scans on every
+# push/PR to main. Documented follow-ups (see IMPLEMENTATION_PLAN.md): pin actions by commit SHA;
+# add `--locked-mode` restore once F-019a commits packages.lock.json; enforce (fail on) the vulnerable
+# scan once F-019b (xUnit v3) clears the two test-only High advisories; add signing/SBOM/provenance
+# when a release channel is defined.
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore sWinShortcuts.sln
+
+      - name: Build (Release)
+        run: dotnet build sWinShortcuts.sln -c Release --no-restore
+
+      - name: Test (Release)
+        run: dotnet test sWinShortcuts.sln -c Release --no-build
+
+      # Informational for now (these commands exit 0 even on findings). Production graph is clean; the
+      # test graph still surfaces two High advisories until F-019b migrates to xUnit v3.
+      - name: Vulnerable package scan
+        run: dotnet list sWinShortcuts.sln package --vulnerable --include-transitive
+
+      - name: Deprecated package scan
+        run: dotnet list sWinShortcuts.sln package --deprecated --include-transitive

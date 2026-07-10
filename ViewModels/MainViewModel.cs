@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using sWinShortcuts.Configuration;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
@@ -38,6 +39,21 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly object _saveSync = new();
     private readonly Dictionary<ProfileViewModel, CancellationTokenSource> _debounce = [];
     private readonly HashSet<ProfileViewModel> _dirty = [];
+
+    // F-014: a failed save keeps the profile dirty so the exit flush / next edit still persists it (bounded
+    // in-place transient retries live in SaveProfileInternalAsync). _saveErrorShown suppresses repeat error
+    // dialogs until the next success. _activeSaves holds at most ONE save-loop per profile (coalescing rapid
+    // edits into one active save + one dirty follow-up); the loop runs on the pool — NEVER under _saveSync,
+    // since the store's synchronous write under the lock would block the UI/hook thread — and finalizes
+    // _dirty before it completes, so the exit flush can await these tasks with no lost/duplicated save.
+    // All collections guarded by _saveSync.
+    private readonly HashSet<ProfileViewModel> _saveErrorShown = [];
+    private readonly Dictionary<ProfileViewModel, Task> _activeSaves = [];
+    private readonly Dictionary<ProfileViewModel, long> _editSeq = []; // codex #4b: per-profile edit counter
+    private bool _isFlushing; // guarded by _saveSync: exit flush is draining — no new debounce timers arm.
+    private const int MaxFlushPasses = 3;
+
+    private enum SaveOutcome { Saved, Failed, Suspended }
 
     public MainViewModel(IProfileManager profileManager, IDialogService dialogService, IDisplayService displayService, IColorControlService colorControlService)
     {
@@ -149,7 +165,16 @@ public sealed partial class MainViewModel : ViewModelBase
             return;
         }
 
-        await _profileManager.RemoveProfileAsync(SelectedProfile.Model);
+        try
+        {
+            await _profileManager.RemoveProfileAsync(SelectedProfile.Model);
+        }
+        catch (Exception ex)
+        {
+            // F-015: a failed durable delete leaves the profile managed + visible; surface why rather
+            // than faulting the AsyncRelayCommand task.
+            _dialogService.ShowError(ex.Message, "Unable to remove profile");
+        }
     }
 
     private bool CanRemoveProfile() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
@@ -162,11 +187,31 @@ public sealed partial class MainViewModel : ViewModelBase
             return;
         }
 
-        SelectedProfile.CommitChanges();
-        await SaveProfileInternalAsync(SelectedProfile);
+        var viewModel = SelectedProfile;
+        viewModel.CommitChanges();
+
+        // F-014: route through the SAME coalesced path (mark dirty → ensure the one active loop → await it)
+        // so a manual Save is tracked, clears dirty/error state on success, and can't run a duplicate save
+        // concurrently with autosave.
+        lock (_saveSync)
+        {
+            _dirty.Add(viewModel);
+        }
+        EnsureSaveStarted(viewModel);
+
+        Task? active;
+        lock (_saveSync)
+        {
+            _activeSaves.TryGetValue(viewModel, out active);
+        }
+
+        if (active is not null)
+        {
+            await active.ConfigureAwait(false);
+        }
     }
 
-    private bool CanSaveProfile() => SelectedProfile is not null;
+    private bool CanSaveProfile() => SelectedProfile is { Model.IsPersistenceSuspended: false };
 
     private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
 
@@ -403,9 +448,14 @@ public sealed partial class MainViewModel : ViewModelBase
         viewModel.PropertyChanged -= OnProfilePropertyChanged;
 
         // Drop any pending save so an edit-then-remove doesn't later hit the manager's "not managed" throw.
+        // Mark detached (under _saveSync) so an in-flight save that fails AFTER this delete can't re-add an
+        // unmanaged VM to _dirty (codex CRITICAL #3), and clear its retry/error bookkeeping.
         lock (_saveSync)
         {
+            viewModel.IsDetached = true;
             _dirty.Remove(viewModel);
+            _saveErrorShown.Remove(viewModel);
+            _editSeq.Remove(viewModel);
             if (_debounce.Remove(viewModel, out var cts))
             {
                 cts.Cancel();
@@ -441,7 +491,26 @@ public sealed partial class MainViewModel : ViewModelBase
         CancellationToken token;
         lock (_saveSync)
         {
+            // Check detachment + suspension ATOMICALLY under the lock (codex #6): a change callback already
+            // in flight when the profile is detached must not re-add a detached VM to _dirty/_debounce that
+            // EnsureSaveStarted would then refuse forever. F-008: a suspended built-in is read-only, so a
+            // stray edit can never persist — don't accumulate a dirty flag that would be lost anyway.
+            if (viewModel.IsDetached || viewModel.Model.IsPersistenceSuspended)
+            {
+                return;
+            }
+
             _dirty.Add(viewModel);
+            _editSeq[viewModel] = _editSeq.GetValueOrDefault(viewModel) + 1; // codex #4b: mark a fresh edit
+
+            // During the exit flush don't (re)arm a debounce timer (codex #4): the flush drives
+            // EnsureSaveStarted directly, and a 500 ms timer firing during/after exit could start an
+            // untracked save that removes _dirty after the final count. The edit stays dirty for the flush.
+            if (_isFlushing)
+            {
+                return;
+            }
+
             if (_debounce.Remove(viewModel, out var existing))
             {
                 existing.Cancel();
@@ -467,62 +536,273 @@ public sealed partial class MainViewModel : ViewModelBase
             return;
         }
 
-        await SaveIfDirtyAsync(viewModel).ConfigureAwait(false);
+        EnsureSaveStarted(viewModel);
     }
 
-    private async Task SaveIfDirtyAsync(ProfileViewModel viewModel)
+    // F-014: start (or coalesce into) the single active save-loop for this profile. Started via Task.Run so
+    // the store's SYNCHRONOUS file I/O never runs under _saveSync — holding _saveSync across the write would
+    // block the UI/hook thread in QueueAutoSave and can drop the LL hooks (codex CRITICAL).
+    private void EnsureSaveStarted(ProfileViewModel viewModel)
     {
         lock (_saveSync)
         {
-            // Whoever removes it first (the debounce timer or the flush) owns the save; the other no-ops.
-            if (!_dirty.Remove(viewModel))
+            if (viewModel.IsDetached || _activeSaves.ContainsKey(viewModel) || !_dirty.Contains(viewModel))
             {
                 return;
             }
 
-            if (_debounce.Remove(viewModel, out var cts))
+            _activeSaves[viewModel] = Task.Run(() => RunSaveLoopAsync(viewModel));
+        }
+    }
+
+    // Persist the profile, then — if a newer edit re-dirtied it while the write was running — loop and
+    // persist again, so rapid edits coalesce into one active save plus at most one follow-up. A
+    // failed/suspended save leaves the profile dirty (for the exit flush / next edit) and exits the loop.
+    // codex-final #1: the loop deregisters from _activeSaves in the SAME _saveSync critical section that
+    // makes its final _dirty decision, so EnsureSaveStarted can never observe "active present but this loop
+    // already past its last dirty check" — a gap in which a fresh edit would be stranded with no active loop
+    // or debounce (data loss on crash / a manual Save returning without persisting).
+    private async Task RunSaveLoopAsync(ProfileViewModel viewModel)
+    {
+        var deregistered = false;
+        try
+        {
+            while (true)
             {
-                cts.Dispose();
+                long savedSeq;
+                lock (_saveSync)
+                {
+                    if (viewModel.IsDetached || !_dirty.Contains(viewModel))
+                    {
+                        if (viewModel.IsDetached)
+                        {
+                            _saveErrorShown.Remove(viewModel);
+                        }
+
+                        // Deregister ATOMICALLY with observing _dirty empty/detached (codex-final #1).
+                        _activeSaves.Remove(viewModel);
+                        deregistered = true;
+                        return;
+                    }
+
+                    savedSeq = _editSeq.GetValueOrDefault(viewModel); // codex #4b: detect edits during this save
+                    _dirty.Remove(viewModel);
+                }
+
+                SaveOutcome outcome;
+                try
+                {
+                    outcome = await SaveProfileInternalAsync(viewModel).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Unexpected failure (e.g. the error dialog itself threw during dispatcher shutdown).
+                    // Restore the dirty flag so the edit is NOT lost, then exit (codex #5). Deregister under
+                    // the SAME lock as the dirty re-add (codex-final #1).
+                    lock (_saveSync)
+                    {
+                        if (!viewModel.IsDetached)
+                        {
+                            _dirty.Add(viewModel);
+                        }
+
+                        _activeSaves.Remove(viewModel);
+                        deregistered = true;
+                    }
+                    return;
+                }
+
+                lock (_saveSync)
+                {
+                    if (outcome == SaveOutcome.Saved)
+                    {
+                        _saveErrorShown.Remove(viewModel);
+                        continue; // a concurrent edit may have re-dirtied it; the top of the loop decides.
+                    }
+
+                    // Failed or Suspended: keep the edit dirty (unless the profile was removed mid-save) so
+                    // the exit flush / next edit still has it.
+                    if (viewModel.IsDetached)
+                    {
+                        _saveErrorShown.Remove(viewModel);
+                        _activeSaves.Remove(viewModel); // codex-final #1: atomic deregister
+                        deregistered = true;
+                        return;
+                    }
+
+                    _dirty.Add(viewModel);
+
+                    // codex #4b: if a NEWER edit landed while this (failed) save ran, loop again to persist it
+                    // rather than stranding it until the next edit / exit flush. A static failure (seq
+                    // unchanged) exits and leaves it dirty — the in-place transient retries already ran.
+                    if (outcome == SaveOutcome.Failed && _editSeq.GetValueOrDefault(viewModel) != savedSeq)
+                    {
+                        continue;
+                    }
+
+                    // Deregister ATOMICALLY with leaving it dirty (codex-final #1): a later edit / the exit
+                    // flush / a manual Save then starts a FRESH loop to retry, with no active/dirty overlap.
+                    _activeSaves.Remove(viewModel);
+                    deregistered = true;
+                    return;
+                }
             }
         }
-
-        await SaveProfileInternalAsync(viewModel).ConfigureAwait(false);
+        finally
+        {
+            // Backstop ONLY for an UNEXPECTED throw that escaped the inner locks before we deregistered.
+            // Guarded by `deregistered` so we never remove a DIFFERENT loop's registration that
+            // EnsureSaveStarted may have created after our atomic in-lock removal above — which would let two
+            // concurrent loops run for one profile (codex-final #1). On the normal paths this is a no-op.
+            if (!deregistered)
+            {
+                lock (_saveSync)
+                {
+                    _activeSaves.Remove(viewModel);
+                }
+            }
+        }
     }
 
     /// <summary>
-    /// Persists every profile with a pending debounced edit immediately (no 500 ms wait).
-    /// Call on application exit / session ending so in-flight edits are never lost.
+    /// Persists every profile with a pending debounced edit immediately (no 500 ms wait) and awaits any
+    /// in-flight save to completion. Call on application exit / session ending. Returns the number of
+    /// profiles whose edits could NOT be persisted (0 = all saved) so the caller can report them.
     /// </summary>
-    public async Task FlushPendingSavesAsync()
+    public async Task<int> FlushPendingSavesAsync()
     {
-        ProfileViewModel[] pending;
         lock (_saveSync)
         {
-            pending = [.. _dirty];
+            // Enter flush mode: QueueAutoSave stops arming debounce timers, and cancel every pending one so
+            // a 500 ms timer can't fire during/after exit and start an untracked save that removes _dirty
+            // after the final count (codex #4). Any edit still queues into _dirty for the drain below.
+            _isFlushing = true;
+            foreach (var cts in _debounce.Values)
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+            _debounce.Clear();
         }
 
-        foreach (var viewModel in pending)
+        try
         {
-            await SaveIfDirtyAsync(viewModel).ConfigureAwait(false);
+            return await DrainSavesAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_saveSync)
+            {
+                _isFlushing = false; // resume normal debounced autosave (e.g. after a canceled session end).
+            }
         }
     }
 
-    private async Task SaveProfileInternalAsync(ProfileViewModel viewModel)
+    private async Task<int> DrainSavesAsync()
     {
+        // Drain: ensure a save-loop runs for everything dirty, then await every active loop (each finalizes
+        // _dirty before completing, so there is no observe-empty gap). Bounded by MaxFlushPasses so a
+        // persistently-failing/suspended save can't block exit indefinitely.
+        for (var pass = 0; pass < MaxFlushPasses; pass++)
+        {
+            ProfileViewModel[] pending;
+            lock (_saveSync)
+            {
+                pending = [.. _dirty];
+            }
+
+            foreach (var viewModel in pending)
+            {
+                EnsureSaveStarted(viewModel);
+            }
+
+            Task[] active;
+            lock (_saveSync)
+            {
+                active = [.. _activeSaves.Values];
+            }
+
+            if (active.Length == 0)
+            {
+                lock (_saveSync)
+                {
+                    if (_dirty.Count == 0)
+                    {
+                        return 0;
+                    }
+                }
+            }
+            else
+            {
+                try
+                {
+                    await Task.WhenAll(active).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Individual outcomes (dirty/error state) are finalized inside each RunSaveLoopAsync.
+                }
+            }
+        }
+
+        lock (_saveSync)
+        {
+            return _dirty.Count; // >0 = edits that could not be persisted before exit
+        }
+    }
+
+    // F-014: reports the save OUTCOME. Transient I/O (a file lock, antivirus scan) is retried a bounded
+    // number of times with short backoff before giving up; a non-transient error (e.g. duplicate-name
+    // InvalidOperationException) fails immediately with a one-time dialog; a persistence-suspended
+    // built-in (F-008) returns Suspended so the caller keeps the edit without a false success or dialog.
+    private async Task<SaveOutcome> SaveProfileInternalAsync(ProfileViewModel viewModel)
+    {
+        const int maxAttempts = 3;
         await _saveSemaphore.WaitAsync().ConfigureAwait(false);
         try
         {
-            await _profileManager.SaveProfileAsync(viewModel.Model).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _dialogService.ShowError(ex.Message, "Unable to save profile");
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await _profileManager.SaveProfileAsync(viewModel.Model).ConfigureAwait(false);
+                    return SaveOutcome.Saved;
+                }
+                catch (PersistenceSuspendedException)
+                {
+                    return SaveOutcome.Suspended;
+                }
+                catch (Exception ex) when (attempt < maxAttempts && IsTransientSaveFailure(ex))
+                {
+                    await Task.Delay(120 * attempt).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Show the error only once per failure streak (reset on the next success) so a
+                    // deferred-retry loop or the exit flush can't spam identical dialogs.
+                    bool show;
+                    lock (_saveSync)
+                    {
+                        show = _saveErrorShown.Add(viewModel);
+                    }
+
+                    if (show)
+                    {
+                        _dialogService.ShowError(ex.Message, "Unable to save profile");
+                    }
+
+                    return SaveOutcome.Failed;
+                }
+            }
         }
         finally
         {
             _saveSemaphore.Release();
         }
     }
+
+    private static bool IsTransientSaveFailure(Exception ex) =>
+        ex is System.IO.IOException || ex is UnauthorizedAccessException;
 
     private static string NormalizeExecutable(string? executable) => ExecutableName.Normalize(executable);
 }
