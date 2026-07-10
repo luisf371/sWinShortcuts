@@ -24,6 +24,10 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IReadOnlyList<Key> _keyOptionsWithNone;
     private readonly IReadOnlyList<CapsLockMode> _capsLockModes = Enum.GetValues<CapsLockMode>();
     private readonly IReadOnlyList<HoldBreathMode> _holdBreathModes = Enum.GetValues<HoldBreathMode>();
+    private readonly IReadOnlyList<SprintActivation> _sprintActivationModes = Enum.GetValues<SprintActivation>();
+    private readonly IReadOnlyList<AutoRunSendMode> _autoRunSendModes = Enum.GetValues<AutoRunSendMode>();
+    private readonly IReadOnlyList<ModifierKeys> _triggerModifiers =
+        new[] { ModifierKeys.Control, ModifierKeys.Alt, ModifierKeys.Shift, ModifierKeys.Windows };
     private readonly IDisplayService _displayService;
     private readonly IColorControlService _colorControlService;
     private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
@@ -58,11 +62,22 @@ public sealed partial class MainViewModel : ViewModelBase
 
     public IReadOnlyList<HoldBreathMode> HoldBreathModes => _holdBreathModes;
 
+    public IReadOnlyList<SprintActivation> SprintActivationModes => _sprintActivationModes;
+
+    public IReadOnlyList<AutoRunSendMode> AutoRunSendModes => _autoRunSendModes;
+
+    public IReadOnlyList<ModifierKeys> TriggerModifiers => _triggerModifiers;
+
     [ObservableProperty]
     private ProfileViewModel? selectedProfile;
 
     [ObservableProperty]
     private bool isBusy;
+
+    // Source of truth for the XAML gray-out of gated features. Seeded + kept in sync with the
+    // service's AdvancedModeEnabled by MainWindow (startup resolve + post-Settings refresh).
+    [ObservableProperty]
+    private bool advancedModeEnabled;
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {

@@ -187,6 +187,8 @@ public sealed class IniProfileStore : IProfileStore
         DeserializeAltMouse(document, profile.AltMouse);
         DeserializeCombinedMappings(document, profile.CombinedMappings);
         DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
+        DeserializeAutoRun(document, profile.AutoRun);
+        DeserializeAntiAfk(document, profile.AntiAfk);
         DeserializeCapsLock(document, profile.CapsLock);
         DeserializeColorSettings(document, profile.ColorSettings);
 
@@ -360,6 +362,35 @@ public sealed class IniProfileStore : IProfileStore
         settings.DelayMilliseconds = Math.Max(0, document.GetInt32("RightClickHoldBreath", "Delay", settings.DelayMilliseconds));
     }
 
+    private static void DeserializeAutoRun(IniDocument document, AutoRunSettings settings)
+    {
+        settings.IsEnabled = document.GetBoolean("AutoRun", "Enabled", settings.IsEnabled);
+        // GetEnum's Enum.IsDefined guard rejects a combined ModifierKeys flag (e.g. Control|Alt=6)
+        // and falls back to the default, matching the "single side-agnostic modifier only" constraint.
+        settings.TriggerModifier = document.GetEnum("AutoRun", "TriggerModifier", settings.TriggerModifier);
+        // ...but IsDefined still accepts ModifierKeys.None (=0), which the UI never offers and which makes
+        // the chord un-triggerable (IsTriggerModifierDown(None) is always false) + shows a blank ComboBox.
+        // Coerce anything outside the supported single-value set back to the default (E2).
+        if (settings.TriggerModifier is not (ModifierKeys.Control or ModifierKeys.Alt or ModifierKeys.Shift or ModifierKeys.Windows))
+        {
+            settings.TriggerModifier = ModifierKeys.Control;
+        }
+        settings.TriggerKey = document.GetKey("AutoRun", "TriggerKey") ?? settings.TriggerKey;
+        settings.SprintEnabled = document.GetBoolean("AutoRun", "SprintEnabled", settings.SprintEnabled);
+        settings.SprintKey = document.GetKey("AutoRun", "SprintKey") ?? settings.SprintKey;
+        settings.SprintMode = document.GetEnum("AutoRun", "SprintMode", settings.SprintMode);
+        // Missing/old INIs (no key) fall back to Foreground via the model default.
+        settings.SendMode = document.GetEnum("AutoRun", "SendMode", settings.SendMode);
+    }
+
+    private static void DeserializeAntiAfk(IniDocument document, AntiAfkSettings settings)
+    {
+        settings.IsEnabled = document.GetBoolean("AntiAfk", "Enabled", settings.IsEnabled);
+        // Clamp to the UI's 1..15 slider range on load (mirrors the Delay clamp above) so a
+        // hand-edited or out-of-range INI can't drive the always-ticking timer with a bogus period.
+        settings.IntervalMinutes = Math.Clamp(document.GetInt32("AntiAfk", "IntervalMinutes", settings.IntervalMinutes), 1, 15);
+    }
+
     private static void DeserializeCapsLock(IniDocument document, CapsLockSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("CapsLock", "Enabled", settings.IsEnabled);
@@ -473,6 +504,19 @@ public sealed class IniProfileStore : IProfileStore
         document.SetKey("RightClickHoldBreath", "Key", rightClickHoldBreath.HoldBreathKey);
         document.SetEnum("RightClickHoldBreath", "Mode", rightClickHoldBreath.Mode);
         document.SetInt32("RightClickHoldBreath", "Delay", rightClickHoldBreath.DelayMilliseconds);
+
+        var autoRun = profile.AutoRun;
+        document.SetBoolean("AutoRun", "Enabled", autoRun.IsEnabled);
+        document.SetEnum("AutoRun", "TriggerModifier", autoRun.TriggerModifier);
+        document.SetKey("AutoRun", "TriggerKey", autoRun.TriggerKey);
+        document.SetBoolean("AutoRun", "SprintEnabled", autoRun.SprintEnabled);
+        document.SetKey("AutoRun", "SprintKey", autoRun.SprintKey);
+        document.SetEnum("AutoRun", "SprintMode", autoRun.SprintMode);
+        document.SetEnum("AutoRun", "SendMode", autoRun.SendMode);
+
+        var antiAfk = profile.AntiAfk;
+        document.SetBoolean("AntiAfk", "Enabled", antiAfk.IsEnabled);
+        document.SetInt32("AntiAfk", "IntervalMinutes", antiAfk.IntervalMinutes);
 
         var capsLock = profile.CapsLock;
         document.SetBoolean("CapsLock", "Enabled", capsLock.IsEnabled);

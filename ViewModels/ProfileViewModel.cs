@@ -255,6 +255,133 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public bool AutoRunEnabled
+    {
+        get => Model.AutoRun.IsEnabled;
+        set
+        {
+            if (Model.AutoRun.IsEnabled != value)
+            {
+                Model.AutoRun.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public ModifierKeys AutoRunTriggerModifier
+    {
+        get => Model.AutoRun.TriggerModifier;
+        set
+        {
+            if (Model.AutoRun.TriggerModifier != value)
+            {
+                Model.AutoRun.TriggerModifier = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public Key AutoRunTriggerKey
+    {
+        get => Model.AutoRun.TriggerKey;
+        set
+        {
+            if (Model.AutoRun.TriggerKey != value)
+            {
+                Model.AutoRun.TriggerKey = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public bool AutoRunSprintEnabled
+    {
+        get => Model.AutoRun.SprintEnabled;
+        set
+        {
+            if (Model.AutoRun.SprintEnabled != value)
+            {
+                Model.AutoRun.SprintEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public Key AutoRunSprintKey
+    {
+        get => Model.AutoRun.SprintKey;
+        set
+        {
+            if (Model.AutoRun.SprintKey != value)
+            {
+                Model.AutoRun.SprintKey = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public SprintActivation AutoRunSprintMode
+    {
+        get => Model.AutoRun.SprintMode;
+        set
+        {
+            if (Model.AutoRun.SprintMode != value)
+            {
+                Model.AutoRun.SprintMode = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public AutoRunSendMode AutoRunSendMode
+    {
+        get => Model.AutoRun.SendMode;
+        set
+        {
+            if (Model.AutoRun.SendMode != value)
+            {
+                Model.AutoRun.SendMode = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public bool AntiAfkEnabled
+    {
+        get => Model.AntiAfk.IsEnabled;
+        set
+        {
+            if (Model.AntiAfk.IsEnabled != value)
+            {
+                Model.AntiAfk.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public int AntiAfkIntervalMinutes
+    {
+        get => Model.AntiAfk.IntervalMinutes;
+        set
+        {
+            var clamped = Math.Clamp(value, 1, 15);
+            if (Model.AntiAfk.IntervalMinutes != clamped)
+            {
+                Model.AntiAfk.IntervalMinutes = clamped;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
     public bool CapsLockEnabled
     {
         get => Model.CapsLock.IsEnabled;
@@ -513,6 +640,15 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.RightClickHoldBreath.HoldBreathKey = RightClickHoldBreathKey;
             Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
             Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
+            Model.AutoRun.IsEnabled = AutoRunEnabled;
+            Model.AutoRun.TriggerModifier = AutoRunTriggerModifier;
+            Model.AutoRun.TriggerKey = AutoRunTriggerKey;
+            Model.AutoRun.SprintEnabled = AutoRunSprintEnabled;
+            Model.AutoRun.SprintKey = AutoRunSprintKey;
+            Model.AutoRun.SprintMode = AutoRunSprintMode;
+            Model.AutoRun.SendMode = AutoRunSendMode;
+            Model.AntiAfk.IsEnabled = AntiAfkEnabled;
+            Model.AntiAfk.IntervalMinutes = AntiAfkIntervalMinutes;
             Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
             Model.CapsLock.RemapTarget = CapsLockRemapKey;

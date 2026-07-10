@@ -179,6 +179,87 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndLoad_RoundTripsAutoRun()
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "autorun.exe");
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerModifier = ModifierKeys.Alt;
+        profile.AutoRun.TriggerKey = Key.T;
+        profile.AutoRun.SprintEnabled = true;
+        profile.AutoRun.SprintKey = Key.LeftCtrl;
+        profile.AutoRun.SprintMode = SprintActivation.Press;
+        profile.AutoRun.SendMode = AutoRunSendMode.Background;
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
+
+        Assert.NotNull(loaded);
+        Assert.True(loaded.AutoRun.IsEnabled);
+        Assert.Equal(ModifierKeys.Alt, loaded.AutoRun.TriggerModifier);
+        Assert.Equal(Key.T, loaded.AutoRun.TriggerKey);
+        Assert.True(loaded.AutoRun.SprintEnabled);
+        Assert.Equal(Key.LeftCtrl, loaded.AutoRun.SprintKey);
+        Assert.Equal(SprintActivation.Press, loaded.AutoRun.SprintMode);
+        Assert.Equal(AutoRunSendMode.Background, loaded.AutoRun.SendMode);
+    }
+
+    [Fact]
+    public async Task SaveAndLoad_CoercesUnsupportedAutoRunModifierToControl()
+    {
+        // ModifierKeys.None is Enum.IsDefined (so GetEnum accepts it) but is not one of the four supported
+        // single modifiers — a hand-editable value that would leave the chord un-triggerable + a blank UI
+        // ComboBox. DeserializeAutoRun must coerce it back to the default Control on load (E2).
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "arnone.exe");
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerModifier = ModifierKeys.None;
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
+
+        Assert.NotNull(loaded);
+        Assert.Equal(ModifierKeys.Control, loaded.AutoRun.TriggerModifier);
+    }
+
+    [Fact]
+    public async Task SaveAndLoad_RoundTripsAntiAfk()
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "antiafk.exe");
+        profile.AntiAfk.IsEnabled = true;
+        profile.AntiAfk.IntervalMinutes = 10;
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
+
+        Assert.NotNull(loaded);
+        Assert.True(loaded.AntiAfk.IsEnabled);
+        Assert.Equal(10, loaded.AntiAfk.IntervalMinutes);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]    // below range clamps up to 1
+    [InlineData(99, 15)]  // above range clamps down to 15
+    [InlineData(7, 7)]    // in range round-trips unchanged
+    public async Task SaveAndLoad_ClampsAntiAfkInterval(int saved, int expected)
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "antiafkclamp.exe");
+        profile.AntiAfk.IntervalMinutes = saved;
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
+
+        Assert.NotNull(loaded);
+        Assert.Equal(expected, loaded.AntiAfk.IntervalMinutes);
+    }
+
+    [Fact]
     public async Task DeleteProfileAsync_RemovesFile()
     {
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "todelete.exe");

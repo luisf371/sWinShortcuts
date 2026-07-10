@@ -10,6 +10,7 @@ namespace sWinShortcuts.Views;
 public partial class SettingsWindow : Window
 {
     private readonly IStartupService _startupService;
+    private readonly IInputHookService _inputHookService;
     private readonly SettingsViewModel _vm;
 
     // Reuse the same INI storage path pattern used by MainWindow
@@ -19,6 +20,7 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
         _startupService = startupService;
+        _inputHookService = inputHookService;
         _vm = new SettingsViewModel(loggerService, inputHookService);
         DataContext = _vm;
 
@@ -42,11 +44,23 @@ public partial class SettingsWindow : Window
             _vm.EnableDebugLogging = ini.GetValue("App", "EnableDebugLogging") == "true";
             // Default-on: only the literal "false" disables (missing key = enabled).
             _vm.HookWatchdogEnabled = ini.GetValue("App", "HookWatchdog") != "false";
+            // MainWindow resolves + persists [App] AdvancedMode at startup (incl. the upgrade
+            // default). A PRESENT key is authoritative; but if that startup persist silently failed
+            // (UpdateSettings swallows save errors), the key can be ABSENT while the service already
+            // holds the resolved value — fall back to that live value, never a blind false, so saving
+            // settings here can't clobber an upgrade-enabled gate (codex P2 #1).
+            var advancedRaw = ini.GetValue("App", "AdvancedMode");
+            _vm.AdvancedModeEnabled = advancedRaw is null
+                ? _inputHookService.AdvancedModeEnabled
+                : advancedRaw == "true";
         }
         catch
         {
             _vm.EnableDebugLogging = false;
             _vm.HookWatchdogEnabled = true;
+            // Fall back to the live service value (never a blind false) so a read failure can't
+            // silently disable an upgrade-enabled gate the service already applied.
+            _vm.AdvancedModeEnabled = _inputHookService.AdvancedModeEnabled;
         }
     }
 
@@ -59,6 +73,7 @@ public partial class SettingsWindow : Window
             ini.SetValue("App", "StartAsAdmin", vm.StartAsAdmin ? "true" : "false");
             ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
             ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
+            ini.SetValue("App", "AdvancedMode", vm.AdvancedModeEnabled ? "true" : "false");
             ini.Save(_settingsPath);
         }
         catch

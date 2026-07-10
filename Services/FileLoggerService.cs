@@ -17,6 +17,7 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
     private readonly CancellationTokenSource _cancellation;
     private readonly Task _writeTask;
     private volatile bool _isEnabled;
+    private static readonly int ProcessId = Environment.ProcessId;
 
     public FileLoggerService()
     {
@@ -50,7 +51,9 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
         {
             var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
             var threadId = Environment.CurrentManagedThreadId;
-            var entry = $"[{timestamp}] [T{threadId:D3}] {message}";
+            // Include the process id so a shared debug.log written by two instances is disambiguable
+            // (a second instance is now prevented, but the tag keeps old/interleaved logs readable).
+            var entry = $"[{timestamp}] [P{ProcessId}] [T{threadId:D3}] {message}";
             _logQueue.TryAdd(entry);
         }
         catch

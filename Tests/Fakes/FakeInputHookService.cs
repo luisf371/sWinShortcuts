@@ -9,6 +9,8 @@ public sealed class FakeInputHookService : IInputHookService
 
     public bool HookWatchdogEnabled { get; set; } = true;
 
+    public bool AdvancedModeEnabled { get; set; }
+
     public bool IsStarted { get; private set; }
 
     public Profile? WindowsProfile { get; private set; }
@@ -37,6 +39,20 @@ public sealed class FakeInputHookService : IInputHookService
     {
         DeactivateCount++;
         ActiveProfileChanged?.Invoke(this, null);
+    }
+
+    public int ReleaseForegroundAutoRunCount { get; private set; }
+
+    public void ReleaseForegroundAutoRun()
+    {
+        ReleaseForegroundAutoRunCount++;
+    }
+
+    public (IntPtr Hwnd, uint Pid, string? Exe)? LastForegroundIdentity { get; private set; }
+
+    public void SetForegroundIdentity(IntPtr windowHandle, uint processId, string? normalizedExecutable)
+    {
+        LastForegroundIdentity = (windowHandle, processId, normalizedExecutable);
     }
 
     public void SetWindowsProfile(Profile profile)

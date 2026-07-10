@@ -154,6 +154,11 @@ public sealed class ProfileActivationService : IHostedService
     private void OnForegroundChanged(object? sender, ForegroundChangedEventArgs e)
     {
         _initialEventFired = true;
+        // A1: publish the foreground identity to the input hook IMMEDIATELY (on this watcher thread, off
+        // the low-level hook thread), before the name-only channel write. Auto-Run activation confirms the
+        // live foreground against this {hwnd,pid,exe} snapshot to fail closed without a hook-thread
+        // Process.GetProcessById.
+        _inputHookService.SetForegroundIdentity(e.WindowHandle, e.ProcessId, Utilities.ExecutableName.Normalize(e.ProcessName));
         // Record the newest foreground app on arrival (NOT at end-of-processing) so a resume/display
         // re-apply enqueues the genuinely-current app, never a previously-processed one (§14.2).
         _lastProcessName = e.ProcessName;
@@ -200,6 +205,15 @@ public sealed class ProfileActivationService : IHostedService
         var profile = string.IsNullOrWhiteSpace(processName)
             ? null
             : _profileManager.FindByExecutable(processName);
+
+        // Eager Auto-Run release the moment focus LEAVES the active profile — BEFORE the color work —
+        // so a held Foreground W can't briefly leak into the incoming window during ApplyColorPlan. The
+        // profile switch below still releases via ReleaseAllState (the hard no-stuck-key guarantee);
+        // this only tightens the leak window. Same-app refocus (profile == _activeProfile) is a no-op.
+        if (!ReferenceEquals(profile, _activeProfile))
+        {
+            _inputHookService.ReleaseForegroundAutoRun();
+        }
 
         var displays = _displayService.GetDisplays();
         var plan = BuildColorPlan(profile, displays, _profileManager);

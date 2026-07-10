@@ -12,6 +12,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     private bool _startAsAdmin;
     private bool _enableDebugLogging;
     private bool _hookWatchdogEnabled = true;
+    private bool _advancedModeEnabled;
 
     public bool StartWithWindows
     {
@@ -69,6 +70,22 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
             {
                 _hookWatchdogEnabled = value;
                 _inputHookService.HookWatchdogEnabled = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    // Applies live to the service (same pattern as HookWatchdogEnabled); persistence happens on Save
+    // in SettingsWindow. Turning it off makes the service release any held gated state immediately.
+    public bool AdvancedModeEnabled
+    {
+        get => _advancedModeEnabled;
+        set
+        {
+            if (_advancedModeEnabled != value)
+            {
+                _advancedModeEnabled = value;
+                _inputHookService.AdvancedModeEnabled = value;
                 OnPropertyChanged();
             }
         }

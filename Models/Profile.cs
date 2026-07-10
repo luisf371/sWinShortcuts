@@ -29,6 +29,10 @@ public sealed class Profile
 
     public RightClickHoldBreathSettings RightClickHoldBreath { get; init; } = new();
 
+    public AutoRunSettings AutoRun { get; init; } = new();
+
+    public AntiAfkSettings AntiAfk { get; init; } = new();
+
     public ColorSettings ColorSettings { get; init; } = new();
 
 

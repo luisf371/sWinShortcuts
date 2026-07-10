@@ -105,10 +105,42 @@ public partial class MainWindow : Window
             SaveAppSettings();
         }
 
+        // Resolve Advanced Mode only now — the upgrade default (§4.4) needs the loaded profiles.
+        ResolveAndApplyAdvancedMode();
+
         if (_startMinimized)
         {
             MinimizeToTray();
         }
+    }
+
+    // [App] AdvancedMode resolution + apply. Key present → honor it. Key absent (fresh install or
+    // upgrade) → default false, but resolve TRUE if any loaded profile already relies on a now-gated
+    // capability (Hold-Breath enabled, or an un-suppressed 1→2 mapping) so a returning user's feature
+    // doesn't silently go inert. The resolved value is pushed to BOTH the service (gating) and the
+    // view-model (gray-out) so they agree, then persisted so the next launch takes the present branch.
+    private void ResolveAndApplyAdvancedMode()
+    {
+        string? persisted = null;
+        try
+        {
+            persisted = IniDocument.Load(_settingsPath).GetValue("App", "AdvancedMode");
+        }
+        catch
+        {
+            // Treat a load failure as "absent" and re-resolve from the profiles below.
+        }
+
+        bool advanced = persisted is not null
+            ? persisted == "true"
+            : _viewModel.Profiles.Any(p =>
+                p.Model.RightClickHoldBreath.IsEnabled ||
+                p.Model.CombinedMappings.Mappings.Any(m => !m.SuppressOriginalKey));
+
+        _inputHook.AdvancedModeEnabled = advanced;
+        _viewModel.AdvancedModeEnabled = advanced;
+
+        UpdateSettings(ini => ini.SetValue("App", "AdvancedMode", advanced ? "true" : "false"));
     }
 
     private void LoadWindowState()
@@ -215,6 +247,10 @@ public partial class MainWindow : Window
             Owner = this
         };
         wnd.ShowDialog();
+
+        // The dialog live-applies AdvancedMode to the service (incl. a mid-dialog toggle); mirror the
+        // live value back into the view-model so the gray-out agrees after the modal closes.
+        _viewModel.AdvancedModeEnabled = _inputHook.AdvancedModeEnabled;
     }
 
     private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)

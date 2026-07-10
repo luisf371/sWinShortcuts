@@ -389,6 +389,7 @@
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <CheckBox IsChecked="{Binding SuppressOriginalKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                                                           VerticalAlignment="Center"
                                                                           HorizontalAlignment="Center" />
                                                             </DataTemplate>
@@ -572,6 +573,7 @@
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
+                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal">
@@ -632,6 +634,143 @@
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold" />
                                             </StackPanel>
+                                        </StackPanel>
+                                    </GroupBox>
+                                    <GroupBox Padding="16" Margin="0,0,0,8"
+                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
+                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Auto-Run"
+                                                          IsChecked="{Binding AutoRunEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Press the trigger combo (modifier + key) to toggle auto-run (continuous forward movement). Enable Sprint to also send a sprint key while auto-running."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                                <TextBlock Style="{StaticResource WarningIconStyle}"
+                                                           ToolTip="⚠️ WARNING: Automated / continuous input violates '1 key = 1 action' rules in competitive or anti-cheat restricted games. Use at your own risk."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding AutoRunEnabled}"
+                                                    Tag="{Binding AutoRunEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <TextBlock Text="Trigger modifier"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <ComboBox ItemsSource="{Binding DataContext.TriggerModifiers, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunTriggerModifier, Mode=TwoWay}"
+                                                          Width="160" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <TextBlock Text="Trigger key"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunTriggerKey, Mode=TwoWay}"
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                                          Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <CheckBox Content="Sprint"
+                                                      IsChecked="{Binding AutoRunSprintEnabled}"
+                                                      Margin="0,0,0,8"
+                                                      VerticalAlignment="Center" />
+                                            <StackPanel IsEnabled="{Binding AutoRunSprintEnabled}"
+                                                        Tag="{Binding AutoRunSprintEnabled}"
+                                                        Style="{StaticResource FeatureToggleContentStyle}">
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                    <TextBlock Text="Sprint key"
+                                                               VerticalAlignment="Center"
+                                                               Width="140" />
+                                                    <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                              SelectedItem="{Binding AutoRunSprintKey, Mode=TwoWay}"
+                                                              behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                                              Width="160">
+                                                        <ComboBox.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                            </DataTemplate>
+                                                        </ComboBox.ItemTemplate>
+                                                    </ComboBox>
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                    <TextBlock Text="Sprint mode"
+                                                               VerticalAlignment="Center"
+                                                               Width="140" />
+                                                    <ComboBox ItemsSource="{Binding DataContext.SprintActivationModes, ElementName=RootWindow}"
+                                                              SelectedItem="{Binding AutoRunSprintMode, Mode=TwoWay}"
+                                                              Width="160" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Send mode"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <ComboBox ItemsSource="{Binding DataContext.AutoRunSendModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunSendMode, Mode=TwoWay}"
+                                                          Width="160" />
+                                                <TextBlock Style="{StaticResource WarningIconStyle}"
+                                                           ToolTip="⚠️ EXPERIMENTAL: Background send posts key messages to the game window (like AutoHotkey ControlSend), so it keeps moving while alt-tabbed. Works with many games (incl. GZW); a few pure raw-input / DirectInput titles ignore it — test per game. Carries anti-cheat risk."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </GroupBox>
+                                    <GroupBox Padding="16" Margin="0,0,0,8"
+                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
+                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Anti-AFK"
+                                                          IsChecked="{Binding AntiAfkEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Prevents idle / AFK kicks by sending a brief net-zero WASD tap — but ONLY after your KEYBOARD has been genuinely inactive for the set interval (mouse movement does NOT reset it). Any real keypress resets the timer, so it never fires while you're actively playing, and it only runs while this game is focused."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding AntiAfkEnabled}"
+                                                    Tag="{Binding AntiAfkEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Interval (min)"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <Slider Value="{Binding AntiAfkIntervalMinutes, UpdateSourceTrigger=PropertyChanged}"
+                                                        Minimum="1"
+                                                        Maximum="15"
+                                                        TickFrequency="1"
+                                                        IsSnapToTickEnabled="True"
+                                                        Width="200"
+                                                        VerticalAlignment="Center"
+                                                        Margin="0,0,8,0" />
+                                                <TextBlock Text="{Binding AntiAfkIntervalMinutes, StringFormat='{}{0} min'}"
+                                                           VerticalAlignment="Center"
+                                                           Width="50"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           FontWeight="SemiBold" />
+                                            </StackPanel>
+                                            <TextBlock Text="Only fires after real KEYBOARD inactivity — any keypress resets the timer (mouse movement does not), so it never triggers while you're actively playing."
+                                                       TextWrapping="Wrap"
+                                                       MaxWidth="420"
+                                                       HorizontalAlignment="Left"
+                                                       Margin="0,10,0,0"
+                                                       FontSize="11"
+                                                       Opacity="0.7" />
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8">

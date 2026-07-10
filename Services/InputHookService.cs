@@ -84,6 +84,12 @@ public sealed class InputHookService : IInputHookService
     // Profile state
     private volatile Profile? _activeProfile;
     private volatile Profile? _windowsProfile;
+
+    // A1: foreground identity published off-hook by the foreground watcher. A volatile reference gives an
+    // atomic whole-snapshot publish/read (no torn {hwnd,pid,exe}); Auto-Run activation confirms the live
+    // foreground against it with cheap non-blocking calls, keeping Process.GetProcessById off the hook thread.
+    private sealed record ForegroundIdentitySnapshot(IntPtr Hwnd, uint Pid, string? Exe);
+    private volatile ForegroundIdentitySnapshot? _foregroundIdentity;
     
     // Runtime flags (volatile for lock-free reads)
     private volatile bool _isRunning;
@@ -146,10 +152,120 @@ public sealed class InputHookService : IInputHookService
     // = every enqueued DOWN is released by the UP enqueued behind it (release paths are
     // unconditional, so pairing survives profile switches, disable, and Stop's final drain).
     // PreSleepMs implements the Toggle-mode tap duration between a DOWN and its own UP.
-    private readonly record struct HoldBreathInjection(Key Key, bool IsDown, int PreSleepMs);
+    // Shared key-injector item (hold-breath + auto-run Foreground + anti-afk). Sequence, when non-null,
+    // carries a self-contained atomic tap sequence (anti-afk WASD) executed as ONE queue item so a
+    // paired DOWN/UP can never be split across a shutdown drain (see HoldBreathInjectionLoop). Record
+    // name retained for stability; the §10 rename to KeyInjection is a separate optional step.
+    // AutoRunGeneration/ExpectedForegroundExe (A2): a NON-zero AutoRunGeneration marks a foreground-guarded
+    // Auto-Run DOWN — the injector fires it only if the generation is still current AND the foreground
+    // window still belongs to ExpectedForegroundExe, so a queued W-down can't drain into a window you
+    // alt-tabbed to. Zero (the default for hold-breath / UPs / anti-afk) means "unguarded", i.e. today's
+    // behavior. Appended after Sequence so existing positional callers are unchanged.
+    private readonly record struct HoldBreathInjection(Key Key, bool IsDown, int PreSleepMs, TapStep[]? Sequence = null, long AutoRunGeneration = 0, string? ExpectedForegroundExe = null);
+
+    // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
+    private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
     private BlockingCollection<HoldBreathInjection>? _holdBreathInjectionQueue;
     private Thread? _holdBreathInjectionThread;
     
+    // ==================== AUTO-RUN STATE ====================
+    // Auto-Run holds W (and optionally sprint) via the shared injector, toggled by a modifier+key
+    // chord, cancelled by a FRESH physical down-edge of W/S/sprint. Active-state records are guarded by
+    // _autoRunLock; _autoRunActive is volatile so the keyboard hot path reads it lock-free (its write
+    // is release-ordered AFTER the record + sprint-snapshot writes, so a reader seeing true also sees
+    // them). Physical down-state is keyboard-hook-thread-only and lock-free (like _altPressed),
+    // re-seeded from GetAsyncKeyState at each activation.
+    private const int VK_W = 0x57;
+    private const int VK_S = 0x53;
+    private const int AUTO_RUN_REPEAT_MS = 35; // Background re-post cadence (see BackgroundInputLoop)
+    // Background sprint activation timing (user spec): after W-down, wait this before pressing the sprint
+    // key — posting it back-to-back with W is read "too soon" by GZW and skipped. Press/toggle then holds
+    // the tap this long before releasing so the game registers a clean press.
+    private const int BG_SPRINT_PREDELAY_MIN_MS = 40;
+    private const int BG_SPRINT_PREDELAY_MAX_MS = 60;
+    private const int BG_SPRINT_TAP_MIN_MS = 40;
+    private const int BG_SPRINT_TAP_MAX_MS = 60;
+    // On focus-REGAIN, re-post W then wait this quiet window before re-engaging a Background Hold sprint
+    // (mirrors the activation "W → 40-60ms → sprint" ordering so the game doesn't read sprint as "too soon
+    // after W"). W re-posts are suppressed during the window. See BackgroundInputLoop.
+    private const int BG_SPRINT_REENGAGE_QUIET_MS = 50;
+
+    private readonly object _autoRunLock = new();
+    private volatile bool _autoRunActive;
+    // A2 foreground-guard epoch. Incremented (Interlocked) on each successful FOREGROUND activation and on
+    // EVERY terminal release of an active run; a queued guarded Auto-Run DOWN carries the generation it was
+    // stamped with, and the injector fires it only while that generation is still current (see
+    // HoldBreathInjectionLoop). _activeAutoRunInjectionGeneration is the current Foreground run's stamp,
+    // reused when a mid-run sprint re-engage enqueues a fresh DOWN.
+    private long _autoRunInjectionGeneration;
+    private long _activeAutoRunInjectionGeneration;
+    private string? _autoRunForegroundGuardExe; // A2 expected-exe for a Foreground run's guarded DOWNs (incl. sprint re-engage); null for Background
+    private bool _autoRunMoveInjected;          // injected W recorded (I2); guarded by _autoRunLock
+    private bool _autoRunSprintInjected;        // guarded by _autoRunLock
+    private Key _autoRunSprintInjectedKey;      // guarded by _autoRunLock
+    private Key _autoRunSprintKey;              // sprint-key snapshot for the run; written under _autoRunLock, read lock-free after the volatile _autoRunActive publish
+    private bool _autoRunSprintToggleable;      // snapshot: SprintEnabled && Hold mode — the sprint key acts as the sustained-sprint stamina toggle (never cancels)
+    private bool _autoRunSprintEnabled;         // Background only: sprint pending the delayed activation on the Background thread (see DoDelayedBackgroundSprintActivation); guarded by _autoRunLock
+    // Sprint state is SPLIT (codex sol/xhigh): _autoRunSprintIntendedHeld = the user WANTS sprint held for
+    // this run; _autoRunSprintInjected = best-effort belief the target CURRENTLY treats sprint as down in
+    // the current focus epoch. They diverge after alt-tab (the game clears sprint on focus-loss → current
+    // goes false, intent stays true), which is what lets the first physical press re-engage instead of
+    // being eaten, and lets the Background loop re-engage once on focus-regain. Both guarded by _autoRunLock.
+    private bool _autoRunSprintIntendedHeld;
+
+    // Background-transport run state (guarded by _autoRunLock). A Background run posts to the game's
+    // HWND (survives alt-tab) and is DECOUPLED from _activeProfile (§11.6): ReleaseAllState skips it;
+    // only the hard-teardown sites (Stop / OnSessionSwitch / Advanced-off), an explicit chord toggle-off,
+    // a focused physical cancel, or a per-post validation failure release it.
+    private bool _autoRunIsBackground;
+    private IntPtr _autoRunTargetHwnd;
+    private string? _autoRunTargetExe;          // normalized exe snapshot for per-post validation + focus check
+    // Background-transport re-post / modifier-state-hold runs on a DEDICATED thread (not a threadpool
+    // timer): the sprint-modifier state-hold needs a STABLE thread to keep an AttachThreadInput alive
+    // across ticks (threadpool callbacks hop threads, and the attach is per-thread). See BackgroundInputLoop.
+    // Lifecycle fields are read/written under _autoRunLock; the thread is NEVER joined on the hook thread
+    // (chord toggle-off releases there — I5) — release only signals _backgroundInputRun=false; Stop/Dispose
+    // join off-hook via JoinBackgroundInputThread. A run-identity check (_backgroundInputThread == self)
+    // lets a stale thread exit if a new run starts before it winds down.
+    private Thread? _backgroundInputThread;
+    private bool _backgroundInputRun;
+    private uint _autoRunTargetPid;             // Background target process id (for the debug heartbeat's foreground check)
+    private int _autoRunRepostTicks;            // Background: re-post tick counter for the throttled debug heartbeat
+
+    // Trigger-chord latches — keyboard-hook-thread ONLY, lock-free, keyed by VK (0 = none) so a profile
+    // switch to a DIFFERENT trigger key mid-press can't confuse them. _autoRunConsumedTriggerVk
+    // suppresses the repeats + matching keyup of a chord press that already fired, handled UNGATED so
+    // turning Advanced Mode off or switching profiles mid-press can't leak a stray trigger key or
+    // strand the latch (codex P3a #1). _triggerKeyDownVk rejects auto-repeat so only a FRESH trigger
+    // down forms a chord.
+    private int _autoRunConsumedTriggerVk;
+    private int _triggerKeyDownVk;
+
+    // Trigger snapshot for TOGGLE-OFF (hook-thread-only). A decoupled background run outlives its
+    // profile, so toggle-off must match the trigger that STARTED the run, not the live _activeProfile
+    // (which may be null/different after alt-tab). Set at activation, read on toggle-off.
+    private int _autoRunSnapshotTriggerVk;
+    private System.Windows.Input.ModifierKeys _autoRunSnapshotModifier;
+
+    // Physical key down-state — keyboard-hook-thread ONLY, lock-free. NOT cleared on cancel/release
+    // (tracks physical reality); RE-SEEDED from GetAsyncKeyState at each activation.
+    private bool _wPhysicallyDown;
+    private bool _sPhysicallyDown;
+    private bool _sprintPhysicallyDown;
+
+    // ==================== ANTI-AFK STATE ====================
+    // One always-ticking timer (fixed coarse period). No arm/disarm — each tick reads live conditions,
+    // so a UI toggle on the ALREADY-active profile takes effect within one period, and there is no
+    // ActivateProfile ordering hazard. Fires ONE atomic WASD tap-sequence on the shared injector when
+    // idle + focused on the active game profile.
+    private System.Threading.Timer? _antiAfkTimer;
+    private int _antiAfkTickRunning;        // single-flight (Interlocked), like _watchdogTickRunning
+    private uint _antiAfkLastFireTick;      // (uint)Environment.TickCount of the last fire, for cadence
+    private int _antiAfkDiagTicks;          // throttle counter for the idle-check diagnostic log
+    private const int ANTI_AFK_PERIOD_MS = 5_000;
+    private const int ANTI_AFK_GAP_MIN_MS = 90;   // inter-tap gap jitter
+    private const int ANTI_AFK_GAP_MAX_MS = 160;
+
     // Hook handles
     private NativeMethods.LowLevelKeyboardProc? _keyboardProc;
     private NativeMethods.LowLevelMouseProc? _mouseProc;
@@ -166,6 +282,14 @@ public sealed class InputHookService : IInputHookService
     // from a different thread, hence Volatile rather than plain fields.
     private long _lastKeyboardEventTick;
     private long _lastMouseEventTick;
+
+    // Anti-AFK idle basis: last PHYSICAL (non-injected) keyboard event, stamped AFTER the
+    // LLKHF_INJECTED / INPUT_IGNORE filter (unlike _lastKeyboardEventTick, which counts injected
+    // events too so it stays valid as hook-liveness proof). Keyboard-ONLY on purpose: GetLastInputInfo
+    // is global (all devices), so mouse/peripheral noise kept the system "fresh" and Anti-AFK's idle
+    // guard never tripped (debug.log: 69 "system input is fresh" / 0 idle). Volatile: written on the
+    // hook thread, read on the Anti-AFK timer thread.
+    private long _lastPhysicalKeyboardTick;
 
     // P8 fail-open swap-window flags: while a hook re-install is in flight, its callback passes
     // every event straight to CallNextHookEx with ZERO side effects instead of relying on overlap
@@ -220,6 +344,39 @@ public sealed class InputHookService : IInputHookService
             {
                 _hookWatchdogEnabled = value;
                 LogDebug($"Hook-loss watchdog {(value ? "enabled" : "disabled")} via settings");
+            }
+        }
+    }
+
+    // Advanced Mode: global [App] gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, and
+    // un-suppressed key mappings). Mirrors HookWatchdogEnabled end-to-end; live-togglable from Settings.
+    // volatile for the lock-free gating reads on the hook thread (and the injector thread).
+    private volatile bool _advancedModeEnabled;
+
+    public bool AdvancedModeEnabled
+    {
+        get => _advancedModeEnabled;
+        set
+        {
+            if (_advancedModeEnabled == value)
+            {
+                return;
+            }
+
+            _advancedModeEnabled = value;
+            LogDebug($"Advanced Mode {(value ? "enabled" : "disabled")} via settings");
+
+            // true→false: release every gated held state so nothing keeps injecting under a now-off
+            // gate. This setter runs on the UI dispatcher — which IS the hook thread — so each release
+            // MUST be enqueue-only / non-blocking (a synchronous SendInput here could stall the
+            // dispatcher on a foreign LL hook, the very freeze the injector exists to prevent). Each
+            // release takes only its own leaf lock; they are never nested (I5). Anti-AFK needs no
+            // action — its tick self-gates on _advancedModeEnabled. (Auto-Run release is wired in P3a.)
+            if (!value)
+            {
+                ReleaseAutoRunState(includeBackground: true); // gate closed — release Background too
+                ReleaseHoldBreathState();
+                ReleaseUnsuppressedCombinedOverrides();
             }
         }
     }
@@ -321,6 +478,12 @@ public sealed class InputHookService : IInputHookService
             var startTick = Stopwatch.GetTimestamp();
             Volatile.Write(ref _lastKeyboardEventTick, startTick);
             Volatile.Write(ref _lastMouseEventTick, startTick);
+            // Seed Anti-AFK's keyboard-idle basis too, so a freshly-started app accumulates idle from
+            // 0 (not "infinitely idle" → an immediate spurious fire).
+            Volatile.Write(ref _lastPhysicalKeyboardTick, startTick);
+            // Seed the cadence baseline explicitly (not the default 0) so first-fire cadence is correct even
+            // across the rare 49.7-day Environment.TickCount rollover where 0 is a real recent value.
+            _antiAfkLastFireTick = unchecked((uint)Environment.TickCount);
 
             // P7: request 1ms timer resolution while hooks are live. Win11 silently ignores
             // resolution requests from hidden/minimized-window processes (this app's tray state
@@ -383,6 +546,10 @@ public sealed class InputHookService : IInputHookService
                 // P8: hook-loss watchdog. 10s period is coarse on purpose — this only needs to catch
                 // the rare silent hook removal (UI stall > LowLevelHooksTimeout), not run hot.
                 _hookWatchdogTimer = new System.Threading.Timer(_ => WatchdogTick(), null, WATCHDOG_PERIOD_MS, WATCHDOG_PERIOD_MS);
+
+                // Anti-AFK: one always-ticking timer at a fixed coarse period; the tick reads live
+                // conditions each time (no arm/disarm). Rolled back below on a failed Start.
+                _antiAfkTimer = new System.Threading.Timer(_ => AntiAfkTick(), null, ANTI_AFK_PERIOD_MS, ANTI_AFK_PERIOD_MS);
             }
             catch
             {
@@ -391,6 +558,9 @@ public sealed class InputHookService : IInputHookService
                 // hooks on top of these. Mirrors the hook-install-failure branch above.
                 _hookWatchdogTimer?.Dispose();
                 _hookWatchdogTimer = null;
+
+                _antiAfkTimer?.Dispose();
+                _antiAfkTimer = null;
 
                 // Ends the injector loop; nothing was enqueued yet (hooks never went live).
                 _holdBreathInjectionQueue?.CompleteAdding();
@@ -443,6 +613,11 @@ public sealed class InputHookService : IInputHookService
             _hookWatchdogTimer?.Dispose();
             _hookWatchdogTimer = null;
 
+            // Stop new Anti-AFK ticks. An in-flight tick re-checks _isRunning (flipped false below) and
+            // the injector drain skips any sequence item it enqueued.
+            _antiAfkTimer?.Dispose();
+            _antiAfkTimer = null;
+
             // Unregisters any open device sinks from whatever thread Stop() runs on; the message-only
             // window itself is only destroyed when this is the owning (dispatcher) thread — the
             // App.OnExit path runs Stop() on a pool thread, where the moribund window is left for
@@ -473,6 +648,12 @@ public sealed class InputHookService : IInputHookService
             _isRunning = false;
 
             ReleaseAllState();
+            // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; Stop() (app exit) must still
+            // release it — post the final UP before the injector drains below.
+            ReleaseAutoRunState(includeBackground: true);
+            // Off-hook (app lifecycle): join the Background thread so its AttachThreadInput is undone
+            // before we tear down further. ReleaseAutoRunState above only SIGNALS stop (hook-safe).
+            JoinBackgroundInputThread();
 
             // Drain the hold-breath injector AFTER ReleaseAllState so the release it enqueued still
             // executes; bounded join because a drain item can be mid-flight through a stalled foreign
@@ -517,6 +698,9 @@ public sealed class InputHookService : IInputHookService
             }
 
             ReleaseAllState();
+            // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; the desktop is going away
+            // (lock/logoff), so release it here too.
+            ReleaseAutoRunState(includeBackground: true);
             LogDebug($"Session switch ({e.Reason}): released all injected state");
         }
     }
@@ -974,11 +1158,14 @@ public sealed class InputHookService : IInputHookService
         }
 
         // Ignore injected events from our own SendInput calls
-        if ((data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 || 
+        if ((data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 ||
             data.dwExtraInfo == NativeMethods.INPUT_IGNORE)
         {
             return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
+
+        // Anti-AFK keyboard-idle basis: a genuine PHYSICAL key event (injected events returned above).
+        Volatile.Write(ref _lastPhysicalKeyboardTick, Stopwatch.GetTimestamp());
 
         bool isKeyDown = message is NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN;
         bool isKeyUp = message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP;
@@ -1003,6 +1190,14 @@ public sealed class InputHookService : IInputHookService
                     _ => false // generic VK_MENU up: LL hooks deliver L/R codes, treat as full release
                 };
             }
+        }
+
+        // Auto-Run runs BEFORE the handled-chain: a cancel key (W/S) may ALSO be a combined-mapping
+        // source, so it must be seen for cancel detection even when another feature would consume it.
+        // Returns true only to suppress the trigger chord key; W/S/sprint pass through (false).
+        if (HandleAutoRun(vkCode, isKeyDown, isKeyUp))
+        {
+            return (IntPtr)1;
         }
 
         // Handle features in priority order
@@ -1364,7 +1559,10 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        var suppressOriginal = entry.SuppressOriginalKey;
+        // Advanced Mode off forces suppression on every mapping (1:1, source consumed) regardless of
+        // the saved per-entry value — disabling Suppress is the gated non-1:1 capability. This is the
+        // runtime belt; the XAML IsEnabled binding on the Suppress checkbox is the UI suspenders.
+        var suppressOriginal = entry.SuppressOriginalKey || !_advancedModeEnabled;
         var targetKey = entry.TargetKey;
         var requiresRightClick = entry.RightClickOnly;
 
@@ -1616,7 +1814,10 @@ public sealed class InputHookService : IInputHookService
     private void HandleRightClickHoldBreathDown()
     {
         var profile = _activeProfile;
-        if (profile is null || !profile.RightClickHoldBreath.IsEnabled)
+        // Advanced-Mode-gated feature: an off gate blocks NEW activations only. The UP/release path
+        // (HandleRightClickHoldBreathUp / ReleaseHoldBreathState) stays ungated (I3) so a hold in
+        // flight when the flag flips still releases.
+        if (profile is null || !profile.RightClickHoldBreath.IsEnabled || !_advancedModeEnabled)
         {
             return;
         }
@@ -1867,6 +2068,39 @@ public sealed class InputHookService : IInputHookService
             {
                 try
                 {
+                    // Anti-AFK atomic tap-sequence (§3.4): executed here as ONE queue item so a DOWN/UP
+                    // pair can never be split across a shutdown drain. Per-step abort at the TOP of each
+                    // iteration, BEFORE that key's DOWN (never between a DOWN and its UP — the finally
+                    // guarantees the UP), so a mid-sequence Stop/alt-tab/profile-switch leaves the
+                    // remaining keys UNPRESSED rather than leaking into a new window or overrunning
+                    // shutdown (bounds the post-Stop drain to one key-pair, not a whole 4-step sequence).
+                    if (injection.Sequence is { } steps)
+                    {
+                        foreach (var step in steps)
+                        {
+                            // Gate on _advancedModeEnabled too (C1): turning Advanced Mode off must
+                            // stop a still-queued ripple. An already-started step still completes its
+                            // paired UP (the finally below) — that one pair is the accepted residual.
+                            if (!_isRunning || !_advancedModeEnabled || queue.IsAddingCompleted || !ForegroundMatchesActiveProfile())
+                            {
+                                break;
+                            }
+
+                            try
+                            {
+                                SendKey(step.Key, true);
+                                Thread.Sleep(step.DownMs);
+                            }
+                            finally
+                            {
+                                SendKey(step.Key, false);
+                            }
+
+                            Thread.Sleep(step.GapMs);
+                        }
+                        continue;
+                    }
+
                     // Shutdown drain: once CompleteAdding was called (Stop/Start-rollback), any
                     // still-queued DOWN is stale pre-shutdown work — emitting a NEW press after the
                     // hooks are gone (or into a later session, if Stop's bounded join timed out and
@@ -1877,6 +2111,20 @@ public sealed class InputHookService : IInputHookService
                     if (injection.IsDown && queue.IsAddingCompleted)
                     {
                         if (IsDebugEnabled) LogDebug($"HoldBreath inject DOWN skipped (shutdown drain): {injection.Key}");
+                        continue;
+                    }
+
+                    // A2: a foreground-guarded Auto-Run DOWN (AutoRunGeneration != 0) fires only while its
+                    // epoch is still current AND the foreground window still belongs to the run's exe — so a
+                    // queued W/sprint DOWN can't drain into a window you alt-tabbed to (or after the run
+                    // ended). This runs on the injector thread, so the WindowBelongsToExe GetProcessById is
+                    // OFF the hook thread. UPs (gen 0) are never guarded, so the skipped DOWN's paired UP
+                    // still drains as a harmless no-op and FIFO pairing is preserved.
+                    if (injection.IsDown && injection.AutoRunGeneration != 0
+                        && (Volatile.Read(ref _autoRunInjectionGeneration) != injection.AutoRunGeneration
+                            || !WindowBelongsToExe(NativeMethods.GetForegroundWindow(), injection.ExpectedForegroundExe)))
+                    {
+                        if (IsDebugEnabled) LogDebug($"AutoRun DOWN skipped (foreground guard): {injection.Key}");
                         continue;
                     }
 
@@ -1906,6 +2154,1145 @@ public sealed class InputHookService : IInputHookService
         {
             // Stop() disposed the queue after the final item; clean exit.
         }
+    }
+
+    // ==================== AUTO-RUN ====================
+
+    // Called UNCONDITIONALLY at the top of the keyboard dispatch region, BEFORE the handled-chain, so
+    // a cancel key (W/S) that is also a combined-mapping source is still seen for cancel detection.
+    // Returns true ONLY to suppress the trigger chord key; W/S/sprint always pass through (false).
+    private bool HandleAutoRun(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        // 1) Physical down-state bookkeeping (lock-free, hook-thread-only). Our own injected W/sprint
+        //    are INPUT_IGNORE-filtered upstream (I1), so these flags track PHYSICAL reality only.
+        //    Capture the pre-update value: a held key auto-repeats with wasDown == true (not fresh).
+        bool freshW = false, freshS = false, freshSprint = false;
+
+        if (vkCode == VK_W)
+        {
+            if (isKeyDown) { freshW = !_wPhysicallyDown; _wPhysicallyDown = true; }
+            else if (isKeyUp) { _wPhysicallyDown = false; }
+        }
+        else if (vkCode == VK_S)
+        {
+            if (isKeyDown) { freshS = !_sPhysicallyDown; _sPhysicallyDown = true; }
+            else if (isKeyUp) { _sPhysicallyDown = false; }
+        }
+
+        var active = _autoRunActive; // volatile read — lock-free hot path
+        var sprintVk = active ? KeyInteropUtilities.ToVirtualKey(_autoRunSprintKey) : 0;
+
+        // Sprint physical tracking (for the stamina toggle in 2b). Only while a run is active; the W/S
+        // guard avoids double-handling if sprint == W/S was configured (W/S still cancel via freshW/S).
+        if (active && sprintVk != 0 && vkCode == sprintVk && vkCode != VK_W && vkCode != VK_S)
+        {
+            if (isKeyDown) { freshSprint = !_sprintPhysicallyDown; _sprintPhysicallyDown = true; }
+            else if (isKeyUp) { _sprintPhysicallyDown = false; }
+        }
+
+        // 2) Cancel on a FRESH physical down-edge of W or S (sprint NO LONGER cancels — see 2b). Pass the
+        //    key THROUGH (return false) so pressing S to cancel still moves you back. A key held THROUGH
+        //    activation produces no fresh edge (auto-repeat has wasDown == true), so releasing it keeps
+        //    you running. A Background run cancels on physical W/S ONLY while the game is focused (user's
+        //    choice: chord-only-while-unfocused, so stray W/S in another app can't kill it); a Foreground
+        //    run always cancels. The GetForegroundWindow cost is paid only on a fresh W/S edge while a
+        //    Background run is active.
+        // E3 exclusion: if this fresh W/S is ALSO the run's trigger key WITH its modifier physically down,
+        // it is a TOGGLE-OFF chord, not a bare cancel — skip step 2 so it falls to 3c (which toggles off
+        // AND consumes the key, so a W/S trigger doesn't leak). Without this, a Background run whose trigger
+        // is W/S can't be chord-toggled-off while unfocused (step 2's cancel is focus-gated and returns
+        // before 3c). Bare W/S (no modifier) still cancels + passes through unchanged.
+        if (active && isKeyDown && (freshW || freshS)
+            && !(vkCode == _autoRunSnapshotTriggerVk && IsTriggerModifierDown(_autoRunSnapshotModifier)))
+        {
+            if (!_autoRunIsBackground || ForegroundMatchesAutoRunTarget())
+            {
+                ReleaseAutoRunState(includeBackground: true);
+                if (IsDebugEnabled) LogDebug($"AutoRun CANCEL on fresh physical down: vk=0x{vkCode:X2}");
+            }
+            return false;
+        }
+
+        // 2b) Sprint stamina toggle (Hold mode only). The sprint key NEVER cancels auto-run; instead,
+        //     while a run with a sustained sprint is active, a FRESH physical sprint press toggles that
+        //     sprint OFF/ON (release to let in-game stamina recharge, press again to re-engage) and the
+        //     key is CONSUMED so the game never sees a raw sprint tap. A Background run acts on the sprint
+        //     key only while the game is focused (like cancel); otherwise it passes through to the focused
+        //     app. On auto-run exit, any still-held sprint is released by ReleaseAutoRunState (no stuck
+        //     sprint). Auto-run's W is untouched throughout — only the sprint hold toggles.
+        //     If the sprint key is ALSO this run's trigger key (a shared-key config), the TRIGGER wins:
+        //     the sprint-toggle is skipped so the chord still toggles auto-run OFF (codex tweak #1).
+        if (active && _autoRunSprintToggleable && sprintVk != 0 && vkCode == sprintVk
+            && vkCode != VK_W && vkCode != VK_S && vkCode != _autoRunSnapshotTriggerVk)
+        {
+            if (!_autoRunIsBackground || ForegroundMatchesAutoRunTarget())
+            {
+                if (isKeyDown && freshSprint)
+                {
+                    ToggleAutoRunSprintHold();
+                }
+                return true; // consume the sprint key's down / repeat / up
+            }
+        }
+
+        // 3) Trigger chord. The consumed-press cleanup (3a) and the fresh-edge keyup latch (3b) are
+        //    UNGATED (release-style, I3): once a chord press is in flight, its repeats + matching keyup
+        //    must be swallowed and the latches cleared even if Advanced Mode was turned off or the
+        //    profile changed (to a different/absent trigger) mid-press — otherwise a stray trigger key
+        //    leaks to the game (codex P3a #1) or a stale latch blocks a later activation.
+
+        // 3a. Suppress + clean up a chord press that already fired, matched by the STORED consumed VK
+        //     (the configured trigger key may have changed since the press).
+        if (_autoRunConsumedTriggerVk != 0 && vkCode == _autoRunConsumedTriggerVk)
+        {
+            if (isKeyUp)
+            {
+                _autoRunConsumedTriggerVk = 0;
+                if (_triggerKeyDownVk == vkCode) _triggerKeyDownVk = 0;
+                return true; // swallow the matching keyup so no dangling trigger keyup leaks
+            }
+            return isKeyDown; // swallow auto-repeats
+        }
+
+        // 3b. A non-consumed trigger key's keyup clears the fresh-edge latch UNGATED (so a stale latch
+        //     can't block a later activation) and passes through to the game.
+        if (isKeyUp && _triggerKeyDownVk == vkCode)
+        {
+            _triggerKeyDownVk = 0;
+            return false;
+        }
+
+        // 3c. A run is ACTIVE → the only chord action is TOGGLE-OFF, matched by the SNAPSHOT trigger so
+        //     it works even when _activeProfile is null/changed (essential for a decoupled Background
+        //     run that outlives its profile). Releases whichever transport is active.
+        if (_autoRunActive)
+        {
+            if (_autoRunSnapshotTriggerVk == 0 || vkCode != _autoRunSnapshotTriggerVk || !isKeyDown)
+            {
+                return false;
+            }
+            if (_triggerKeyDownVk == vkCode)
+            {
+                return false; // auto-repeat
+            }
+            _triggerKeyDownVk = vkCode;
+            if (!IsTriggerModifierDown(_autoRunSnapshotModifier))
+            {
+                // E1: shared-key config — this trigger key is ALSO the run's (Hold) sprint key. Without a
+                // modifier it is not a toggle-off chord, but it must NOT leak to the game: a raw sprint tap
+                // would release in-game sprint while we still track it as injected (state desync). Consume
+                // BOTH edges (3a swallows the repeats + matching keyup via the consumed latch). The
+                // stamina-toggle-via-tap is intentionally unavailable for a shared-key config; the
+                // modifier+key chord still toggles the run off. Distinct trigger keys pass through unchanged.
+                if (_autoRunSprintToggleable && sprintVk != 0 && sprintVk == vkCode && vkCode != VK_W && vkCode != VK_S)
+                {
+                    _autoRunConsumedTriggerVk = vkCode;
+                    return true;
+                }
+                return false;
+            }
+
+            ReleaseAutoRunState(includeBackground: true);
+            _autoRunConsumedTriggerVk = vkCode;
+            return true;
+        }
+
+        // 3d. No run active → TOGGLE-ON, gated on the feature being usable, matched by the LIVE profile
+        //     trigger. The game is foreground here (you press the chord while playing), so _activeProfile
+        //     and its exe are valid to snapshot for a Background run.
+        var profile = _activeProfile; // benign lock-free read (like HandleRightClickHoldBreathDown)
+        if (!_advancedModeEnabled || profile is null || !profile.AutoRun.IsEnabled)
+        {
+            return false;
+        }
+
+        var settings = profile.AutoRun;
+        var triggerVk = KeyInteropUtilities.ToVirtualKey(settings.TriggerKey);
+        if (triggerVk == 0 || vkCode != triggerVk || !isKeyDown)
+        {
+            return false;
+        }
+
+        // Trigger keydown + feature usable. Only a FRESH down (not an auto-repeat) forms a chord.
+        if (_triggerKeyDownVk == vkCode)
+        {
+            return false; // auto-repeat — pass through
+        }
+        _triggerKeyDownVk = vkCode;
+
+        // Require the single side-agnostic modifier physically down.
+        if (!IsTriggerModifierDown(settings.TriggerModifier))
+        {
+            return false; // trigger key without its modifier — pass through to the game
+        }
+
+        // Chord — activate; consume this press (repeats + keyup handled by 3a) ONLY if the run actually
+        // started (A1). If activation failed closed (foreground not the game), do NOT swallow the chord —
+        // pass it through (return false) so it isn't eaten in the wrong window. The fresh-edge latch
+        // (_triggerKeyDownVk) is cleared ungated by 3b on the trigger's keyup either way.
+        if (ActivateAutoRun(settings, profile))
+        {
+            _autoRunConsumedTriggerVk = vkCode;
+            return true;
+        }
+        return false;
+    }
+
+    // Single side-agnostic modifier check (VK_CONTROL/VK_MENU/VK_SHIFT report either side; Windows has
+    // no combined VK, so check both). Combined modifiers are intentionally unsupported (AutoRunSettings).
+    private static bool IsTriggerModifierDown(System.Windows.Input.ModifierKeys modifier)
+    {
+        return modifier switch
+        {
+            System.Windows.Input.ModifierKeys.Control => (NativeMethods.GetAsyncKeyState(0x11) & 0x8000) != 0, // VK_CONTROL
+            System.Windows.Input.ModifierKeys.Alt => (NativeMethods.GetAsyncKeyState(0x12) & 0x8000) != 0,     // VK_MENU
+            System.Windows.Input.ModifierKeys.Shift => (NativeMethods.GetAsyncKeyState(0x10) & 0x8000) != 0,   // VK_SHIFT
+            System.Windows.Input.ModifierKeys.Windows =>
+                (NativeMethods.GetAsyncKeyState(0x5B) & 0x8000) != 0 || // VK_LWIN
+                (NativeMethods.GetAsyncKeyState(0x5C) & 0x8000) != 0,   // VK_RWIN
+            _ => false
+        };
+    }
+
+    // Under _autoRunLock, _isRunning re-checked. Seeds the physical flags from GetAsyncKeyState (ground
+    // truth) so a held-through-activation W/S/sprint is seen as already-down (no false cancel) and a
+    // genuinely-up key is fresh on its next press (cancels). Enqueue-only (I5): only the injector and
+    // GetAsyncKeyState run under the lock — no SendInput, no nested subsystem lock.
+    // Returns true iff a run was started (chord consumed). Returns false on any abort (service stopped,
+    // already active, foreground not the game, or a refused Background W post) — the caller must NOT
+    // consume the chord on false, so it passes through instead of being swallowed in the wrong window.
+    private bool ActivateAutoRun(AutoRunSettings settings, Profile profile)
+    {
+        lock (_autoRunLock)
+        {
+            if (!_isRunning || _autoRunActive)
+            {
+                return false;
+            }
+
+            // A1: FAIL CLOSED on foreground ownership — for BOTH transports — with NO Process.GetProcessById
+            // on the hook thread. _activeProfile lags real foreground during ProfileActivationService's
+            // color work, so a chord pressed right after an alt-tab could otherwise activate and inject W
+            // into the NEW foreground app. Confirm against the off-hook foreground snapshot: the LIVE
+            // foreground window must still equal the snapshot HWND, the snapshot PID must be resolved, and
+            // the snapshot exe must be THIS profile's game. Any mismatch (incl. a stale/absent snapshot)
+            // aborts — never a Foreground fallback into the wrong window. Only cheap non-blocking calls.
+            var hwnd = NativeMethods.GetForegroundWindow();
+            var exe = profile.NormalizedExecutable;
+            var snapshot = _foregroundIdentity;
+            // Resolve the LIVE owning PID of the foreground window and require it to equal the snapshot PID
+            // (codex sol/xhigh #3): matching the HWND alone is not enough — under HWND reuse the same handle
+            // could now belong to a DIFFERENT process, and a Background run would then target that foreign
+            // process. GetWindowThreadProcessId is cheap/non-blocking (safe on the hook thread).
+            NativeMethods.GetWindowThreadProcessId(hwnd, out var livePid);
+            if (snapshot is null || hwnd == IntPtr.Zero || hwnd != snapshot.Hwnd || snapshot.Pid == 0
+                || livePid == 0 || livePid != snapshot.Pid
+                || string.IsNullOrEmpty(exe)
+                || !string.Equals(snapshot.Exe, exe, StringComparison.OrdinalIgnoreCase))
+            {
+                LogDebug("AutoRun: foreground not confirmed as the profile game (cached identity / live PID); activation aborted (fail closed)");
+                return false;
+            }
+
+            // Transport: Background posts key messages to the game's HWND (survives alt-tab) via a
+            // non-blocking PostMessage; Foreground injects via the shared FIFO injector.
+            var background = settings.SendMode == AutoRunSendMode.Background;
+            if (background)
+            {
+                // Match AutoHotkey ControlSend's blank-control target: post to the window's TOPMOST CHILD
+                // control (the keyboard-input surface for many games, incl. GZW) rather than the top-level
+                // frame — but only if that child is in the SAME PROCESS (compare PIDs, not just the exe
+                // name: a CEF/helper child can share the exe name under a DIFFERENT PID). Focus-independent.
+                // framePid is the just-verified livePid (== snapshot.Pid).
+                var framePid = livePid;
+                var child = NativeMethods.GetWindow(hwnd, NativeMethods.GW_CHILD);
+                var childSameProcess = false;
+                if (child != IntPtr.Zero && framePid != 0)
+                {
+                    NativeMethods.GetWindowThreadProcessId(child, out var childPid);
+                    childSameProcess = childPid == framePid;
+                }
+                _autoRunTargetHwnd = childSameProcess ? child : hwnd;
+                _autoRunTargetExe = exe;
+                _autoRunTargetPid = framePid;
+                LogDebug($"AutoRun Background target=0x{_autoRunTargetHwnd.ToInt64():X} (child={childSameProcess}), exe={exe}");
+            }
+            _autoRunIsBackground = background;
+
+            // Snapshot the sprint key for the run's lifetime (a mid-run UI edit can't retarget it).
+            _autoRunSprintKey = settings.SprintKey;
+            // In Hold mode the sprint key becomes the sustained-sprint stamina toggle for this run.
+            _autoRunSprintToggleable = settings.SprintEnabled && settings.SprintMode == SprintActivation.Hold;
+            // Intent to hold sprint for the run (Hold mode). Current (_autoRunSprintInjected) is set false
+            // here and flipped true only when a DOWN actually lands; a fresh activation is a fresh epoch.
+            _autoRunSprintIntendedHeld = _autoRunSprintToggleable;
+            _autoRunSprintInjected = false;
+
+            // Snapshot the trigger for TOGGLE-OFF so it works even when _activeProfile is gone (bg run).
+            _autoRunSnapshotTriggerVk = KeyInteropUtilities.ToVirtualKey(settings.TriggerKey);
+            _autoRunSnapshotModifier = settings.TriggerModifier;
+
+            // Re-seed physical down-state from ground truth (codex R1 #2). Hook-thread-only fields
+            // written here on the hook thread (ActivateAutoRun is only ever reached from the hook).
+            // Both transports cancel on a fresh physical edge, so both need this.
+            _wPhysicallyDown = (NativeMethods.GetAsyncKeyState(VK_W) & 0x8000) != 0;
+            _sPhysicallyDown = (NativeMethods.GetAsyncKeyState(VK_S) & 0x8000) != 0;
+            var sprintVk = KeyInteropUtilities.ToVirtualKey(_autoRunSprintKey);
+            _sprintPhysicallyDown = sprintVk != 0 && (NativeMethods.GetAsyncKeyState(sprintVk) & 0x8000) != 0;
+
+            // W-down: post (Background) or enqueue (Foreground) and record it (I2). If physical W is also
+            // down, both are down (harmless); the delivered W is what survives the physical release.
+            // Background: if the target died between capture-validation and now, the post is REFUSED —
+            // abort activation and clear state so no zombie active run is left for ReleaseAllState to
+            // skip (per-post validation failure must clear state, §11.5; codex P3b #1).
+            // A2: a FOREGROUND run opens a new injector-guard epoch and stamps its queued DOWNs with that
+            // generation + the profile exe, so a still-queued W/sprint DOWN can't drain into a window you
+            // alt-tabbed to (the injector re-checks both at fire time). Background posts (not enqueues) and
+            // needs no stamp. gen==0 leaves the DOWN unguarded (hold-breath/anti-afk behaviour).
+            long gen = 0;
+            string? guardExe = null;
+            if (!background)
+            {
+                gen = Interlocked.Increment(ref _autoRunInjectionGeneration);
+                _activeAutoRunInjectionGeneration = gen;
+                guardExe = exe;
+            }
+            _autoRunForegroundGuardExe = guardExe; // used by a later Foreground sprint re-engage (null for Background)
+
+            _autoRunMoveInjected = true;
+            if (!PostOrEnqueueAutoRunDown(Key.W, background, gen, guardExe))
+            {
+                _autoRunMoveInjected = false;
+                _autoRunIsBackground = false;
+                _autoRunTargetHwnd = IntPtr.Zero;
+                _autoRunTargetExe = null;
+                _autoRunTargetPid = 0;
+                _autoRunSprintIntendedHeld = false; // no run → no sprint intent/current
+                _autoRunSprintInjected = false;
+                LogDebug("AutoRun Background: target window invalid at W post; activation aborted");
+                return false; // _autoRunActive stays false — no zombie run
+            }
+
+            if (settings.SprintEnabled)
+            {
+                if (background)
+                {
+                    // Background sprint is posted by the dedicated thread AFTER a short delay — NOT here.
+                    // Posting the sprint key back-to-back with W is read "too soon" by GZW and skipped
+                    // (user-confirmed in-game). The thread does: hold W → wait 40-60ms → sprint DOWN, and
+                    // for Press/toggle → DOWN → 40-60ms → UP (one clean tap that toggles in-game sprint).
+                    // _autoRunSprintToggleable already records Hold vs Press for this run.
+                    _autoRunSprintEnabled = true;
+                }
+                else if (settings.SprintMode == SprintActivation.Hold)
+                {
+                    // Foreground Hold: enqueue shift-down (held) via the injector; record for release.
+                    if (PostOrEnqueueAutoRunDown(_autoRunSprintKey, background, gen, guardExe))
+                    {
+                        _autoRunSprintInjected = true;
+                        _autoRunSprintInjectedKey = _autoRunSprintKey;
+                    }
+                }
+                else
+                {
+                    // Foreground Press: a self-releasing tap (DOWN + UP-with-presleep), not marked held —
+                    // same shape as the Toggle hold-breath tap, so Stop()'s drain runs the UP.
+                    var rng = _random.Value!;
+                    var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
+                    for (int i = 0; i < warmupCalls; i++) rng.Next();
+                    var duration = rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1);
+                    EnqueueHoldBreathInjection(new HoldBreathInjection(_autoRunSprintKey, IsDown: true, PreSleepMs: 0, AutoRunGeneration: gen, ExpectedForegroundExe: guardExe));
+                    EnqueueHoldBreathInjection(new HoldBreathInjection(_autoRunSprintKey, IsDown: false, PreSleepMs: duration));
+                }
+            }
+
+            _autoRunActive = true; // volatile write LAST — publishes records + snapshots to readers
+
+            // Background: start the dedicated thread (see BackgroundInputLoop). It does the delayed sprint
+            // activation (hold W → wait 40-60ms → press sprint) then re-posts W every tick so the run
+            // survives the game clearing its input on focus-loss (a single focused down does not persist
+            // through alt-tab). Started AFTER _autoRunActive so it sees the published run; Thread.Start is
+            // non-blocking and the thread waits on _autoRunLock (held here) before its first action.
+            // Overwrites any stale ref from a prior run. Foreground uses the injector and needs no thread.
+            if (background)
+            {
+                _backgroundInputRun = true;
+                var bgThread = new Thread(BackgroundInputLoop) { IsBackground = true, Name = "sWinBgInput" };
+                _backgroundInputThread = bgThread;
+                bgThread.Start();
+            }
+            if (IsDebugEnabled) LogDebug($"AutoRun ACTIVATED: transport={(background ? "Background" : "Foreground")}, sprintEnabled={settings.SprintEnabled}, mode={settings.SprintMode}, sprintKey={_autoRunSprintKey}");
+            return true; // run started — caller consumes the chord
+        }
+    }
+
+    // Routes a held-key DOWN to the active transport. Caller holds _autoRunLock. Returns whether the
+    // key was delivered: Foreground always true (enqueue can't refuse); Background = the post's
+    // validation result (false if the target window died — the caller must not record/keep the run).
+    private bool PostOrEnqueueAutoRunDown(Key key, bool background, long gen, string? guardExe)
+    {
+        if (background)
+        {
+            return PostAutoRunKey(key, isDown: true);
+        }
+
+        // Foreground DOWN carries the A2 foreground-guard (gen + expected exe); UPs are never guarded.
+        EnqueueHoldBreathInjection(new HoldBreathInjection(key, IsDown: true, PreSleepMs: 0, AutoRunGeneration: gen, ExpectedForegroundExe: guardExe));
+        return true;
+    }
+
+    // Unconditional release (I3) of the active run's W/sprint. includeBackground gates the DECOUPLING
+    // (§11.6): ordinary teardown (ReleaseAllState from profile/session switch + watchdog reinstall, and
+    // the eager focus-loss release) passes false and MUST skip a Background run — that run is meant to
+    // outlive profile churn. The hard-teardown sites (Stop / OnSessionSwitch / Advanced-off), an
+    // explicit chord toggle-off, and a focused physical cancel pass true. Enqueue-only (Foreground) or
+    // non-blocking PostMessage (Background), so safe on the hook / pool / dispatcher threads.
+    private void ReleaseAutoRunState(bool includeBackground)
+    {
+        lock (_autoRunLock)
+        {
+            if (!_autoRunActive)
+            {
+                return;
+            }
+
+            if (_autoRunIsBackground && !includeBackground)
+            {
+                return; // decoupled: a Background run ignores ordinary profile/hook churn
+            }
+
+            // Terminal release of an active run → open a new injector-guard epoch (A2) so any still-queued
+            // guarded Foreground DOWN is invalidated and skipped by the injector. NOT reached for a
+            // decoupled Background run left active by includeBackground:false (returned above).
+            Interlocked.Increment(ref _autoRunInjectionGeneration);
+
+            // Release the sprint UP if it is CURRENT or merely INTENDED-held (a Background Hold sprint whose
+            // current bit was cleared on focus-loss still has intent true — post an UP so nothing is left
+            // held even in that epoch). Use the injected key if current, else the run's snapshot key.
+            bool releaseSprint = _autoRunSprintInjected || _autoRunSprintIntendedHeld;
+            var sprintUpKey = _autoRunSprintInjected ? _autoRunSprintInjectedKey : _autoRunSprintKey;
+
+            if (_autoRunIsBackground)
+            {
+                // Signal the Background thread to stop BEFORE posting the UPs. We do NOT join here: a chord
+                // toggle-off reaches this on the hook thread and I5 forbids blocking it. Clearing the run
+                // flag makes the thread exit on its next tick (it also re-checks _autoRunActive, which we
+                // set false below, both under _autoRunLock which the thread takes each tick), so no re-posted
+                // DOWN can land after the UP. The ref is left set for a Stop/Dispose off-hook join or the
+                // next activation to overwrite. Stop/Dispose additionally join via JoinBackgroundInputThread.
+                _backgroundInputRun = false;
+
+                // Best-effort post the UPs (each re-validates the target first). PostMessage is
+                // non-blocking, so this is safe under the lock. If the window is gone the UP can't
+                // land — the in-game "held" state is the documented Background residual (OS input
+                // stays clean; nothing is held system-wide).
+                if (_autoRunMoveInjected) PostAutoRunKey(Key.W, isDown: false);
+                if (releaseSprint) PostAutoRunKey(sprintUpKey, isDown: false);
+                _autoRunTargetHwnd = IntPtr.Zero;
+                _autoRunTargetExe = null;
+                _autoRunTargetPid = 0;
+            }
+            else
+            {
+                if (_autoRunMoveInjected) EnqueueHoldBreathInjection(new HoldBreathInjection(Key.W, IsDown: false, PreSleepMs: 0));
+                if (releaseSprint) EnqueueHoldBreathInjection(new HoldBreathInjection(sprintUpKey, IsDown: false, PreSleepMs: 0));
+            }
+
+            _autoRunMoveInjected = false;
+            _autoRunSprintInjected = false;
+            _autoRunSprintIntendedHeld = false;
+            _autoRunSprintToggleable = false;
+            _autoRunSprintEnabled = false;
+            _autoRunSprintKey = Key.None;
+            _autoRunSprintInjectedKey = Key.None;
+            _autoRunIsBackground = false;
+            _autoRunForegroundGuardExe = null;
+            _autoRunActive = false;
+        }
+    }
+
+    // Toggles the sustained sprint of an active Hold-mode run for stamina management: release it if
+    // held, else re-engage it. Routes by transport exactly like ActivateAutoRun/ReleaseAutoRunState
+    // (enqueue for Foreground, non-blocking PostMessage for Background), under _autoRunLock; re-checks
+    // _autoRunActive (the caller read it lock-free). Auto-run's W is untouched — only sprint toggles,
+    // and ReleaseAutoRunState still releases whatever sprint is held on exit (no stuck sprint).
+    private void ToggleAutoRunSprintHold()
+    {
+        lock (_autoRunLock)
+        {
+            if (!_autoRunActive)
+            {
+                return;
+            }
+
+            if (_autoRunSprintInjected)
+            {
+                // Sprint currently held → turn it OFF (in-game stamina recharges; W keeps running). Intent
+                // goes false (the user chose to stop). CURRENT clears only once the UP actually lands: a
+                // transient Background PostMessage failure keeps current=true so terminal release still
+                // retries the UP (no stuck sprint). Foreground enqueue cannot fail (codex sol/xhigh tweak).
+                _autoRunSprintIntendedHeld = false;
+                if (_autoRunIsBackground)
+                {
+                    if (PostAutoRunKey(_autoRunSprintInjectedKey, isDown: false))
+                    {
+                        _autoRunSprintInjected = false;
+                    }
+                }
+                else
+                {
+                    EnqueueHoldBreathInjection(new HoldBreathInjection(_autoRunSprintInjectedKey, IsDown: false, PreSleepMs: 0));
+                    _autoRunSprintInjected = false;
+                }
+                if (IsDebugEnabled) LogDebug("AutoRun sprint toggled OFF (stamina)");
+            }
+            else
+            {
+                // Sprint currently off → engage it. Intent goes true unconditionally (the user wants sprint,
+                // so a later focus-regain also re-engages); current goes true only if the DOWN actually
+                // lands (Foreground always; Background could refuse if the target window died). This branch
+                // also handles the first physical press after an alt-tab (intent=true, current=false): it
+                // re-engages instead of the old stale "release + eaten" behaviour.
+                _autoRunSprintIntendedHeld = true;
+                if (_autoRunIsBackground)
+                {
+                    if (PostAutoRunKey(_autoRunSprintKey, isDown: true))
+                    {
+                        _autoRunSprintInjected = true;
+                        _autoRunSprintInjectedKey = _autoRunSprintKey;
+                    }
+                }
+                else
+                {
+                    // Foreground sprint re-engage: stamp with the run's active epoch + exe (A2) so a stale
+                    // re-engage DOWN is skipped if the run ended / focus left before it drains.
+                    EnqueueHoldBreathInjection(new HoldBreathInjection(_autoRunSprintKey, IsDown: true, PreSleepMs: 0, AutoRunGeneration: _activeAutoRunInjectionGeneration, ExpectedForegroundExe: _autoRunForegroundGuardExe));
+                    _autoRunSprintInjected = true;
+                    _autoRunSprintInjectedKey = _autoRunSprintKey;
+                }
+                if (IsDebugEnabled) LogDebug("AutoRun sprint toggled ON");
+            }
+        }
+    }
+
+    // Eager release when foreground LEAVES the active profile — called by ProfileActivationService
+    // BEFORE its color work, so a held Foreground W can't briefly leak into the incoming window during
+    // that window (the profile switch also releases via ReleaseAllState, but only after color work).
+    // includeBackground:false — a Background run is SUPPOSED to keep going while unfocused (§11.6).
+    public void ReleaseForegroundAutoRun()
+    {
+        ReleaseAutoRunState(includeBackground: false);
+    }
+
+    // A1: off-hook publish of the foreground identity (see field). Called by ProfileActivationService on
+    // every foreground change, on the watcher thread — never the hook thread. Atomic reference swap.
+    public void SetForegroundIdentity(IntPtr windowHandle, uint processId, string? normalizedExecutable)
+    {
+        _foregroundIdentity = new ForegroundIdentitySnapshot(windowHandle, processId, normalizedExecutable);
+    }
+
+    // Posts one WM_KEYDOWN/WM_KEYUP to the Background target after re-validating it via the CHEAP PID
+    // compare (BackgroundTargetValid: GetWindowThreadProcessId == snapshot PID). This catches BOTH "window
+    // gone" (pid 0) AND "handle reused by another process" (pid mismatch) with no Process.GetProcessById —
+    // so it is safe on the HOOK thread (activation / toggle-off / cancel), where the heavier
+    // WindowBelongsToExe could stall past LowLevelHooksTimeout (B2). On validation failure it posts
+    // nothing (a same-process window swap remains the documented residual). PostMessage is
+    // async/non-blocking, so this never stalls on a foreign hook. Caller holds _autoRunLock. Returns
+    // whether the target was still valid.
+    private bool PostAutoRunKey(Key key, bool isDown)
+    {
+        if (!BackgroundTargetValid(_autoRunTargetHwnd))
+        {
+            return false;
+        }
+
+        var posted = PostKeyToWindow(_autoRunTargetHwnd, key, isDown, repeat: false);
+        if (IsDebugEnabled) LogDebug($"AutoRun Background post {(isDown ? "DOWN" : "UP")}: {key} to hwnd=0x{_autoRunTargetHwnd.ToInt64():X} posted={posted}");
+        return posted;
+    }
+
+    // Posts one WM_KEY* to hwnd using AutoHotkey ControlSend's technique: attach our (posting) thread to
+    // the target window's input thread around the post — the one thing ControlSend does that a bare
+    // PostMessage does not, and WITHOUT which games like GZW ignore a posted WM_KEYDOWN. AttachThreadInput
+    // is non-blocking and we detach right after the post, so the shared-input-queue coupling lasts only
+    // microseconds. Guards: skip if the target thread is unknown or is our own thread, and never attach
+    // to a hung window's queue (IsHungAppWindow is a non-blocking status check, not a SendMessage). A
+    // failed attach still posts (best-effort). Runs under _autoRunLock but stays non-blocking (I5 holds).
+    // `repeat` sets the previous-state bit for a sustained-key re-post (see BackgroundInputLoop).
+    private bool PostKeyToWindow(IntPtr hwnd, Key key, bool isDown, bool repeat)
+    {
+        var vk = KeyInteropUtilities.ToVirtualKey(key);
+        if (vk == 0)
+        {
+            return true;
+        }
+
+        var scan = NativeMethods.MapVirtualKey((uint)vk, 0);
+        // Alt (VK_MENU / L/R) and F10 are SYSTEM keys — Windows delivers them as WM_SYSKEY*; a game reading
+        // an Alt sprint off WM_SYSKEYDOWN would never see a WM_KEYDOWN (D1). We only ever post a SINGLE key
+        // (never a non-Alt key while holding Alt), so the WM_SYSKEY* context bit (29) is always clear here.
+        var isSysKey = vk is 0x12 or 0xA4 or 0xA5 or 0x79; // VK_MENU, VK_LMENU, VK_RMENU, VK_F10
+        var lParam = BuildKeyLParam(scan, isDown, IsExtendedKey(key), repeat, altContext: false);
+        var msg = (uint)(isDown
+            ? (isSysKey ? NativeMethods.WM_SYSKEYDOWN : NativeMethods.WM_KEYDOWN)
+            : (isSysKey ? NativeMethods.WM_SYSKEYUP : NativeMethods.WM_KEYUP));
+
+        var targetThread = NativeMethods.GetWindowThreadProcessId(hwnd, out _);
+        var thisThread = NativeMethods.GetCurrentThreadId();
+        // Confine AttachThreadInput to the dedicated Background thread (B1(b)): attaching couples the
+        // caller's input queue to the game's, which must NEVER happen on the hook/dispatcher thread (a
+        // hung game could then stall hook dispatch). Hook-thread posts (activation first-down, toggle-off /
+        // cancel UPs, sprint toggle) go BARE and best-effort; the bg thread's attached ~35ms repost
+        // re-asserts a held key. Only the bg thread attaches (and thus only it touches the key-state table).
+        var onBackgroundThread = ReferenceEquals(Thread.CurrentThread, _backgroundInputThread);
+        var willAttach = onBackgroundThread && targetThread != 0 && targetThread != thisThread && !NativeMethods.IsHungAppWindow(hwnd);
+
+        // AttachThreadInput RESETS the calling thread's GetKeyState/GetKeyboardState table (per MSDN).
+        // Snapshot it first and restore it after, so a Background post can't corrupt a same-thread
+        // key-state reader — notably CapsLock Hold mode's GetKeyState(VK_CAPITAL) on the dispatcher/hook
+        // thread (codex). The reset window is confined to this method, which completes on the thread
+        // before any other key-state reader can run.
+        byte[]? savedKeyState = null;
+        if (willAttach)
+        {
+            savedKeyState = new byte[256];
+            if (!NativeMethods.GetKeyboardState(savedKeyState))
+            {
+                // No snapshot → do NOT attach: attach would reset a key-state table we can't restore,
+                // corrupting a same-thread reader (CapsLock-Hold). A bare best-effort post is safer. B3.
+                savedKeyState = null;
+                willAttach = false;
+            }
+        }
+
+        // Exception-safe (B3): detach and restore ALWAYS run — even on an asynchronous exception between
+        // attach and post — so we never leak the UI/game input-queue attachment or leave the key-state
+        // table reset.
+        bool attached = false;
+        try
+        {
+            attached = willAttach && NativeMethods.AttachThreadInput(thisThread, targetThread, true);
+            return NativeMethods.PostMessage(hwnd, msg, (IntPtr)vk, lParam);
+        }
+        finally
+        {
+            if (attached)
+            {
+                NativeMethods.AttachThreadInput(thisThread, targetThread, false);
+            }
+            if (savedKeyState != null)
+            {
+                NativeMethods.SetKeyboardState(savedKeyState);
+            }
+        }
+    }
+
+    // Dedicated Background input thread. First does the one-time delayed sprint activation (user spec: hold
+    // W → wait 40-60ms → press the sprint key; posting it back-to-back with W is read "too soon" by GZW and
+    // skipped), then re-posts W every AUTO_RUN_REPEAT_MS. W (movement) is STATE-based and the game clears
+    // input on focus-loss, so a single focused down does not persist through alt-tab — re-posting keeps the
+    // run alive. Sprint is NOT re-posted PER TICK (a per-tick modifier re-post reads as a fresh
+    // "dash"/fast-sprint, and SetKeyboardState is ignored by GZW). Instead a Hold sprint is re-asserted
+    // ONCE on each focus-REGAIN transition (W → BG_SPRINT_REENGAGE_QUIET_MS quiet window → one sprint DOWN),
+    // gated on intent so it survives alt-tab without the dash; current is cleared on focus-loss so the
+    // intent/current split stays accurate. A Press/toggle sprint persists as the game's OWN toggle state
+    // with no re-post — that is the working background-sprint path for GZW. (Regain re-assert needs in-game
+    // verification per game; see BG_SPRINT_REENGAGE_QUIET_MS.)
+    // Concurrency: every tick's shared-state read + posts happen under _autoRunLock (serializes with
+    // activate/release, like the old timer); Sleeps are OUTSIDE the lock. The thread exits when
+    // _backgroundInputRun is cleared, the run ends, or it is no longer the current run's thread
+    // (_backgroundInputThread identity — lets a stale thread bow out if a new run started).
+    private void BackgroundInputLoop()
+    {
+        try
+        {
+            // One-time: hold W (posted at activation) → wait → press sprint. Safe to block here (dedicated
+            // thread, never the hook thread).
+            DoDelayedBackgroundSprintActivation();
+
+            // Focus-transition state, OWNED by this loop (single thread → no cross-thread field needed).
+            // Activation fails closed unless the game was foreground (A1), so the run starts focused.
+            bool wasTargetForeground = true;
+            bool sprintReengagePending = false;
+            int sprintReengageDueTick = 0;
+
+            while (true)
+            {
+                bool stop = false;
+                lock (_autoRunLock)
+                {
+                    if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread
+                        || !_autoRunActive || !_autoRunIsBackground || !_isRunning || _disposed)
+                    {
+                        stop = true;
+                    }
+                    else if (!BackgroundTargetValid(_autoRunTargetHwnd))
+                    {
+                        // Target window died OR its HWND was reused by ANOTHER process (pid mismatch): do NOT
+                        // keep spinning or post into a reused/foreign window — hard-release the run (a per-post
+                        // validation failure is a teardown path, §11.5). Its UPs re-validate via
+                        // WindowBelongsToExe, so nothing lands on a foreign/dead window. codex R1 #1.
+                        if (IsDebugEnabled) LogDebug("AutoRun Background: target invalid (dead/reused pid) — hard-releasing the run");
+                        ReleaseAutoRunState(includeBackground: true); // re-entrant on _autoRunLock (held here)
+                        stop = true;
+                    }
+                    else
+                    {
+                        bool foreground = ForegroundIsAutoRunTargetProcess();
+
+                        if (wasTargetForeground && !foreground)
+                        {
+                            // Focus LOST: the game clears its input, so a Hold sprint is no longer CURRENT
+                            // (intent is preserved). Cancel any pending re-engage. W keeps being re-posted
+                            // so movement resumes on return.
+                            if (_autoRunSprintInjected)
+                            {
+                                _autoRunSprintInjected = false;
+                                if (IsDebugEnabled) LogDebug("AutoRun Background: focus lost — sprint no longer current (intent preserved)");
+                            }
+                            sprintReengagePending = false;
+                        }
+                        else if (!wasTargetForeground && foreground
+                                 && _autoRunSprintToggleable && _autoRunSprintIntendedHeld && !_autoRunSprintInjected)
+                        {
+                            // Focus REGAINED and sprint should be held but isn't current → re-assert W once,
+                            // then arm ONE sprint DOWN after a fixed quiet window (mirrors activation timing;
+                            // regain-only avoids a fresh-Shift "dash"). W re-posts are suppressed until due.
+                            if (_autoRunMoveInjected) PostKeyToWindow(_autoRunTargetHwnd, Key.W, isDown: true, repeat: true);
+                            sprintReengagePending = true;
+                            sprintReengageDueTick = unchecked(Environment.TickCount + BG_SPRINT_REENGAGE_QUIET_MS);
+                            if (IsDebugEnabled) LogDebug("AutoRun Background: focus regained — sprint re-engage armed");
+                        }
+                        wasTargetForeground = foreground;
+
+                        if (sprintReengagePending && unchecked(Environment.TickCount - sprintReengageDueTick) >= 0)
+                        {
+                            // Due: post exactly one sprint DOWN, re-checked under this held lock. Clear the
+                            // pending attempt whether it lands or not (no per-tick retries). A physical
+                            // stamina toggle that engaged sprint first is seen here via _autoRunSprintInjected.
+                            sprintReengagePending = false;
+                            if (_autoRunSprintToggleable && _autoRunSprintIntendedHeld && !_autoRunSprintInjected
+                                && foreground && BackgroundTargetValid(_autoRunTargetHwnd))
+                            {
+                                if (PostAutoRunKey(_autoRunSprintKey, isDown: true))
+                                {
+                                    _autoRunSprintInjected = true;
+                                    _autoRunSprintInjectedKey = _autoRunSprintKey;
+                                    if (IsDebugEnabled) LogDebug("AutoRun Background: sprint re-engaged on focus regain");
+                                }
+                            }
+                        }
+                        else if (!sprintReengagePending)
+                        {
+                            // Movement: re-post W each tick (suppressed only during the quiet window above).
+                            bool wPosted = _autoRunMoveInjected && PostKeyToWindow(_autoRunTargetHwnd, Key.W, isDown: true, repeat: true);
+                            if (IsDebugEnabled && (++_autoRunRepostTicks % 28) == 0)
+                            {
+                                LogDebug($"AutoRun Background heartbeat: W posted={wPosted}, foreground={foreground}, sprintInjected={_autoRunSprintInjected}");
+                            }
+                        }
+                    }
+                }
+                if (stop) break;
+
+                // Normally tick every 35ms; while a re-engage is pending, sleep only until it is due so the
+                // 50ms quiet window is honoured without busy-waiting. Sleep is OUTSIDE the lock.
+                int sleepMs = AUTO_RUN_REPEAT_MS;
+                if (sprintReengagePending)
+                {
+                    int remaining = unchecked(sprintReengageDueTick - Environment.TickCount);
+                    sleepMs = Math.Max(1, Math.Min(AUTO_RUN_REPEAT_MS, remaining));
+                }
+                Thread.Sleep(sleepMs);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (IsDebugEnabled) LogDebug($"BackgroundInputLoop exception: {ex}");
+
+            // F2: an exception must NOT leave the run marked active (a zombie only clearable by
+            // toggle-off/Stop/session/Advanced-off, still "moving" per Anti-AFK's guard 4). Terminalize
+            // and post the paired UPs while STILL HOLDING _autoRunLock (codex): PostMessage is non-blocking
+            // and this is the dedicated bg thread (I5 holds), and serializing the UP under the lock stops a
+            // replacement activation from posting its W-DOWN first and having our stale UP cancel it. We do
+            // NOT call ReleaseAutoRunState here (its native posts could throw before it clears state).
+            lock (_autoRunLock)
+            {
+                if (_backgroundInputThread == Thread.CurrentThread && _autoRunActive && _autoRunIsBackground)
+                {
+                    var hwnd = _autoRunTargetHwnd;
+                    var releaseW = _autoRunMoveInjected;
+                    // Release sprint if CURRENT or INTENDED-held (same predicate as ReleaseAutoRunState), using
+                    // the injected key if current, else the run's snapshot key.
+                    var releaseSprint = _autoRunSprintInjected || _autoRunSprintIntendedHeld;
+                    var sprintKey = _autoRunSprintInjected ? _autoRunSprintInjectedKey : _autoRunSprintKey;
+
+                    // Terminal release of an active run → invalidate any in-flight guarded injector DOWNs (A2).
+                    Interlocked.Increment(ref _autoRunInjectionGeneration);
+                    _backgroundInputRun = false;
+                    _autoRunMoveInjected = false;
+                    _autoRunSprintInjected = false;
+                    _autoRunSprintIntendedHeld = false;
+                    _autoRunSprintToggleable = false;
+                    _autoRunSprintEnabled = false;
+                    _autoRunSprintKey = Key.None;
+                    _autoRunSprintInjectedKey = Key.None;
+                    _autoRunIsBackground = false;
+                    _autoRunForegroundGuardExe = null;
+                    _autoRunActive = false;
+                    _autoRunTargetHwnd = IntPtr.Zero;
+                    _autoRunTargetExe = null;
+                    _autoRunTargetPid = 0;
+
+                    // Best-effort paired UPs UNDER the lock (non-blocking). PostKeyToWindow is exception-safe
+                    // (B3); wrap anyway so a second failure can't escape a thread that is exiting.
+                    try
+                    {
+                        if (hwnd != IntPtr.Zero && releaseW) PostKeyToWindow(hwnd, Key.W, isDown: false, repeat: false);
+                        if (hwnd != IntPtr.Zero && releaseSprint) PostKeyToWindow(hwnd, sprintKey, isDown: false, repeat: false);
+                    }
+                    catch { /* run already terminalized; nothing more we can do */ }
+                }
+            }
+        }
+    }
+
+    // One-time delayed sprint activation for a Background run. After the activation W-down, wait 40-60ms
+    // before touching the sprint key (GZW skips a sprint key posted back-to-back with W). Hold mode leaves
+    // the key held (recorded so ReleaseAutoRunState posts the paired UP — no stuck sprint); Press/toggle
+    // mode taps it (DOWN → 40-60ms → UP) to flip the game's sprint toggle, which then persists across
+    // alt-tab with no re-post. Sleeps are OUTSIDE _autoRunLock; every post re-checks the run + target under
+    // the lock. Runs on the Background thread, so blocking sleeps are safe (never the hook thread).
+    private void DoDelayedBackgroundSprintActivation()
+    {
+        bool hold;
+        Key sprintKey;
+        lock (_autoRunLock)
+        {
+            if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread
+                || !_autoRunActive || !_autoRunIsBackground || !_autoRunSprintEnabled)
+            {
+                return;
+            }
+            hold = _autoRunSprintToggleable; // Hold mode (else Press/toggle)
+            sprintKey = _autoRunSprintKey;
+        }
+
+        Thread.Sleep(RandomBackgroundDelay(BG_SPRINT_PREDELAY_MIN_MS, BG_SPRINT_PREDELAY_MAX_MS));
+
+        lock (_autoRunLock)
+        {
+            if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread
+                || !_autoRunActive || !_autoRunIsBackground || !BackgroundTargetValid(_autoRunTargetHwnd))
+            {
+                return;
+            }
+            // Consume the one-time pending flag UNCONDITIONALLY now (codex sol/xhigh #1): whatever we decide
+            // below, this delayed activation has run once.
+            if (!_autoRunSprintEnabled) return;
+            _autoRunSprintEnabled = false;
+
+            if (hold)
+            {
+                // Hold: only post the initial DOWN if the user STILL wants sprint held (a stamina toggle
+                // during the pre-delay window may have turned it off → intent=false; do NOT resurrect it),
+                // it is not already engaged, and the game is STILL foreground (if focus left during the
+                // delay the game cleared its input — leave intent=true,current=false and let the loop's
+                // focus-regain path do the W → 50ms → sprint sequence instead of posting into a stale epoch).
+                // RESIDUAL (codex sol/xhigh round 2): if focus LEFT and RETURNED entirely within this 40-60ms
+                // pre-delay, the foreground check below passes and the loop (edge-triggered on the boolean)
+                // may not register the crossed epoch. Benign for the INITIAL activation — sprint was never
+                // engaged, so this DOWN is a clean first engage (no prior sprint to "dash"). A strict epoch
+                // guarantee would need a monotonic foreground-generation token; not worth the hot-path
+                // complexity for a sub-60ms, non-human-reproducible blip.
+                if (!_autoRunSprintIntendedHeld) return;
+                if (_autoRunSprintInjected) return;
+                if (!ForegroundIsAutoRunTargetProcess()) return;
+
+                if (!PostAutoRunKey(sprintKey, isDown: true)) return; // sprint DOWN
+                if (IsDebugEnabled) LogDebug("AutoRun Background delayed sprint DOWN posted (mode=Hold)");
+                // Held: record CURRENT so ReleaseAutoRunState posts the paired UP (no stuck sprint). Intent
+                // was set at activation; current now matches.
+                _autoRunSprintInjected = true;
+                _autoRunSprintInjectedKey = sprintKey;
+                return;
+            }
+
+            // Press/toggle: a one-shot tap that flips the game's OWN sprint toggle (no intent/current
+            // model). Post the DOWN best-effort.
+            if (!PostAutoRunKey(sprintKey, isDown: true)) return; // sprint DOWN
+            if (IsDebugEnabled) LogDebug("AutoRun Background delayed sprint DOWN posted (mode=Press)");
+        }
+
+        // Press/toggle: hold the tap briefly, then release. Post the UP ONLY if THIS worker still owns the
+        // current run (identity + active) — otherwise a stale tap could post into a REPLACEMENT run and
+        // truncate/release its sprint (codex R2 #1). If our run ended first, the unpaired DOWN is the
+        // documented residual (PostMessage-only: the game's toggle already fired on the DOWN edge and
+        // nothing is held system-wide).
+        Thread.Sleep(RandomBackgroundDelay(BG_SPRINT_TAP_MIN_MS, BG_SPRINT_TAP_MAX_MS));
+        lock (_autoRunLock)
+        {
+            if (_backgroundInputRun && _backgroundInputThread == Thread.CurrentThread
+                && _autoRunActive && _autoRunIsBackground && BackgroundTargetValid(_autoRunTargetHwnd))
+            {
+                PostAutoRunKey(sprintKey, isDown: false); // sprint UP (completes the tap)
+                if (IsDebugEnabled) LogDebug("AutoRun Background delayed sprint UP posted (tap complete)");
+            }
+        }
+    }
+
+    // Random dwell in [minMs, maxMs] for the Background sprint activation timing, on the Background thread's
+    // own ThreadLocal Random.
+    private int RandomBackgroundDelay(int minMs, int maxMs) => _random.Value!.Next(minMs, maxMs + 1);
+
+    // Signals the Background thread to stop and joins it (bounded), off the hook thread — called only from
+    // Stop/Dispose (app lifecycle). Signals under _autoRunLock, then joins OUTSIDE it so the thread can take
+    // _autoRunLock to finish its final tick and exit. A chord toggle-off must NOT call this (I5):
+    // ReleaseAutoRunState signals only.
+    private void JoinBackgroundInputThread()
+    {
+        Thread? t;
+        lock (_autoRunLock)
+        {
+            _backgroundInputRun = false;
+            t = _backgroundInputThread;
+            _backgroundInputThread = null;
+        }
+        if (t != null && t != Thread.CurrentThread && t.IsAlive)
+        {
+            t.Join(300);
+        }
+    }
+
+    // Cheap foreground-process check for the sprint re-establish edge (no Process.GetProcessById on the
+    // 28Hz path). True iff the current foreground window belongs to the Background run's target process.
+    private bool ForegroundIsAutoRunTargetProcess()
+    {
+        var fg = NativeMethods.GetForegroundWindow();
+        if (fg == IntPtr.Zero || _autoRunTargetPid == 0)
+        {
+            return false;
+        }
+
+        NativeMethods.GetWindowThreadProcessId(fg, out var fgPid);
+        return fgPid == _autoRunTargetPid;
+    }
+
+    // Cheap hot-path validity check for the Background target (called every ~35ms on the Background
+    // thread): valid iff the HWND still resolves to the SAME process instance we exe-validated at
+    // activation. GetWindowThreadProcessId returns pid 0 for a dead handle and the reusing process's pid
+    // for a reused one, so this single non-blocking call catches BOTH "window gone" AND "handle reused by
+    // another process" (the case that must never receive an attach / SetKeyboardState / post) with NO
+    // Process.GetProcessById on the 28Hz path (WindowBelongsToExe does that heavier check, kept for the
+    // teardown UPs). A same-process window swap remains the documented residual. Caller holds _autoRunLock.
+    private bool BackgroundTargetValid(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || _autoRunTargetPid == 0)
+        {
+            return false;
+        }
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+        return pid != 0 && pid == _autoRunTargetPid;
+    }
+
+    // WM_KEY*/WM_SYSKEY* lParam: bits 0-15 repeat count (1), 16-23 scan code, 24 extended-key, 29 context
+    // (ALT held, for WM_SYSKEY*), 30 previous-state (1 on keyup), 31 transition (1 on keyup). Zero-extended
+    // into the pointer-sized LPARAM.
+    private static IntPtr BuildKeyLParam(uint scanCode, bool isDown, bool extended, bool repeat = false, bool altContext = false)
+    {
+        uint lp = 1u;
+        lp |= (scanCode & 0xFFu) << 16;
+        if (extended) lp |= 1u << 24;
+        if (altContext) lp |= 1u << 29;             // WM_SYSKEY* context bit: ALT down when the key was pressed
+        if (!isDown) lp |= (1u << 30) | (1u << 31); // keyup: previous-state + transition bits
+        else if (repeat) lp |= 1u << 30;            // auto-repeat keydown: previous-state = down
+        return (IntPtr)(long)lp;
+    }
+
+    // True iff the current foreground window belongs to the Background run's target PROCESS. Gates the
+    // physical W/S/sprint cancel of a Background run to "only while the game is focused" (§11.6). This is
+    // reached on the HOOK thread (cancel / sprint-toggle), so it uses the CHEAP PID compare
+    // (ForegroundIsAutoRunTargetProcess) — never Process.GetProcessById (WindowBelongsToExe), which could
+    // stall past LowLevelHooksTimeout and freeze all input (B2). The exe→PID binding was established
+    // off-hot-path at activation; the PID compare here is equivalent for a live run (same process).
+    private bool ForegroundMatchesAutoRunTarget()
+    {
+        return ForegroundIsAutoRunTargetProcess();
+    }
+
+    // Validates that a window is alive and its owning process's exe equals the given normalized name.
+    // Mirrors ForegroundWatcher.ResolveProcessName + ExecutableName.Normalize. Does NOT catch a
+    // same-process window swap (the stale handle still passes IsWindow + PID→exe) — documented residual.
+    private static bool WindowBelongsToExe(IntPtr hwnd, string? normalizedExe)
+    {
+        if (hwnd == IntPtr.Zero || string.IsNullOrEmpty(normalizedExe) || !NativeMethods.IsWindow(hwnd))
+        {
+            return false;
+        }
+
+        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+        if (pid == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
+            return string.Equals(ExecutableName.Normalize(process.ProcessName), normalizedExe, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false; // process exited between the PID query and the open — treat as invalid
+        }
+    }
+
+    // ==================== ANTI-AFK ====================
+
+    // Fixed-period tick (single-flight). Fires ONE atomic WASD sequence iff ALL guards hold. Runs on a
+    // threadpool timer thread; reads volatile runtime state + native idle/foreground, enqueues on the
+    // shared injector. No locks (guard 4 reads _autoRunActive volatile; the injector serializes work).
+    private void AntiAfkTick()
+    {
+        if (!_isRunning || _disposed)
+        {
+            return;
+        }
+
+        // Single-flight: a slow injector must not let ticks overlap (Interlocked, like the watchdog).
+        if (Interlocked.CompareExchange(ref _antiAfkTickRunning, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            // One throttled diagnostic per ~minute, evaluated at EVERY guard so "why didn't it fire" is
+            // answerable even when an early guard (auto-run active / foreground mismatch) returns before
+            // the idle snapshot below.
+            bool logReason = IsDebugEnabled && (++_antiAfkDiagTicks % 12) == 0;
+
+            // Guard 2: Advanced-Mode-gated feature — off → this tick simply no-ops (no explicit disarm).
+            if (!_advancedModeEnabled)
+            {
+                if (logReason) LogDebug("Anti-AFK skip: advanced-mode-off");
+                return;
+            }
+
+            // Guard 3: an active game profile that has Anti-AFK enabled.
+            var profile = _activeProfile;
+            if (profile is null || !profile.AntiAfk.IsEnabled)
+            {
+                if (logReason) LogDebug("Anti-AFK skip: no active profile / anti-afk disabled");
+                return;
+            }
+
+            // Guard 4 (fast pre-check): Auto-Run counts as activity — never overlap a WASD tap onto a
+            // held W. This volatile read is only an optimization; the AUTHORITATIVE re-check is under
+            // _autoRunLock at the fire point below (codex P4 #1), so an Auto-Run activation racing this
+            // tick cannot interleave its W-down before our WASD in the FIFO.
+            if (_autoRunActive)
+            {
+                if (logReason) LogDebug("Anti-AFK skip: auto-run active");
+                return;
+            }
+
+            // Guard 5: KEYBOARD-ONLY physical idle AND cadence both satisfied. Keyboard idle is measured
+            // from _lastPhysicalKeyboardTick (Stopwatch domain; genuine physical keys only — injected
+            // events are filtered before that stamp). GetLastInputInfo is deliberately NOT used here: it
+            // is global (all devices), so mouse/peripheral noise kept the system "fresh" and this guard
+            // never tripped (debug.log: 69 fresh / 0 idle → Anti-AFK never fired). Cadence stays in the
+            // Environment.TickCount (uint) domain — do NOT mix the two raw values. Anti-AFK's own injected
+            // WASD is INPUT_IGNORE-filtered so it does NOT advance _lastPhysicalKeyboardTick; the cadence
+            // clause is what paces repeat ripples every interval while the keyboard stays idle, and a
+            // single REAL keypress resets keyboard idle and stops it.
+            var intervalMs = (uint)(Math.Clamp(profile.AntiAfk.IntervalMinutes, 1, 15) * 60_000);
+            var keyboardIdleMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPhysicalKeyboardTick)) * TickToMilliseconds;
+            var now = unchecked((uint)Environment.TickCount);
+            var sinceLastFireMs = unchecked(now - _antiAfkLastFireTick);
+
+            // Diagnostic (throttled, ~once/min): the exact snapshot the decision uses, so a future "it
+            // didn't fire" investigation reads the reason straight from the log.
+            if (logReason)
+            {
+                LogDebug($"Anti-AFK idle check: keyboardIdle={keyboardIdleMs:F0}ms, sinceLastFire={sinceLastFireMs}ms, interval={intervalMs}ms");
+            }
+
+            if (keyboardIdleMs < intervalMs || sinceLastFireMs < intervalMs)
+            {
+                return; // not idle long enough / cadence — the idle-check line above logged the numbers
+            }
+
+            // Guard 6 (MANDATORY): the foreground process still matches the active profile.
+            // _activeProfile lags real foreground during ProfileActivationService's color work, so
+            // without this an idle-satisfied tick could inject WASD into a browser you alt-tabbed to.
+            if (!ForegroundMatchesActiveProfile())
+            {
+                if (logReason) LogDebug("Anti-AFK skip: foreground is not the active game (idle+cadence WERE met)");
+                return;
+            }
+
+            // Build the jittered sequence OUTSIDE the lock (RNG only), then check guard 4 AUTHORITATIVELY
+            // and enqueue ATOMICALLY under _autoRunLock: ActivateAutoRun holds this same lock while it
+            // enqueues its W-down and publishes _autoRunActive, so either we observe it active (skip) or
+            // we enqueue our WASD before its W-down takes the lock — never our W-up AFTER its held W-down
+            // (which would release Auto-Run's forward, codex P4 #1). Enqueue takes no other lock (I5), and
+            // the RNG work is already done, so the lock is held only for a check + a queue Add. Dummy
+            // Key/IsDown/PreSleep — the Sequence field carries the real work.
+            var sequence = BuildAntiAfkSequence();
+            lock (_autoRunLock)
+            {
+                // Re-check _isRunning (C2) as well as _autoRunActive: a tick racing Stop() (before its
+                // _isRunning=false flip) must not enqueue a ripple into a tearing-down injector.
+                if (!_isRunning || _autoRunActive)
+                {
+                    // Auto-Run won the race between guard-4's pre-check and this authoritative recheck.
+                    if (logReason && _autoRunActive) LogDebug("Anti-AFK skip: auto-run active (authoritative recheck)");
+                    return;
+                }
+
+                EnqueueHoldBreathInjection(new HoldBreathInjection(Key.None, IsDown: false, PreSleepMs: 0, Sequence: sequence));
+                _antiAfkLastFireTick = now;
+            }
+
+            if (IsDebugEnabled) LogDebug($"Anti-AFK fired WASD ripple (keyboardIdle={keyboardIdleMs:F0}ms, interval={intervalMs}ms)");
+        }
+        finally
+        {
+            Volatile.Write(ref _antiAfkTickRunning, 0);
+        }
+    }
+
+    // W↓W↑ · gap · A↓A↑ · gap · S↓S↑ · gap · D↓D↑ — net-zero displacement, each tap human-jittered
+    // (reuses the hold-breath tap-duration idiom + RNG warmup). Sequential taps, never simultaneous
+    // (simultaneous W+S / A+D cancel and read as a single frame).
+    private TapStep[] BuildAntiAfkSequence()
+    {
+        var rng = _random.Value!;
+        var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
+        for (int i = 0; i < warmupCalls; i++) rng.Next();
+
+        TapStep Tap(Key key) => new(
+            key,
+            rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1),
+            rng.Next(ANTI_AFK_GAP_MIN_MS, ANTI_AFK_GAP_MAX_MS + 1));
+
+        return new[] { Tap(Key.W), Tap(Key.A), Tap(Key.S), Tap(Key.D) };
+    }
+
+    // True iff the current foreground window's process matches the active profile's exe. Used by the
+    // Anti-AFK tick (fire-time gate, guard 6) and the injector's per-step sequence abort so WASD can
+    // only ever land in the profile's own game window.
+    private bool ForegroundMatchesActiveProfile()
+    {
+        var profile = _activeProfile;
+        if (profile is null)
+        {
+            return false;
+        }
+
+        var exe = profile.NormalizedExecutable;
+        return !string.IsNullOrEmpty(exe) && WindowBelongsToExe(NativeMethods.GetForegroundWindow(), exe);
     }
 
     // ==================== WINDOWS LAUNCHER ====================
@@ -2188,6 +3575,52 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    // Advanced-Mode-off release of the gated capability among combined overrides: the un-suppressed
+    // (SuppressOriginal == false) ones, which are the non-1:1 mappings. Suppressed 1:1 overrides are
+    // game-safe and stay active. ENQUEUE each target UP on the injector (NOT synchronous SendKey):
+    // the Advanced-off setter calls this on the UI dispatcher/hook thread, where a SendInput trip
+    // through a stalled foreign hook would freeze input. Removing the dict entry means a later
+    // physical source key-up finds nothing to release (H2 Remove→false), so it can't double-send.
+    private void ReleaseUnsuppressedCombinedOverrides()
+    {
+        List<KeyValuePair<Key, CombinedOverrideState>>? overridesToRelease = null;
+
+        lock (_combinedOverridesLock)
+        {
+            if (_activeCombinedOverrides.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var kvp in _activeCombinedOverrides)
+            {
+                if (!kvp.Value.SuppressOriginal)
+                {
+                    overridesToRelease ??= new List<KeyValuePair<Key, CombinedOverrideState>>();
+                    overridesToRelease.Add(kvp);
+                }
+            }
+
+            if (overridesToRelease is null)
+            {
+                return;
+            }
+
+            foreach (var kvp in overridesToRelease)
+            {
+                _activeCombinedOverrides.Remove(kvp.Key);
+            }
+
+            _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
+        }
+
+        foreach (var (key, state) in overridesToRelease)
+        {
+            EnqueueHoldBreathInjection(new HoldBreathInjection(state.TargetKey, IsDown: false, PreSleepMs: 0));
+            if (IsDebugEnabled) LogDebug($"Advanced-off release un-suppressed override: {key} -> {state.TargetKey} (queued)");
+        }
+    }
+
     private void ReleaseAllOverrides()
     {
         List<KeyValuePair<Key, CombinedOverrideState>>? overridesToRelease;
@@ -2224,6 +3657,9 @@ public sealed class InputHookService : IInputHookService
         ResetMouseStates();
         ReleaseCapsState();
         ReleaseHoldBreathState();
+        // includeBackground:false — a decoupled Background run must survive ordinary teardown
+        // (ReleaseAllState is reached by profile switch AND watchdog reinstall). §11.6.
+        ReleaseAutoRunState(includeBackground: false);
 
         // Force-complete untracked taps mid-flight (DOWN sent, UP pending on a pool thread). The tap
         // worker skips its own UP when its entry is gone, so this never double-sends. The epoch bump

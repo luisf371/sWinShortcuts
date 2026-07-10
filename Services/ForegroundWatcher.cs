@@ -43,8 +43,8 @@ public sealed class ForegroundWatcher : IForegroundWatcher
         if (current != IntPtr.Zero)
         {
             _lastWindow = current;
-            var processName = ResolveProcessName(current);
-            ForegroundChanged?.Invoke(this, new ForegroundChangedEventArgs(current, processName));
+            var processName = ResolveProcessName(current, out var processId);
+            ForegroundChanged?.Invoke(this, new ForegroundChangedEventArgs(current, processName, processId));
         }
     }
 
@@ -79,16 +79,17 @@ public sealed class ForegroundWatcher : IForegroundWatcher
 
         _lastWindow = hwnd;
 
-        string processName = ResolveProcessName(hwnd);
+        string processName = ResolveProcessName(hwnd, out var processId);
 
-        ForegroundChanged?.Invoke(this, new ForegroundChangedEventArgs(hwnd, processName));
+        ForegroundChanged?.Invoke(this, new ForegroundChangedEventArgs(hwnd, processName, processId));
     }
 
-    private static string ResolveProcessName(IntPtr hwnd)
+    private static string ResolveProcessName(IntPtr hwnd, out uint processId)
     {
+        processId = 0;
         try
         {
-            _ = NativeMethods.GetWindowThreadProcessId(hwnd, out var processId);
+            _ = NativeMethods.GetWindowThreadProcessId(hwnd, out processId);
             if (processId == 0)
             {
                 return string.Empty;
@@ -99,6 +100,7 @@ public sealed class ForegroundWatcher : IForegroundWatcher
         }
         catch
         {
+            processId = 0;
             return string.Empty;
         }
     }

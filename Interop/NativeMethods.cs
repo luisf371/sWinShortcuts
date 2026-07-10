@@ -46,6 +46,52 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern IntPtr GetForegroundWindow();
 
+    // Background Auto-Run transport: post key messages to a specific window's queue (focus-independent,
+    // async/non-blocking — never stalls on a foreign LL hook, unlike SendInput). IsWindow validates the
+    // target handle before each post (dead-handle guard).
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindow(IntPtr hWnd);
+
+    // AutoHotkey ControlSend (blank control) posts to the window's TOPMOST CHILD control, not the
+    // top-level frame — many games route keyboard input through a child surface. GW_CHILD returns the
+    // first (topmost, Z-order) direct child. Focus-independent, so it works while the game is alt-tabbed.
+    internal const uint GW_CHILD = 5;
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    // AutoHotkey ControlSend attaches the posting thread to the target window's input thread around the
+    // PostMessage (source-confirmed) — WITHOUT this, many games (incl. GZW/UE5) ignore a posted
+    // WM_KEYDOWN even though it reaches the window. AttachThreadInput itself is non-blocking; we attach
+    // only for the single post and detach immediately. IsHungAppWindow is a NON-blocking guard so we
+    // never couple our input queue to a hung game's.
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsHungAppWindow(IntPtr hwnd);
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    // AttachThreadInput RESETS the calling thread's GetKeyState/GetKeyboardState table (per MSDN), so
+    // Background posts snapshot it before the attach and restore it after — otherwise a post on the
+    // dispatcher/hook thread would corrupt CapsLock-Hold's GetKeyState(VK_CAPITAL) read.
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetKeyboardState(byte[] lpKeyState);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetKeyboardState(byte[] lpKeyState);
+
     [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
     internal static extern IntPtr CreateDC(string? lpszDriver, string? lpszDevice, string? lpszOutput, IntPtr lpInitData);
 

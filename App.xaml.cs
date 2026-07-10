@@ -11,12 +11,28 @@ namespace sWinShortcuts;
 public partial class App : System.Windows.Application
 {
     private static readonly object CrashLogSync = new();
+    // Per-session single-instance guard. Two instances would install independent low-level input hooks +
+    // injectors and both write the shared debug.log, producing conflicting input and unreadable logs.
+    private const string SingleInstanceMutexName = @"Local\sWinShortcuts_SingleInstance_9E1C0B24-3F5A-4E77-9C2D-7B2A1F6C8D40";
+    private System.Threading.Mutex? _singleInstanceMutex;
     private IHost? _host;
     private bool _exceptionHandlersRegistered;
 
     private async void OnStartup(object sender, System.Windows.StartupEventArgs e)
     {
         RegisterExceptionHandlers();
+
+        // Single-instance: acquire the named mutex. If a prior instance already owns it, exit immediately
+        // (the OS destroys the mutex when the owning process ends/crashes, so a stale lock self-heals).
+        _singleInstanceMutex = new System.Threading.Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
+        if (!createdNew)
+        {
+            LogCrash("SingleInstance", new InvalidOperationException("Another instance of sWinShortcuts is already running; this instance is exiting."));
+            _singleInstanceMutex.Dispose();
+            _singleInstanceMutex = null;
+            Shutdown();
+            return;
+        }
 
         _host = Host.CreateDefaultBuilder()
             .ConfigureServices(ConfigureServices)
@@ -96,6 +112,12 @@ public partial class App : System.Windows.Application
         finally
         {
             UnregisterExceptionHandlers();
+            if (_singleInstanceMutex is not null)
+            {
+                try { _singleInstanceMutex.ReleaseMutex(); } catch { /* not owned / already released */ }
+                _singleInstanceMutex.Dispose();
+                _singleInstanceMutex = null;
+            }
         }
     }
 
