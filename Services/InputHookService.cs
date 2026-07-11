@@ -117,6 +117,16 @@ public sealed class InputHookService : IInputHookService
     // physical Caps to Windows (stuck CapsLock) or stranding the injected remap. Latched ONCE per press.
     private bool _capsPhysicallyDown;
 
+    // Global color-variant toggle (Primary<->Secondary). _colorToggleVk is the assigned key's virtual-key
+    // code (0 = unassigned), published (volatile) from any thread via SetColorToggleKey and read on the hook
+    // thread. The key is NOT suppressed — it passes through to apps like any key — so there is no down/up
+    // pairing to get wrong across a re-assign / hook restart / watchdog reinstall: the worst case is one
+    // missed or extra color flip, never a stuck key or a wrong binding. _colorToggleDownLatched
+    // (hook-thread-only) simply makes the toggle fire ONCE per physical press, not on every typematic repeat.
+    private volatile int _colorToggleVk;
+    private bool _colorToggleDownLatched;
+    private int _hookSeenToggleVk; // hook-thread-only; used only to clear the fire-once latch on a re-assign
+
     // Per-key "already launched while held" latch. Prevents typematic auto-repeat from spawning a
     // launcher process on every repeated WM_KEYDOWN. Guarded by its own lock because ReleaseAllState()
     // (Clear) runs on the activation-worker POOL thread while the keyboard hook thread does Add/Remove.
@@ -418,6 +428,8 @@ public sealed class InputHookService : IInputHookService
 
     public event EventHandler<Profile?>? ActiveProfileChanged;
 
+    public event EventHandler? ColorVariantToggleRequested;
+
     // ==================== LIFECYCLE ====================
     
     public void Start()
@@ -621,6 +633,15 @@ public sealed class InputHookService : IInputHookService
                 _capsPhysicallyDown = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CAPITAL) & 0x8000) != 0;
                 _capsDownSuppressed = false;
             }
+
+            // Fresh session: SEED the color-toggle fire-once latch from the ACTUAL physical key state (mirrors
+            // the Caps seed above). If the toggle key is still held across Stop->Start its press already fired,
+            // so latch TRUE so its post-restart typematic repeats DON'T re-fire (a blind clear would
+            // double-fire); its UP then clears it. Not held -> false -> the next press fires. Sync
+            // _hookSeenToggleVk so HandleColorToggle's reconciliation doesn't immediately clear this seed.
+            var colorToggleVk = _colorToggleVk;
+            _colorToggleDownLatched = colorToggleVk != 0 && (NativeMethods.GetAsyncKeyState(colorToggleVk) & 0x8000) != 0;
+            _hookSeenToggleVk = colorToggleVk;
 
             _isRunning = true;
             LogDebug("InputHookService started");
@@ -1142,6 +1163,31 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    public void SetColorToggleKey(Key? key)
+    {
+        var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
+
+        // Modifiers can't be the toggle key: their physical-state reconstruction (the dual-Alt sibling check)
+        // can't distinguish a "reserved" modifier from a real one, and firing a color toggle off Shift/Ctrl/
+        // Alt/Win would be surprising. Treat a modifier assignment as unassigned.
+        if (IsModifierVirtualKey(vk))
+        {
+            vk = 0;
+        }
+
+        // Publish ONLY the volatile VK from this (worker/UI) thread; the fire-once latch is owned by the hook
+        // thread. Because the key is never suppressed, a stale latch across this change costs at most one
+        // missed/extra flip — so no cross-thread latch reset (which would itself be a race) is needed.
+        _colorToggleVk = vk;
+    }
+
+    private static bool IsModifierVirtualKey(int vk) =>
+        vk is 0x10 or 0x11 or 0x12   // VK_SHIFT / VK_CONTROL / VK_MENU
+           or 0xA0 or 0xA1           // VK_LSHIFT / VK_RSHIFT
+           or 0xA2 or 0xA3           // VK_LCONTROL / VK_RCONTROL
+           or 0xA4 or 0xA5           // VK_LMENU / VK_RMENU (Alt)
+           or 0x5B or 0x5C;          // VK_LWIN / VK_RWIN
+
     public void Dispose()
     {
         // Set first so any pool work item racing shutdown becomes a no-op instead of touching
@@ -1197,6 +1243,12 @@ public sealed class InputHookService : IInputHookService
         bool isKeyUp = message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP;
         int vkCode = (int)data.vkCode;
 
+        // Global color-variant toggle: fire on the assigned key (once per physical press). The key is NOT
+        // suppressed — it passes through to apps and the feature chain below — so it can never strand a key or
+        // create a wrong binding. Modifiers are rejected as toggle keys (SetColorToggleKey), so this never
+        // shadows the Alt-tracking that follows.
+        HandleColorToggle(vkCode, isKeyDown, isKeyUp);
+
         // Track Alt key state (lock-free)
         if (vkCode is 0xA4 or 0xA5 or 0x12)  // VK_LMENU, VK_RMENU, VK_MENU
         {
@@ -1235,9 +1287,44 @@ public sealed class InputHookService : IInputHookService
             handled = HandleWindowsLauncher(vkCode, isKeyDown, isKeyUp);
         }
 
-        return handled 
-            ? (IntPtr)1 
+        return handled
+            ? (IntPtr)1
             : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
+    }
+
+    // Global color-variant toggle. Fires ColorVariantToggleRequested ONCE per physical press (typematic
+    // repeats ignored). Deliberately does NOT suppress the key — it passes through to apps — so it holds no
+    // paired state and can never strand a key or fabricate a wrong binding across a re-assign / hook restart /
+    // watchdog reinstall. (Users should pick a key not otherwise used, since it still reaches the focused app.)
+    private void HandleColorToggle(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        var toggleVk = _colorToggleVk;
+
+        // Clear the fire-once latch when the assigned key CHANGES, so the new key's first press fires (parity)
+        // even if the old key's UP was never seen. Hook-thread-only; no suppression, so this can't strand a key.
+        if (toggleVk != _hookSeenToggleVk)
+        {
+            _hookSeenToggleVk = toggleVk;
+            _colorToggleDownLatched = false;
+        }
+
+        if (toggleVk == 0 || vkCode != toggleVk)
+        {
+            return;
+        }
+
+        if (isKeyDown)
+        {
+            if (!_colorToggleDownLatched)
+            {
+                _colorToggleDownLatched = true;
+                ColorVariantToggleRequested?.Invoke(this, EventArgs.Empty);
+            }
+        }
+        else if (isKeyUp)
+        {
+            _colorToggleDownLatched = false;
+        }
     }
 
     // ==================== MOUSE HOOK ====================

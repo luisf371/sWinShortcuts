@@ -51,6 +51,48 @@ public class ProfileActivationColorPlanTests
         Assert.Equal(DisplayColorProfile.DefaultDigitalVibrance, display.DigitalVibrance);
     }
 
+    [Fact]
+    public async Task BuildColorPlan_TogglesBetweenPrimaryAndSecondary()
+    {
+        var manager = await CreateManagerAsync();
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.IsEnabled = true;
+        profile.ColorSettings.IsEnabled = true;
+        profile.ColorSettings.HasSecondary = true;
+        profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 40, Contrast = 50, Gamma = 1.0, DigitalVibrance = 50 }, ColorVariant.Primary);
+        profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 90, Contrast = 50, Gamma = 1.0, DigitalVibrance = 80 }, ColorVariant.Secondary);
+
+        var displays = new[] { CreateDisplay("DISPLAY1") };
+
+        // Starts on Primary ("as default")
+        Assert.Equal(40, Assert.Single(ProfileActivationService.BuildColorPlan(profile, displays, manager).Displays).Brightness);
+
+        profile.ColorSettings.ToggleVariant(); // -> Secondary
+        var secondary = Assert.Single(ProfileActivationService.BuildColorPlan(profile, displays, manager).Displays);
+        Assert.Equal(90, secondary.Brightness);
+        Assert.Equal(80, secondary.DigitalVibrance);
+
+        profile.ColorSettings.ToggleVariant(); // -> back to Primary
+        Assert.Equal(40, Assert.Single(ProfileActivationService.BuildColorPlan(profile, displays, manager).Displays).Brightness);
+    }
+
+    [Fact]
+    public async Task BuildColorPlan_ToggleNoOp_ForProfileWithoutSecondary()
+    {
+        var manager = await CreateManagerAsync();
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.IsEnabled = true;
+        profile.ColorSettings.IsEnabled = true;
+        profile.ColorSettings.HasSecondary = false; // an app the user never gave a secondary
+        profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 40, Contrast = 50, Gamma = 1.0, DigitalVibrance = 50 }, ColorVariant.Primary);
+
+        var displays = new[] { CreateDisplay("DISPLAY1") };
+
+        profile.ColorSettings.ToggleVariant(); // no-op: HasSecondary is false
+        Assert.Equal(ColorVariant.Primary, profile.ColorSettings.ActiveVariant);
+        Assert.Equal(40, Assert.Single(ProfileActivationService.BuildColorPlan(profile, displays, manager).Displays).Brightness);
+    }
+
     private static async Task<ProfileManager> CreateManagerAsync()
     {
         var manager = new ProfileManager(new InMemoryProfileStore());

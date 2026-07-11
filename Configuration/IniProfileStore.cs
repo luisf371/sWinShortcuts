@@ -517,18 +517,36 @@ public sealed class IniProfileStore : IProfileStore
 #pragma warning disable CS0618 // Type or member is obsolete
         settings.SelectedDisplayId = document.GetString("Color", "SelectedDisplay", settings.SelectedDisplayId);
 #pragma warning restore CS0618
+        settings.HasSecondary = document.GetBoolean("Color", "HasSecondary", settings.HasSecondary);
+        settings.ToggleKey = document.GetKey("Color", "ToggleKey");
         settings.ClearProfiles();
 
-        var section = document.GetSection("ColorDisplays");
+        // Primary keeps the historical [ColorDisplays] section (back-compat); Secondary is the new preset.
+        LoadColorDisplaySection(document, "ColorDisplays", settings, ColorVariant.Primary);
+        LoadColorDisplaySection(document, "ColorDisplaysSecondary", settings, ColorVariant.Secondary);
+
+        // Enforce the invariant HasSecondary => Secondary is POPULATED. A hand-edited / partial INI with
+        // HasSecondary=true but an empty [ColorDisplaysSecondary] must not let the editor later create blank
+        // (disabled) entries that a toggle would then apply as a neutral plan, wiping Primary. Seed from
+        // Primary (no-op if the section had entries).
+        if (settings.HasSecondary)
+        {
+            settings.EnsureSecondaryInitialized();
+        }
+    }
+
+    private static void LoadColorDisplaySection(IniDocument document, string sectionName, ColorSettings settings, ColorVariant variant)
+    {
+        var section = document.GetSection(sectionName);
         foreach (var pair in section)
         {
             var parts = pair.Value.Split('|');
-            
+
             // Detect format: new format has 5 fields (IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance)
             // Old format has 4 fields (Brightness|Contrast|Gamma|DigitalVibrance)
             bool isEnabled;
             int brightnessIndex, contrastIndex, gammaIndex, vibranceIndex;
-            
+
             if (parts.Length >= 5)
             {
                 // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
@@ -565,7 +583,7 @@ public sealed class IniProfileStore : IProfileStore
                 DigitalVibrance = vibrance
             };
 
-            settings.SetProfile(entry);
+            settings.SetProfile(entry, variant);
         }
     }
 
@@ -650,18 +668,28 @@ public sealed class IniProfileStore : IProfileStore
     private static void WriteColorSection(IniDocument document, ColorSettings color)
     {
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
+        document.SetBoolean("Color", "HasSecondary", color.HasSecondary);
+        document.SetKey("Color", "ToggleKey", color.ToggleKey);
         // Note: SelectedDisplayId is deprecated but kept for backward compatibility
 #pragma warning disable CS0618 // Type or member is obsolete
         document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
 #pragma warning restore CS0618
 
-        document.RemoveSection("ColorDisplays");
-        foreach (var pair in color.SnapshotProfiles())
+        // Serialize each variant EXPLICITLY (not SnapshotProfiles(), which returns whichever is currently
+        // active) so an autosave while Secondary is toggled-on still writes Primary->[ColorDisplays].
+        WriteColorDisplaySection(document, "ColorDisplays", color.SnapshotProfiles(ColorVariant.Primary));
+        WriteColorDisplaySection(document, "ColorDisplaysSecondary", color.SnapshotProfiles(ColorVariant.Secondary));
+    }
+
+    private static void WriteColorDisplaySection(IniDocument document, string sectionName, IReadOnlyDictionary<string, DisplayColorProfile> profiles)
+    {
+        document.RemoveSection(sectionName);
+        foreach (var pair in profiles)
         {
             // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
             var isEnabledStr = pair.Value.IsEnabled ? "1" : "0";
             var value = $"{isEnabledStr}|{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
-            document.SetString("ColorDisplays", pair.Key, value);
+            document.SetString(sectionName, pair.Key, value);
         }
     }
 

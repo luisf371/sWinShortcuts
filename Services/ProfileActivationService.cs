@@ -42,6 +42,12 @@ public sealed class ProfileActivationService : IHostedService
     // Set by the resume/display-change handlers; consumed by the worker so a forced re-apply routes
     // through the same C1 plan-diff (a resume while color is disabled therefore never wipes calibration).
     private int _forceReapply;
+    // The ColorSettings currently being applied (active app profile's, else the global Color fallback),
+    // published by the worker on each foreground change. The color-toggle hook event flips THIS object at
+    // PRESS TIME (thread-safe via ColorSettings._sync) — so a toggle targets the color visible at the moment
+    // of the press and preserves parity (one flip per press), instead of a deferred worker flip keyed off the
+    // capacity-1 DropOldest channel (which coalesces and could otherwise flip the wrong/later profile).
+    private volatile ColorSettings? _activeColorSettings;
     private volatile string? _lastProcessName;
     private bool _reapplyHandlersRegistered;
 
@@ -79,6 +85,9 @@ public sealed class ProfileActivationService : IHostedService
 
             _foregroundWatcher.ForegroundChanged += OnForegroundChanged;
             _inputHookService.ActiveProfileChanged += OnActiveProfileChanged;
+            _inputHookService.ColorVariantToggleRequested += OnColorVariantToggleRequested;
+            // Push the GLOBAL color-toggle key (authoritative on the Color profile) to the hook.
+            _inputHookService.SetColorToggleKey(_profileManager.ColorProfile.ColorSettings.ToggleKey);
             SystemEvents.DisplaySettingsChanged += OnReapplyRequested;
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
             _reapplyHandlersRegistered = true;
@@ -102,6 +111,7 @@ public sealed class ProfileActivationService : IHostedService
     {
         try { _foregroundWatcher.ForegroundChanged -= OnForegroundChanged; } catch { /* best effort */ }
         try { _inputHookService.ActiveProfileChanged -= OnActiveProfileChanged; } catch { /* best effort */ }
+        try { _inputHookService.ColorVariantToggleRequested -= OnColorVariantToggleRequested; } catch { /* best effort */ }
 
         if (_reapplyHandlersRegistered)
         {
@@ -127,6 +137,7 @@ public sealed class ProfileActivationService : IHostedService
         _stopping = true;
         _foregroundWatcher.ForegroundChanged -= OnForegroundChanged;
         _inputHookService.ActiveProfileChanged -= OnActiveProfileChanged;
+        _inputHookService.ColorVariantToggleRequested -= OnColorVariantToggleRequested;
         if (_reapplyHandlersRegistered)
         {
             SystemEvents.DisplaySettingsChanged -= OnReapplyRequested;
@@ -179,6 +190,17 @@ public sealed class ProfileActivationService : IHostedService
         _foregroundChanges.Writer.TryWrite(_lastProcessName);
     }
 
+    private void OnColorVariantToggleRequested(object? sender, EventArgs e)
+    {
+        // Hook thread: flip the CURRENTLY-APPLIED color preset at PRESS TIME (thread-safe; internally a no-op
+        // without a populated Secondary), then request a re-apply. Flipping here — not deferred to the worker
+        // off the coalescing channel — preserves parity (one flip per press) and targets the color that was
+        // visible at the instant of the press.
+        _activeColorSettings?.ToggleVariant();
+        Interlocked.Exchange(ref _forceReapply, 1);
+        _foregroundChanges.Writer.TryWrite(_lastProcessName);
+    }
+
     private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
     {
         if (e.Mode == PowerModes.Resume)
@@ -213,6 +235,10 @@ public sealed class ProfileActivationService : IHostedService
             return; // F-010: shutdown began — don't start new activation/color work.
         }
 
+        // Keep the hook's global color-toggle key in sync with the (live-editable) Color profile setting.
+        // Cheap + idempotent (no-op when unchanged), so a user edit takes effect on the next foreground change.
+        _inputHookService.SetColorToggleKey(_profileManager.ColorProfile.ColorSettings.ToggleKey);
+
         var profile = string.IsNullOrWhiteSpace(processName)
             ? null
             : _profileManager.FindByExecutable(processName);
@@ -230,6 +256,7 @@ public sealed class ProfileActivationService : IHostedService
         var plan = BuildColorPlan(profile, displays, _profileManager);
 
         var force = Interlocked.Exchange(ref _forceReapply, 0) == 1;
+        var planOnScreen = true;
         if (!_stopping && (force || !_lastAppliedColorPlan.Equals(plan))) // F-010: skip color once stopping
         {
             // Advance the dedup baseline ONLY when every enabled display actually applied (§14.1):
@@ -238,6 +265,18 @@ public sealed class ProfileActivationService : IHostedService
             {
                 _lastAppliedColorPlan = plan;
             }
+            else
+            {
+                planOnScreen = false; // apply failed -> this plan is NOT on screen; keep the old toggle target
+            }
+        }
+
+        // Publish AFTER a SUCCESSFUL/current apply so the color-toggle hook event only ever flips the
+        // ColorSettings whose plan is actually on screen — not a profile whose color failed to apply or hasn't
+        // been applied yet (codex). On failure _activeColorSettings keeps the old (still-visible) target.
+        if (planOnScreen)
+        {
+            _activeColorSettings = ResolveColorSettings(profile, _profileManager);
         }
 
         if (_stopping)

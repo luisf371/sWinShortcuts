@@ -62,7 +62,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             displayService,
             colorControlService,
             Model.IsColorProfile,
-            parentEnabledCheck: Model.IsColorProfile ? () => IsEnabled : null);
+            parentEnabledCheck: Model.IsColorProfile ? () => IsEnabled : null,
+            canEditToggleKey: Model.IsColorProfile);
 
         ColorSettings.Changed += (_, _) => OnProfileChanged();
 

@@ -14,6 +14,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 {
     private readonly DisplayColorProfile _profile;
     private readonly ColorSettings _colorSettings;
+    private readonly ColorVariant _variant;
     private readonly DisplayInfo _displayInfo;
     private readonly IColorControlService _colorService;
     private readonly Func<bool> _isMasterEnabled;
@@ -34,11 +35,13 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
         ColorSettings colorSettings,
         IColorControlService colorService,
         Func<bool> isMasterEnabled,
+        ColorVariant variant = ColorVariant.Primary,
         bool allowLiveUpdates = false)
     {
         _displayInfo = displayInfo ?? throw new ArgumentNullException(nameof(displayInfo));
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
         _colorSettings = colorSettings ?? throw new ArgumentNullException(nameof(colorSettings));
+        _variant = variant;
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
         _isMasterEnabled = isMasterEnabled ?? throw new ArgumentNullException(nameof(isMasterEnabled));
         _allowLiveUpdates = allowLiveUpdates;
@@ -83,7 +86,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
         {
             if (SetProperty(ref _isEnabled, value))
             {
-                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.IsEnabled = value); // F-018: under _sync
+                _colorSettings.UpdateProfile(_displayInfo.Id, _variant, p => p.IsEnabled = value); // F-018: under _sync
                 OnPropertyChanged(nameof(AreControlsEnabled));
                 
                 // When toggled OFF: revert to default colors
@@ -107,7 +110,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampPercent(value);
             if (SetProperty(ref _brightness, clamped))
             {
-                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.Brightness = clamped); // F-018: under _sync
+                _colorSettings.UpdateProfile(_displayInfo.Id, _variant, p => p.Brightness = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }
@@ -122,7 +125,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampPercent(value);
             if (SetProperty(ref _contrast, clamped))
             {
-                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.Contrast = clamped); // F-018: under _sync
+                _colorSettings.UpdateProfile(_displayInfo.Id, _variant, p => p.Contrast = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }
@@ -137,7 +140,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampGamma(value);
             if (SetProperty(ref _gamma, clamped))
             {
-                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.Gamma = clamped); // F-018: under _sync
+                _colorSettings.UpdateProfile(_displayInfo.Id, _variant, p => p.Gamma = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }
@@ -152,7 +155,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
             var clamped = ClampDigitalVibrance(value);
             if (SetProperty(ref _digitalVibrance, clamped))
             {
-                _colorSettings.UpdateProfile(_displayInfo.Id, p => p.DigitalVibrance = clamped); // F-018: under _sync
+                _colorSettings.UpdateProfile(_displayInfo.Id, _variant, p => p.DigitalVibrance = clamped); // F-018: under _sync
                 ApplyToHardware();
                 Changed?.Invoke(this, EventArgs.Empty);
             }

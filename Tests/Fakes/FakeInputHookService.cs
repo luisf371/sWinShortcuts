@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 
@@ -6,6 +7,8 @@ namespace Tests.Fakes;
 public sealed class FakeInputHookService : IInputHookService
 {
     public event EventHandler<Profile?>? ActiveProfileChanged;
+
+    public event EventHandler? ColorVariantToggleRequested;
 
     public bool HookWatchdogEnabled { get; set; } = true;
 
@@ -58,6 +61,19 @@ public sealed class FakeInputHookService : IInputHookService
     public void SetWindowsProfile(Profile profile)
     {
         WindowsProfile = profile;
+    }
+
+    public Key? LastColorToggleKey { get; private set; }
+
+    public void SetColorToggleKey(Key? key)
+    {
+        LastColorToggleKey = key;
+    }
+
+    /// <summary>Test helper: simulate the user pressing the assigned global color-toggle key.</summary>
+    public void RaiseColorVariantToggle()
+    {
+        ColorVariantToggleRequested?.Invoke(this, EventArgs.Empty);
     }
 
     public void Dispose()

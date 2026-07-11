@@ -182,6 +182,61 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndLoad_RoundTripsColorVariantsAndToggleKey()
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "color.exe");
+        profile.ColorSettings.IsEnabled = true;
+        profile.ColorSettings.HasSecondary = true;
+        profile.ColorSettings.ToggleKey = Key.F8;
+        profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 45, Contrast = 55, Gamma = 1.2, DigitalVibrance = 60 }, ColorVariant.Primary);
+        profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 95, Contrast = 60, Gamma = 1.0, DigitalVibrance = 90 }, ColorVariant.Secondary);
+        // Toggle to Secondary BEFORE saving — the serializer must still write each variant to its own section
+        // (Primary must not be overwritten by the currently-active variant).
+        profile.ColorSettings.ToggleVariant();
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
+
+        Assert.NotNull(loaded);
+        Assert.True(loaded.ColorSettings.HasSecondary);
+        Assert.Equal(Key.F8, loaded.ColorSettings.ToggleKey);
+        Assert.Equal(ColorVariant.Primary, loaded.ColorSettings.ActiveVariant); // runtime state resets on load
+
+        var primary = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
+        Assert.Equal(45, primary.Brightness);
+        Assert.Equal(60, primary.DigitalVibrance);
+
+        var secondary = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Secondary)["DISPLAY1"];
+        Assert.Equal(95, secondary.Brightness);
+        Assert.Equal(90, secondary.DigitalVibrance);
+    }
+
+    [Fact]
+    public async Task Load_SeedsSecondaryFromPrimary_WhenHasSecondaryButSectionEmpty()
+    {
+        // Simulates a partial/hand-edited INI: HasSecondary=true but no secondary entries were ever written.
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "seed.exe");
+        profile.ColorSettings.IsEnabled = true;
+        profile.ColorSettings.HasSecondary = true; // enabled...
+        profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 65, DigitalVibrance = 75 }, ColorVariant.Primary);
+        // ...but Secondary intentionally left EMPTY.
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).FirstOrDefault(p => p.Name == profile.Name);
+
+        Assert.NotNull(loaded);
+        Assert.True(loaded.ColorSettings.HasSecondary);
+        // Secondary was seeded from Primary on load -> a toggle applies the calibrated look, NOT a blank plan.
+        var seeded = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Secondary)["DISPLAY1"];
+        Assert.Equal(65, seeded.Brightness);
+        Assert.Equal(75, seeded.DigitalVibrance);
+        Assert.Equal(ColorVariant.Secondary, loaded.ColorSettings.ToggleVariant()); // now switches (populated)
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTripsCombinedMappings()
     {
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "combined.exe");

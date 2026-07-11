@@ -896,6 +896,35 @@
                                             </Style>
                                         </StackPanel.Style>
                                         
+                                        <!-- Primary/Secondary color presets: one set of sliders, toggled live by a global key -->
+                                        <StackPanel Margin="0,0,0,12">
+                                            <CheckBox Content="Enable a secondary color preset"
+                                                      IsChecked="{Binding ColorSettings.HasSecondary}"
+                                                      Margin="0,0,0,6" />
+                                            <CheckBox Content="Edit secondary preset (unchecked = primary)"
+                                                      IsChecked="{Binding ColorSettings.IsEditingSecondary}"
+                                                      IsEnabled="{Binding ColorSettings.CanEditSecondary}"
+                                                      Margin="16,0,0,6" />
+                                            <StackPanel Orientation="Horizontal"
+                                                        Visibility="{Binding ColorSettings.CanEditToggleKey, Converter={StaticResource VisibleIfTrue}}">
+                                                <TextBlock Text="Toggle key (global)" VerticalAlignment="Center" />
+                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding ColorSettings.ToggleKey, Mode=TwoWay}"
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                                          Margin="8,0,0,0" Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="One global key that toggles the ACTIVE profile between its Primary and Secondary color presets. No effect for a profile without a secondary."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </StackPanel>
+
                                         <!-- No displays message -->
                                         <TextBlock Text="No displays detected."
                                                    Foreground="{StaticResource AccentBrush}"

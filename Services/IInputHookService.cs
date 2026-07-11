@@ -1,4 +1,5 @@
 using System;
+using System.Windows.Input;
 using sWinShortcuts.Models;
 
 namespace sWinShortcuts.Services;
@@ -6,6 +7,19 @@ namespace sWinShortcuts.Services;
 public interface IInputHookService : IDisposable
 {
     event EventHandler<Profile?>? ActiveProfileChanged;
+
+    /// <summary>
+    /// Raised on the hook thread when the user presses the configured GLOBAL color-variant toggle key.
+    /// Fires exactly once per physical press (typematic repeats are ignored). The subscriber flips the
+    /// active profile's applied color preset (Primary&lt;-&gt;Secondary) and re-applies.
+    /// </summary>
+    event EventHandler? ColorVariantToggleRequested;
+
+    /// <summary>
+    /// Sets (or clears, when null) the GLOBAL key that toggles the active profile's color preset. Detected
+    /// on the low-level keyboard hook and suppressed from applications. Live-updatable.
+    /// </summary>
+    void SetColorToggleKey(Key? key);
 
     /// <summary>
     /// Enables the hook-loss watchdog (default true). When false, the watchdog neither probes nor
