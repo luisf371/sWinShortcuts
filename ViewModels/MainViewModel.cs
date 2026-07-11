@@ -23,6 +23,7 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly ObservableCollection<ProfileViewModel> _profiles = [];
     private readonly IReadOnlyList<Key> _keyOptions = KeyCatalog.GetCommonKeys();
     private readonly IReadOnlyList<Key> _keyOptionsWithNone;
+    private readonly IReadOnlyList<InputTrigger> _holdBreathPanicTriggers;
     private readonly IReadOnlyList<CapsLockMode> _capsLockModes = Enum.GetValues<CapsLockMode>();
     private readonly IReadOnlyList<HoldBreathMode> _holdBreathModes = Enum.GetValues<HoldBreathMode>();
     private readonly IReadOnlyList<SprintActivation> _sprintActivationModes = Enum.GetValues<SprintActivation>();
@@ -62,6 +63,7 @@ public sealed partial class MainViewModel : ViewModelBase
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorControlService = colorControlService ?? throw new ArgumentNullException(nameof(colorControlService));
         _keyOptionsWithNone = KeyCatalog.SortKeys(new[] { Key.None }.Concat(_keyOptions)).ToArray();
+        _holdBreathPanicTriggers = BuildHoldBreathPanicTriggers();
         Profiles = new ReadOnlyObservableCollection<ProfileViewModel>(_profiles);
 
         _profileManager.ProfileAdded += OnProfileAdded;
@@ -73,6 +75,7 @@ public sealed partial class MainViewModel : ViewModelBase
     public IReadOnlyList<Key> KeyOptions => _keyOptions;
 
     public IReadOnlyList<Key> KeyOptionsWithNone => _keyOptionsWithNone;
+    public IReadOnlyList<InputTrigger> HoldBreathPanicTriggers => _holdBreathPanicTriggers;
 
     public IReadOnlyList<CapsLockMode> CapsLockModes => _capsLockModes;
 
@@ -83,6 +86,16 @@ public sealed partial class MainViewModel : ViewModelBase
     public IReadOnlyList<AutoRunSendMode> AutoRunSendModes => _autoRunSendModes;
 
     public IReadOnlyList<ModifierKeys> TriggerModifiers => _triggerModifiers;
+
+    private static IReadOnlyList<InputTrigger> BuildHoldBreathPanicTriggers()
+    {
+        var triggers = new List<InputTrigger> { InputTrigger.None };
+        triggers.AddRange(KeyCatalog.GetCommonKeys().Select(InputTrigger.FromKey));
+        triggers.Add(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.Middle));
+        triggers.Add(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.XButton1));
+        triggers.Add(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.XButton2));
+        return triggers;
+    }
 
     [ObservableProperty]
     private ProfileViewModel? selectedProfile;

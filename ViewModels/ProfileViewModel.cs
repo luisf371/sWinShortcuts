@@ -244,6 +244,38 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public InputTrigger RightClickHoldBreathPanicTrigger
+    {
+        get => Model.RightClickHoldBreath.PanicTrigger;
+        set
+        {
+            if (Model.RightClickHoldBreath.PanicTrigger != value)
+            {
+                Model.RightClickHoldBreath.PanicTrigger = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RightClickHoldBreathEarlyCancelConfigured));
+                OnProfileChanged();
+            }
+        }
+    }
+
+    public bool RightClickHoldBreathEarlyCancelConfigured =>
+        Model.RightClickHoldBreath.PanicTrigger.Kind != InputTriggerKind.None;
+
+    public bool RightClickHoldBreathSuppressEarlyCancelInput
+    {
+        get => Model.RightClickHoldBreath.SuppressEarlyCancelInput;
+        set
+        {
+            if (Model.RightClickHoldBreath.SuppressEarlyCancelInput != value)
+            {
+                Model.RightClickHoldBreath.SuppressEarlyCancelInput = value;
+                OnPropertyChanged();
+                OnProfileChanged();
+            }
+        }
+    }
+
     public HoldBreathMode RightClickHoldBreathMode
     {
         get => Model.RightClickHoldBreath.Mode;
@@ -655,6 +687,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.IsEnabled = IsEnabled;
             Model.RightClickHoldBreath.IsEnabled = RightClickHoldBreathEnabled;
             Model.RightClickHoldBreath.HoldBreathKey = RightClickHoldBreathKey;
+            Model.RightClickHoldBreath.PanicTrigger = RightClickHoldBreathPanicTrigger;
+            Model.RightClickHoldBreath.SuppressEarlyCancelInput = RightClickHoldBreathSuppressEarlyCancelInput;
             Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
             Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
             Model.AutoRun.IsEnabled = AutoRunEnabled;

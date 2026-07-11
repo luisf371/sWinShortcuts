@@ -168,6 +168,12 @@ public sealed class InputHookService : IInputHookService
     private HoldBreathMode _holdBreathArmedMode;
     private long _holdBreathArmedTick;      // arm timestamp for the stale-fire guard
     private int _holdBreathArmedDelayMs;
+    private long _holdBreathGeneration;
+    private bool _holdBreathPanicSuppressed;
+    // Hook-thread-owned paired suppression state. Lifecycle boundaries clear these atomically so a
+    // rebind/profile switch cannot swallow a future unrelated key or button press.
+    private int _holdBreathPanicConsumedKeyVk;
+    private int _holdBreathPanicConsumedMouseButton;
 
     // Hold-breath injector: a dedicated thread draining a FIFO queue so no hook callback and no
     // lock-holding path ever waits on SendInput's foreign-hook dispatch. One consumer = strict FIFO
@@ -182,8 +188,8 @@ public sealed class InputHookService : IInputHookService
     // Auto-Run DOWN — the injector fires it only if the generation is still current AND the foreground
     // window still belongs to ExpectedForegroundExe, so a queued W-down can't drain into a window you
     // alt-tabbed to. Zero (the default for hold-breath / UPs / anti-afk) means "unguarded", i.e. today's
-    // behavior. Appended after Sequence so existing positional callers are unchanged.
-    private readonly record struct HoldBreathInjection(Key Key, bool IsDown, int PreSleepMs, TapStep[]? Sequence = null, long AutoRunGeneration = 0, string? ExpectedForegroundExe = null);
+    // behavior. Appended after the existing optional fields so positional callers remain unchanged.
+    private readonly record struct HoldBreathInjection(Key Key, bool IsDown, int PreSleepMs, TapStep[]? Sequence = null, long AutoRunGeneration = 0, string? ExpectedForegroundExe = null, long HoldBreathGeneration = 0);
 
     // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
     private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
@@ -1249,6 +1255,8 @@ public sealed class InputHookService : IInputHookService
         // shadows the Alt-tracking that follows.
         HandleColorToggle(vkCode, isKeyDown, isKeyUp);
 
+        var suppressEarlyCancelKey = HandleHoldBreathPanicKey(vkCode, isKeyDown, isKeyUp);
+
         // Track Alt key state (lock-free)
         if (vkCode is 0xA4 or 0xA5 or 0x12)  // VK_LMENU, VK_RMENU, VK_MENU
         {
@@ -1268,6 +1276,11 @@ public sealed class InputHookService : IInputHookService
                     _ => false // generic VK_MENU up: LL hooks deliver L/R codes, treat as full release
                 };
             }
+        }
+
+        if (suppressEarlyCancelKey)
+        {
+            return (IntPtr)1;
         }
 
         // Auto-Run runs BEFORE the handled-chain: a cancel key (W/S) may ALSO be a combined-mapping
@@ -1327,7 +1340,128 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    // ==================== HOLD BREATH PANIC ====================
+    private bool HandleHoldBreathPanicKey(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        var consumedKeyVk = Volatile.Read(ref _holdBreathPanicConsumedKeyVk);
+        if (consumedKeyVk != 0 && consumedKeyVk == vkCode)
+        {
+            if (isKeyUp)
+            {
+                Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
+            }
+
+            return true;
+        }
+
+        if (!isKeyDown)
+        {
+            return false;
+        }
+
+        var profile = _activeProfile;
+        if (profile is null)
+        {
+            return false;
+        }
+
+        var settings = profile.RightClickHoldBreath;
+        var trigger = settings.PanicTrigger;
+        if (trigger.Kind != InputTriggerKind.KeyboardKey ||
+            KeyInteropUtilities.ToVirtualKey(trigger.Key) != vkCode ||
+            !_rightButtonPressed)
+        {
+            return false;
+        }
+
+        PanicHoldBreath();
+
+        if (!settings.SuppressEarlyCancelInput)
+        {
+            return false;
+        }
+
+        Volatile.Write(ref _holdBreathPanicConsumedKeyVk, vkCode);
+        return true;
+    }
+
+    private bool HandleHoldBreathPanicMouse(int message, uint mouseData)
+    {
+        var button = message switch
+        {
+            NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP => Models.MouseButton.Left,
+            NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP => Models.MouseButton.Right,
+            NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP => Models.MouseButton.Middle,
+            _ => GetXButton(mouseData)
+        };
+
+        var consumedButton = Volatile.Read(ref _holdBreathPanicConsumedMouseButton);
+        if (consumedButton != 0 && consumedButton == (int)button)
+        {
+            if (message is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or
+                NativeMethods.WM_MBUTTONUP or NativeMethods.WM_XBUTTONUP)
+            {
+                Volatile.Write(ref _holdBreathPanicConsumedMouseButton, 0);
+            }
+
+            return true;
+        }
+
+        if (message is not (NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or
+                            NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_XBUTTONDOWN))
+        {
+            return false;
+        }
+
+        var profile = _activeProfile;
+        if (profile is null)
+        {
+            return false;
+        }
+
+        var settings = profile.RightClickHoldBreath;
+        var trigger = settings.PanicTrigger;
+        if (trigger.Kind != InputTriggerKind.MouseButton ||
+            trigger.MouseButton != button ||
+            !_rightButtonPressed)
+        {
+            return false;
+        }
+
+        PanicHoldBreath();
+
+        if (!settings.SuppressEarlyCancelInput)
+        {
+            return false;
+        }
+
+        Volatile.Write(ref _holdBreathPanicConsumedMouseButton, (int)button);
+        return true;
+    }
+
+    private void PanicHoldBreath()
+    {
+        var lockWaitStart = Stopwatch.GetTimestamp();
+        lock (_holdBreathLock)
+        {
+            LogHoldBreathLockWait("PANIC", lockWaitStart);
+
+            if (_disposed || !_rightButtonPressed)
+            {
+                return;
+            }
+
+            if (!_holdBreathPanicSuppressed)
+            {
+                _holdBreathPanicSuppressed = true;
+                CancelHoldBreathStateLocked();
+                if (IsDebugEnabled) LogDebug("HoldBreath panic: canceled and suppressed until right-button-up");
+            }
+        }
+    }
+
     // ==================== MOUSE HOOK ====================
+
     
     private IntPtr MouseCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
@@ -1385,7 +1519,8 @@ public sealed class InputHookService : IInputHookService
             ReleaseRightClickOverrides();
         }
 
-        var handled = HandleAltMouse(message, data.mouseData);
+        var handled = HandleHoldBreathPanicMouse(message, data.mouseData) ||
+                      HandleAltMouse(message, data.mouseData);
 
         // H6: only arm hold-breath for a genuine right-click, not one suppressed as an Alt+Right binding.
         if (message == NativeMethods.WM_RBUTTONDOWN)
@@ -1988,6 +2123,18 @@ public sealed class InputHookService : IInputHookService
 
     // ==================== HOLD BREATH HANDLING ====================
 
+    private void CancelHoldBreathStateLocked()
+    {
+        _holdBreathPending = false;
+        if (!_disposed)
+        {
+            _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+
+        Interlocked.Increment(ref _holdBreathGeneration);
+        ReleaseInjectedHoldBreathKeyLocked();
+    }
+
     private void HandleRightClickHoldBreathDown()
     {
         var profile = _activeProfile;
@@ -2028,13 +2175,11 @@ public sealed class InputHookService : IInputHookService
 
             // A missed WM_RBUTTONUP (hook timeout, UAC secure desktop, Win+L) can leave the previous
             // press's key down; release it before starting a new cycle so it can never stay stuck.
-            ReleaseInjectedHoldBreathKeyLocked();
+            CancelHoldBreathStateLocked();
 
-            // After Dispose the shared timer is gone — touching it would throw inside the hook
-            // callback. The orphan release above still ran; nothing new may be armed.
-            if (_disposed)
+            // After cancellation, a disposed service or panic-vetoed press cannot arm.
+            if (_disposed || _holdBreathPanicSuppressed)
             {
-                _holdBreathPending = false;
                 return;
             }
 
@@ -2070,12 +2215,8 @@ public sealed class InputHookService : IInputHookService
         {
             LogHoldBreathLockWait("UP", lockWaitStart);
 
-            _holdBreathPending = false;
-            if (!_disposed)
-            {
-                _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
-            }
-            ReleaseInjectedHoldBreathKeyLocked();
+            CancelHoldBreathStateLocked();
+            _holdBreathPanicSuppressed = false;
         }
     }
 
@@ -2141,11 +2282,12 @@ public sealed class InputHookService : IInputHookService
     private void ActivateHoldBreathLocked()
     {
         _holdBreathPending = false;
+        var holdBreathGeneration = Interlocked.Increment(ref _holdBreathGeneration);
 
         if (_holdBreathArmedMode == HoldBreathMode.Hold)
         {
             _holdBreathInjectedKey = _holdBreathArmedKey;
-            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: true, PreSleepMs: 0));
+            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: true, PreSleepMs: 0, HoldBreathGeneration: holdBreathGeneration));
 
             if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey} (queued)");
         }
@@ -2166,8 +2308,8 @@ public sealed class InputHookService : IInputHookService
             }
 
             var duration = rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1);
-            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: true, PreSleepMs: 0));
-            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: false, PreSleepMs: duration));
+            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: true, PreSleepMs: 0, HoldBreathGeneration: holdBreathGeneration));
+            EnqueueHoldBreathInjection(new HoldBreathInjection(_holdBreathArmedKey, IsDown: false, PreSleepMs: duration, HoldBreathGeneration: holdBreathGeneration));
 
             if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey} (queued tap, duration={duration}ms)");
         }
@@ -2194,12 +2336,7 @@ public sealed class InputHookService : IInputHookService
         // disabled, the key was rebound, or the profile changed while the key was held.
         lock (_holdBreathLock)
         {
-            _holdBreathPending = false;
-            if (!_disposed)
-            {
-                _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
-            }
-            ReleaseInjectedHoldBreathKeyLocked();
+            CancelHoldBreathStateLocked();
         }
     }
 
@@ -2291,6 +2428,14 @@ public sealed class InputHookService : IInputHookService
                         continue;
                     }
 
+                    // A panic/release boundary invalidates queued hold-breath DOWNs. The paired UP
+                    // remains in FIFO and is still allowed to drain.
+                    if (injection.IsDown && injection.HoldBreathGeneration != 0
+                        && Volatile.Read(ref _holdBreathGeneration) != injection.HoldBreathGeneration)
+                    {
+                        if (IsDebugEnabled) LogDebug($"HoldBreath inject DOWN skipped (stale generation): {injection.Key}");
+                        continue;
+                    }
                     // A2: a foreground-guarded Auto-Run DOWN (AutoRunGeneration != 0) fires only while its
                     // epoch is still current AND the foreground window still belongs to the run's exe — so a
                     // queued W/sprint DOWN can't drain into a window you alt-tabbed to (or after the run
@@ -3868,6 +4013,12 @@ public sealed class InputHookService : IInputHookService
         ResetMouseStates();
         ReleaseCapsState();
         ReleaseHoldBreathState();
+        lock (_holdBreathLock)
+        {
+            _holdBreathPanicSuppressed = false;
+        }
+        Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
+        Volatile.Write(ref _holdBreathPanicConsumedMouseButton, 0);
         // includeBackground:false — a decoupled Background run must survive ordinary teardown
         // (ReleaseAllState is reached by profile switch AND watchdog reinstall). §11.6.
         ReleaseAutoRunState(includeBackground: false);

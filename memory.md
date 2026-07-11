@@ -410,3 +410,10 @@
 
 # 2026-07-11 (color toggle settings UX + debug log)
 - Requested follow-up: cap `debug.log` at 2 MiB while preserving newest entries; replace the Color Settings secondary-editor checkbox with a visible Primary/Secondary segmented toggle; move the global color preset key from `Color.ini` into `[App]` Settings. Keep a compatibility read of legacy `[Color] ToggleKey`, but write the new app-level value as an explicit `None` when cleared so an old key cannot reappear after the user disables it.
+
+# 2026-07-11 (hold-breath panic trigger)
+- Added a per-profile `InputTrigger` setting persisted as `RightClickHoldBreath\Panic`, with keyboard, middle-mouse, XButton1, XButton2, and None options.
+- Panic cancellation increments a generation so queued hold-breath DOWN events are skipped while paired UP events still drain; the trigger remains pass-through to the game.
+- Tooltip documents the required active right-mouse hold, cancellation scope, reset-on-release behavior, pass-through behavior, and `None` disable option.
+- Early Cancel reuses the existing InfoIconStyle question icon; suppression defaults on, persists as SuppressEarlyCancel, and pairs consumed key/button releases across the right-mouse hold.
+- The suppression checkbox now disables when the Early Cancel trigger is None through a view-model boolean, preserving the app-wide implicit CheckBox style.

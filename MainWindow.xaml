@@ -29,6 +29,7 @@
         <conv:BooleanNegationConverter x:Key="NotConverter" />
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
         <conv:MouseButtonDisplayConverter x:Key="MouseButtonDisplayConverter" />
+        <conv:InputTriggerDisplayConverter x:Key="InputTriggerDisplayConverter" />
         <conv:AvailableMouseButtonsConverter x:Key="AvailableMouseButtonsConverter" />
         <conv:AvailableKeysConverter x:Key="AvailableKeysConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
@@ -616,6 +617,33 @@
                                                         </DataTemplate>
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <StackPanel Orientation="Horizontal" Width="140">
+                                                    <TextBlock Text="Early Cancel"
+                                                               VerticalAlignment="Center" />
+                                                    <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                               ToolTip="Press the selected key or button while holding right mouse to cancel hold-breath input before it worsens sway."
+                                                               ToolTipService.InitialShowDelay="0"
+                                                               ToolTipService.Placement="Right" />
+                                                </StackPanel>
+                                                <ComboBox ItemsSource="{Binding DataContext.HoldBreathPanicTriggers, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding RightClickHoldBreathPanicTrigger, Mode=TwoWay}"
+                                                          Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <TextBlock Text="Suppress Early Cancel"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <CheckBox IsChecked="{Binding RightClickHoldBreathSuppressEarlyCancelInput, Mode=TwoWay}"
+                                                          IsEnabled="{Binding RightClickHoldBreathEarlyCancelConfigured}"
+                                                          VerticalAlignment="Center" />
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                                 <TextBlock Text="Mode" VerticalAlignment="Center" Width="140" />

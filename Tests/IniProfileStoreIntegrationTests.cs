@@ -305,6 +305,8 @@ public class IniProfileStoreIntegrationTests : IDisposable
         profile.RightClickHoldBreath.Mode = HoldBreathMode.Toggle;
         profile.RightClickHoldBreath.HoldBreathKey = Key.LeftShift;
         profile.RightClickHoldBreath.DelayMilliseconds = 150;
+        profile.RightClickHoldBreath.PanicTrigger = InputTrigger.FromMouseButton(MouseButton.XButton1);
+        profile.RightClickHoldBreath.SuppressEarlyCancelInput = false;
         _createdProfiles.Add(profile);
 
         await _store.SaveProfileAsync(profile, CancellationToken.None);
@@ -316,6 +318,8 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Equal(HoldBreathMode.Toggle, loaded.RightClickHoldBreath.Mode);
         Assert.Equal(Key.LeftShift, loaded.RightClickHoldBreath.HoldBreathKey);
         Assert.Equal(150, loaded.RightClickHoldBreath.DelayMilliseconds);
+        Assert.Equal(InputTrigger.FromMouseButton(MouseButton.XButton1), loaded.RightClickHoldBreath.PanicTrigger);
+        Assert.False(loaded.RightClickHoldBreath.SuppressEarlyCancelInput);
     }
 
     [Fact]

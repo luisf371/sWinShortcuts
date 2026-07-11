@@ -462,6 +462,8 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.IsEnabled = document.GetBoolean("RightClickHoldBreath", "Enabled", settings.IsEnabled);
         settings.HoldBreathKey = document.GetKey("RightClickHoldBreath", "Key") ?? settings.HoldBreathKey;
+        settings.PanicTrigger = document.GetInputTrigger("RightClickHoldBreath", "Panic", settings.PanicTrigger);
+        settings.SuppressEarlyCancelInput = document.GetBoolean("RightClickHoldBreath", "SuppressEarlyCancel", settings.SuppressEarlyCancelInput);
         settings.Mode = document.GetEnum("RightClickHoldBreath", "Mode", settings.Mode);
         // 0 is a designed value (fully synchronous, jitter-free activation) selectable in the UI —
         // clamping to 5 here silently re-enabled the jitter path on the next launch.
@@ -626,6 +628,8 @@ public sealed class IniProfileStore : IProfileStore
         var rightClickHoldBreath = profile.RightClickHoldBreath;
         document.SetBoolean("RightClickHoldBreath", "Enabled", rightClickHoldBreath.IsEnabled);
         document.SetKey("RightClickHoldBreath", "Key", rightClickHoldBreath.HoldBreathKey);
+        document.SetInputTrigger("RightClickHoldBreath", "Panic", rightClickHoldBreath.PanicTrigger);
+        document.SetBoolean("RightClickHoldBreath", "SuppressEarlyCancel", rightClickHoldBreath.SuppressEarlyCancelInput);
         document.SetEnum("RightClickHoldBreath", "Mode", rightClickHoldBreath.Mode);
         document.SetInt32("RightClickHoldBreath", "Delay", rightClickHoldBreath.DelayMilliseconds);
 

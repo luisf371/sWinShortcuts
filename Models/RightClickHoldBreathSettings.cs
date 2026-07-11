@@ -11,6 +11,10 @@ public sealed class RightClickHoldBreathSettings
     public HoldBreathMode Mode { get; set; } = HoldBreathMode.Hold;
 
     public int DelayMilliseconds { get; set; } = 5;
+
+    public InputTrigger PanicTrigger { get; set; } = InputTrigger.None;
+
+    public bool SuppressEarlyCancelInput { get; set; } = true;
 }
 
 public enum HoldBreathMode
