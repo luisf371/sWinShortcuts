@@ -896,33 +896,27 @@
                                             </Style>
                                         </StackPanel.Style>
                                         
-                                        <!-- Primary/Secondary color presets: one set of sliders, toggled live by a global key -->
+                                        <!-- Primary/Secondary color presets: edit one set of sliders at a time. -->
                                         <StackPanel Margin="0,0,0,12">
                                             <CheckBox Content="Enable a secondary color preset"
                                                       IsChecked="{Binding ColorSettings.HasSecondary}"
                                                       Margin="0,0,0,6" />
-                                            <CheckBox Content="Edit secondary preset (unchecked = primary)"
-                                                      IsChecked="{Binding ColorSettings.IsEditingSecondary}"
-                                                      IsEnabled="{Binding ColorSettings.CanEditSecondary}"
-                                                      Margin="16,0,0,6" />
-                                            <StackPanel Orientation="Horizontal"
-                                                        Visibility="{Binding ColorSettings.CanEditToggleKey, Converter={StaticResource VisibleIfTrue}}">
-                                                <TextBlock Text="Toggle key (global)" VerticalAlignment="Center" />
-                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding ColorSettings.ToggleKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="8,0,0,0" Width="160">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                                <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="One global key that toggles the ACTIVE profile between its Primary and Secondary color presets. No effect for a profile without a secondary."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                <TextBlock Text="Edit preset"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center"
+                                                           Margin="0,0,10,0" />
+                                                <ToggleButton Style="{StaticResource PresetVariantToggleStyle}"
+                                                              IsChecked="{Binding ColorSettings.IsEditingSecondary, Mode=TwoWay}"
+                                                              IsEnabled="{Binding ColorSettings.CanEditSecondary}"
+                                                              Width="176"
+                                                              ToolTip="Choose which color preset the display controls below edit."
+                                                              AutomationProperties.Name="Color preset to edit" />
                                             </StackPanel>
+                                            <TextBlock Text="Primary is the default look. Secondary is an optional alternate preset."
+                                                       Foreground="{StaticResource ForegroundSecondaryBrush}"
+                                                       FontSize="11"
+                                                       TextWrapping="Wrap" />
                                         </StackPanel>
 
                                         <!-- No displays message -->

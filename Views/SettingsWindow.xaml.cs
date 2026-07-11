@@ -1,7 +1,7 @@
 using System;
 using System.ComponentModel;
-using System.IO;
 using System.Windows;
+using System.Windows.Input;
 using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
 using sWinShortcuts.ViewModels;
@@ -23,6 +23,7 @@ public partial class SettingsWindow : Window
     // leaves e.g. Advanced Mode disabled (which already released gated input state) or the watchdog off.
     private bool _baselineDebugLogging;
     private bool _baselineWatchdog;
+    private Key _baselineColorToggleKey;
     private bool _baselineAdvancedMode;
     private bool _baselineStartWithWindows;
     private bool _baselineStartAsAdmin;
@@ -37,14 +38,13 @@ public partial class SettingsWindow : Window
         _vm = new SettingsViewModel(loggerService, inputHookService);
         DataContext = _vm;
 
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var rootDirectory = Path.Combine(appData, "sWinShortcuts");
-        _settingsPath = Path.Combine(rootDirectory, "sWinShortcuts.ini");
+        _settingsPath = AppSettings.GetSettingsPath();
 
         LoadIniState();
 
         // Baseline = the live-apply state the dialog opened with (from INI / the live services). OnClosing
         // rolls the live services back to this on any non-Save close.
+        _baselineColorToggleKey = _vm.ColorToggleKey;
         _baselineDebugLogging = _vm.EnableDebugLogging;
         _baselineWatchdog = _vm.HookWatchdogEnabled;
         _baselineAdvancedMode = _vm.AdvancedModeEnabled;
@@ -110,6 +110,7 @@ public partial class SettingsWindow : Window
             _vm.AdvancedModeEnabled = advancedRaw is null
                 ? _inputHookService.AdvancedModeEnabled
                 : advancedRaw == "true";
+            _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;
         }
         catch
         {
@@ -118,6 +119,7 @@ public partial class SettingsWindow : Window
             // Fall back to the live service value (never a blind false) so a read failure can't
             // silently disable an upgrade-enabled gate the service already applied.
             _vm.AdvancedModeEnabled = _inputHookService.AdvancedModeEnabled;
+            _vm.ColorToggleKey = Key.None;
         }
     }
 
@@ -132,6 +134,7 @@ public partial class SettingsWindow : Window
             ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
             ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
             ini.SetValue("App", "AdvancedMode", vm.AdvancedModeEnabled ? "true" : "false");
+            AppSettings.SetColorToggleKey(ini, vm.ColorToggleKey);
             ini.Save(_settingsPath);
             return true;
         }
@@ -253,5 +256,6 @@ public partial class SettingsWindow : Window
         _vm.EnableDebugLogging = _baselineDebugLogging;
         _vm.HookWatchdogEnabled = _baselineWatchdog;
         _vm.AdvancedModeEnabled = _baselineAdvancedMode;
+        _vm.ColorToggleKey = _baselineColorToggleKey;
     }
 }

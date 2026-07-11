@@ -1,6 +1,5 @@
 using System;
 using System.Collections.ObjectModel;
-using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 
@@ -20,7 +19,6 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
     private bool _isEnabled;
     private bool _disposed;
     private ColorVariant _editingVariant = ColorVariant.Primary;
-    private readonly bool _canEditToggleKey;
 
     public event EventHandler? Changed;
 
@@ -29,15 +27,13 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         IDisplayService displayService,
         IColorControlService colorService,
         bool allowLiveUpdates = false,
-        Func<bool>? parentEnabledCheck = null,
-        bool canEditToggleKey = false)
+        Func<bool>? parentEnabledCheck = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
         _allowLiveUpdates = allowLiveUpdates;
         _parentEnabledCheck = parentEnabledCheck;
-        _canEditToggleKey = canEditToggleKey;
 
         _isEnabled = model.IsEnabled;
 
@@ -217,26 +213,6 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         }
     }
 
-    /// <summary>The GLOBAL color-toggle key. Editable only on the global Color profile
-    /// (<see cref="CanEditToggleKey"/>); persisted and re-read by the hook on the next foreground change.</summary>
-    public Key? ToggleKey
-    {
-        get => _model.ToggleKey;
-        set
-        {
-            if (_model.ToggleKey == value)
-            {
-                return;
-            }
-
-            _model.ToggleKey = value;
-            OnPropertyChanged();
-            Changed?.Invoke(this, EventArgs.Empty);
-        }
-    }
-
-    /// <summary>True only on the global Color profile editor — the single place the global key is set.</summary>
-    public bool CanEditToggleKey => _canEditToggleKey;
 
     private void OnDisplayChanged(object? sender, EventArgs e)
     {

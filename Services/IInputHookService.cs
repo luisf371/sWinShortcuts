@@ -17,7 +17,7 @@ public interface IInputHookService : IDisposable
 
     /// <summary>
     /// Sets (or clears, when null) the GLOBAL key that toggles the active profile's color preset. Detected
-    /// on the low-level keyboard hook and suppressed from applications. Live-updatable.
+    /// on the low-level keyboard hook and passed through to applications. Live-updatable.
     /// </summary>
     void SetColorToggleKey(Key? key);
 

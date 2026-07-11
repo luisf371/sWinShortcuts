@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using sWinShortcuts.Configuration;
 using sWinShortcuts.Services;
+using sWinShortcuts.Utilities;
 using sWinShortcuts.ViewModels;
 
 namespace sWinShortcuts;
@@ -37,6 +38,21 @@ public partial class App : System.Windows.Application
         _host = Host.CreateDefaultBuilder()
             .ConfigureServices(ConfigureServices)
             .Build();
+
+        // The color preset key is an app-level setting. Seed the hook before hosted services start so
+        // ProfileActivationService never needs to read it from the Color profile. Read the legacy Color.ini
+        // value once for existing users and persist the migrated value when possible.
+        var inputHook = _host.Services.GetRequiredService<IInputHookService>();
+        try
+        {
+            var settingsPath = AppSettings.GetSettingsPath();
+            inputHook.SetColorToggleKey(AppSettings.LoadColorToggleKey(settingsPath));
+            AppSettings.MigrateLegacyColorToggleKey(settingsPath);
+        }
+        catch
+        {
+            // A settings read failure must not prevent the app or input hooks from starting.
+        }
 
         await _host.StartAsync();
 

@@ -1,6 +1,9 @@
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Windows.Input;
 using sWinShortcuts.Services;
+using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.ViewModels;
 
@@ -8,9 +11,12 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
 {
     private readonly ILoggerService _loggerService = loggerService;
     private readonly IInputHookService _inputHookService = inputHookService;
+    private readonly IReadOnlyList<Key> _colorToggleKeyOptions =
+        KeyCatalog.SortKeys(new[] { Key.None }.Concat(KeyCatalog.GetCommonKeys())).ToArray();
     private bool _startWithWindows;
     private bool _startAsAdmin;
     private bool _enableDebugLogging;
+    private Key _colorToggleKey = Key.None;
     private bool _hookWatchdogEnabled = true;
     private bool _advancedModeEnabled;
     private bool _isStartupLoaded;
@@ -58,6 +64,28 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
                 _loggerService.IsEnabled = value;
                 OnPropertyChanged();
             }
+        }
+    }
+
+    public IReadOnlyList<Key> ColorToggleKeyOptions => _colorToggleKeyOptions;
+
+    /// <summary>
+    /// The app-wide key that flips the active profile between its Primary and Secondary color presets.
+    /// The hook receives the update immediately; SettingsWindow persists it when the user saves.
+    /// </summary>
+    public Key ColorToggleKey
+    {
+        get => _colorToggleKey;
+        set
+        {
+            if (_colorToggleKey == value)
+            {
+                return;
+            }
+
+            _colorToggleKey = value;
+            _inputHookService.SetColorToggleKey(value == Key.None ? null : value);
+            OnPropertyChanged();
         }
     }
 

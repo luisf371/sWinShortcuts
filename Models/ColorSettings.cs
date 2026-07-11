@@ -42,10 +42,10 @@ public sealed class ColorSettings
     }
 
     /// <summary>
-    /// The GLOBAL color-variant toggle key. Only the global Color profile's value is authoritative at
-    /// runtime (<see cref="Services.ProfileActivationService"/> pushes it to the hook); it lives on
-    /// <see cref="ColorSettings"/> so it rides the existing color persistence. Guarded by <c>_sync</c> — a
-    /// bare Key? is a non-atomic struct the worker must not read torn while the UI writes it.
+    /// Legacy compatibility slot for the old Color.ini [Color] ToggleKey value.
+    /// New writes use the app-level [App] ColorToggleKey setting instead; runtime reads no longer use this
+    /// property. It remains so existing profiles can be loaded once and migrated without data loss.
+    /// Guarded by <c>_sync</c> for compatibility with older callers.
     /// </summary>
     public Key? ToggleKey
     {

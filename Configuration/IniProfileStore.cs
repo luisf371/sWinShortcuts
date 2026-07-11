@@ -669,7 +669,6 @@ public sealed class IniProfileStore : IProfileStore
     {
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
         document.SetBoolean("Color", "HasSecondary", color.HasSecondary);
-        document.SetKey("Color", "ToggleKey", color.ToggleKey);
         // Note: SelectedDisplayId is deprecated but kept for backward compatibility
 #pragma warning disable CS0618 // Type or member is obsolete
         document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);

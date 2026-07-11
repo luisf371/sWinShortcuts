@@ -67,6 +67,36 @@ Technical highlights include:
 **Q: What happens if my hardware does not support NVIDIA Digital Vibrance?**  
 **A:** The application includes a graceful fallback system. It will continue to apply standard Windows Gamma Ramps while silently skipping NVIDIA-specific calls on unsupported hardware.
 
+## Build & Publish Reference
+
+Here is a reference of the available build and publish commands for different use cases:
+
+### Standard Commands
+* **Build Debug (Default)**: Builds the project with debug symbols and no optimizations.
+  ```powershell
+  dotnet build sWinShortcuts.csproj -c Debug
+  ```
+* **Build Release**: Builds the project with optimizations, ready for production.
+  ```powershell
+  dotnet build sWinShortcuts.csproj -c Release
+  ```
+* **Clean Artifacts**: Cleans previous build outputs (clears `bin/` and `obj/` directories).
+  ```powershell
+  dotnet clean sWinShortcuts.csproj
+  ```
+
+### Publishing Single Executables
+Publishing outputs compiled packages ready for distribution.
+
+* **Self-Contained Single EXE**: Compiles all binaries and the .NET 8 runtime into a single executable. No .NET runtime installation is required on the user's machine.
+  ```powershell
+  dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true
+  ```
+* **Framework-Dependent Single EXE**: Compiles into a single executable but does not bundle the runtime, yielding a significantly smaller file size. Requires the .NET 8 runtime to be installed on the target machine.
+  ```powershell
+  dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
+  ```
+
 ## License
 
 Unspecified

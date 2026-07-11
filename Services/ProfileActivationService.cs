@@ -86,8 +86,6 @@ public sealed class ProfileActivationService : IHostedService
             _foregroundWatcher.ForegroundChanged += OnForegroundChanged;
             _inputHookService.ActiveProfileChanged += OnActiveProfileChanged;
             _inputHookService.ColorVariantToggleRequested += OnColorVariantToggleRequested;
-            // Push the GLOBAL color-toggle key (authoritative on the Color profile) to the hook.
-            _inputHookService.SetColorToggleKey(_profileManager.ColorProfile.ColorSettings.ToggleKey);
             SystemEvents.DisplaySettingsChanged += OnReapplyRequested;
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
             _reapplyHandlersRegistered = true;
@@ -234,10 +232,6 @@ public sealed class ProfileActivationService : IHostedService
         {
             return; // F-010: shutdown began — don't start new activation/color work.
         }
-
-        // Keep the hook's global color-toggle key in sync with the (live-editable) Color profile setting.
-        // Cheap + idempotent (no-op when unchanged), so a user edit takes effect on the next foreground change.
-        _inputHookService.SetColorToggleKey(_profileManager.ColorProfile.ColorSettings.ToggleKey);
 
         var profile = string.IsNullOrWhiteSpace(processName)
             ? null

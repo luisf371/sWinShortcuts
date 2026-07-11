@@ -182,7 +182,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task SaveAndLoad_RoundTripsColorVariantsAndToggleKey()
+    public async Task SaveAndLoad_RoundTripsColorVariants_WithoutLegacyToggleKey()
     {
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "color.exe");
         profile.ColorSettings.IsEnabled = true;
@@ -201,7 +201,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
 
         Assert.NotNull(loaded);
         Assert.True(loaded.ColorSettings.HasSecondary);
-        Assert.Equal(Key.F8, loaded.ColorSettings.ToggleKey);
+        Assert.Null(loaded.ColorSettings.ToggleKey); // the global key now lives in [App] settings
         Assert.Equal(ColorVariant.Primary, loaded.ColorSettings.ActiveVariant); // runtime state resets on load
 
         var primary = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
