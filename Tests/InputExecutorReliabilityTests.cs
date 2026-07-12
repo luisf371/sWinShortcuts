@@ -46,6 +46,65 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public void AutoRunPhysicalKey_HeldThroughActivation_RepeatIsNotFreshButPostReleasePressIsFresh()
+    {
+        var physicallyDown = false;
+
+        // Initial physical W down arrives before the Auto-Run trigger chord.
+        Assert.True(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+            ref physicallyDown,
+            isKeyDown: true,
+            isKeyUp: false));
+
+        // Activation preserves the hook-owned state. A typematic repeat from the held press is not fresh.
+        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+            ref physicallyDown,
+            isKeyDown: true,
+            isKeyUp: false));
+
+        // Release is never absorbed; it clears the edge latch without cancelling Auto-Run.
+        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+            ref physicallyDown,
+            isKeyDown: false,
+            isKeyUp: true));
+
+        // A genuinely new physical press after that release is fresh and therefore cancels Auto-Run.
+        Assert.True(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+            ref physicallyDown,
+            isKeyDown: true,
+            isKeyUp: false));
+    }
+
+    [Fact]
+    public void AutoRunPhysicalW_Handoff_ConsumesRepeatAndFocusedReleaseButNextPressCancels()
+    {
+        var physicallyDown = true;
+        var handoffActive = true;
+
+        // A held W repeat remains down and is consumed while the game owns the handoff.
+        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+            ref physicallyDown,
+            isKeyDown: true,
+            isKeyUp: false));
+        Assert.True(InputHookService.ShouldConsumeAutoRunPhysicalWHandoff(handoffActive, targetFocused: true));
+
+        // The physical UP clears the handoff; Auto-Run transfers to its synthetic W before consuming it.
+        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+            ref physicallyDown,
+            isKeyDown: false,
+            isKeyUp: true));
+        handoffActive = false;
+        Assert.False(InputHookService.ShouldConsumeAutoRunPhysicalWHandoff(handoffActive, targetFocused: true));
+        Assert.False(InputHookService.ShouldConsumeAutoRunPhysicalWHandoff(handoffActive: true, targetFocused: false));
+
+        // A genuinely new W press is fresh again and must remain available to cancel Auto-Run.
+        Assert.True(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+            ref physicallyDown,
+            isKeyDown: true,
+            isKeyUp: false));
+    }
+
+    [Fact]
     public async Task Executor_StaleDownSkipped_UpRemainsUnconditional()
     {
         var sender = new RecordingInputSender();

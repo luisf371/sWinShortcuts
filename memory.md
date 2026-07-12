@@ -442,3 +442,6 @@
 - Manual Save emits ProfileChangeKind.None; only actual setting edits notify the runtime. This avoids an unnecessary full reconcile that could cancel an active gesture or Auto-Run.
 - Foreground Auto-Run ownership includes the exact HWND/PID generation. A same-executable process restart/window replacement releases the old foreground run synchronously, and queued W/sprint DOWNs are stamped so they cannot drain across the transition.
 - Final reliability checkpoint: Release tests build with 0 warnings/errors; 52 focused reliability tests passed once and across 10 consecutive repeats. The sandbox-runnable full suite passes 180/180; the two remaining integration tests are blocked only by the sandbox denying File.Replace.
+
+# 2026-07-12 (Auto-Run physical W handoff)
+- Auto-Run cannot treat physical and synthetic W as independent key sources: duplicate W-downs and a pass-through physical W-up can make Background stutter and can release Foreground movement. When W is held at activation, skip the duplicate synthetic DOWN, consume focused physical repeats/UPs, and transfer to a synthetic W hold on the physical UP; a later W DOWN remains the cancel edge.
