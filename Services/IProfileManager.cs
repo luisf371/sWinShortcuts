@@ -29,4 +29,9 @@ public interface IProfileManager
     Profile? FindByExecutable(string executableName);
 
     Task SaveProfileAsync(Profile profile, CancellationToken cancellationToken = default);
+
+    Task SaveProfileSnapshotAsync(
+        Profile managedProfile,
+        Profile persistenceSnapshot,
+        CancellationToken cancellationToken = default);
 }

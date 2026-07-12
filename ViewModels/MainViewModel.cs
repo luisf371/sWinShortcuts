@@ -32,6 +32,7 @@ public sealed partial class MainViewModel : ViewModelBase
         new[] { ModifierKeys.Control, ModifierKeys.Alt, ModifierKeys.Shift, ModifierKeys.Windows };
     private readonly IDisplayService _displayService;
     private readonly IColorControlService _colorControlService;
+    private readonly IProfileRuntimeService? _profileRuntimeService;
     private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
 
     // Autosave is debounced PER ProfileViewModel instance (stable across rename) so editing profile B
@@ -51,17 +52,24 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly HashSet<ProfileViewModel> _saveErrorShown = [];
     private readonly Dictionary<ProfileViewModel, Task> _activeSaves = [];
     private readonly Dictionary<ProfileViewModel, long> _editSeq = []; // codex #4b: per-profile edit counter
+    private readonly Dictionary<ProfileViewModel, Profile> _persistenceSnapshots = [];
     private bool _isFlushing; // guarded by _saveSync: exit flush is draining — no new debounce timers arm.
     private const int MaxFlushPasses = 3;
 
     private enum SaveOutcome { Saved, Failed, Suspended }
 
-    public MainViewModel(IProfileManager profileManager, IDialogService dialogService, IDisplayService displayService, IColorControlService colorControlService)
+    public MainViewModel(
+        IProfileManager profileManager,
+        IDialogService dialogService,
+        IDisplayService displayService,
+        IColorControlService colorControlService,
+        IProfileRuntimeService? profileRuntimeService = null)
     {
         _profileManager = profileManager ?? throw new ArgumentNullException(nameof(profileManager));
         _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorControlService = colorControlService ?? throw new ArgumentNullException(nameof(colorControlService));
+        _profileRuntimeService = profileRuntimeService;
         _keyOptionsWithNone = KeyCatalog.SortKeys(new[] { Key.None }.Concat(_keyOptions)).ToArray();
         _holdBreathPanicTriggers = BuildHoldBreathPanicTriggers();
         Profiles = new ReadOnlyObservableCollection<ProfileViewModel>(_profiles);
@@ -209,6 +217,8 @@ public sealed partial class MainViewModel : ViewModelBase
         lock (_saveSync)
         {
             _dirty.Add(viewModel);
+            _persistenceSnapshots[viewModel] =
+                ProfilePersistenceSnapshot.Create(viewModel.Model);
         }
         EnsureSaveStarted(viewModel);
 
@@ -469,6 +479,7 @@ public sealed partial class MainViewModel : ViewModelBase
             _dirty.Remove(viewModel);
             _saveErrorShown.Remove(viewModel);
             _editSeq.Remove(viewModel);
+            _persistenceSnapshots.Remove(viewModel);
             if (_debounce.Remove(viewModel, out var cts))
             {
                 cts.Cancel();
@@ -480,10 +491,14 @@ public sealed partial class MainViewModel : ViewModelBase
         viewModel.Dispose();
     }
 
-    private void OnProfileChanged(object? sender, EventArgs e)
+    private void OnProfileChanged(object? sender, ProfileChangedEventArgs e)
     {
         if (sender is ProfileViewModel viewModel)
         {
+            if (e.Kind != ProfileChangeKind.None)
+            {
+                _profileRuntimeService?.NotifyProfileChanged(viewModel.Model, e.Kind);
+            }
             QueueAutoSave(viewModel);
         }
     }
@@ -515,6 +530,11 @@ public sealed partial class MainViewModel : ViewModelBase
 
             _dirty.Add(viewModel);
             _editSeq[viewModel] = _editSeq.GetValueOrDefault(viewModel) + 1; // codex #4b: mark a fresh edit
+            // This callback runs on the WPF dispatcher after the model update. Capture a deep snapshot
+            // NOW, before the save moves to the pool, so validation and serialization see one coherent
+            // edit even if the live model changes again during I/O.
+            _persistenceSnapshots[viewModel] =
+                ProfilePersistenceSnapshot.Create(viewModel.Model);
 
             // During the exit flush don't (re)arm a debounce timer (codex #4): the flush drives
             // EnsureSaveStarted directly, and a 500 ms timer firing during/after exit could start an
@@ -583,6 +603,7 @@ public sealed partial class MainViewModel : ViewModelBase
             while (true)
             {
                 long savedSeq;
+                Profile persistenceSnapshot;
                 lock (_saveSync)
                 {
                     if (viewModel.IsDetached || !_dirty.Contains(viewModel))
@@ -591,6 +612,7 @@ public sealed partial class MainViewModel : ViewModelBase
                         {
                             _saveErrorShown.Remove(viewModel);
                         }
+                        _persistenceSnapshots.Remove(viewModel);
 
                         // Deregister ATOMICALLY with observing _dirty empty/detached (codex-final #1).
                         _activeSaves.Remove(viewModel);
@@ -599,13 +621,20 @@ public sealed partial class MainViewModel : ViewModelBase
                     }
 
                     savedSeq = _editSeq.GetValueOrDefault(viewModel); // codex #4b: detect edits during this save
+                    if (!_persistenceSnapshots.TryGetValue(viewModel, out persistenceSnapshot!))
+                    {
+                        throw new InvalidOperationException(
+                            "Dirty profile has no persistence snapshot.");
+                    }
                     _dirty.Remove(viewModel);
                 }
 
                 SaveOutcome outcome;
                 try
                 {
-                    outcome = await SaveProfileInternalAsync(viewModel).ConfigureAwait(false);
+                    outcome = await SaveProfileInternalAsync(
+                        viewModel,
+                        persistenceSnapshot).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -768,7 +797,9 @@ public sealed partial class MainViewModel : ViewModelBase
     // number of times with short backoff before giving up; a non-transient error (e.g. duplicate-name
     // InvalidOperationException) fails immediately with a one-time dialog; a persistence-suspended
     // built-in (F-008) returns Suspended so the caller keeps the edit without a false success or dialog.
-    private async Task<SaveOutcome> SaveProfileInternalAsync(ProfileViewModel viewModel)
+    private async Task<SaveOutcome> SaveProfileInternalAsync(
+        ProfileViewModel viewModel,
+        Profile persistenceSnapshot)
     {
         const int maxAttempts = 3;
         await _saveSemaphore.WaitAsync().ConfigureAwait(false);
@@ -778,7 +809,9 @@ public sealed partial class MainViewModel : ViewModelBase
             {
                 try
                 {
-                    await _profileManager.SaveProfileAsync(viewModel.Model).ConfigureAwait(false);
+                    await _profileManager.SaveProfileSnapshotAsync(
+                        viewModel.Model,
+                        persistenceSnapshot).ConfigureAwait(false);
                     return SaveOutcome.Saved;
                 }
                 catch (PersistenceSuspendedException)

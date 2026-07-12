@@ -96,20 +96,27 @@ public class MainViewModelSaveTests
     {
         var (vm, store, _, _, profileVm) = await BuildWithProfileAsync();
         var before = store.SaveCount;
+        var savedProfilesBefore = store.SavedProfiles.Count;
         store.SaveEntered = new TaskCompletionSource();
         store.SaveGate = new TaskCompletionSource();
-        profileVm.IsEnabled = !profileVm.IsEnabled; // dirty #1
+        profileVm.IsEnabled = false; // dirty #1 snapshot
 
         var flushTask = vm.FlushPendingSavesAsync();
         await store.SaveEntered.Task; // iter 1 has removed dirty #1 and is gated in the store I/O
 
-        profileVm.IsEnabled = !profileVm.IsEnabled; // dirty #2 during the gated save → re-adds to _dirty
+        profileVm.IsEnabled = true; // dirty #2 during the gated save → re-adds to _dirty
 
         store.SaveGate.SetResult();
         var unsaved = await flushTask;
 
         Assert.Equal(0, unsaved);
         Assert.Equal(before + 2, store.SaveCount); // one active save + exactly one coalesced follow-up
+        var saved = store.SavedProfiles.Skip(savedProfilesBefore).ToArray();
+        Assert.Collection(
+            saved,
+            first => Assert.False(first.IsEnabled),
+            second => Assert.True(second.IsEnabled));
+        Assert.All(saved, snapshot => Assert.NotSame(profileVm.Model, snapshot));
     }
 
     [Fact]

@@ -39,9 +39,15 @@ public interface IInputHookService : IDisposable
 
     void Stop();
 
-    void ActivateProfile(Profile profile);
+    void ActivateProfile(Profile profile, long foregroundGeneration);
 
-    void DeactivateProfile();
+    void DeactivateProfile(long foregroundGeneration);
+
+    /// <summary>
+    /// Reconciles live edits against already-owned runtime state. Recorded releases remain unconditional;
+    /// disabling or rebinding a feature only prevents new work and releases state that feature owns.
+    /// </summary>
+    void ReconcileProfileSettings(Profile profile, ProfileChangeKind changeKind);
 
     /// <summary>
     /// Releases any active FOREGROUND Auto-Run. Called on a foreground change that leaves the active
@@ -56,7 +62,11 @@ public interface IInputHookService : IDisposable
     /// a cheap live HWND/PID compare against this snapshot instead of a Process.GetProcessById on the hook
     /// thread (A1). Cheap and thread-safe; call on every foreground change.
     /// </summary>
-    void SetForegroundIdentity(IntPtr windowHandle, uint processId, string? normalizedExecutable);
+    void SetForegroundIdentity(
+        IntPtr windowHandle,
+        uint processId,
+        string? normalizedExecutable,
+        long foregroundGeneration);
 
     void SetWindowsProfile(Profile profile);
 }

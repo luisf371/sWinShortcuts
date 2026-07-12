@@ -188,4 +188,51 @@ public class ProfileManagerRegressionTests
         Assert.Contains("Foo", customNames);
         Assert.Contains("Foo (2)", customNames);
     }
+
+    [Fact]
+    public async Task FindByExecutable_DuplicateDiskIdentity_FailsClosedUntilRepaired()
+    {
+        var store = new InMemoryProfileStore();
+        var first = new Profile
+        {
+            Name = "First",
+            Executable = "game.exe",
+            IsEnabled = false,
+            SourcePath = @"C:/p/a.ini"
+        };
+        var second = new Profile
+        {
+            Name = "Second",
+            Executable = "game.exe",
+            IsEnabled = true,
+            SourcePath = @"C:/p/z.ini"
+        };
+        store.Profiles.AddRange([second, first]); // deliberately reverse stable path order
+
+        var manager = new ProfileManager(store);
+        await manager.InitializeAsync();
+
+        Assert.Null(manager.FindByExecutable("game.exe"));
+
+        first.Executable = "other.exe";
+        Assert.Same(second, manager.FindByExecutable("game.exe"));
+    }
+
+    [Fact]
+    public async Task SaveProfileSnapshotAsync_AfterSuccessfulRemoval_IsCanceledNoOp()
+    {
+        var store = new InMemoryProfileStore();
+        var manager = new ProfileManager(store);
+        await manager.InitializeAsync();
+        var profile = await manager.AddProfileAsync("Alpha", "alpha.exe");
+        var staleSnapshot = ProfilePersistenceSnapshot.Create(profile);
+
+        await manager.RemoveProfileAsync(profile);
+        var savesAfterRemoval = store.SaveCount;
+
+        await manager.SaveProfileSnapshotAsync(profile, staleSnapshot);
+
+        Assert.Equal(savesAfterRemoval, store.SaveCount);
+        Assert.DoesNotContain(store.Profiles, p => p.Name == "Alpha");
+    }
 }

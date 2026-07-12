@@ -68,13 +68,18 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IProfileStore, IniProfileStore>();
         services.AddSingleton<IProfileManager, ProfileManager>();
         services.AddSingleton<IForegroundWatcher, ForegroundWatcher>();
+        services.AddSingleton<IInputSender, WindowsInputSender>();
         services.AddSingleton<IInputHookService, InputHookService>();
         services.AddSingleton<ISystemTrayService, SystemTrayService>();
         services.AddSingleton<IStartupService, StartupService>();
         services.AddSingleton<IDisplayService, DisplayService>();
         services.AddSingleton<IColorControlService, NvidiaColorControlService>();
         services.AddSingleton<ILoggerService, FileLoggerService>();
-        services.AddHostedService<ProfileActivationService>();
+        services.AddSingleton<ProfileActivationService>();
+        services.AddSingleton<IProfileRuntimeService>(
+            provider => provider.GetRequiredService<ProfileActivationService>());
+        services.AddHostedService(
+            provider => provider.GetRequiredService<ProfileActivationService>());
         services.AddSingleton<IDialogService, DialogService>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton<MainWindow>();

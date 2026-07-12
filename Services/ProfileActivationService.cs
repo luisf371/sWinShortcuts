@@ -11,8 +11,16 @@ using sWinShortcuts.Models;
 
 namespace sWinShortcuts.Services;
 
-public sealed class ProfileActivationService : IHostedService
+public sealed class ProfileActivationService : IHostedService, IProfileRuntimeService
 {
+    private sealed record ForegroundSnapshot(
+        long Generation,
+        IntPtr WindowHandle,
+        uint ProcessId,
+        string? ProcessName,
+        string? NormalizedExecutable,
+        Profile? Profile);
+
     private readonly IProfileManager _profileManager;
     private readonly IForegroundWatcher _foregroundWatcher;
     private readonly IInputHookService _inputHookService;
@@ -20,17 +28,19 @@ public sealed class ProfileActivationService : IHostedService
     private readonly IColorControlService _colorControlService;
     private readonly IDisplayService _displayService;
     private readonly ILoggerService _logger;
-    private readonly Channel<string?> _foregroundChanges =
-        Channel.CreateBounded<string?>(new BoundedChannelOptions(1)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = false
-        });
-
-    private Profile? _activeProfile;
-    private CancellationTokenSource? _foregroundWorkerCancellation;
-    private Task? _foregroundWorkerTask;
+    // Foreground callbacks, live profile edits, and display/power reapply events arrive on different
+    // threads. Generation allocation, identity publication, and both channel writes must be one
+    // indivisible operation; otherwise generation N+1 can be queued before N and the input worker can
+    // permanently regress its active generation behind the published one.
+    private readonly object _publicationLock = new();
+    private Channel<ForegroundSnapshot>? _inputChanges;
+    private Channel<ForegroundSnapshot>? _colorChanges;
+    private volatile Profile? _activeProfile;
+    private volatile ForegroundSnapshot? _latestForeground;
+    private CancellationTokenSource? _workerCancellation;
+    private Task? _inputWorkerTask;
+    private Task? _colorWorkerTask;
+    private long _foregroundGeneration;
     // F-010: set at the START of StopAsync; the worker checks it before every side effect so a late-returning
     // (uncancelable) native color call can't activate input / touch the tray after shutdown has begun.
     private volatile bool _stopping;
@@ -48,7 +58,6 @@ public sealed class ProfileActivationService : IHostedService
     // of the press and preserves parity (one flip per press), instead of a deferred worker flip keyed off the
     // capacity-1 DropOldest channel (which coalesces and could otherwise flip the wrong/later profile).
     private volatile ColorSettings? _activeColorSettings;
-    private volatile string? _lastProcessName;
     private bool _reapplyHandlersRegistered;
 
     public ProfileActivationService(
@@ -75,15 +84,64 @@ public sealed class ProfileActivationService : IHostedService
 
         try
         {
-            _inputHookService.SetWindowsProfile(_profileManager.WindowsProfile);
-            _inputHookService.Start();
+            Channel<ForegroundSnapshot> inputChanges;
+            Channel<ForegroundSnapshot> colorChanges;
+            CancellationTokenSource workerCancellation;
+            lock (_publicationLock)
+            {
+                if (_inputWorkerTask is { IsCompleted: false } ||
+                    _colorWorkerTask is { IsCompleted: false })
+                {
+                    throw new InvalidOperationException(
+                        "The previous activation workers are still shutting down; retry Start after they exit.");
+                }
 
-            _foregroundWorkerCancellation = new CancellationTokenSource();
-            _foregroundWorkerTask = Task.Run(
-                () => ProcessForegroundChangesAsync(_foregroundWorkerCancellation.Token),
+                _workerCancellation?.Dispose();
+                _workerCancellation = null;
+                _inputWorkerTask = null;
+                _colorWorkerTask = null;
+                _inputChanges = null;
+                _colorChanges = null;
+                _stopping = false;
+                _initialEventFired = false;
+                inputChanges = Channel.CreateUnbounded<ForegroundSnapshot>(
+                    new UnboundedChannelOptions
+                    {
+                        SingleReader = true,
+                        SingleWriter = false,
+                        AllowSynchronousContinuations = false
+                    });
+                colorChanges = Channel.CreateBounded<ForegroundSnapshot>(
+                    new BoundedChannelOptions(1)
+                    {
+                        FullMode = BoundedChannelFullMode.DropOldest,
+                        SingleReader = true,
+                        SingleWriter = false,
+                        AllowSynchronousContinuations = false
+                    });
+                workerCancellation = new CancellationTokenSource();
+                _inputChanges = inputChanges;
+                _colorChanges = colorChanges;
+                _workerCancellation = workerCancellation;
+            }
+
+            _inputHookService.SetWindowsProfile(_profileManager.WindowsProfile);
+            StartInputHookOnDispatcher();
+
+            // Capture this run's immutable channel/token state. A failed start may clear the service
+            // fields before Task.Run schedules its delegate; field-capturing here could otherwise make
+            // the retired worker dereference null or consume a later restart's channel.
+            var workerToken = workerCancellation.Token;
+            _inputWorkerTask = Task.Run(
+                () => ProcessInputChangesAsync(inputChanges, workerToken),
+                CancellationToken.None);
+            _colorWorkerTask = Task.Run(
+                () => ProcessColorChangesAsync(colorChanges, workerToken),
                 CancellationToken.None);
 
             _foregroundWatcher.ForegroundChanged += OnForegroundChanged;
+            _profileManager.ProfileAdded += OnProfileAdded;
+            _profileManager.ProfileRemoved += OnProfileRemoved;
             _inputHookService.ActiveProfileChanged += OnActiveProfileChanged;
             _inputHookService.ColorVariantToggleRequested += OnColorVariantToggleRequested;
             SystemEvents.DisplaySettingsChanged += OnReapplyRequested;
@@ -93,7 +151,7 @@ public sealed class ProfileActivationService : IHostedService
 
             if (!_initialEventFired)
             {
-                _foregroundChanges.Writer.TryWrite(null);
+                PublishForeground(IntPtr.Zero, 0, null);
             }
         }
         catch
@@ -105,9 +163,32 @@ public sealed class ProfileActivationService : IHostedService
         }
     }
 
+    private void StartInputHookOnDispatcher()
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.Invoke(_inputHookService.Start);
+            return;
+        }
+
+        _inputHookService.Start();
+    }
+
     private void CleanupAfterFailedStart()
     {
+        CancellationTokenSource? workerCancellation;
+        lock (_publicationLock)
+        {
+            _stopping = true;
+            _inputChanges?.Writer.TryComplete();
+            _colorChanges?.Writer.TryComplete();
+            workerCancellation = _workerCancellation;
+        }
+
         try { _foregroundWatcher.ForegroundChanged -= OnForegroundChanged; } catch { /* best effort */ }
+        try { _profileManager.ProfileAdded -= OnProfileAdded; } catch { /* best effort */ }
+        try { _profileManager.ProfileRemoved -= OnProfileRemoved; } catch { /* best effort */ }
         try { _inputHookService.ActiveProfileChanged -= OnActiveProfileChanged; } catch { /* best effort */ }
         try { _inputHookService.ColorVariantToggleRequested -= OnColorVariantToggleRequested; } catch { /* best effort */ }
 
@@ -119,21 +200,44 @@ public sealed class ProfileActivationService : IHostedService
         }
 
         try { _foregroundWatcher.Stop(); } catch { /* best effort */ }
-        _foregroundChanges.Writer.TryComplete();
-        _foregroundWorkerCancellation?.Cancel();
+        workerCancellation?.Cancel();
         try { _inputHookService.Stop(); } catch { /* best effort */ }
 
-        _foregroundWorkerCancellation?.Dispose();
-        _foregroundWorkerCancellation = null;
-        _foregroundWorkerTask = null;
+        lock (_publicationLock)
+        {
+            if ((_inputWorkerTask?.IsCompleted ?? true) &&
+                (_colorWorkerTask?.IsCompleted ?? true))
+            {
+                workerCancellation?.Dispose();
+                _workerCancellation = null;
+                _inputWorkerTask = null;
+                _colorWorkerTask = null;
+                _inputChanges = null;
+                _colorChanges = null;
+            }
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         // F-010: signal the worker to make any in-flight/late foreground change side-effect-free — a native
         // color call that can't be canceled must not activate input or touch the tray after we stop below.
-        _stopping = true;
+        CancellationTokenSource? workerCancellation;
+        Task? inputWorkerTask;
+        Task? colorWorkerTask;
+        lock (_publicationLock)
+        {
+            _stopping = true;
+            _inputChanges?.Writer.TryComplete();
+            _colorChanges?.Writer.TryComplete();
+            workerCancellation = _workerCancellation;
+            inputWorkerTask = _inputWorkerTask;
+            colorWorkerTask = _colorWorkerTask;
+        }
+
         _foregroundWatcher.ForegroundChanged -= OnForegroundChanged;
+        _profileManager.ProfileAdded -= OnProfileAdded;
+        _profileManager.ProfileRemoved -= OnProfileRemoved;
         _inputHookService.ActiveProfileChanged -= OnActiveProfileChanged;
         _inputHookService.ColorVariantToggleRequested -= OnColorVariantToggleRequested;
         if (_reapplyHandlersRegistered)
@@ -143,49 +247,169 @@ public sealed class ProfileActivationService : IHostedService
             _reapplyHandlersRegistered = false;
         }
         _foregroundWatcher.Stop();
-        _foregroundChanges.Writer.TryComplete();
-        _foregroundWorkerCancellation?.Cancel();
+        workerCancellation?.Cancel();
 
-        if (_foregroundWorkerTask is not null)
+        // Input teardown must never wait behind a slow, non-cancelable native color call.
+        _inputHookService.Stop();
+        var inputWorkerCompleted =
+            await WaitForWorkerAsync(inputWorkerTask, cancellationToken).ConfigureAwait(false);
+        var colorWorkerCompleted =
+            await WaitForWorkerAsync(colorWorkerTask, cancellationToken).ConfigureAwait(false);
+
+        _activeProfile = null;
+        _activeColorSettings = null;
+        _lastAppliedColorPlan = ColorPlan.Empty;
+        lock (_publicationLock)
         {
-            try
+            _latestForeground = null;
+            if (inputWorkerCompleted && colorWorkerCompleted)
             {
-                await _foregroundWorkerTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // StopAsync can only cancel pending work; in-flight native calls finish synchronously.
+                workerCancellation?.Dispose();
+                _workerCancellation = null;
+                _inputWorkerTask = null;
+                _colorWorkerTask = null;
+                _inputChanges = null;
+                _colorChanges = null;
             }
         }
+    }
 
-        _inputHookService.Stop();
-        _activeProfile = null;
-        _lastAppliedColorPlan = ColorPlan.Empty;
-        _foregroundWorkerCancellation?.Dispose();
-        _foregroundWorkerCancellation = null;
-        _foregroundWorkerTask = null;
+    private static async Task<bool> WaitForWorkerAsync(
+        Task? worker,
+        CancellationToken cancellationToken)
+    {
+        if (worker is null)
+        {
+            return true;
+        }
+
+        try
+        {
+            await worker.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            // Pending work was canceled; an in-flight native color call completes synchronously.
+            return worker.IsCompleted;
+        }
     }
 
     private void OnForegroundChanged(object? sender, ForegroundChangedEventArgs e)
     {
         _initialEventFired = true;
-        // A1: publish the foreground identity to the input hook IMMEDIATELY (on this watcher thread, off
-        // the low-level hook thread), before the name-only channel write. Auto-Run activation confirms the
-        // live foreground against this {hwnd,pid,exe} snapshot to fail closed without a hook-thread
-        // Process.GetProcessById.
-        _inputHookService.SetForegroundIdentity(e.WindowHandle, e.ProcessId, Utilities.ExecutableName.Normalize(e.ProcessName));
-        // Record the newest foreground app on arrival (NOT at end-of-processing) so a resume/display
-        // re-apply enqueues the genuinely-current app, never a previously-processed one (§14.2).
-        _lastProcessName = e.ProcessName;
-        _foregroundChanges.Writer.TryWrite(e.ProcessName);
+        PublishForeground(e.WindowHandle, e.ProcessId, e.ProcessName);
+    }
+
+    private void PublishForeground(IntPtr windowHandle, uint processId, string? processName)
+    {
+        lock (_publicationLock)
+        {
+            if (_stopping)
+            {
+                return;
+            }
+
+            PublishForegroundLocked(windowHandle, processId, processName);
+        }
+    }
+
+    // Caller holds _publicationLock. Keeping generation allocation through both writes under one gate
+    // makes channel order identical to generation order for every publisher.
+    private void PublishForegroundLocked(IntPtr windowHandle, uint processId, string? processName)
+    {
+        var normalizedExecutable = string.IsNullOrWhiteSpace(processName)
+            ? null
+            : Utilities.ExecutableName.Normalize(processName);
+        var profile = string.IsNullOrWhiteSpace(processName)
+            ? null
+            : _profileManager.FindByExecutable(processName);
+        var generation = ++_foregroundGeneration;
+        var snapshot = new ForegroundSnapshot(
+            generation,
+            windowHandle,
+            processId,
+            processName,
+            normalizedExecutable,
+            profile);
+
+        // Publish identity + generation before queuing activation. Until the lossless input worker catches
+        // up, InputHookService rejects only NEW profile-scoped presses; recorded releases still drain.
+        var previousForeground = _latestForeground;
+        _latestForeground = snapshot;
+        _inputHookService.SetForegroundIdentity(windowHandle, processId, normalizedExecutable, generation);
+
+        // A Foreground AutoRun belongs to the exact focused window, not merely to a profile/exe.
+        // The same game can replace its HWND or restart under a new PID while still resolving to the
+        // same Profile instance. End that run synchronously before the activation worker catches up.
+        var foregroundIdentityChanged = previousForeground is null ||
+                                        previousForeground.WindowHandle != windowHandle ||
+                                        previousForeground.ProcessId != processId;
+        if (foregroundIdentityChanged || !ReferenceEquals(profile, _activeProfile))
+        {
+            _inputHookService.ReleaseForegroundAutoRun();
+        }
+
+        _inputChanges?.Writer.TryWrite(snapshot);
+        _colorChanges?.Writer.TryWrite(snapshot);
+    }
+
+    private void RepublishLatestForeground()
+    {
+        lock (_publicationLock)
+        {
+            if (_stopping)
+            {
+                return;
+            }
+
+            var latest = _latestForeground;
+            if (latest is not null)
+            {
+                PublishForegroundLocked(latest.WindowHandle, latest.ProcessId, latest.ProcessName);
+            }
+        }
+    }
+
+    public void NotifyProfileChanged(Profile profile, ProfileChangeKind changeKind)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        if (_stopping || changeKind == ProfileChangeKind.None)
+        {
+            return;
+        }
+
+        if ((changeKind & (ProfileChangeKind.Master | ProfileChangeKind.Identity | ProfileChangeKind.Removed)) != 0)
+        {
+            // Publish the invalidating generation first. The hook immediately fails open for new
+            // profile-scoped presses while reconciliation releases already-owned state.
+            RepublishLatestForeground();
+            _inputHookService.ReconcileProfileSettings(profile, changeKind);
+            return;
+        }
+
+        _inputHookService.ReconcileProfileSettings(profile, changeKind);
+
+        if ((changeKind & ProfileChangeKind.Color) != 0)
+        {
+            QueueLatestColor(force: true);
+        }
+    }
+
+    private void OnProfileAdded(object? sender, Profile profile)
+    {
+        RepublishLatestForeground();
+    }
+
+    private void OnProfileRemoved(object? sender, Profile profile)
+    {
+        NotifyProfileChanged(profile, ProfileChangeKind.Removed);
     }
 
     private void OnReapplyRequested(object? sender, EventArgs e)
     {
-        // Handler only touches an Interlocked flag + a thread-safe channel write; _lastAppliedColorPlan
-        // stays owned by the worker thread.
-        Interlocked.Exchange(ref _forceReapply, 1);
-        _foregroundChanges.Writer.TryWrite(_lastProcessName);
+        QueueLatestColor(force: true);
     }
 
     private void OnColorVariantToggleRequested(object? sender, EventArgs e)
@@ -195,8 +419,29 @@ public sealed class ProfileActivationService : IHostedService
         // off the coalescing channel — preserves parity (one flip per press) and targets the color that was
         // visible at the instant of the press.
         _activeColorSettings?.ToggleVariant();
-        Interlocked.Exchange(ref _forceReapply, 1);
-        _foregroundChanges.Writer.TryWrite(_lastProcessName);
+        QueueLatestColor(force: true);
+    }
+
+    private void QueueLatestColor(bool force)
+    {
+        lock (_publicationLock)
+        {
+            if (_stopping)
+            {
+                return;
+            }
+
+            if (force)
+            {
+                Interlocked.Exchange(ref _forceReapply, 1);
+            }
+
+            var latest = _latestForeground;
+            if (latest is not null)
+            {
+                _colorChanges?.Writer.TryWrite(latest);
+            }
+        }
     }
 
     private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
@@ -207,13 +452,48 @@ public sealed class ProfileActivationService : IHostedService
         }
     }
 
-    private async Task ProcessForegroundChangesAsync(CancellationToken cancellationToken)
+    private async Task ProcessInputChangesAsync(
+        Channel<ForegroundSnapshot> channel,
+        CancellationToken cancellationToken)
     {
-        await foreach (var processName in _foregroundChanges.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var snapshot in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
-                ProcessForegroundChange(processName);
+                if (_stopping)
+                {
+                    continue;
+                }
+
+                if (snapshot.Profile is { IsEnabled: true } profile)
+                {
+                    _inputHookService.ActivateProfile(profile, snapshot.Generation);
+                }
+                else
+                {
+                    _inputHookService.DeactivateProfile(snapshot.Generation);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"[Input] Profile activation failed: {ex}");
+            }
+        }
+    }
+
+    private async Task ProcessColorChangesAsync(
+        Channel<ForegroundSnapshot> channel,
+        CancellationToken cancellationToken)
+    {
+        await foreach (var snapshot in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                ProcessColorChange(snapshot);
             }
             catch (OperationCanceledException)
             {
@@ -226,28 +506,16 @@ public sealed class ProfileActivationService : IHostedService
         }
     }
 
-    private void ProcessForegroundChange(string? processName)
+    private void ProcessColorChange(ForegroundSnapshot snapshot)
     {
-        if (_stopping)
+        var latest = _latestForeground;
+        if (_stopping || latest is null || latest.Generation != snapshot.Generation)
         {
-            return; // F-010: shutdown began — don't start new activation/color work.
-        }
-
-        var profile = string.IsNullOrWhiteSpace(processName)
-            ? null
-            : _profileManager.FindByExecutable(processName);
-
-        // Eager Auto-Run release the moment focus LEAVES the active profile — BEFORE the color work —
-        // so a held Foreground W can't briefly leak into the incoming window during ApplyColorPlan. The
-        // profile switch below still releases via ReleaseAllState (the hard no-stuck-key guarantee);
-        // this only tightens the leak window. Same-app refocus (profile == _activeProfile) is a no-op.
-        if (!ReferenceEquals(profile, _activeProfile))
-        {
-            _inputHookService.ReleaseForegroundAutoRun();
+            return;
         }
 
         var displays = _displayService.GetDisplays();
-        var plan = BuildColorPlan(profile, displays, _profileManager);
+        var plan = BuildColorPlan(snapshot.Profile, displays, _profileManager);
 
         var force = Interlocked.Exchange(ref _forceReapply, 0) == 1;
         var planOnScreen = true;
@@ -268,23 +536,10 @@ public sealed class ProfileActivationService : IHostedService
         // Publish AFTER a SUCCESSFUL/current apply so the color-toggle hook event only ever flips the
         // ColorSettings whose plan is actually on screen — not a profile whose color failed to apply or hasn't
         // been applied yet (codex). On failure _activeColorSettings keeps the old (still-visible) target.
-        if (planOnScreen)
+        latest = _latestForeground;
+        if (planOnScreen && latest is not null && latest.Generation == snapshot.Generation)
         {
-            _activeColorSettings = ResolveColorSettings(profile, _profileManager);
-        }
-
-        if (_stopping)
-        {
-            return; // F-010: StopAsync began during the (possibly slow) color apply — don't touch input/tray.
-        }
-
-        if (profile is { IsEnabled: true })
-        {
-            _inputHookService.ActivateProfile(profile);
-        }
-        else
-        {
-            _inputHookService.DeactivateProfile();
+            _activeColorSettings = ResolveColorSettings(snapshot.Profile, _profileManager);
         }
     }
 

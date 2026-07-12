@@ -15,6 +15,8 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
 {
     private readonly IProfileStore _store = store;
     private readonly List<Profile> _profiles = [];
+    private readonly HashSet<Profile> _removedProfiles =
+        new(ReferenceEqualityComparer.Instance);
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     // Immutable snapshot swapped under _gate after every mutation. Read APIs (called from the background
@@ -165,6 +167,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
             // (which is what cancels the pending autosave, so that too happens only on success).
             await _store.DeleteProfileAsync(profile, cancellationToken).ConfigureAwait(false);
             _profiles.Remove(profile);
+            _removedProfiles.Add(profile);
             RebuildSnapshot();
         }
         finally
@@ -243,35 +246,84 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
         }
 
         // Read the immutable snapshot (not the live _profiles) so this can't race an add/remove.
+        // Legacy/copied INIs can still contain duplicate executable identities. Fail closed when that
+        // happens: both profiles stay visible for repair, but filesystem enumeration order can never
+        // decide which bindings activate.
         var snapshot = _snapshot;
-        return snapshot.FirstOrDefault(p =>
-            string.Equals(p.NormalizedExecutable, normalized, StringComparison.OrdinalIgnoreCase));
+        Profile? match = null;
+        foreach (var profile in snapshot)
+        {
+            if (!string.Equals(
+                    profile.NormalizedExecutable,
+                    normalized,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (match is not null)
+            {
+                return null;
+            }
+
+            match = profile;
+        }
+
+        return match;
     }
 
-    public async Task SaveProfileAsync(Profile profile, CancellationToken cancellationToken = default)
+    public Task SaveProfileAsync(
+        Profile profile,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        return SaveProfileSnapshotAsync(
+            profile,
+            ProfilePersistenceSnapshot.Create(profile),
+            cancellationToken);
+    }
+
+    public async Task SaveProfileSnapshotAsync(
+        Profile managedProfile,
+        Profile persistenceSnapshot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(managedProfile);
+        ArgumentNullException.ThrowIfNull(persistenceSnapshot);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!_profiles.Contains(profile))
+            if (!_profiles.Contains(managedProfile))
             {
+                // A successful durable removal may win the manager gate just before an already-queued
+                // autosave. Treat only that known removed instance as canceled work; arbitrary unmanaged
+                // profiles remain programmer errors.
+                if (_removedProfiles.Contains(managedProfile))
+                {
+                    return;
+                }
+
                 throw new InvalidOperationException("Profile is not managed by this manager.");
             }
 
             // Check for duplicate profile name (excluding the current profile)
-            if (_profiles.Any(p => !ReferenceEquals(p, profile) &&
-                                   string.Equals(p.Name, profile.Name, StringComparison.OrdinalIgnoreCase)))
+            if (_profiles.Any(p => !ReferenceEquals(p, managedProfile) &&
+                                   string.Equals(
+                                       p.Name,
+                                       persistenceSnapshot.Name,
+                                       StringComparison.OrdinalIgnoreCase)))
             {
-                throw new InvalidOperationException($"A profile named '{profile.Name}' already exists.");
+                throw new InvalidOperationException(
+                    $"A profile named '{persistenceSnapshot.Name}' already exists.");
             }
 
             // F-017: executable validation is centralized so EVERY persistence path (inline edit, Modify
             // dialog, Add, programmatic) is protected, not just the Modify dialog.
-            ValidateCustomProfile(profile);
+            ValidateCustomProfile(persistenceSnapshot, managedProfile);
 
-            await _store.SaveProfileAsync(profile, cancellationToken).ConfigureAwait(false);
+            await _store.SaveProfileAsync(persistenceSnapshot, cancellationToken).ConfigureAwait(false);
+            managedProfile.SourcePath = persistenceSnapshot.SourcePath;
         }
         finally
         {
@@ -282,8 +334,9 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
     // F-017: single executable-validation used by every custom-profile persistence entry point (Add +
     // Save). Built-ins carry no executable and are exempt. A custom profile must target a non-empty, .exe,
     // and unique-by-normalized-name executable — empty never activates, non-.exe is rejected by policy,
-    // and a duplicate is shadowed by list order. (Rename is name-only and does not touch the executable.)
-    private void ValidateCustomProfile(Profile profile)
+    // and a newly-saved duplicate would make activation ambiguous. (Rename is name-only and does not
+    // touch the executable.)
+    private void ValidateCustomProfile(Profile profile, Profile? managedProfile = null)
     {
         if (profile.Kind != ProfileKind.Custom)
         {
@@ -300,7 +353,8 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
             throw new InvalidOperationException("The target must be an .exe executable.");
         }
 
-        if (_profiles.Any(p => !ReferenceEquals(p, profile) &&
+        var excluded = managedProfile ?? profile;
+        if (_profiles.Any(p => !ReferenceEquals(p, excluded) &&
                                string.Equals(p.NormalizedExecutable, profile.NormalizedExecutable, StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidOperationException($"A profile for executable '{profile.Executable}' already exists.");

@@ -24,10 +24,12 @@ public sealed class InMemoryProfileStore : IProfileStore
     // test assert how many persists actually ran (e.g. coalescing).
     public TaskCompletionSource? SaveGate { get; set; }
     public int SaveCount { get; private set; }
+    public List<Profile> SavedProfiles { get; } = [];
 
     // Signaled when SaveProfileAsync is entered (past the save-loop's top-of-loop guard, so the profile has
     // already left _dirty) — lets a test deterministically act while a save is genuinely in flight.
     public TaskCompletionSource? SaveEntered { get; set; }
+    public Action? Saving { get; set; }
 
     public Task<IReadOnlyList<Profile>> LoadProfilesAsync(CancellationToken cancellationToken)
     {
@@ -39,6 +41,7 @@ public sealed class InMemoryProfileStore : IProfileStore
         ArgumentNullException.ThrowIfNull(profile);
 
         SaveEntered?.TrySetResult(); // signal the save is genuinely in flight (past the loop's top guard)
+        Saving?.Invoke();
 
         // Gate BEFORE the exception so a test can hold a failing save in flight, then release it.
         var gate = SaveGate;
@@ -60,6 +63,7 @@ public sealed class InMemoryProfileStore : IProfileStore
             _profiles.Add(profile);
         }
 
+        SavedProfiles.Add(profile);
         SaveCount++;
     }
 
@@ -67,7 +71,9 @@ public sealed class InMemoryProfileStore : IProfileStore
     {
         ArgumentNullException.ThrowIfNull(profile);
         if (DeleteException is not null) throw DeleteException;
-        _profiles.Remove(profile);
+        _profiles.RemoveAll(candidate =>
+            ReferenceEquals(candidate, profile) ||
+            string.Equals(candidate.Name, profile.Name, StringComparison.Ordinal));
         _deletedNames.Add(profile.Name);
         return Task.CompletedTask;
     }
