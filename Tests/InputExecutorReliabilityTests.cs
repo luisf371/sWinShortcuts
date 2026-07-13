@@ -62,7 +62,8 @@ public sealed class InputExecutorReliabilityTests
             isKeyDown: true,
             isKeyUp: false));
 
-        // Release is never absorbed; it clears the edge latch without cancelling Auto-Run.
+        // Release clears the physical edge latch. The active handoff handler separately decides whether
+        // the target-visible UP is suppressed; this pure helper only owns physical-state bookkeeping.
         Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
             ref physicallyDown,
             isKeyDown: false,
@@ -76,32 +77,179 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
-    public void AutoRunPhysicalW_Handoff_ConsumesRepeatAndFocusedReleaseButNextPressCancels()
+    public async Task AutoRunForeground_PhysicalWHeldAtActivation_SuppressesReleaseThenStartsScriptedHold()
     {
-        var physicallyDown = true;
-        var handoffActive = true;
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
 
-        // A held W repeat remains down and is consumed while the game owns the handoff.
-        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
-            ref physicallyDown,
-            isKeyDown: true,
-            isKeyUp: false));
-        Assert.True(InputHookService.ShouldConsumeAutoRunPhysicalWHandoff(handoffActive, targetFocused: true));
+        try
+        {
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            service.ConfigureForegroundAutoRunHandoffForTesting(
+                profile,
+                sprintEnabled: true,
+                sprintMode: SprintActivation.Hold,
+                sprintKey: Key.LeftShift);
 
-        // The physical UP clears the handoff; Auto-Run transfers to its synthetic W before consuming it.
-        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
-            ref physicallyDown,
-            isKeyDown: false,
-            isKeyUp: true));
-        handoffActive = false;
-        Assert.False(InputHookService.ShouldConsumeAutoRunPhysicalWHandoff(handoffActive, targetFocused: true));
-        Assert.False(InputHookService.ShouldConsumeAutoRunPhysicalWHandoff(handoffActive: true, targetFocused: false));
+            // Typematic W repeats remain ordinary physical input and do not start the scripted sequence.
+            Assert.False(service.HandleAutoRunForTesting(Key.W, isKeyDown: true, isKeyUp: false));
+            Assert.Empty(sender.Transitions);
 
-        // A genuinely new W press is fresh again and must remain available to cancel Auto-Run.
-        Assert.True(InputHookService.ApplyAutoRunPhysicalKeyEvent(
-            ref physicallyDown,
-            isKeyDown: true,
-            isKeyUp: false));
+            // KeyWait semantics: suppress the target-visible UP so movement never stops. The observed hook
+            // event is authoritative; the off-hook executor emits one W DOWN followed by deferred sprint.
+            Assert.True(service.HandleAutoRunForTesting(Key.W, isKeyDown: false, isKeyUp: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            Assert.Equal(
+                new[] { (Key.W, true), (Key.LeftShift, true) },
+                sender.Transitions.Select(item => (item.Key, item.IsDown)).ToArray());
+
+            // A duplicate UP cannot start a second handoff.
+            Assert.False(service.HandleAutoRunForTesting(Key.W, isKeyDown: false, isKeyUp: true));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(2, sender.Transitions.Count);
+        }
+        finally
+        {
+            service.ReleaseForegroundAutoRun();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task AutoRunForeground_QueuedPhysicalWHandoffReleasedBeforeExecutorDrain_DoesNotInjectDown()
+    {
+        var sender = new RecordingInputSender(blockDummy: true);
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var gate = service.EnqueueDummyForTesting();
+            Assert.True(sender.DummyEntered.Wait(TimeSpan.FromSeconds(2)));
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            service.ConfigureForegroundAutoRunHandoffForTesting(
+                profile,
+                sprintEnabled: true,
+                sprintMode: SprintActivation.Hold,
+                sprintKey: Key.LeftShift);
+
+            Assert.True(service.HandleAutoRunForTesting(Key.W, isKeyDown: false, isKeyUp: true));
+            Assert.Empty(sender.Transitions);
+
+            service.ReleaseForegroundAutoRun();
+            sender.ReleaseDummy.Set();
+            Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(
+                new[] { (Key.W, false), (Key.LeftShift, false) },
+                sender.Transitions.Select(item => (item.Key, item.IsDown)).ToArray());
+        }
+        finally
+        {
+            sender.ReleaseDummy.Set();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task AutoRunForeground_SuppressedWHandoffUp_ReleasesPairedConsumers()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureCombinedOverrideForTesting(
+                source: Key.W,
+                target: Key.F,
+                suppressOriginal: true);
+            service.ConfigureLauncherLatchForTesting(
+                new Profile { Name = "Windows" },
+                Key.W);
+            await WaitForAsync(() => sender.Transitions.Count == 1);
+
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            service.ConfigureForegroundAutoRunHandoffForTesting(profile);
+
+            Assert.True(service.HandleAutoRunForTesting(Key.W, isKeyDown: false, isKeyUp: true));
+            await WaitForAsync(() => sender.Transitions.Count == 3);
+            Assert.Equal(
+                new[] { (Key.F, true), (Key.W, true), (Key.F, false) },
+                sender.Transitions.Select(item => (item.Key, item.IsDown)).ToArray());
+            Assert.False(service.HandleLauncherForTesting(Key.W, isDown: false));
+        }
+        finally
+        {
+            service.ReleaseForegroundAutoRun();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task AutoRunForeground_FreshWPress_StopsOnlyOnMatchingPhysicalUp()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            service.ConfigureForegroundAutoRunForTesting(
+                profile,
+                sprintInjected: true,
+                sprintKey: Key.LeftShift);
+
+            Assert.False(service.HandleAutoRunForTesting(Key.W, isKeyDown: true, isKeyUp: false));
+            Assert.False(service.HandleAutoRunForTesting(Key.W, isKeyDown: true, isKeyUp: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Empty(sender.Transitions);
+
+            Assert.False(service.HandleAutoRunForTesting(Key.W, isKeyDown: false, isKeyUp: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            Assert.Equal(
+                new[] { (Key.W, false), (Key.LeftShift, false) },
+                sender.Transitions.Select(item => (item.Key, item.IsDown)).ToArray());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void AutoRunBackground_AttachPolicy_UsesOneForcedReassertOrUnfocusedTarget()
+    {
+        Assert.False(InputHookService.ShouldAttachBackgroundInput(
+            onBackgroundThread: true,
+            targetIsForegroundProcess: true,
+            targetThread: 22,
+            currentThread: 11,
+            targetIsHung: false));
+
+        Assert.True(InputHookService.ShouldAttachBackgroundInput(
+            onBackgroundThread: true,
+            targetIsForegroundProcess: true,
+            targetThread: 22,
+            currentThread: 11,
+            targetIsHung: false,
+            forceAttach: true));
+
+        Assert.True(InputHookService.ShouldAttachBackgroundInput(
+            onBackgroundThread: true,
+            targetIsForegroundProcess: false,
+            targetThread: 22,
+            currentThread: 11,
+            targetIsHung: false));
+
+        Assert.False(InputHookService.ShouldAttachBackgroundInput(
+            onBackgroundThread: true,
+            targetIsForegroundProcess: false,
+            targetThread: 22,
+            currentThread: 11,
+            targetIsHung: true));
     }
 
     [Fact]

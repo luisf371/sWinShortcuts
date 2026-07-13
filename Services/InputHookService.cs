@@ -212,6 +212,7 @@ public sealed class InputHookService : IInputHookService
     private BlockingCollection<HoldBreathInjection>? _holdBreathInjectionQueue;
     private Thread? _holdBreathInjectionThread;
     private readonly object _inputInjectionEnqueueLock = new();
+    private volatile bool _bypassAutoRunForegroundOwnershipForTesting;
     private long _altMouseGeneration = 1;
     
     // ==================== AUTO-RUN STATE ====================
@@ -254,7 +255,7 @@ public sealed class InputHookService : IInputHookService
     private Key _autoRunSprintInjectedKey;      // guarded by _autoRunLock
     private Key _autoRunSprintKey;              // sprint-key snapshot for the run; written under _autoRunLock, read lock-free after the volatile _autoRunActive publish
     private bool _autoRunSprintToggleable;      // snapshot: SprintEnabled && Hold mode — the sprint key acts as the sustained-sprint stamina toggle (never cancels)
-    private bool _autoRunSprintEnabled;         // Background only: sprint pending the delayed activation on the Background thread (see DoDelayedBackgroundSprintActivation); guarded by _autoRunLock
+    private bool _autoRunSprintEnabled;         // Pending scripted sprint; consumed after W starts (Foreground handoff or Background delayed activation); guarded by _autoRunLock
     // Sprint state is SPLIT (codex sol/xhigh): _autoRunSprintIntendedHeld = the user WANTS sprint held for
     // this run; _autoRunSprintInjected = best-effort belief the target CURRENTLY treats sprint as down in
     // the current focus epoch. They diverge after alt-tab (the game clears sprint on focus-loss → current
@@ -303,12 +304,21 @@ public sealed class InputHookService : IInputHookService
     private bool _wPhysicallyDown;
     private bool _sPhysicallyDown;
     private bool _sprintPhysicallyDown;
+    private readonly record struct AutoRunPhysicalEvent(
+        bool FreshW,
+        bool FreshS,
+        bool SuppressPhysicalWHandoffUp);
     // When Auto-Run starts while physical W is already held, the physical key is the handoff source. While
-    // this latch is set, W repeats and the matching physical UP are consumed while the game is focused so
-    // they cannot fight the synthetic W hold. A later W DOWN after that UP remains a genuine cancel edge.
+    // this latch is set, physical repeats remain physical and no scripted sequence starts. The matching UP
+    // is suppressed, then an off-hook worker starts the synthetic W hold. A later fresh W DOWN arms a
+    // graceful manual takeover: Auto-Run stays active until that physical press emits its matching UP.
     // Written by the keyboard hook and read by the Background thread, so keep the handoff publication
     // explicit even though the other Auto-Run records are lock-guarded.
     private volatile bool _autoRunPhysicalWHandoff;
+    // Set after the handoff's physical W-UP is suppressed and cleared once a scripted W-DOWN is recorded.
+    // If teardown wins that gap, it still owes the target a W-UP even though no synthetic DOWN landed yet.
+    private bool _autoRunSuppressedPhysicalWUp;
+    private bool _autoRunStopOnPhysicalWUp;
 
     // ==================== ANTI-AFK STATE ====================
     // One always-ticking timer (fixed coarse period). No arm/disarm — each tick reads live conditions,
@@ -568,6 +578,45 @@ public sealed class InputHookService : IInputHookService
             _autoRunIsBackground = false;
             _autoRunActive = true;
         }
+    }
+
+    internal void ConfigureForegroundAutoRunHandoffForTesting(
+        Profile owner,
+        bool sprintEnabled = false,
+        SprintActivation sprintMode = SprintActivation.Hold,
+        Key sprintKey = Key.LeftShift)
+    {
+        lock (_autoRunLock)
+        {
+            _wPhysicallyDown = true;
+            _autoRunPhysicalWHandoff = true;
+            _autoRunMoveInjected = false;
+            _autoRunSprintEnabled = sprintEnabled;
+            _autoRunSprintToggleable = sprintEnabled && sprintMode == SprintActivation.Hold;
+            _autoRunSprintIntendedHeld = _autoRunSprintToggleable;
+            _autoRunSprintInjected = false;
+            _autoRunSprintKey = sprintKey;
+            _autoRunSprintInjectedKey = Key.None;
+            _autoRunIsBackground = false;
+            _autoRunForegroundGuardExe = null;
+            _bypassAutoRunForegroundOwnershipForTesting = true;
+            _activeAutoRunInjectionGeneration = Interlocked.Increment(ref _autoRunInjectionGeneration);
+            _autoRunOwnerProfile = owner;
+            _autoRunStopOnPhysicalWUp = false;
+            _autoRunActive = true;
+        }
+    }
+
+    internal bool HandleAutoRunForTesting(Key key, bool isKeyDown, bool isKeyUp)
+    {
+        var vkCode = KeyInteropUtilities.ToVirtualKey(key);
+        var physicalEvent = ObserveAutoRunPhysicalEvent(vkCode, isKeyDown, isKeyUp);
+        if (physicalEvent.SuppressPhysicalWHandoffUp)
+        {
+            HandleCombinedMappings(vkCode, isKeyDown, isKeyUp);
+            HandleWindowsLauncher(vkCode, isKeyDown, isKeyUp);
+        }
+        return HandleAutoRun(vkCode, isKeyDown, isKeyUp, physicalEvent);
     }
 
     internal void ConfigureCombinedOverrideForTesting(
@@ -1635,7 +1684,21 @@ public sealed class InputHookService : IInputHookService
         // shadows the Alt-tracking that follows.
         HandleColorToggle(vkCode, isKeyDown, isKeyUp);
 
+        // Physical W/S observation must precede every feature that may consume/early-return this event.
+        // In particular, Hold-Breath Early Cancel can own W-UP; Auto-Run still needs to complete its
+        // physical handoff even when that feature ultimately suppresses the same target-visible event.
+        var autoRunPhysicalEvent = ObserveAutoRunPhysicalEvent(vkCode, isKeyDown, isKeyUp);
+
         var suppressEarlyCancelKey = HandleHoldBreathPanicKey(vkCode, isKeyDown, isKeyUp);
+
+        // The original W-UP stays suppressed, but downstream paired consumers still need cleanup: a
+        // combined mapping sourced from W may own a mapped target DOWN, and Win+W launcher may own its
+        // held-key latch. Auto-Run suppression prevents the normal handled-chain from reaching either.
+        if (autoRunPhysicalEvent.SuppressPhysicalWHandoffUp)
+        {
+            HandleCombinedMappings(vkCode, isKeyDown, isKeyUp);
+            HandleWindowsLauncher(vkCode, isKeyDown, isKeyUp);
+        }
 
         // Track Alt key state (lock-free)
         if (vkCode is 0xA4 or 0xA5 or 0x12)  // VK_LMENU, VK_RMENU, VK_MENU
@@ -1669,8 +1732,9 @@ public sealed class InputHookService : IInputHookService
 
         // Auto-Run runs BEFORE the handled-chain: a cancel key (W/S) may ALSO be a combined-mapping
         // source, so it must be seen for cancel detection even when another feature would consume it.
-        // Returns true only to suppress the trigger chord key; W/S/sprint pass through (false).
-        if (HandleAutoRun(vkCode, isKeyDown, isKeyUp))
+        // Returns true for the trigger chord and for the one physical W-UP transferred into an active
+        // Auto-Run handoff; ordinary W/S/sprint input passes through.
+        if (HandleAutoRun(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent))
         {
             return (IntPtr)1;
         }
@@ -3096,7 +3160,9 @@ public sealed class InputHookService : IInputHookService
                     // still drains as a harmless no-op and FIFO pairing is preserved.
                     if (injection.IsDown && injection.AutoRunGeneration != 0
                         && (Volatile.Read(ref _autoRunInjectionGeneration) != injection.AutoRunGeneration
-                            || !WindowBelongsToExe(NativeMethods.GetForegroundWindow(), injection.ExpectedForegroundExe)))
+                            || (!_bypassAutoRunForegroundOwnershipForTesting &&
+                                (injection.ExpectedForegroundExe is null ||
+                                 !WindowBelongsToExe(NativeMethods.GetForegroundWindow(), injection.ExpectedForegroundExe)))))
                     {
                         if (IsDebugEnabled) LogDebug($"AutoRun DOWN skipped (foreground guard): {injection.Key}");
                         continue;
@@ -3133,15 +3199,15 @@ public sealed class InputHookService : IInputHookService
 
     // ==================== AUTO-RUN ====================
 
-    // Called UNCONDITIONALLY at the top of the keyboard dispatch region, BEFORE the handled-chain, so
-    // a cancel key (W/S) that is also a combined-mapping source is still seen for cancel detection.
-    // Returns true ONLY to suppress the trigger chord key; W/S/sprint always pass through (false).
-    private bool HandleAutoRun(int vkCode, bool isKeyDown, bool isKeyUp)
+    // Lock-free, hook-thread-only observation. It is deliberately separate from HandleAutoRun so physical
+    // release ownership is updated before Hold-Breath/other consumers can early-return the hook callback.
+    private AutoRunPhysicalEvent ObserveAutoRunPhysicalEvent(
+        int vkCode,
+        bool isKeyDown,
+        bool isKeyUp)
     {
-        // 1) Physical down-state bookkeeping (lock-free, hook-thread-only). Our own injected W/sprint
-        //    are INPUT_IGNORE-filtered upstream (I1), so these flags track PHYSICAL reality only.
-        //    Capture the pre-update value: a held key auto-repeats with wasDown == true (not fresh).
-        bool freshW = false, freshS = false, freshSprint = false;
+        bool freshW = false;
+        bool freshS = false;
 
         if (vkCode == VK_W)
         {
@@ -3152,28 +3218,85 @@ public sealed class InputHookService : IInputHookService
             freshS = ApplyAutoRunPhysicalKeyEvent(ref _sPhysicallyDown, isKeyDown, isKeyUp);
         }
 
-        var active = _autoRunActive; // volatile read — lock-free hot path
-        var physicalWHandoffEvent = vkCode == VK_W && _autoRunPhysicalWHandoff;
+        if (vkCode == VK_W && isKeyUp)
+        {
+            CompleteAutoRunStopOnPhysicalWUp();
+        }
 
-        // A physical UP ends the handoff even when Auto-Run has already been released off-hook. The UP
-        // itself is handled below while the run is active; clearing here prevents a stale handoff from
-        // affecting a later activation.
+        var active = _autoRunActive;
+        var physicalWHandoffEvent = vkCode == VK_W && _autoRunPhysicalWHandoff;
+        var suppressPhysicalWHandoffUp = active && physicalWHandoffEvent && isKeyUp;
+
         if (vkCode == VK_W && isKeyUp && physicalWHandoffEvent)
         {
             _autoRunPhysicalWHandoff = false;
+            if (active)
+            {
+                BeginAutoRunAfterPhysicalWRelease();
+            }
+
+            // W may itself be the Auto-Run trigger. Clear its paired latches here because an earlier
+            // Hold-Breath consumer can return before HandleAutoRun reaches its ordinary key-up cleanup.
+            if (_autoRunConsumedTriggerVk == vkCode)
+            {
+                _autoRunConsumedTriggerVk = 0;
+            }
+            if (_triggerKeyDownVk == vkCode)
+            {
+                _triggerKeyDownVk = 0;
+            }
         }
 
-        // Once physical W supplied the initial hold, keep its repeats/UP from competing with the
-        // synthetic hold while the target is focused. On a physical UP, transfer ownership to the
-        // synthetic W before consuming that UP so movement continues after the user lets go.
-        var consumePhysicalWHandoff = active && physicalWHandoffEvent &&
-            ShouldConsumeAutoRunPhysicalWHandoff(
-                handoffActive: true,
-                targetFocused: !_autoRunIsBackground || _autoRunBackgroundTargetFocused);
-        if (consumePhysicalWHandoff && isKeyUp)
+        return new AutoRunPhysicalEvent(freshW, freshS, suppressPhysicalWHandoffUp);
+    }
+
+    private bool ArmAutoRunStopOnPhysicalWUp()
+    {
+        lock (_autoRunLock)
         {
-            consumePhysicalWHandoff = EnsureAutoRunWDownAfterPhysicalRelease();
+            if (!_autoRunActive)
+            {
+                return false;
+            }
+
+            _autoRunStopOnPhysicalWUp = true;
+            return true;
         }
+    }
+
+    private void CompleteAutoRunStopOnPhysicalWUp()
+    {
+        lock (_autoRunLock)
+        {
+            if (!_autoRunStopOnPhysicalWUp)
+            {
+                return;
+            }
+
+            _autoRunStopOnPhysicalWUp = false;
+            if (_autoRunActive)
+            {
+                if (IsDebugEnabled) LogDebug("AutoRun graceful stop on physical W UP");
+                ReleaseAutoRunState(includeBackground: true);
+            }
+        }
+    }
+
+    // Called UNCONDITIONALLY at the top of the keyboard dispatch region, BEFORE the handled-chain, so
+    // a cancel key (W/S) that is also a combined-mapping source is still seen for cancel detection.
+    // Returns true for the trigger chord and for the matching physical W-UP of an active handoff. Ordinary
+    // W/S/sprint events pass through so fresh movement keys can still cancel Auto-Run normally.
+    private bool HandleAutoRun(
+        int vkCode,
+        bool isKeyDown,
+        bool isKeyUp,
+        AutoRunPhysicalEvent physicalEvent)
+    {
+        bool freshW = physicalEvent.FreshW;
+        bool freshS = physicalEvent.FreshS;
+        bool freshSprint = false;
+        var active = _autoRunActive; // volatile read — lock-free hot path
+        var suppressPhysicalWHandoffUp = physicalEvent.SuppressPhysicalWHandoffUp;
 
         var sprintVk = active ? KeyInteropUtilities.ToVirtualKey(_autoRunSprintKey) : 0;
 
@@ -3184,8 +3307,9 @@ public sealed class InputHookService : IInputHookService
             freshSprint = ApplyAutoRunPhysicalKeyEvent(ref _sprintPhysicallyDown, isKeyDown, isKeyUp);
         }
 
-        // 2) Cancel on a FRESH physical down-edge of W or S (sprint NO LONGER cancels — see 2b). Pass the
-        //    key THROUGH (return false) so pressing S to cancel still moves you back. A key held THROUGH
+        // 2) A fresh physical W begins a graceful manual takeover: pass it through, keep Auto-Run active,
+        //    and stop only on its matching physical UP. A fresh S still cancels immediately and passes
+        //    through so it moves you back. A key held THROUGH
         //    activation produces no fresh edge (auto-repeat has wasDown == true), so releasing it keeps
         //    you running. A Background run cancels on physical W/S ONLY while the game is focused (user's
         //    choice: chord-only-while-unfocused, so stray W/S in another app can't kill it); a Foreground
@@ -3195,14 +3319,24 @@ public sealed class InputHookService : IInputHookService
         // it is a TOGGLE-OFF chord, not a bare cancel — skip step 2 so it falls to 3c (which toggles off
         // AND consumes the key, so a W/S trigger doesn't leak). Without this, a Background run whose trigger
         // is W/S can't be chord-toggled-off while unfocused (step 2's cancel is focus-gated and returns
-        // before 3c). Bare W/S (no modifier) still cancels + passes through unchanged.
+        // before 3c). Bare W arms stop-on-UP; bare S cancels immediately.
         if (active && isKeyDown && (freshW || freshS)
             && !(vkCode == _autoRunSnapshotTriggerVk && IsTriggerModifierDown(_autoRunSnapshotModifier)))
         {
             if (!_autoRunIsBackground || ForegroundMatchesAutoRunTarget())
             {
-                ReleaseAutoRunState(includeBackground: true);
-                if (IsDebugEnabled) LogDebug($"AutoRun CANCEL on fresh physical down: vk=0x{vkCode:X2}");
+                if (freshW)
+                {
+                    if (ArmAutoRunStopOnPhysicalWUp() && IsDebugEnabled)
+                    {
+                        LogDebug("AutoRun physical W DOWN: graceful stop armed for matching UP");
+                    }
+                }
+                else
+                {
+                    ReleaseAutoRunState(includeBackground: true);
+                    if (IsDebugEnabled) LogDebug("AutoRun CANCEL on fresh physical S DOWN");
+                }
             }
             return false;
         }
@@ -3253,7 +3387,14 @@ public sealed class InputHookService : IInputHookService
         if (isKeyUp && _triggerKeyDownVk == vkCode)
         {
             _triggerKeyDownVk = 0;
-            return consumePhysicalWHandoff;
+            return suppressPhysicalWHandoffUp;
+        }
+
+        // Do this only AFTER the consumed-trigger cleanup above: W itself may be the configured trigger,
+        // and its key-up must still clear those latches even though the handoff release is suppressed.
+        if (suppressPhysicalWHandoffUp)
+        {
+            return true;
         }
 
         // 3c. A run is ACTIVE → the only chord action is TOGGLE-OFF, matched by the SNAPSHOT trigger so
@@ -3261,11 +3402,6 @@ public sealed class InputHookService : IInputHookService
         //     run that outlives its profile). Releases whichever transport is active.
         if (_autoRunActive)
         {
-            if (consumePhysicalWHandoff)
-            {
-                return true;
-            }
-
             if (_autoRunSnapshotTriggerVk == 0 || vkCode != _autoRunSnapshotTriggerVk || !isKeyDown)
             {
                 return false;
@@ -3360,11 +3496,6 @@ public sealed class InputHookService : IInputHookService
         }
 
         return false;
-    }
-
-    internal static bool ShouldConsumeAutoRunPhysicalWHandoff(bool handoffActive, bool targetFocused)
-    {
-        return handoffActive && targetFocused;
     }
 
     private void SeedAutoRunMovementPhysicalState()
@@ -3481,6 +3612,8 @@ public sealed class InputHookService : IInputHookService
             // If physical W is already down, it is the initial movement source. Do not emit a duplicate
             // synthetic W-down into the same target; the handoff path below takes ownership on physical UP.
             _autoRunPhysicalWHandoff = _wPhysicallyDown;
+            _autoRunSuppressedPhysicalWUp = false;
+            _autoRunStopOnPhysicalWUp = false;
 
             // Do NOT re-seed W/S here. HandleAutoRun has already applied every physical W/S event in hook
             // order, including a key held through this activation. Replacing that state from inside the
@@ -3520,6 +3653,7 @@ public sealed class InputHookService : IInputHookService
                 _autoRunTargetExe = null;
                 _autoRunTargetPid = 0;
                 _autoRunPhysicalWHandoff = false;
+                _autoRunSuppressedPhysicalWUp = false;
                 _autoRunBackgroundTargetFocused = false;
                 _autoRunSprintIntendedHeld = false; // no run → no sprint intent/current
                 _autoRunSprintInjected = false;
@@ -3535,46 +3669,10 @@ public sealed class InputHookService : IInputHookService
                 LogDebug("AutoRun W DOWN skipped: physical W handoff");
             }
 
-            if (settings.SprintEnabled)
+            _autoRunSprintEnabled = settings.SprintEnabled;
+            if (settings.SprintEnabled && !background && !_autoRunPhysicalWHandoff)
             {
-                if (background)
-                {
-                    // Background sprint is posted by the dedicated thread AFTER a short delay — NOT here.
-                    // Posting the sprint key back-to-back with W is read "too soon" by GZW and skipped
-                    // (user-confirmed in-game). The thread does: hold W → wait 40-60ms → sprint DOWN, and
-                    // for Press/toggle → DOWN → 40-60ms → UP (one clean tap that toggles in-game sprint).
-                    // _autoRunSprintToggleable already records Hold vs Press for this run.
-                    _autoRunSprintEnabled = true;
-                }
-                else if (settings.SprintMode == SprintActivation.Hold)
-                {
-                    // Foreground Hold: enqueue shift-down (held) via the injector; record for release.
-                    if (PostOrEnqueueAutoRunDown(
-                            _autoRunSprintKey,
-                            background,
-                            gen,
-                            guardExe,
-                            snapshot.Generation))
-                    {
-                        _autoRunSprintInjected = true;
-                        _autoRunSprintInjectedKey = _autoRunSprintKey;
-                    }
-                }
-                else
-                {
-                    // Foreground Press: a self-releasing tap (DOWN + UP-with-presleep), not marked held —
-                    // same shape as the Toggle hold-breath tap, so Stop()'s drain runs the UP.
-                    var rng = _random.Value!;
-                    var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
-                    for (int i = 0; i < warmupCalls; i++) rng.Next();
-                    var duration = rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1);
-                    EnqueueKeyTap(
-                        _autoRunSprintKey,
-                        duration,
-                        autoRunGeneration: gen,
-                        expectedForegroundExe: guardExe,
-                        foregroundGeneration: snapshot.Generation);
-                }
+                QueueForegroundAutoRunSprintLocked(gen, guardExe, snapshot.Generation);
             }
 
             _autoRunOwnerProfile = profile;
@@ -3625,52 +3723,101 @@ public sealed class InputHookService : IInputHookService
         return true;
     }
 
-    // Caller reaches this from the keyboard hook after a physical W-UP that belonged to the initial
-    // handoff. The physical UP is consumed while the target is focused; this method replaces the physical
-    // source with the synthetic hold before the target can observe a gap. Caller does not hold
-    // _autoRunLock; the method re-checks the active run and transport under its lock.
-    private bool EnsureAutoRunWDownAfterPhysicalRelease()
+    // Called from the keyboard hook when the initial physical W emits its real UP. That hook event is the
+    // authoritative physical release: because its target-visible UP is suppressed, GetAsyncKeyState remains
+    // logically down and must NOT be used as a second gate. Foreground queues ownership onto the executor;
+    // Background's dedicated thread observes the cleared latch and posts ownership there.
+    private void BeginAutoRunAfterPhysicalWRelease()
     {
         lock (_autoRunLock)
         {
             if (!_autoRunActive)
             {
-                return false;
+                return;
             }
 
-            if (_autoRunIsBackground && !ForegroundMatchesAutoRunTarget())
+            _autoRunSuppressedPhysicalWUp = true;
+            if (_autoRunIsBackground || _autoRunMoveInjected)
             {
-                return false;
-            }
-
-            if (_autoRunMoveInjected)
-            {
-                return true;
-            }
-
-            if (_autoRunIsBackground)
-            {
-                if (PostAutoRunKey(Key.W, isDown: true))
+                if (IsDebugEnabled && _autoRunIsBackground)
                 {
-                    _autoRunMoveInjected = true;
+                    LogDebug("AutoRun physical W UP suppressed; Background handoff signaled");
                 }
-
-                return true;
+                return;
             }
 
-            if (EnqueueHoldBreathInjection(new HoldBreathInjection(
+            var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
+            if (!EnqueueHoldBreathInjection(new HoldBreathInjection(
                     Key.W,
                     IsDown: true,
                     PreSleepMs: 0,
                     AutoRunGeneration: _activeAutoRunInjectionGeneration,
                     ExpectedForegroundExe: _autoRunForegroundGuardExe,
-                    ForegroundGeneration: Volatile.Read(ref _activeProfileGeneration))))
+                    ForegroundGeneration: foregroundGeneration)))
             {
-                _autoRunMoveInjected = true;
+                LogDebug("AutoRun physical W handoff enqueue failed");
+                return;
             }
 
-            return true;
+            _autoRunMoveInjected = true;
+            _autoRunSuppressedPhysicalWUp = false;
+            QueueForegroundAutoRunSprintLocked(
+                _activeAutoRunInjectionGeneration,
+                _autoRunForegroundGuardExe,
+                foregroundGeneration);
+
+            if (IsDebugEnabled)
+            {
+                LogDebug("AutoRun physical W UP suppressed; Foreground synthetic W DOWN queued");
+            }
         }
+    }
+
+    // Caller holds _autoRunLock. The pending bit lets physical-W activation defer the entire scripted
+    // sequence until after the physical UP; FIFO ordering then guarantees W DOWN precedes sprint.
+    private void QueueForegroundAutoRunSprintLocked(
+        long autoRunGeneration,
+        string? guardExe,
+        long foregroundGeneration)
+    {
+        if (!_autoRunSprintEnabled)
+        {
+            return;
+        }
+        _autoRunSprintEnabled = false;
+
+        if (_autoRunSprintToggleable)
+        {
+            if (!_autoRunSprintIntendedHeld)
+            {
+                return;
+            }
+
+            if (EnqueueHoldBreathInjection(new HoldBreathInjection(
+                    _autoRunSprintKey,
+                    IsDown: true,
+                    PreSleepMs: 0,
+                    AutoRunGeneration: autoRunGeneration,
+                    ExpectedForegroundExe: guardExe,
+                    ForegroundGeneration: foregroundGeneration)))
+            {
+                _autoRunSprintInjected = true;
+                _autoRunSprintInjectedKey = _autoRunSprintKey;
+            }
+            return;
+        }
+
+        // Press mode: a self-releasing FIFO tap after the W handoff.
+        var rng = _random.Value!;
+        var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
+        for (int i = 0; i < warmupCalls; i++) rng.Next();
+        var duration = rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1);
+        EnqueueKeyTap(
+            _autoRunSprintKey,
+            duration,
+            autoRunGeneration: autoRunGeneration,
+            expectedForegroundExe: guardExe,
+            foregroundGeneration: foregroundGeneration);
     }
 
     // Unconditional release (I3) of the active run's W/sprint. includeBackground gates the DECOUPLING
@@ -3701,8 +3848,13 @@ public sealed class InputHookService : IInputHookService
             // Release the sprint UP if it is CURRENT or merely INTENDED-held (a Background Hold sprint whose
             // current bit was cleared on focus-loss still has intent true — post an UP so nothing is left
             // held even in that epoch). Use the injected key if current, else the run's snapshot key.
-            bool releaseSprint = _autoRunSprintInjected || _autoRunSprintIntendedHeld;
+            // While a physical-W handoff is still pending, sprint has not started yet. Do not emit a
+            // release-only sprint UP for that never-issued DOWN. Once the pending bit is consumed, intent
+            // remains a valid safety-release signal for Background focus-loss epochs.
+            bool releaseSprint = _autoRunSprintInjected ||
+                (_autoRunSprintIntendedHeld && !_autoRunSprintEnabled);
             var sprintUpKey = _autoRunSprintInjected ? _autoRunSprintInjectedKey : _autoRunSprintKey;
+            bool releaseW = _autoRunMoveInjected || _autoRunSuppressedPhysicalWUp;
 
             if (_autoRunIsBackground)
             {
@@ -3718,7 +3870,7 @@ public sealed class InputHookService : IInputHookService
                 // non-blocking, so this is safe under the lock. If the window is gone the UP can't
                 // land — the in-game "held" state is the documented Background residual (OS input
                 // stays clean; nothing is held system-wide).
-                if (_autoRunMoveInjected) PostAutoRunKey(Key.W, isDown: false);
+                if (releaseW) PostAutoRunKey(Key.W, isDown: false);
                 if (releaseSprint) PostAutoRunKey(sprintUpKey, isDown: false);
                 _autoRunTargetHwnd = IntPtr.Zero;
                 _autoRunTargetExe = null;
@@ -3726,11 +3878,14 @@ public sealed class InputHookService : IInputHookService
             }
             else
             {
-                if (_autoRunMoveInjected) EnqueueHoldBreathInjection(new HoldBreathInjection(Key.W, IsDown: false, PreSleepMs: 0));
+                if (releaseW) EnqueueHoldBreathInjection(new HoldBreathInjection(Key.W, IsDown: false, PreSleepMs: 0));
                 if (releaseSprint) EnqueueHoldBreathInjection(new HoldBreathInjection(sprintUpKey, IsDown: false, PreSleepMs: 0));
             }
 
             _autoRunMoveInjected = false;
+            _autoRunPhysicalWHandoff = false;
+            _autoRunSuppressedPhysicalWUp = false;
+            _autoRunStopOnPhysicalWUp = false;
             _autoRunSprintInjected = false;
             _autoRunSprintIntendedHeld = false;
             _autoRunSprintToggleable = false;
@@ -3756,6 +3911,16 @@ public sealed class InputHookService : IInputHookService
         {
             if (!_autoRunActive)
             {
+                return;
+            }
+
+            if (_autoRunSprintEnabled)
+            {
+                _autoRunSprintIntendedHeld = !_autoRunSprintIntendedHeld;
+                if (IsDebugEnabled)
+                {
+                    LogDebug($"AutoRun pending sprint intent toggled {(_autoRunSprintIntendedHeld ? "ON" : "OFF")}");
+                }
                 return;
             }
 
@@ -3855,14 +4020,18 @@ public sealed class InputHookService : IInputHookService
     // nothing (a same-process window swap remains the documented residual). PostMessage is
     // async/non-blocking, so this never stalls on a foreign hook. Caller holds _autoRunLock. Returns
     // whether the target was still valid.
-    private bool PostAutoRunKey(Key key, bool isDown)
+    private bool PostAutoRunKey(
+        Key key,
+        bool isDown,
+        bool repeat = false,
+        bool forceAttach = false)
     {
         if (!BackgroundTargetValid(_autoRunTargetHwnd))
         {
             return false;
         }
 
-        var posted = PostKeyToWindow(_autoRunTargetHwnd, key, isDown, repeat: false);
+        var posted = PostKeyToWindow(_autoRunTargetHwnd, key, isDown, repeat, forceAttach);
         if (IsDebugEnabled) LogDebug($"AutoRun Background post {(isDown ? "DOWN" : "UP")}: {key} to hwnd=0x{_autoRunTargetHwnd.ToInt64():X} posted={posted}");
         return posted;
     }
@@ -3875,7 +4044,12 @@ public sealed class InputHookService : IInputHookService
     // to a hung window's queue (IsHungAppWindow is a non-blocking status check, not a SendMessage). A
     // failed attach still posts (best-effort). Runs under _autoRunLock but stays non-blocking (I5 holds).
     // `repeat` sets the previous-state bit for a sustained-key re-post (see BackgroundInputLoop).
-    private bool PostKeyToWindow(IntPtr hwnd, Key key, bool isDown, bool repeat)
+    private bool PostKeyToWindow(
+        IntPtr hwnd,
+        Key key,
+        bool isDown,
+        bool repeat,
+        bool forceAttach = false)
     {
         var vk = KeyInteropUtilities.ToVirtualKey(key);
         if (vk == 0)
@@ -3897,11 +4071,24 @@ public sealed class InputHookService : IInputHookService
         var thisThread = NativeMethods.GetCurrentThreadId();
         // Confine AttachThreadInput to the dedicated Background thread (B1(b)): attaching couples the
         // caller's input queue to the game's, which must NEVER happen on the hook/dispatcher thread (a
-        // hung game could then stall hook dispatch). Hook-thread posts (activation first-down, toggle-off /
-        // cancel UPs, sprint toggle) go BARE and best-effort; the bg thread's attached ~35ms repost
-        // re-asserts a held key. Only the bg thread attaches (and thus only it touches the key-state table).
+        // hung game could then stall hook dispatch). Hook-thread posts go BARE. The bg thread attaches for
+        // one startup/focus-regain reassertion and while the target is unfocused; its foreground heartbeat
+        // stays bare so physical A/D state is not reset every 35ms.
         var onBackgroundThread = ReferenceEquals(Thread.CurrentThread, _backgroundInputThread);
-        var willAttach = onBackgroundThread && targetThread != 0 && targetThread != thisThread && !NativeMethods.IsHungAppWindow(hwnd);
+        // Attaching while the game is already foreground repeatedly resets/shares its keyboard-state table
+        // every 35ms, which can make physical A/D appear released until typematic reasserts them. A bare
+        // PostMessage is sufficient for the focused target; attach only to reach an unfocused target.
+        var targetIsForegroundProcess = onBackgroundThread && ForegroundIsAutoRunTargetProcess();
+        var attachCandidate = onBackgroundThread && (forceAttach || !targetIsForegroundProcess) &&
+            targetThread != 0 && targetThread != thisThread;
+        var targetIsHung = attachCandidate && NativeMethods.IsHungAppWindow(hwnd);
+        var willAttach = ShouldAttachBackgroundInput(
+            onBackgroundThread,
+            targetIsForegroundProcess,
+            targetThread,
+            thisThread,
+            targetIsHung,
+            forceAttach);
 
         // AttachThreadInput RESETS the calling thread's GetKeyState/GetKeyboardState table (per MSDN).
         // Snapshot it first and restore it after, so a Background post can't corrupt a same-thread
@@ -3943,6 +4130,18 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    internal static bool ShouldAttachBackgroundInput(
+        bool onBackgroundThread,
+        bool targetIsForegroundProcess,
+        uint targetThread,
+        uint currentThread,
+        bool targetIsHung,
+        bool forceAttach = false)
+    {
+        return onBackgroundThread && (forceAttach || !targetIsForegroundProcess) &&
+            targetThread != 0 && targetThread != currentThread && !targetIsHung;
+    }
+
     // Dedicated Background input thread. First does the one-time delayed sprint activation (user spec: hold
     // W → wait 40-60ms → press the sprint key; posting it back-to-back with W is read "too soon" by GZW and
     // skipped), then re-posts W every AUTO_RUN_REPEAT_MS. W (movement) is STATE-based and the game clears
@@ -3962,8 +4161,13 @@ public sealed class InputHookService : IInputHookService
     {
         try
         {
-            // One-time: W is already held physically or was posted at activation → wait → press sprint.
-            // Safe to block here (dedicated thread, never the hook thread).
+            // A held physical W owns movement until its UP passes through. Only then post the scripted W
+            // DOWN; afterward the existing delayed sprint/repost sequence may begin. All waiting is on this
+            // dedicated thread, never the low-level-hook thread.
+            if (!EnsureBackgroundAutoRunMovementStarted())
+            {
+                return;
+            }
             DoDelayedBackgroundSprintActivation();
 
             // Focus-transition state, OWNED by this loop (single thread → no cross-thread field needed).
@@ -3975,7 +4179,6 @@ public sealed class InputHookService : IInputHookService
             while (true)
             {
                 bool stop = false;
-                bool forceWRepost = false;
                 lock (_autoRunLock)
                 {
                     if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread
@@ -4016,7 +4219,11 @@ public sealed class InputHookService : IInputHookService
                             // immediately (ordinary movement) or before the one quiet-window sprint engage.
                             if (_autoRunSprintToggleable && _autoRunSprintIntendedHeld && !_autoRunSprintInjected)
                             {
-                                if (_autoRunActive && PostAutoRunKey(Key.W, isDown: true))
+                                if (_autoRunActive && PostAutoRunKey(
+                                        Key.W,
+                                        isDown: true,
+                                        repeat: false,
+                                        forceAttach: true))
                                 {
                                     _autoRunMoveInjected = true;
                                 }
@@ -4026,7 +4233,14 @@ public sealed class InputHookService : IInputHookService
                             }
                             else
                             {
-                                forceWRepost = true;
+                                if (_autoRunActive && PostAutoRunKey(
+                                        Key.W,
+                                        isDown: true,
+                                        repeat: false,
+                                        forceAttach: true))
+                                {
+                                    _autoRunMoveInjected = true;
+                                }
                             }
                         }
                         wasTargetForeground = foreground;
@@ -4050,10 +4264,8 @@ public sealed class InputHookService : IInputHookService
                         }
                         else if (!sprintReengagePending)
                         {
-                            // Movement: re-post W each tick once Auto-Run owns the synthetic hold. While the
-                            // initial physical W handoff is still active and no synthetic DOWN has been
-                            // needed, suppress duplicate posts so physical and posted W cannot fight.
-                            bool shouldPostW = forceWRepost || _autoRunMoveInjected || !_autoRunPhysicalWHandoff;
+                            // Movement: re-post W each tick once Auto-Run owns the synthetic hold.
+                            bool shouldPostW = _autoRunMoveInjected;
                             bool wPosted = shouldPostW && PostKeyToWindow(_autoRunTargetHwnd, Key.W, isDown: true, repeat: true);
                             if (wPosted)
                             {
@@ -4094,16 +4306,20 @@ public sealed class InputHookService : IInputHookService
                 if (_backgroundInputThread == Thread.CurrentThread && _autoRunActive && _autoRunIsBackground)
                 {
                     var hwnd = _autoRunTargetHwnd;
-                    var releaseW = _autoRunMoveInjected;
+                    var releaseW = _autoRunMoveInjected || _autoRunSuppressedPhysicalWUp;
                     // Release sprint if CURRENT or INTENDED-held (same predicate as ReleaseAutoRunState), using
                     // the injected key if current, else the run's snapshot key.
-                    var releaseSprint = _autoRunSprintInjected || _autoRunSprintIntendedHeld;
+                    var releaseSprint = _autoRunSprintInjected ||
+                        (_autoRunSprintIntendedHeld && !_autoRunSprintEnabled);
                     var sprintKey = _autoRunSprintInjected ? _autoRunSprintInjectedKey : _autoRunSprintKey;
 
                     // Terminal release of an active run → invalidate any in-flight guarded injector DOWNs (A2).
                     Interlocked.Increment(ref _autoRunInjectionGeneration);
                     _backgroundInputRun = false;
                     _autoRunMoveInjected = false;
+                    _autoRunPhysicalWHandoff = false;
+                    _autoRunSuppressedPhysicalWUp = false;
+                    _autoRunStopOnPhysicalWUp = false;
                     _autoRunSprintInjected = false;
                     _autoRunSprintIntendedHeld = false;
                     _autoRunSprintToggleable = false;
@@ -4129,6 +4345,59 @@ public sealed class InputHookService : IInputHookService
                     catch { /* run already terminalized; nothing more we can do */ }
                 }
             }
+        }
+    }
+
+    private bool EnsureBackgroundAutoRunMovementStarted()
+    {
+        bool loggedWait = false;
+
+        while (true)
+        {
+            bool waitForPhysicalRelease;
+            lock (_autoRunLock)
+            {
+                if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread ||
+                    !_autoRunActive || !_autoRunIsBackground || !_isRunning || _disposed)
+                {
+                    return false;
+                }
+
+                waitForPhysicalRelease = _autoRunPhysicalWHandoff;
+                if (!waitForPhysicalRelease)
+                {
+                    // Exactly one ControlSend-style attached reassertion establishes the held W for games
+                    // that ignore bare posts. Foreground heartbeats after this are deliberately bare.
+                    // A suppressed physical-UP handoff keeps the target logically down (repeat bit); normal
+                    // startup/focus recovery needs a fresh DOWN because the prior state may have been clear.
+                    var repeat = _autoRunSuppressedPhysicalWUp;
+                    if (!PostAutoRunKey(
+                            Key.W,
+                            isDown: true,
+                            repeat: repeat,
+                            forceAttach: true))
+                    {
+                        ReleaseAutoRunState(includeBackground: true);
+                        return false;
+                    }
+
+                    _autoRunMoveInjected = true;
+                    _autoRunSuppressedPhysicalWUp = false;
+                    if (IsDebugEnabled)
+                    {
+                        LogDebug("AutoRun Background physical W handoff complete: scripted W DOWN posted");
+                    }
+                    return true;
+                }
+
+                if (!loggedWait && IsDebugEnabled)
+                {
+                    LogDebug("AutoRun Background waiting for physical W UP");
+                    loggedWait = true;
+                }
+            }
+
+            Thread.Sleep(1);
         }
     }
 
