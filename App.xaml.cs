@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using sWinShortcuts.Configuration;
 using sWinShortcuts.Services;
+using sWinShortcuts.Utilities;
 using sWinShortcuts.ViewModels;
 
 namespace sWinShortcuts;
@@ -38,6 +39,21 @@ public partial class App : System.Windows.Application
             .ConfigureServices(ConfigureServices)
             .Build();
 
+        // The color preset key is an app-level setting. Seed the hook before hosted services start so
+        // ProfileActivationService never needs to read it from the Color profile. Read the legacy Color.ini
+        // value once for existing users and persist the migrated value when possible.
+        var inputHook = _host.Services.GetRequiredService<IInputHookService>();
+        try
+        {
+            var settingsPath = AppSettings.GetSettingsPath();
+            inputHook.SetColorToggleKey(AppSettings.LoadColorToggleKey(settingsPath));
+            AppSettings.MigrateLegacyColorToggleKey(settingsPath);
+        }
+        catch
+        {
+            // A settings read failure must not prevent the app or input hooks from starting.
+        }
+
         await _host.StartAsync();
 
         var mainWindow = _host.Services.GetRequiredService<MainWindow>();
@@ -52,13 +68,18 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IProfileStore, IniProfileStore>();
         services.AddSingleton<IProfileManager, ProfileManager>();
         services.AddSingleton<IForegroundWatcher, ForegroundWatcher>();
+        services.AddSingleton<IInputSender, WindowsInputSender>();
         services.AddSingleton<IInputHookService, InputHookService>();
         services.AddSingleton<ISystemTrayService, SystemTrayService>();
         services.AddSingleton<IStartupService, StartupService>();
         services.AddSingleton<IDisplayService, DisplayService>();
         services.AddSingleton<IColorControlService, NvidiaColorControlService>();
         services.AddSingleton<ILoggerService, FileLoggerService>();
-        services.AddHostedService<ProfileActivationService>();
+        services.AddSingleton<ProfileActivationService>();
+        services.AddSingleton<IProfileRuntimeService>(
+            provider => provider.GetRequiredService<ProfileActivationService>());
+        services.AddHostedService(
+            provider => provider.GetRequiredService<ProfileActivationService>());
         services.AddSingleton<IDialogService, DialogService>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton<MainWindow>();
@@ -76,10 +97,16 @@ public partial class App : System.Windows.Application
                     var mainViewModel = _host.Services.GetService<MainViewModel>();
                     if (mainViewModel is not null)
                     {
-                        var flushed = Task.Run(() => mainViewModel.FlushPendingSavesAsync()).Wait(TimeSpan.FromSeconds(3));
-                        if (!flushed)
+                        var flushTask = Task.Run(() => mainViewModel.FlushPendingSavesAsync());
+                        if (!flushTask.Wait(TimeSpan.FromSeconds(3)))
                         {
                             LogCrash("OnExit.Flush", new TimeoutException("FlushPendingSavesAsync did not complete within 3s; some edits may be unsaved."));
+                        }
+                        else if (flushTask.Result > 0)
+                        {
+                            // F-014: the flush completed but could not persist every edit (e.g. a locked
+                            // file). Report it rather than exiting as if everything saved.
+                            LogCrash("OnExit.Flush", new InvalidOperationException($"{flushTask.Result} profile edit(s) could not be saved before exit."));
                         }
                     }
                 }

@@ -100,6 +100,20 @@ public partial class MainWindow : Window
             _isInitializingViewModel = false;
         }
 
+        // F-008: a built-in profile whose source was unreadable is loaded as defaults with persistence
+        // suspended (store-side), so InitializeAsync does NOT throw for it. Surface that ONCE here, now that
+        // the window + tray are up — the file is preserved and edits to it won't persist until it can be
+        // read again. Genuine init defects are intentionally NOT caught here (codex #6): they should surface
+        // via the crash handler rather than be masked while hooks/tray keep running.
+        if (_viewModel.Profiles.Any(p => p.Model.IsPersistenceSuspended))
+        {
+            System.Windows.MessageBox.Show(this,
+                "A built-in settings file could not be read, so defaults are in use for it. Your existing file was left untouched; changes to it won't be saved until it can be read again (try restarting).",
+                "sWinShortcuts",
+                System.Windows.MessageBoxButton.OK,
+                System.Windows.MessageBoxImage.Warning);
+        }
+
         if (!restoredProfile && !string.IsNullOrWhiteSpace(_startupProfileName))
         {
             SaveAppSettings();

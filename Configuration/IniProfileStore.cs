@@ -21,53 +21,146 @@ public sealed class IniProfileStore : IProfileStore
     private readonly Services.ILoggerService? _logger;
 
     public IniProfileStore(Services.ILoggerService? logger = null)
+        : this(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "sWinShortcuts"),
+            logger)
     {
+    }
+
+    // F-021: storage-root seam. Tests pass a unique temp root so they never mutate the real
+    // %APPDATA%\sWinShortcuts, can run in parallel, and clean up deterministically. Production still
+    // resolves AppData via the public ctor above.
+    internal IniProfileStore(string rootDirectory, Services.ILoggerService? logger = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootDirectory);
         _logger = logger;
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        _rootDirectory = Path.Combine(appData, "sWinShortcuts");
+        _rootDirectory = rootDirectory;
         _profilesDirectory = Path.Combine(_rootDirectory, ProfileConstants.ProfilesDirectoryName);
         _windowsProfilePath = Path.Combine(_rootDirectory, ProfileConstants.WindowsProfileFileName);
         _colorProfilePath = Path.Combine(_rootDirectory, ProfileConstants.ColorProfileFileName);
 
-        Directory.CreateDirectory(_rootDirectory);
-        Directory.CreateDirectory(_profilesDirectory);
+        // F-008: an inaccessible/redirected AppData must not abort construction (and thus the whole app).
+        // Loads then fall back to in-memory defaults with persistence suspended; the app still starts with
+        // input cleanup + tray. A later save re-attempts directory creation via the atomic INI writer.
+        try
+        {
+            Directory.CreateDirectory(_rootDirectory);
+            Directory.CreateDirectory(_profilesDirectory);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Log($"[Profile] Failed to create storage directories under '{_rootDirectory}': {ex}");
+        }
     }
 
     public Task<IReadOnlyList<Profile>> LoadProfilesAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        // F-008: isolate EACH built-in load. Previously both sat in a list initializer, so an unreadable
+        // Win.ini aborted the whole method (and the app) and Color.ini was never even attempted. Now a
+        // failed built-in degrades to in-memory defaults with persistence suspended (so a later autosave
+        // can't overwrite the preserved, possibly transiently-locked source), and the other still loads.
         var profiles = new List<Profile>
         {
-            LoadWindowsProfile(cancellationToken),
-            LoadColorProfile(cancellationToken)
+            LoadBuiltInProfile("Windows", _windowsProfilePath, LoadWindowsProfile, CreateWindowsFallback, cancellationToken),
+            LoadBuiltInProfile("Color", _colorProfilePath, LoadColorProfile, CreateColorFallback, cancellationToken)
         };
 
-        foreach (var file in Directory.EnumerateFiles(_profilesDirectory, "*.ini", SearchOption.TopDirectoryOnly))
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            foreach (var file in Directory.EnumerateFiles(_profilesDirectory, "*.ini", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            try
-            {
-                var profile = LoadProfile(file);
-                profiles.Add(profile);
+                try
+                {
+                    var profile = LoadProfile(file);
+                    profiles.Add(profile);
+                }
+                catch (Exception ex)
+                {
+                    // Don't let one malformed/partially-migrated file drop silently. Log the path + error so a
+                    // parse/migration failure is diagnosable (a user reporting "my settings vanished" now has a
+                    // trace). The file is left in place — never destroyed — so a transient lock is recoverable.
+                    _logger?.Log($"[Profile] Failed to load '{file}': {ex}");
+                }
             }
-            catch (Exception ex)
-            {
-                // Don't let one malformed/partially-migrated file drop silently. Log the path + error so a
-                // parse/migration failure is diagnosable (a user reporting "my settings vanished" now has a
-                // trace). The file is left in place — never destroyed — so a transient lock is recoverable.
-                _logger?.Log($"[Profile] Failed to load '{file}': {ex}");
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // F-008: a damaged/inaccessible Profiles directory must not abort startup — the built-ins,
+            // input cleanup, and tray still come up. Custom profiles are simply unavailable this run.
+            _logger?.Log($"[Profile] Failed to enumerate profiles directory '{_profilesDirectory}': {ex}");
         }
 
         return Task.FromResult<IReadOnlyList<Profile>>(profiles);
+    }
+
+    // F-008: run one built-in loader in isolation. On any non-cancellation failure, fall back to factory
+    // defaults, tag the source path, and suspend persistence so the unreadable source is preserved.
+    private Profile LoadBuiltInProfile(
+        string label,
+        string path,
+        Func<CancellationToken, Profile> loader,
+        Func<Profile> makeFallback,
+        CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 4; // F-008 (codex #5): initial attempt + 3 transient retries.
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return loader(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && (ex is IOException || ex is UnauthorizedAccessException))
+            {
+                // F-008: a transient lock (another instance, an AV scan) is the common built-in-load
+                // failure. Brief backoff then retry BEFORE degrading, so a fleeting lock doesn't force a
+                // read-only degraded session. Runs on the startup thread before the hooks install.
+                System.Threading.Thread.Sleep(100 * attempt);
+            }
+            catch (Exception ex)
+            {
+                _logger?.Log($"[Profile] Failed to load built-in '{label}' profile '{path}': {ex}. Using in-memory defaults; persistence suspended to preserve the on-disk file.");
+                var fallback = makeFallback();
+                fallback.SourcePath = path;
+                fallback.IsPersistenceSuspended = true;
+                return fallback;
+            }
+        }
+    }
+
+    private static Profile CreateWindowsFallback() => ProfileFactory.CreateWindowsProfile();
+
+    private static Profile CreateColorFallback()
+    {
+        var profile = ProfileFactory.CreateColorProfile();
+        profile.ColorSettings.IsEnabled = true;
+        return profile;
     }
 
     public Task SaveProfileAsync(Profile profile, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
         cancellationToken.ThrowIfCancellationRequested();
+
+        if (profile.IsPersistenceSuspended)
+        {
+            // F-008: this built-in loaded as defaults because its source was unreadable. Refuse to
+            // overwrite the preserved source with defaults, and signal explicitly (NOT silent success) so
+            // the dirty-tracking layer keeps the edit and never reports a false save — a silent success
+            // would clear the dirty flag and lose the change (codex CRITICAL #1).
+            throw new PersistenceSuspendedException(profile.Name);
+        }
 
         var path = profile.IsWindowsProfile
             ? _windowsProfilePath
@@ -103,9 +196,22 @@ public sealed class IniProfileStore : IProfileStore
             path = DetermineProfilePath(profile);
         }
 
-        if (File.Exists(path))
+        if (string.IsNullOrWhiteSpace(path))
         {
+            return Task.CompletedTask;
+        }
+
+        try
+        {
+            // F-015: do NOT gate on File.Exists — it returns false for access/IO errors too, which would
+            // report a FALSE successful delete (manager/UI drop the profile, autosave cancels, and the
+            // surviving INI resurrects next launch). File.Delete is already a no-op for an absent file;
+            // a genuinely locked/denied file throws, which the manager relies on to keep the profile.
             File.Delete(path);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // Parent directory is gone — there is nothing to delete.
         }
 
         return Task.CompletedTask;
@@ -356,6 +462,8 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.IsEnabled = document.GetBoolean("RightClickHoldBreath", "Enabled", settings.IsEnabled);
         settings.HoldBreathKey = document.GetKey("RightClickHoldBreath", "Key") ?? settings.HoldBreathKey;
+        settings.PanicTrigger = document.GetInputTrigger("RightClickHoldBreath", "Panic", settings.PanicTrigger);
+        settings.SuppressEarlyCancelInput = document.GetBoolean("RightClickHoldBreath", "SuppressEarlyCancel", settings.SuppressEarlyCancelInput);
         settings.Mode = document.GetEnum("RightClickHoldBreath", "Mode", settings.Mode);
         // 0 is a designed value (fully synchronous, jitter-free activation) selectable in the UI —
         // clamping to 5 here silently re-enabled the jitter path on the next launch.
@@ -411,18 +519,36 @@ public sealed class IniProfileStore : IProfileStore
 #pragma warning disable CS0618 // Type or member is obsolete
         settings.SelectedDisplayId = document.GetString("Color", "SelectedDisplay", settings.SelectedDisplayId);
 #pragma warning restore CS0618
+        settings.HasSecondary = document.GetBoolean("Color", "HasSecondary", settings.HasSecondary);
+        settings.ToggleKey = document.GetKey("Color", "ToggleKey");
         settings.ClearProfiles();
 
-        var section = document.GetSection("ColorDisplays");
+        // Primary keeps the historical [ColorDisplays] section (back-compat); Secondary is the new preset.
+        LoadColorDisplaySection(document, "ColorDisplays", settings, ColorVariant.Primary);
+        LoadColorDisplaySection(document, "ColorDisplaysSecondary", settings, ColorVariant.Secondary);
+
+        // Enforce the invariant HasSecondary => Secondary is POPULATED. A hand-edited / partial INI with
+        // HasSecondary=true but an empty [ColorDisplaysSecondary] must not let the editor later create blank
+        // (disabled) entries that a toggle would then apply as a neutral plan, wiping Primary. Seed from
+        // Primary (no-op if the section had entries).
+        if (settings.HasSecondary)
+        {
+            settings.EnsureSecondaryInitialized();
+        }
+    }
+
+    private static void LoadColorDisplaySection(IniDocument document, string sectionName, ColorSettings settings, ColorVariant variant)
+    {
+        var section = document.GetSection(sectionName);
         foreach (var pair in section)
         {
             var parts = pair.Value.Split('|');
-            
+
             // Detect format: new format has 5 fields (IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance)
             // Old format has 4 fields (Brightness|Contrast|Gamma|DigitalVibrance)
             bool isEnabled;
             int brightnessIndex, contrastIndex, gammaIndex, vibranceIndex;
-            
+
             if (parts.Length >= 5)
             {
                 // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
@@ -459,7 +585,7 @@ public sealed class IniProfileStore : IProfileStore
                 DigitalVibrance = vibrance
             };
 
-            settings.SetProfile(entry);
+            settings.SetProfile(entry, variant);
         }
     }
 
@@ -502,6 +628,8 @@ public sealed class IniProfileStore : IProfileStore
         var rightClickHoldBreath = profile.RightClickHoldBreath;
         document.SetBoolean("RightClickHoldBreath", "Enabled", rightClickHoldBreath.IsEnabled);
         document.SetKey("RightClickHoldBreath", "Key", rightClickHoldBreath.HoldBreathKey);
+        document.SetInputTrigger("RightClickHoldBreath", "Panic", rightClickHoldBreath.PanicTrigger);
+        document.SetBoolean("RightClickHoldBreath", "SuppressEarlyCancel", rightClickHoldBreath.SuppressEarlyCancelInput);
         document.SetEnum("RightClickHoldBreath", "Mode", rightClickHoldBreath.Mode);
         document.SetInt32("RightClickHoldBreath", "Delay", rightClickHoldBreath.DelayMilliseconds);
 
@@ -544,18 +672,27 @@ public sealed class IniProfileStore : IProfileStore
     private static void WriteColorSection(IniDocument document, ColorSettings color)
     {
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
+        document.SetBoolean("Color", "HasSecondary", color.HasSecondary);
         // Note: SelectedDisplayId is deprecated but kept for backward compatibility
 #pragma warning disable CS0618 // Type or member is obsolete
         document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
 #pragma warning restore CS0618
 
-        document.RemoveSection("ColorDisplays");
-        foreach (var pair in color.SnapshotProfiles())
+        // Serialize each variant EXPLICITLY (not SnapshotProfiles(), which returns whichever is currently
+        // active) so an autosave while Secondary is toggled-on still writes Primary->[ColorDisplays].
+        WriteColorDisplaySection(document, "ColorDisplays", color.SnapshotProfiles(ColorVariant.Primary));
+        WriteColorDisplaySection(document, "ColorDisplaysSecondary", color.SnapshotProfiles(ColorVariant.Secondary));
+    }
+
+    private static void WriteColorDisplaySection(IniDocument document, string sectionName, IReadOnlyDictionary<string, DisplayColorProfile> profiles)
+    {
+        document.RemoveSection(sectionName);
+        foreach (var pair in profiles)
         {
             // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
             var isEnabledStr = pair.Value.IsEnabled ? "1" : "0";
             var value = $"{isEnabledStr}|{ClampPercent(pair.Value.Brightness)}|{ClampPercent(pair.Value.Contrast)}|{ClampGamma(pair.Value.Gamma).ToString("0.###", CultureInfo.InvariantCulture)}|{ClampDigitalVibrance(pair.Value.DigitalVibrance)}";
-            document.SetString("ColorDisplays", pair.Key, value);
+            document.SetString(sectionName, pair.Key, value);
         }
     }
 

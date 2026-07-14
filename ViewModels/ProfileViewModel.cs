@@ -15,6 +15,11 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     private readonly IReadOnlyList<Key> _keyOptions;
     private bool _isSyncing;
 
+    // F-014/F-015: set by MainViewModel (under its _saveSync) when this VM is detached because its profile
+    // was removed. An in-flight autosave checks this before requeueing so a removed profile is never
+    // re-added to the dirty set (which would otherwise hit the manager's "not managed" throw at exit).
+    public bool IsDetached { get; set; }
+
     public ProfileViewModel(Profile model, IDisplayService displayService, IColorControlService colorControlService, IReadOnlyList<Key>? keyOptions = null)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
@@ -26,7 +31,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         AltMouse.Changed += (_, _) =>
         {
             OnPropertyChanged(nameof(AvailableMouseButtons));
-            OnProfileChanged();
+            OnProfileChanged(ProfileChangeKind.AltMouse);
         };
         AltMouse.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableMouseButtons));
 
@@ -59,7 +64,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.IsColorProfile,
             parentEnabledCheck: Model.IsColorProfile ? () => IsEnabled : null);
 
-        ColorSettings.Changed += (_, _) => OnProfileChanged();
+        ColorSettings.Changed += (_, _) => OnProfileChanged(ProfileChangeKind.Color);
 
         _name = Model.Name;
         _isEnabled = Model.IsEnabled;
@@ -68,7 +73,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         UpdateSelectableKeys();
     }
 
-    public event EventHandler? ProfileChanged;
+    public event EventHandler<ProfileChangedEventArgs>? ProfileChanged;
 
     public Profile Model { get; }
 
@@ -83,7 +88,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.Name = normalized;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.None);
             }
         }
     }
@@ -100,12 +105,23 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
                 _executable = normalized;
                 Model.Executable = normalized;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.Identity);
             }
         }
     }
 
     private bool _isEnabled;
+
+    // F-008: the editor content is bound to this. A persistence-suspended built-in (its source was
+    // unreadable at load) is read-only, so editing is disabled and the grayed content is the persistent
+    // read-only indicator. For every normal profile this equals IsEnabled (unchanged behavior).
+    public bool CanEditContent => IsEnabled && !Model.IsPersistenceSuspended;
+
+    // F-008: a persistence-suspended built-in is fully read-only — even its enable/master checkbox is
+    // disabled, so toggling it can't change live model/color state that autosave would then silently drop.
+    // Static (suspension is set once at load).
+    public bool CanToggleEnabled => !Model.IsPersistenceSuspended;
+
     public bool IsEnabled
     {
         get => _isEnabled;
@@ -114,7 +130,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             if (SetProperty(ref _isEnabled, value))
             {
                 Model.IsEnabled = value;
-                OnProfileChanged();
+                OnPropertyChanged(nameof(CanEditContent));
+                OnProfileChanged(ProfileChangeKind.Master);
 
                 if (IsColorProfile)
                 {
@@ -173,7 +190,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.WindowsLauncher.IsEnabled = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.WindowsLauncher);
             }
         }
     }
@@ -187,7 +204,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.CombinedMappings.IsEnabled = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.CombinedMappings);
             }
         }
     }
@@ -208,7 +225,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.RightClickHoldBreath.IsEnabled = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.HoldBreath);
             }
         }
     }
@@ -222,7 +239,39 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.RightClickHoldBreath.HoldBreathKey = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.HoldBreath);
+            }
+        }
+    }
+
+    public InputTrigger RightClickHoldBreathPanicTrigger
+    {
+        get => Model.RightClickHoldBreath.PanicTrigger;
+        set
+        {
+            if (Model.RightClickHoldBreath.PanicTrigger != value)
+            {
+                Model.RightClickHoldBreath.PanicTrigger = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RightClickHoldBreathEarlyCancelConfigured));
+                OnProfileChanged(ProfileChangeKind.HoldBreath);
+            }
+        }
+    }
+
+    public bool RightClickHoldBreathEarlyCancelConfigured =>
+        Model.RightClickHoldBreath.PanicTrigger.Kind != InputTriggerKind.None;
+
+    public bool RightClickHoldBreathSuppressEarlyCancelInput
+    {
+        get => Model.RightClickHoldBreath.SuppressEarlyCancelInput;
+        set
+        {
+            if (Model.RightClickHoldBreath.SuppressEarlyCancelInput != value)
+            {
+                Model.RightClickHoldBreath.SuppressEarlyCancelInput = value;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.HoldBreath);
             }
         }
     }
@@ -236,7 +285,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.RightClickHoldBreath.Mode = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.HoldBreath);
             }
         }
     }
@@ -250,7 +299,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.RightClickHoldBreath.DelayMilliseconds = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.HoldBreath);
             }
         }
     }
@@ -264,7 +313,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AutoRun.IsEnabled = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AutoRun);
             }
         }
     }
@@ -278,7 +327,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AutoRun.TriggerModifier = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AutoRun);
             }
         }
     }
@@ -292,7 +341,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AutoRun.TriggerKey = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AutoRun);
             }
         }
     }
@@ -306,7 +355,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AutoRun.SprintEnabled = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AutoRun);
             }
         }
     }
@@ -320,7 +369,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AutoRun.SprintKey = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AutoRun);
             }
         }
     }
@@ -334,7 +383,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AutoRun.SprintMode = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AutoRun);
             }
         }
     }
@@ -348,7 +397,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AutoRun.SendMode = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AutoRun);
             }
         }
     }
@@ -362,7 +411,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AntiAfk.IsEnabled = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AntiAfk);
             }
         }
     }
@@ -377,7 +426,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.AntiAfk.IntervalMinutes = clamped;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.AntiAfk);
             }
         }
     }
@@ -391,7 +440,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.CapsLock.IsEnabled = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.CapsLock);
             }
         }
     }
@@ -405,7 +454,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.CapsLock.Mode = value;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.CapsLock);
             }
         }
     }
@@ -420,7 +469,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.CapsLock.RemapTarget = newValue;
                 OnPropertyChanged();
-                OnProfileChanged();
+                OnProfileChanged(ProfileChangeKind.CapsLock);
             }
         }
     }
@@ -514,7 +563,9 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public void CommitChanges()
     {
-        OnProfileChanged();
+        // Child/property edits notify their exact runtime category when they occur. Manual Save only
+        // forces persistence; treating it as AllRuntime would needlessly cancel live gestures/runs.
+        OnProfileChanged(ProfileChangeKind.None);
     }
 
     /// <summary>
@@ -544,7 +595,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
         UpdateSelectableKeys();
         OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
-        OnProfileChanged();
+        OnProfileChanged(ProfileChangeKind.CombinedMappings);
     }
 
     private void AttachCombinedVm(CombinedMappingEntryViewModel m)
@@ -565,7 +616,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
         }
         // Persist and notify engine immediately on any mapping change
-        OnProfileChanged();
+        OnProfileChanged(ProfileChangeKind.CombinedMappings);
     }
 
     private void UpdateSelectableKeys()
@@ -602,7 +653,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             }
         }
 
-        OnProfileChanged();
+        OnProfileChanged(ProfileChangeKind.WindowsLauncher);
     }
 
     private void AttachLauncherEntry(WindowsLauncherEntryViewModel entry)
@@ -617,7 +668,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     private void OnChildChanged(object? sender, EventArgs e)
     {
-        OnProfileChanged();
+        OnProfileChanged(ProfileChangeKind.WindowsLauncher);
     }
 
     public void Dispose()
@@ -625,7 +676,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         ColorSettings.Dispose();
     }
 
-    private void OnProfileChanged()
+    private void OnProfileChanged(ProfileChangeKind changeKind)
     {
         if (_isSyncing)
         {
@@ -638,6 +689,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.IsEnabled = IsEnabled;
             Model.RightClickHoldBreath.IsEnabled = RightClickHoldBreathEnabled;
             Model.RightClickHoldBreath.HoldBreathKey = RightClickHoldBreathKey;
+            Model.RightClickHoldBreath.PanicTrigger = RightClickHoldBreathPanicTrigger;
+            Model.RightClickHoldBreath.SuppressEarlyCancelInput = RightClickHoldBreathSuppressEarlyCancelInput;
             Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
             Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
             Model.AutoRun.IsEnabled = AutoRunEnabled;
@@ -679,6 +732,6 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             _isSyncing = false;
         }
 
-        ProfileChanged?.Invoke(this, EventArgs.Empty);
+        ProfileChanged?.Invoke(this, new ProfileChangedEventArgs(changeKind));
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Windows.Input;
 using sWinShortcuts.Models;
 
 namespace sWinShortcuts.Services;
@@ -6,6 +7,19 @@ namespace sWinShortcuts.Services;
 public interface IInputHookService : IDisposable
 {
     event EventHandler<Profile?>? ActiveProfileChanged;
+
+    /// <summary>
+    /// Raised on the hook thread when the user presses the configured GLOBAL color-variant toggle key.
+    /// Fires exactly once per physical press (typematic repeats are ignored). The subscriber flips the
+    /// active profile's applied color preset (Primary&lt;-&gt;Secondary) and re-applies.
+    /// </summary>
+    event EventHandler? ColorVariantToggleRequested;
+
+    /// <summary>
+    /// Sets (or clears, when null) the GLOBAL key that toggles the active profile's color preset. Detected
+    /// on the low-level keyboard hook and passed through to applications. Live-updatable.
+    /// </summary>
+    void SetColorToggleKey(Key? key);
 
     /// <summary>
     /// Enables the hook-loss watchdog (default true). When false, the watchdog neither probes nor
@@ -25,9 +39,15 @@ public interface IInputHookService : IDisposable
 
     void Stop();
 
-    void ActivateProfile(Profile profile);
+    void ActivateProfile(Profile profile, long foregroundGeneration);
 
-    void DeactivateProfile();
+    void DeactivateProfile(long foregroundGeneration);
+
+    /// <summary>
+    /// Reconciles live edits against already-owned runtime state. Recorded releases remain unconditional;
+    /// disabling or rebinding a feature only prevents new work and releases state that feature owns.
+    /// </summary>
+    void ReconcileProfileSettings(Profile profile, ProfileChangeKind changeKind);
 
     /// <summary>
     /// Releases any active FOREGROUND Auto-Run. Called on a foreground change that leaves the active
@@ -42,7 +62,11 @@ public interface IInputHookService : IDisposable
     /// a cheap live HWND/PID compare against this snapshot instead of a Process.GetProcessById on the hook
     /// thread (A1). Cheap and thread-safe; call on every foreground change.
     /// </summary>
-    void SetForegroundIdentity(IntPtr windowHandle, uint processId, string? normalizedExecutable);
+    void SetForegroundIdentity(
+        IntPtr windowHandle,
+        uint processId,
+        string? normalizedExecutable,
+        long foregroundGeneration);
 
     void SetWindowsProfile(Profile profile);
 }

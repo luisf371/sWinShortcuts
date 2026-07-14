@@ -76,6 +76,12 @@ public static class IniExtensions
         return KeySerializer.Deserialize(value);
     }
 
+    public static InputTrigger GetInputTrigger(this IniDocument doc, string section, string key, InputTrigger defaultValue)
+    {
+        var value = doc.GetValue(section, key);
+        return value is null ? defaultValue : InputTriggerSerializer.Deserialize(value);
+    }
+
     public static string GetString(this IniDocument doc, string section, string key, string defaultValue = "")
     {
         return doc.GetValue(section, key) ?? defaultValue;
@@ -105,6 +111,11 @@ public static class IniExtensions
     public static void SetKey(this IniDocument doc, string section, string key, Key? value)
     {
         doc.SetValue(section, key, KeySerializer.Serialize(value));
+    }
+
+    public static void SetInputTrigger(this IniDocument doc, string section, string key, InputTrigger value)
+    {
+        doc.SetValue(section, key, InputTriggerSerializer.Serialize(value));
     }
 
     public static void SetString(this IniDocument doc, string section, string key, string value)

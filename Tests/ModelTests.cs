@@ -1,5 +1,6 @@
 using Xunit;
 using System.Windows.Input;
+using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
 
 namespace Tests;
@@ -42,35 +43,43 @@ public class ProfileTests
     }
 
     [Fact]
-    public void IsWindowsProfile_TrueForWindowsProfileName()
+    public void IsWindowsProfile_TrueForWindowsKind()
     {
-        var profile = new Profile { Name = ProfileConstants.WindowsProfileName };
+        var profile = new Profile { Kind = ProfileKind.Windows, Name = ProfileConstants.WindowsProfileName };
 
         Assert.True(profile.IsWindowsProfile);
+        Assert.False(profile.IsColorProfile);
     }
 
     [Fact]
-    public void IsWindowsProfile_IsCaseInsensitive()
+    public void IsColorProfile_TrueForColorKind()
     {
-        var profile = new Profile { Name = ProfileConstants.WindowsProfileName.ToUpper() };
-
-        Assert.True(profile.IsWindowsProfile);
-    }
-
-    [Fact]
-    public void IsColorProfile_TrueForColorProfileName()
-    {
-        var profile = new Profile { Name = ProfileConstants.ColorProfileName };
+        var profile = new Profile { Kind = ProfileKind.Color, Name = ProfileConstants.ColorProfileName };
 
         Assert.True(profile.IsColorProfile);
+        Assert.False(profile.IsWindowsProfile);
+    }
+
+    // F-007: built-in identity is the immutable Kind, never the display name. A custom INI that declares
+    // a reserved Name must NOT be classified as built-in (otherwise it could clobber Win.ini / Color.ini
+    // or bypass the deletion guard).
+    [Fact]
+    public void CustomProfile_WithReservedName_IsNotBuiltIn()
+    {
+        var fakeWindows = new Profile { Name = ProfileConstants.WindowsProfileName };
+        var fakeColor = new Profile { Name = ProfileConstants.ColorProfileName.ToUpper() };
+
+        Assert.Equal(ProfileKind.Custom, fakeWindows.Kind);
+        Assert.False(fakeWindows.IsWindowsProfile);
+        Assert.False(fakeColor.IsColorProfile);
     }
 
     [Fact]
-    public void IsColorProfile_IsCaseInsensitive()
+    public void Factory_AssignsBuiltInKinds()
     {
-        var profile = new Profile { Name = ProfileConstants.ColorProfileName.ToUpper() };
-
-        Assert.True(profile.IsColorProfile);
+        Assert.True(ProfileFactory.CreateWindowsProfile().IsWindowsProfile);
+        Assert.True(ProfileFactory.CreateColorProfile().IsColorProfile);
+        Assert.Equal(ProfileKind.Custom, ProfileFactory.CreateCustomProfile("X", "x.exe").Kind);
     }
 
     [Fact]

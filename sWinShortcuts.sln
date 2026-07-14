@@ -1,8 +1,10 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "sWinShortcuts", "sWinShortcuts.csproj", "{34AD059F-0C18-F958-4D30-BA46437CFAD4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tests", "Tests\Tests.csproj", "{3D6E31E4-7F5A-4E44-807E-EA1D3FBC1561}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -14,6 +16,10 @@ Global
 		{34AD059F-0C18-F958-4D30-BA46437CFAD4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{34AD059F-0C18-F958-4D30-BA46437CFAD4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{34AD059F-0C18-F958-4D30-BA46437CFAD4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3D6E31E4-7F5A-4E44-807E-EA1D3FBC1561}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3D6E31E4-7F5A-4E44-807E-EA1D3FBC1561}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3D6E31E4-7F5A-4E44-807E-EA1D3FBC1561}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3D6E31E4-7F5A-4E44-807E-EA1D3FBC1561}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

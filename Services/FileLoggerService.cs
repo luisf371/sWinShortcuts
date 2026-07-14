@@ -10,7 +10,7 @@ namespace sWinShortcuts.Services;
 public sealed class FileLoggerService : ILoggerService, IDisposable
 {
     private const int MaxQueuedEntries = 20_000;      // bound memory during high-frequency hook logging
-    private const long MaxLogBytes = 5 * 1024 * 1024; // rotate at 5 MB to bound disk usage
+    private const long MaxLogBytes = 2 * 1024 * 1024; // keep the newest 2 MiB in the active log
 
     private readonly string _logPath;
     private readonly BlockingCollection<string> _logQueue;
@@ -89,7 +89,7 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
 
                 if (buffer.Count > 0)
                 {
-                    RotateIfNeeded();
+                    TrimToNewest();
                     await File.AppendAllLinesAsync(_logPath, buffer, token).ConfigureAwait(false);
                     buffer.Clear();
                 }
@@ -128,6 +128,7 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
             {
                 File.AppendAllText(_logPath, item + Environment.NewLine);
             }
+            TrimToNewest();
         }
         catch
         {
@@ -135,25 +136,59 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
         }
     }
 
-    private void RotateIfNeeded()
+    private void TrimToNewest() => TrimLogFile(_logPath, MaxLogBytes);
+
+    internal static void TrimLogFile(string logPath, long maxLogBytes)
     {
         try
         {
-            var info = new FileInfo(_logPath);
-            if (info.Exists && info.Length > MaxLogBytes)
+            var info = new FileInfo(logPath);
+            if (info.Exists && info.Length > maxLogBytes)
             {
-                var archive = _logPath + ".1";
-                if (File.Exists(archive))
+                var bytesToKeep = (int)Math.Min(info.Length, maxLogBytes);
+                var buffer = new byte[bytesToKeep];
+
+                using (var source = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
-                    File.Delete(archive);
+                    source.Seek(-bytesToKeep, SeekOrigin.End);
+                    source.ReadExactly(buffer);
                 }
 
-                File.Move(_logPath, archive);
+                // Start at the first complete line in the retained window so the trim never leaves a
+                // misleading partial record at the top of the file. If no newline exists, retain the
+                // whole window; the hard byte cap still wins.
+                var firstNewline = Array.IndexOf(buffer, (byte)'\n');
+                var start = firstNewline >= 0 ? firstNewline + 1 : 0;
+                var tempPath = logPath + ".trim";
+
+                try
+                {
+                    using (var target = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        target.Write(buffer, start, buffer.Length - start);
+                    }
+
+                    File.Move(tempPath, logPath, overwrite: true);
+                }
+                catch
+                {
+                    try
+                    {
+                        if (File.Exists(tempPath))
+                        {
+                            File.Delete(tempPath);
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore cleanup failures.
+                    }
+                }
             }
         }
         catch
         {
-            // Ignore rotation failures — logging must never throw.
+            // Ignore trim failures — logging must never throw.
         }
     }
 

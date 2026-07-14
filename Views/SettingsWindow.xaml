@@ -1,10 +1,16 @@
 <Window x:Class="sWinShortcuts.Views.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Settings" Width="380" Height="360"
+        xmlns:conv="clr-namespace:sWinShortcuts.Converters"
+        xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
+        Title="Settings" Width="380" Height="450"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{DynamicResource BackgroundElevatedBrush}">
+    <Window.Resources>
+        <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
+    </Window.Resources>
+
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
@@ -20,6 +26,7 @@
             <CheckBox x:Name="StartWithWindowsCheck"
                       Content="Start with Windows"
                       IsChecked="{Binding StartWithWindows, Mode=TwoWay}"
+                      IsEnabled="{Binding CanEditStartup}"
                       Margin="0,0,0,8"
                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
 
@@ -50,6 +57,38 @@
 
             <Separator Margin="0,8,0,8" Background="{DynamicResource BorderBrush}"/>
 
+            <TextBlock Text="Color"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,8"
+                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="132"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <TextBlock Text="Preset toggle key" FontWeight="SemiBold"/>
+                    <TextBlock Text="Switches the active profile between Primary and Secondary. Choose an unused key; it still reaches the active app."
+                               Foreground="{DynamicResource ForegroundSecondaryBrush}"
+                               FontSize="11"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+                <ComboBox Grid.Column="1"
+                          ItemsSource="{Binding ColorToggleKeyOptions}"
+                          SelectedItem="{Binding ColorToggleKey, Mode=TwoWay}"
+                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                          VerticalAlignment="Center"
+                          Width="132">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}"/>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+            </Grid>
+
+
             <TextBlock Text="Advanced"
                        FontWeight="SemiBold"
                        Margin="0,0,0,8"
@@ -64,7 +103,7 @@
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Width="80" Margin="0,0,8,0" MinHeight="28" IsCancel="True">Cancel</Button>
-            <Button Width="80" Margin="0" MinHeight="28" IsDefault="True" Click="OnSaveClick">Save</Button>
+            <Button Width="80" Margin="0" MinHeight="28" IsDefault="True" IsEnabled="{Binding CanSave}" Click="OnSaveClick">Save</Button>
         </StackPanel>
     </Grid>
 </Window>
