@@ -298,10 +298,18 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     private void OnForegroundChanged(object? sender, ForegroundChangedEventArgs e)
     {
         _initialEventFired = true;
-        PublishForeground(e.WindowHandle, e.ProcessId, e.ProcessName);
+        PublishForeground(
+            e.WindowHandle,
+            e.ProcessId,
+            e.ProcessName,
+            e.RequiresInputReset);
     }
 
-    private void PublishForeground(IntPtr windowHandle, uint processId, string? processName)
+    private void PublishForeground(
+        IntPtr windowHandle,
+        uint processId,
+        string? processName,
+        bool requiresInputReset = false)
     {
         lock (_publicationLock)
         {
@@ -310,13 +318,21 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 return;
             }
 
-            PublishForegroundLocked(windowHandle, processId, processName);
+            PublishForegroundLocked(
+                windowHandle,
+                processId,
+                processName,
+                requiresInputReset);
         }
     }
 
     // Caller holds _publicationLock. Keeping generation allocation through both writes under one gate
     // makes channel order identical to generation order for every publisher.
-    private void PublishForegroundLocked(IntPtr windowHandle, uint processId, string? processName)
+    private void PublishForegroundLocked(
+        IntPtr windowHandle,
+        uint processId,
+        string? processName,
+        bool requiresInputReset = false)
     {
         var normalizedExecutable = string.IsNullOrWhiteSpace(processName)
             ? null
@@ -338,6 +354,13 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         var previousForeground = _latestForeground;
         _latestForeground = snapshot;
         _inputHookService.SetForegroundIdentity(windowHandle, processId, normalizedExecutable, generation);
+
+        // A delayed callback can reveal that focus briefly left and returned before delivery. Release
+        // the old profile's state now, but queue only the live snapshot so stale mappings/color never run.
+        if (requiresInputReset)
+        {
+            _inputHookService.ReleaseForegroundState();
+        }
 
         // A Foreground AutoRun belongs to the exact focused window, not merely to a profile/exe.
         // The same game can replace its HWND or restart under a new PID while still resolving to the

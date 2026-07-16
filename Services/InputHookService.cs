@@ -3989,6 +3989,20 @@ public sealed class InputHookService : IInputHookService
         ReleaseAutoRunState(includeBackground: false);
     }
 
+    public void ReleaseForegroundState()
+    {
+        lock (_profileLock)
+        {
+            if (!_isRunning)
+            {
+                return;
+            }
+
+            ReleaseAllState();
+            RederivePhysicalModifierState();
+        }
+    }
+
     // A1: off-hook publish of the foreground identity (see field). Called by ProfileActivationService on
     // every foreground change, on the watcher thread — never the hook thread. Atomic reference swap.
     public void SetForegroundIdentity(

@@ -460,3 +460,8 @@
 - Debug-log diagnosis: `Profile activated: Grey Zone` could be immediately followed by `Profile deactivated` while Auto-Run's independent foreground PID check still reported the game. No input/color worker failures or confirmed hook loss appeared.
 - `ForegroundWatcher.OnWinEvent` now prefers a nonzero live `GetForegroundWindow()` result over the queued callback HWND, preserving the callback only during the documented no-foreground transition. This prevents a stale transient event from clearing the active profile; focused selector tests pass 2/2.
 - Validation checkpoint: Release build completed with 0 warnings/errors and the full Release test suite passed 190/190 (the integration tests require normal host permissions for `File.Replace`). Luna and Max fresh-context reviews found the guard and its selector-level test coverage sound.
+
+# 2026-07-16 (foreground callback transition preservation)
+- Live foreground revalidation must not discard a queued intermediate transition or publish its stale profile as ordinary work. `ForegroundWatcher` now emits only the live HWND with `RequiresInputReset`; `ProfileActivationService` publishes the final generation first, releases foreground-owned state second, and queues only the live input/color snapshot.
+- `ReleaseForegroundState` retains the active profile and Background Auto-Run while reusing the normal `ReleaseAllState` + physical-modifier re-derivation path. Focused watcher/activation tests pass 9/9.
+- Final validation: `dotnet build sWinShortcuts.csproj -c Release --no-restore` succeeds with 0 warnings/errors; the full Release suite passes 191/191 with normal filesystem permissions.

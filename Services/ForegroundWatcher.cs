@@ -225,21 +225,9 @@ public sealed class ForegroundWatcher : IForegroundWatcher
                 return;
             }
 
-            // WINEVENT_OUTOFCONTEXT is asynchronous. By the time this callback runs, a transient
-            // foreground window may already have yielded back to the real target. Prefer the live
-            // foreground window, but preserve the callback HWND while Windows reports no foreground
-            // window during an activation transition.
-            var foregroundWindow = SelectForegroundWindow(hwnd, NativeMethods.GetForegroundWindow());
-            if (foregroundWindow == _lastWindow)
-            {
-                return;
-            }
-
-            _lastWindow = foregroundWindow;
-            var processName = ResolveProcessName(foregroundWindow, out var processId);
-            ForegroundChanged?.Invoke(
-                this,
-                new ForegroundChangedEventArgs(foregroundWindow, processName, processId));
+            // WINEVENT_OUTOFCONTEXT is asynchronous. Reconcile to the live window, but preserve
+            // an observed intermediate transition as a teardown request instead of activating it.
+            ProcessForegroundChange(hwnd, NativeMethods.GetForegroundWindow());
         }
         catch
         {
@@ -247,8 +235,28 @@ public sealed class ForegroundWatcher : IForegroundWatcher
         }
     }
 
-    internal static IntPtr SelectForegroundWindow(IntPtr eventWindow, IntPtr currentWindow) =>
-        currentWindow != IntPtr.Zero ? currentWindow : eventWindow;
+    internal void ProcessForegroundChange(IntPtr eventWindow, IntPtr currentWindow)
+    {
+        var foregroundWindow = currentWindow != IntPtr.Zero ? currentWindow : eventWindow;
+        var requiresInputReset = currentWindow != IntPtr.Zero &&
+                                 currentWindow != eventWindow &&
+                                 eventWindow != _lastWindow;
+
+        if (foregroundWindow == _lastWindow && !requiresInputReset)
+        {
+            return;
+        }
+
+        _lastWindow = foregroundWindow;
+        var processName = ResolveProcessName(foregroundWindow, out var processId);
+        ForegroundChanged?.Invoke(
+            this,
+            new ForegroundChangedEventArgs(
+                foregroundWindow,
+                processName,
+                processId,
+                requiresInputReset));
+    }
 
     private static string ResolveProcessName(IntPtr hwnd, out uint processId)
     {
