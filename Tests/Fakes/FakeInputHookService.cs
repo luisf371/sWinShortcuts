@@ -18,6 +18,7 @@ public sealed class FakeInputHookService : IInputHookService
     private int _isStarted;
     private int _deactivateCount;
     private int _releaseForegroundAutoRunCount;
+    private int _releaseForegroundStateCount;
     private readonly object _foregroundIdentityLock = new();
     private (IntPtr Hwnd, uint Pid, string? Exe, long Generation)? _lastForegroundIdentity;
 
@@ -70,6 +71,14 @@ public sealed class FakeInputHookService : IInputHookService
     public void ReleaseForegroundAutoRun()
     {
         Interlocked.Increment(ref _releaseForegroundAutoRunCount);
+    }
+
+    public int ReleaseForegroundStateCount =>
+        Volatile.Read(ref _releaseForegroundStateCount);
+
+    public void ReleaseForegroundState()
+    {
+        Interlocked.Increment(ref _releaseForegroundStateCount);
     }
 
     public (IntPtr Hwnd, uint Pid, string? Exe, long Generation)? LastForegroundIdentity

@@ -18,11 +18,20 @@ public sealed class FakeForegroundWatcher : IForegroundWatcher
         IsStarted = false;
     }
 
-    public void RaiseForegroundChanged(string processName, uint processId = 0)
+    public void RaiseForegroundChanged(
+        string processName,
+        uint processId = 0,
+        bool requiresInputReset = false)
     {
         if (IsStarted)
         {
-            ForegroundChanged?.Invoke(this, new ForegroundChangedEventArgs(IntPtr.Zero, processName, processId));
+            ForegroundChanged?.Invoke(
+                this,
+                new ForegroundChangedEventArgs(
+                    IntPtr.Zero,
+                    processName,
+                    processId,
+                    requiresInputReset));
         }
     }
 

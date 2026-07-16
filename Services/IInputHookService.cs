@@ -57,6 +57,13 @@ public interface IInputHookService : IDisposable
     void ReleaseForegroundAutoRun();
 
     /// <summary>
+    /// Releases all foreground profile-owned input state without changing the active profile. The caller
+    /// publishes the final foreground generation first so new presses fail closed until activation catches up.
+    /// Background Auto-Run remains active.
+    /// </summary>
+    void ReleaseForegroundState();
+
+    /// <summary>
     /// Publishes the current foreground window identity (HWND + owning PID + normalized exe), resolved
     /// OFF the low-level hook thread by the foreground watcher. Lets Auto-Run activation fail closed with
     /// a cheap live HWND/PID compare against this snapshot instead of a Process.GetProcessById on the hook

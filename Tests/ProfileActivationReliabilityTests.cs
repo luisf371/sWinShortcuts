@@ -275,6 +275,54 @@ public sealed class ProfileActivationReliabilityTests
     }
 
     [Fact]
+    public async Task ForegroundIntermediateTransition_ReleasesStateAndReactivatesOnlyLiveProfile()
+    {
+        var store = new InMemoryProfileStore();
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        store.Profiles.Add(profile);
+
+        var manager = new ProfileManager(store);
+        var watcher = new FakeForegroundWatcher();
+        var input = new FakeInputHookService();
+        var service = new ProfileActivationService(
+            manager,
+            watcher,
+            input,
+            new FakeSystemTrayService(),
+            new RecordingColorControlService(),
+            new FakeDisplayService(),
+            new NullLoggerService());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            watcher.RaiseForegroundChanged("game.exe", 123);
+            await WaitForAsync(() => input.Activations.Any(x => ReferenceEquals(x.Profile, profile)));
+
+            var activationBaseline = input.Activations.Count;
+            var releasesBeforeTransition = input.ReleaseForegroundStateCount;
+
+            watcher.RaiseForegroundChanged(
+                "game.exe",
+                123,
+                requiresInputReset: true);
+
+            await WaitForAsync(() =>
+                input.ReleaseForegroundStateCount > releasesBeforeTransition &&
+                input.Activations.Count > activationBaseline);
+
+            var activation = input.Activations.Last();
+            Assert.Equal(releasesBeforeTransition + 1, input.ReleaseForegroundStateCount);
+            Assert.Same(profile, activation.Profile);
+            Assert.Equal(input.LastForegroundIdentity?.Generation, activation.Generation);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task ActiveProfileRemoved_ReleasesAndDeactivatesWithoutAnotherFocusEvent()
     {
         var store = new InMemoryProfileStore();

@@ -220,21 +220,42 @@ public sealed class ForegroundWatcher : IForegroundWatcher
     {
         try
         {
-            if (hwnd == IntPtr.Zero || hwnd == _lastWindow)
+            if (hwnd == IntPtr.Zero)
             {
                 return;
             }
 
-            _lastWindow = hwnd;
-            var processName = ResolveProcessName(hwnd, out var processId);
-            ForegroundChanged?.Invoke(
-                this,
-                new ForegroundChangedEventArgs(hwnd, processName, processId));
+            // WINEVENT_OUTOFCONTEXT is asynchronous. Reconcile to the live window, but preserve
+            // an observed intermediate transition as a teardown request instead of activating it.
+            ProcessForegroundChange(hwnd, NativeMethods.GetForegroundWindow());
         }
         catch
         {
             // Never let a managed subscriber exception escape a native WinEvent callback.
         }
+    }
+
+    internal void ProcessForegroundChange(IntPtr eventWindow, IntPtr currentWindow)
+    {
+        var foregroundWindow = currentWindow != IntPtr.Zero ? currentWindow : eventWindow;
+        var requiresInputReset = currentWindow != IntPtr.Zero &&
+                                 currentWindow != eventWindow &&
+                                 eventWindow != _lastWindow;
+
+        if (foregroundWindow == _lastWindow && !requiresInputReset)
+        {
+            return;
+        }
+
+        _lastWindow = foregroundWindow;
+        var processName = ResolveProcessName(foregroundWindow, out var processId);
+        ForegroundChanged?.Invoke(
+            this,
+            new ForegroundChangedEventArgs(
+                foregroundWindow,
+                processName,
+                processId,
+                requiresInputReset));
     }
 
     private static string ResolveProcessName(IntPtr hwnd, out uint processId)
