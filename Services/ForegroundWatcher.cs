@@ -220,22 +220,35 @@ public sealed class ForegroundWatcher : IForegroundWatcher
     {
         try
         {
-            if (hwnd == IntPtr.Zero || hwnd == _lastWindow)
+            if (hwnd == IntPtr.Zero)
             {
                 return;
             }
 
-            _lastWindow = hwnd;
-            var processName = ResolveProcessName(hwnd, out var processId);
+            // WINEVENT_OUTOFCONTEXT is asynchronous. By the time this callback runs, a transient
+            // foreground window may already have yielded back to the real target. Prefer the live
+            // foreground window, but preserve the callback HWND while Windows reports no foreground
+            // window during an activation transition.
+            var foregroundWindow = SelectForegroundWindow(hwnd, NativeMethods.GetForegroundWindow());
+            if (foregroundWindow == _lastWindow)
+            {
+                return;
+            }
+
+            _lastWindow = foregroundWindow;
+            var processName = ResolveProcessName(foregroundWindow, out var processId);
             ForegroundChanged?.Invoke(
                 this,
-                new ForegroundChangedEventArgs(hwnd, processName, processId));
+                new ForegroundChangedEventArgs(foregroundWindow, processName, processId));
         }
         catch
         {
             // Never let a managed subscriber exception escape a native WinEvent callback.
         }
     }
+
+    internal static IntPtr SelectForegroundWindow(IntPtr eventWindow, IntPtr currentWindow) =>
+        currentWindow != IntPtr.Zero ? currentWindow : eventWindow;
 
     private static string ResolveProcessName(IntPtr hwnd, out uint processId)
     {
