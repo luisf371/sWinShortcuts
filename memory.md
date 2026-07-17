@@ -465,3 +465,15 @@
 - Live foreground revalidation must not discard a queued intermediate transition or publish its stale profile as ordinary work. `ForegroundWatcher` now emits only the live HWND with `RequiresInputReset`; `ProfileActivationService` publishes the final generation first, releases foreground-owned state second, and queues only the live input/color snapshot.
 - `ReleaseForegroundState` retains the active profile and Background Auto-Run while reusing the normal `ReleaseAllState` + physical-modifier re-derivation path. Focused watcher/activation tests pass 9/9.
 - Final validation: `dotnet build sWinShortcuts.csproj -c Release --no-restore` succeeds with 0 warnings/errors; the full Release suite passes 191/191 with normal filesystem permissions.
+
+# 2026-07-16 (CI timing flake)
+- GitHub Actions run `29532813063` failed only because `ForegroundChanges_ColorApplyBlocked_InputActivatesEveryGenerationInOrder` exceeded its fixed 2-second polling deadline while intentionally blocking the color worker; the merge did not change that test path.
+- Keep the reliability wait shorter than the blocking mock guard (10 seconds vs 15 seconds) so loaded CI runners have scheduling headroom without letting the color timeout satisfy the lane-isolation test. Exact Release CI restore/build/test passes 191/191.
+
+# 2026-07-16 (standalone publish artifact)
+- `.github/workflows/ci.yml` now has a `publish` job gated by successful `build-test` and restricted to `push` events for `refs/heads/main`; it uploads only `sWinShortcuts.exe` after a self-contained `win-x64` single-file publish. Local equivalent publish produced one 162,594,493-byte executable in `D:\tmp\sWinShortcuts-publish-check`.
+
+# 2026-07-16 (automatic GitHub Release)
+- `.github/workflows/ci.yml` now replaces the Action artifact upload with an idempotent `gh release` step: every successful push to `main` creates `build-<run number>`, attaches only `sWinShortcuts.exe`, and uses the one-line note `Automated standalone build.` Reruns replace the existing asset.
+# 2026-07-16 (framework-dependent release)
+- Release publish now uses `--self-contained false -p:PublishSingleFile=true`, producing one verified `sWinShortcuts.exe` of 4,105,908 bytes. GitHub Release notes state: `Requires .NET 8 Desktop Runtime (x64).`

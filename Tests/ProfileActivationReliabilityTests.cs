@@ -385,7 +385,7 @@ public sealed class ProfileActivationReliabilityTests
 
     private static async Task WaitForAsync(Func<bool> condition)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(2);
+        var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline)
         {
             if (condition())
@@ -408,7 +408,7 @@ public sealed class ProfileActivationReliabilityTests
         public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)
         {
             ApplyEntered.Set();
-            if (!ReleaseApply.Wait(TimeSpan.FromSeconds(5)))
+            if (!ReleaseApply.Wait(TimeSpan.FromSeconds(15)))
             {
                 throw new TimeoutException("Test did not release the blocked color apply.");
             }

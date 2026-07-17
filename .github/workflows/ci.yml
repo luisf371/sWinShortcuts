@@ -42,3 +42,39 @@ jobs:
 
       - name: Deprecated package scan
         run: dotnet list sWinShortcuts.sln package --deprecated --include-transitive
+
+  publish:
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore sWinShortcuts.csproj
+
+      - name: Publish standalone executable
+        run: >
+          dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained false
+          -p:PublishSingleFile=true
+          -p:DebugType=None -p:DebugSymbols=false -o publish
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "build-${{ github.run_number }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag publish/sWinShortcuts.exe --clobber
+          } else {
+            gh release create $tag publish/sWinShortcuts.exe --target "${{ github.sha }}" --title "sWinShortcuts build ${{ github.run_number }}" --notes "Requires .NET 8 Desktop Runtime (x64)."
+          }
