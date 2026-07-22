@@ -186,6 +186,78 @@ public sealed class ProfileActivationReliabilityTests
     }
 
     [Fact]
+    public async Task ForegroundChanges_LogsInputDecisionsFromSnapshots()
+    {
+        var store = new InMemoryProfileStore();
+        var enabledProfile = ProfileFactory.CreateCustomProfile("Enabled Game", "enabled.exe");
+        var disabledProfile = ProfileFactory.CreateCustomProfile("Disabled Game", "disabled.exe");
+        disabledProfile.IsEnabled = false;
+        store.Profiles.AddRange([enabledProfile, disabledProfile]);
+
+        var manager = new ProfileManager(store);
+        var watcher = new FakeForegroundWatcher();
+        var input = new FakeInputHookService();
+        var logger = new NullLoggerService { IsEnabled = true };
+        var service = new ProfileActivationService(
+            manager,
+            watcher,
+            input,
+            new FakeSystemTrayService(),
+            new RecordingColorControlService(),
+            new FakeDisplayService(),
+            logger);
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            var deactivationBaseline = input.DeactivateCount;
+            watcher.RaiseForegroundChanged("other.exe", 321);
+            await WaitForAsync(() => input.DeactivateCount > deactivationBaseline);
+
+            Assert.Contains(
+                logger.Messages,
+                message => message.Contains("Foreground decision=no-match") &&
+                           message.Contains("generation=") &&
+                           message.Contains("hwnd=0x0") &&
+                           message.Contains("pid=321") &&
+                           message.Contains("process=other.exe") &&
+                           message.Contains("normalized=other") &&
+                           message.Contains("profile=<none>"));
+
+            watcher.RaiseForegroundChanged("enabled.exe", 322);
+            await WaitForAsync(() => input.Activations.Any(x => ReferenceEquals(x.Profile, enabledProfile)));
+
+            Assert.Contains(
+                logger.Messages,
+                message => message.Contains("Foreground decision=activate") &&
+                           message.Contains("generation=") &&
+                           message.Contains("hwnd=0x0") &&
+                           message.Contains("pid=322") &&
+                           message.Contains("process=enabled.exe") &&
+                           message.Contains("normalized=enabled") &&
+                           message.Contains("profile=Enabled Game"));
+
+            deactivationBaseline = input.DeactivateCount;
+            watcher.RaiseForegroundChanged("disabled.exe", 323);
+            await WaitForAsync(() => input.DeactivateCount > deactivationBaseline);
+
+            Assert.Contains(
+                logger.Messages,
+                message => message.Contains("Foreground decision=profile-disabled") &&
+                           message.Contains("generation=") &&
+                           message.Contains("hwnd=0x0") &&
+                           message.Contains("pid=323") &&
+                           message.Contains("process=disabled.exe") &&
+                           message.Contains("normalized=disabled") &&
+                           message.Contains("profile=Disabled Game"));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task NotifyProfileChanged_MasterDisableAndEnable_ReconcilesWithoutFocusChange()
     {
         var store = new InMemoryProfileStore();
