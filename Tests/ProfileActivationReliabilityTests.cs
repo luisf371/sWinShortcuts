@@ -210,9 +210,9 @@ public sealed class ProfileActivationReliabilityTests
         await service.StartAsync(CancellationToken.None);
         try
         {
-            var deactivationBaseline = input.DeactivateCount;
             watcher.RaiseForegroundChanged("other.exe", 321);
-            await WaitForAsync(() => input.DeactivateCount > deactivationBaseline);
+            var noMatchGeneration = input.LastForegroundIdentity!.Value.Generation;
+            await WaitForAsync(() => input.DeactivationGenerations.Contains(noMatchGeneration));
 
             Assert.Contains(
                 logger.Messages,
@@ -225,7 +225,10 @@ public sealed class ProfileActivationReliabilityTests
                            message.Contains("profile=<none>"));
 
             watcher.RaiseForegroundChanged("enabled.exe", 322);
-            await WaitForAsync(() => input.Activations.Any(x => ReferenceEquals(x.Profile, enabledProfile)));
+            var enabledGeneration = input.LastForegroundIdentity!.Value.Generation;
+            await WaitForAsync(
+                () => input.Activations.Any(
+                    x => x.Generation == enabledGeneration && ReferenceEquals(x.Profile, enabledProfile)));
 
             Assert.Contains(
                 logger.Messages,
@@ -237,9 +240,9 @@ public sealed class ProfileActivationReliabilityTests
                            message.Contains("normalized=enabled") &&
                            message.Contains("profile=Enabled Game"));
 
-            deactivationBaseline = input.DeactivateCount;
             watcher.RaiseForegroundChanged("disabled.exe", 323);
-            await WaitForAsync(() => input.DeactivateCount > deactivationBaseline);
+            var disabledGeneration = input.LastForegroundIdentity!.Value.Generation;
+            await WaitForAsync(() => input.DeactivationGenerations.Contains(disabledGeneration));
 
             Assert.Contains(
                 logger.Messages,
