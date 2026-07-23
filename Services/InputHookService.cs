@@ -4654,9 +4654,21 @@ public sealed class InputHookService : IInputHookService
 
             // Guard 3: an active game profile that has Anti-AFK enabled.
             var profile = _activeProfile;
-            if (profile is not { IsEnabled: true } || !profile.AntiAfk.IsEnabled)
+            if (profile is null)
             {
-                if (logReason) LogDebug("Anti-AFK skip: no active profile / anti-afk disabled");
+                if (logReason) LogDebug("Anti-AFK skip: no active profile");
+                return;
+            }
+
+            if (!profile.IsEnabled)
+            {
+                if (logReason) LogDebug($"Anti-AFK skip: active profile disabled ({profile.Name})");
+                return;
+            }
+
+            if (!profile.AntiAfk.IsEnabled)
+            {
+                if (logReason) LogDebug($"Anti-AFK skip: anti-afk disabled ({profile.Name})");
                 return;
             }
 

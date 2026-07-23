@@ -490,10 +490,22 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
                 if (snapshot.Profile is { IsEnabled: true } profile)
                 {
+                    _logger.Log(
+                        $"[Input] Foreground decision=activate generation={snapshot.Generation} " +
+                        $"hwnd=0x{snapshot.WindowHandle.ToInt64():X} pid={snapshot.ProcessId} " +
+                        $"process={snapshot.ProcessName ?? "<empty>"} " +
+                        $"normalized={snapshot.NormalizedExecutable ?? "<empty>"} profile={profile.Name}");
                     _inputHookService.ActivateProfile(profile, snapshot.Generation);
                 }
                 else
                 {
+                    var decision = snapshot.Profile is null ? "no-match" : "profile-disabled";
+                    _logger.Log(
+                        $"[Input] Foreground decision={decision} generation={snapshot.Generation} " +
+                        $"hwnd=0x{snapshot.WindowHandle.ToInt64():X} pid={snapshot.ProcessId} " +
+                        $"process={snapshot.ProcessName ?? "<empty>"} " +
+                        $"normalized={snapshot.NormalizedExecutable ?? "<empty>"} " +
+                        $"profile={snapshot.Profile?.Name ?? "<none>"}");
                     _inputHookService.DeactivateProfile(snapshot.Generation);
                 }
             }
