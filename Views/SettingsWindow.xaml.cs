@@ -110,8 +110,9 @@ public partial class SettingsWindow : Window
             _vm.AdvancedModeEnabled = advancedRaw is null
                 ? _inputHookService.AdvancedModeEnabled
                 : advancedRaw == "true";
-            // Start-minimized defaults off. A present key is authoritative; absent = false (fresh install).
-            _vm.StartMinimized = ini.GetValue("App", "StartMinimized") == "true";
+            // The current [App] key is authoritative; fall back to legacy [Window] until this save migrates it.
+            var startMinimizedRaw = ini.GetValue("App", "StartMinimized") ?? ini.GetValue("Window", "StartMinimized");
+            _vm.StartMinimized = startMinimizedRaw == "true";
             _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;
         }
         catch
