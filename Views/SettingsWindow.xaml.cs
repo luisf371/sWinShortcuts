@@ -110,6 +110,8 @@ public partial class SettingsWindow : Window
             _vm.AdvancedModeEnabled = advancedRaw is null
                 ? _inputHookService.AdvancedModeEnabled
                 : advancedRaw == "true";
+            // Start-minimized defaults off. A present key is authoritative; absent = false (fresh install).
+            _vm.StartMinimized = ini.GetValue("App", "StartMinimized") == "true";
             _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;
         }
         catch
@@ -119,6 +121,7 @@ public partial class SettingsWindow : Window
             // Fall back to the live service value (never a blind false) so a read failure can't
             // silently disable an upgrade-enabled gate the service already applied.
             _vm.AdvancedModeEnabled = _inputHookService.AdvancedModeEnabled;
+            _vm.StartMinimized = false;
             _vm.ColorToggleKey = Key.None;
         }
     }
@@ -131,6 +134,7 @@ public partial class SettingsWindow : Window
             var ini = IniDocument.Load(_settingsPath);
             ini.SetValue("App", "StartWithWindows", vm.StartWithWindows ? "true" : "false");
             ini.SetValue("App", "StartAsAdmin", vm.StartAsAdmin ? "true" : "false");
+            ini.SetValue("App", "StartMinimized", vm.StartMinimized ? "true" : "false");
             ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
             ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
             ini.SetValue("App", "AdvancedMode", vm.AdvancedModeEnabled ? "true" : "false");
@@ -175,22 +179,19 @@ public partial class SettingsWindow : Window
                 return; // the user cancelled/closed the dialog while the apply was running.
             }
 
-            if (!applied)
-            {
-                System.Windows.MessageBox.Show(this,
-                    applyError ?? "Unable to apply startup settings.",
-                    "Settings",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-                return;
-            }
+            // The startup apply and the INI save are DECOUPLED. A non-admin run that has a leftover elevated
+            // (HIGHEST) startup task cannot remove it (schtasks Access Denied), so the apply fails — but that
+            // must NOT block saving the rest of the settings (debug logging, watchdog, advanced mode, color
+            // toggle, start-minimized). Surface the startup failure as a non-blocking warning AFTER the INI
+            // save, instead of hard-stopping before it.
+            string? startupWarning = applied ? null : (applyError ?? "Unable to apply startup settings.");
 
             if (!SaveIni(_vm, out var saveError))
             {
                 // F-016 (codex #3): the startup Apply above committed to the OS but the INI didn't persist.
                 // Revert the OS startup task to the baseline OFF the dispatcher so the OS and the (unsaved)
                 // settings can't disagree — otherwise Cancel would leave startup changed. Only if it changed.
-                if (startWithWindows != _baselineStartWithWindows || startAsAdmin != _baselineStartAsAdmin)
+                if (applied && (startWithWindows != _baselineStartWithWindows || startAsAdmin != _baselineStartAsAdmin))
                 {
                     await Task.Run(() => _startupService.Apply(_baselineStartWithWindows, _baselineStartAsAdmin, out _));
                 }
@@ -209,6 +210,18 @@ public partial class SettingsWindow : Window
             }
 
             _applied = true; // committed — OnClosing must not roll back the live services.
+
+            // If only the (admin-only) startup change failed, the INI settings still saved successfully.
+            // Warn the user that the startup option needs an elevated run, then close normally.
+            if (startupWarning is not null)
+            {
+                System.Windows.MessageBox.Show(this,
+                    startupWarning + "\n\nYour other settings were saved. To change startup options, run sWinShortcuts as administrator.",
+                    "Settings",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+
             DialogResult = true;
             Close();
         }

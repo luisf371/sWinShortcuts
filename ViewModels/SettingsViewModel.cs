@@ -15,12 +15,19 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         KeyCatalog.SortKeys(new[] { Key.None }.Concat(KeyCatalog.GetCommonKeys())).ToArray();
     private bool _startWithWindows;
     private bool _startAsAdmin;
+    private bool _startMinimized;
     private bool _enableDebugLogging;
     private Key _colorToggleKey = Key.None;
     private bool _hookWatchdogEnabled = true;
     private bool _advancedModeEnabled;
     private bool _isStartupLoaded;
     private bool _isSaving;
+
+    // Whether the current process is elevated. Captured once per dialog (it cannot change while the dialog
+    // is open). When false, the "Start as administrator" option is grayed out because a non-elevated user
+    // cannot create or remove the HIGHEST scheduled task that option requires (schtasks returns Access
+    // Denied). This is UI awareness only — it does NOT implement the deferred F-004/F-005 security tier.
+    public bool IsRunningAsAdmin { get; set; } = Elevation.IsRunningAsAdmin();
 
     public bool StartWithWindows
     {
@@ -45,9 +52,34 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         get => _startAsAdmin;
         set
         {
+            // A non-admin process cannot manage the HIGHEST scheduled task. Hard-coerce the value off so a
+            // stale saved setting (or a programmatic assignment) can never report a phantom enabled state
+            // while the checkbox is grayed out and the option is unusable.
+            if (!IsRunningAsAdmin)
+            {
+                value = false;
+            }
+
             if (_startAsAdmin != value)
             {
                 _startAsAdmin = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    // Persists as [App] StartMinimized. On launch the main window hides to the tray when this is set, so
+    // the app starts silently. This is an explicit, STICKY user preference: minimizing-to-tray or restoring
+    // during a session does NOT change it (only this toggle does), so "start minimized" stays on until the
+    // user turns it off here.
+    public bool StartMinimized
+    {
+        get => _startMinimized;
+        set
+        {
+            if (_startMinimized != value)
+            {
+                _startMinimized = value;
                 OnPropertyChanged();
             }
         }
@@ -160,7 +192,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
 
     public bool CanSave => IsStartupLoaded && !IsSaving;
 
-    public bool CanChooseAdmin => IsStartupLoaded && !IsSaving && StartWithWindows;
+    public bool CanChooseAdmin => IsStartupLoaded && !IsSaving && StartWithWindows && IsRunningAsAdmin;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnPropertyChanged([CallerMemberName] string? name = null)
