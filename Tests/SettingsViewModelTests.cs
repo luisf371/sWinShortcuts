@@ -83,4 +83,3 @@ public sealed class SettingsViewModelTests
         Assert.True(viewModel.StartAsAdmin);
     }
 }
-
