@@ -37,8 +37,8 @@ public partial class MainWindow : Window
         Loaded += OnLoaded;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
-        // OS shutdown/restart must persist the REAL state, not route through MinimizeToTray (which would
-        // flip StartMinimized on). See OnSessionEnding (S5).
+        // OS shutdown/restart must persist the REAL window bounds, not route through MinimizeToTray (which
+        // would hide the window). See OnSessionEnding (S5).
         if (System.Windows.Application.Current is not null)
         {
             System.Windows.Application.Current.SessionEnding += OnSessionEnding;
@@ -166,9 +166,16 @@ public partial class MainWindow : Window
             _startupProfileName = ini.GetValue("App", "LastProfile")?.Trim();
             _lastProfileName = _startupProfileName;
 
-            if (bool.TryParse(ini.GetValue("Window", "StartMinimized"), out var startMinimized))
+            // Start-minimized is an explicit user preference persisted under [App] by the Settings dialog.
+            // Fall back to the legacy [Window] StartMinimized value once for upgrades, then stop using it.
+            var startMinimizedRaw = ini.GetValue("App", "StartMinimized");
+            if (startMinimizedRaw is not null)
             {
-                _startMinimized = startMinimized;
+                _startMinimized = startMinimizedRaw == "true";
+            }
+            else if (bool.TryParse(ini.GetValue("Window", "StartMinimized"), out var legacyStartMinimized))
+            {
+                _startMinimized = legacyStartMinimized;
             }
 
             var width = ini.GetValue("Window", "Width");
@@ -384,9 +391,10 @@ public partial class MainWindow : Window
             {
                 _previousWindowState = WindowState;
             }
-            _startMinimized = true;
-            SaveAppSettings();
 
+            // Start-minimized is an explicit, sticky user preference owned by the Settings toggle — do NOT
+            // flip it on just because the user minimized to tray this session. Persisting it here would
+            // silently turn "start minimized" on/off based on transient window state.
             ShowInTaskbar = false;
             if (WindowState != WindowState.Minimized)
             {
@@ -427,9 +435,8 @@ public partial class MainWindow : Window
             ? WindowState.Normal
             : _previousWindowState;
 
-        _startMinimized = false;
-        SaveAppSettings();
-
+        // Restoring the window during a session does NOT clear the sticky "start minimized" preference —
+        // only the Settings toggle changes it. Otherwise one restore would silently disable the preference.
         WindowState = targetState;
 
         Dispatcher.BeginInvoke(new Action(() =>
@@ -450,8 +457,9 @@ public partial class MainWindow : Window
 
     private void OnSessionEnding(object? sender, System.Windows.SessionEndingCancelEventArgs e)
     {
-        // Persist the user's real preference (StartMinimized as-is) and allow the forced close to proceed
-        // WITHOUT the tray path. Guarded by _allowClose so it can't double-run with the normal close path.
+        // Persist the real window bounds and allow the forced close to proceed WITHOUT the tray path (which
+        // would hide the window). Start-minimized is a sticky Settings-owned preference, not window state,
+        // so it is intentionally not touched here. Guarded by _allowClose against double-run with the close.
         if (_allowClose)
         {
             return;
@@ -507,6 +515,8 @@ public partial class MainWindow : Window
         // persisted stale (§7/M2); fall back to the cached name when nothing is selected.
         var currentName = _viewModel.SelectedProfile?.Name ?? _lastProfileName;
         ini.SetValue("App", "LastProfile", string.IsNullOrWhiteSpace(currentName) ? null : currentName);
-        ini.SetValue("Window", "StartMinimized", _startMinimized ? "true" : "false");
+        // NOTE: [App] StartMinimized is owned exclusively by the Settings dialog (the user-facing toggle).
+        // MainWindow only READS it at launch, so do not write it here — a stale in-memory value would
+        // otherwise clobber a preference the user just changed in Settings.
     }
 }

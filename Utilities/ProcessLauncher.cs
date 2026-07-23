@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
-using System.Security.Principal;
 using sWinShortcuts.Services;
 using sWinShortcuts.Interop;
 
@@ -52,12 +51,7 @@ public static class ProcessLauncher
         }
     }
 
-    private static bool IsRunningAsAdmin()
-    {
-        using var identity = WindowsIdentity.GetCurrent();
-        var principal = new WindowsPrincipal(identity);
-        return principal.IsInRole(WindowsBuiltInRole.Administrator);
-    }
+    private static bool IsRunningAsAdmin() => Elevation.IsRunningAsAdmin();
 
     private static void LaunchAsDesktopUser(string path, string arguments, ILoggerService? logger)
     {
