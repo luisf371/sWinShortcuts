@@ -42,6 +42,30 @@ public class ColorPlanTests
     }
 
     [Fact]
+    public void BuildColorPlan_PersistentIds_KeepProfilesWithTheirPhysicalMonitor()
+    {
+        var manager = CreateInitializedManager();
+        var settings = manager.ColorProfile.ColorSettings;
+        settings.IsEnabled = true;
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "monitor-a", IsEnabled = true, Brightness = 40 });
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "monitor-b", IsEnabled = true, Brightness = 90 });
+
+        // Simulates Windows reassigning DISPLAY1/DISPLAY2 after a reboot.
+        var displays = new[]
+        {
+            new DisplayInfo { Id = "monitor-a", Name = "Monitor A", DeviceName = @"\\.\DISPLAY2", IsPrimary = false },
+            new DisplayInfo { Id = "monitor-b", Name = "Monitor B", DeviceName = @"\\.\DISPLAY1", IsPrimary = true }
+        };
+
+        var plan = ProfileActivationService.BuildColorPlan(null, displays, manager);
+
+        Assert.Collection(
+            plan.Displays,
+            first => { Assert.Equal("monitor-a", first.DisplayId); Assert.Equal(40, first.Brightness); },
+            second => { Assert.Equal("monitor-b", second.DisplayId); Assert.Equal(90, second.Brightness); });
+    }
+
+    [Fact]
     public void Equals_ChangedBrightness_ReturnsFalse()
     {
         var first = new ColorPlan(ImmutableArray.Create(new DisplayColorPlan("DISPLAY1", true, 55, 60, 1.1, 70)));

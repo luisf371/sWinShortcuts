@@ -267,6 +267,8 @@ internal static class NativeMethods
         public uint StateMask;
     }
 
+    internal const uint EDD_GET_DEVICE_INTERFACE_NAME = 0x00000001;
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern bool EnumDisplayDevices(string? lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
 

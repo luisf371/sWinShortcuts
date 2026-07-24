@@ -68,8 +68,14 @@ public sealed class DisplayService : IDisplayService, IDisposable
     {
         var list = new List<DisplayInfo>();
 
-        foreach (var screen in Screen.AllScreens)
+        foreach (var screen in Screen.AllScreens.OrderByDescending(screen => screen.Primary))
         {
+            var monitorId = GetMonitorInterfaceId(screen.DeviceName);
+            if (monitorId is null)
+            {
+                continue;
+            }
+
             var friendlyName = GetBestDisplayName(screen.DeviceName);
             
             // Fallback if empty or generic
@@ -88,7 +94,7 @@ public sealed class DisplayService : IDisplayService, IDisposable
 
             list.Add(new DisplayInfo
             {
-                Id = screen.DeviceName,
+                Id = monitorId,
                 DeviceName = screen.DeviceName,
                 Name = friendlyName,
                 IsPrimary = screen.Primary
@@ -96,6 +102,28 @@ public sealed class DisplayService : IDisplayService, IDisposable
         }
 
         return list;
+    }
+
+    private static string? GetMonitorInterfaceId(string adapterDeviceName)
+    {
+        try
+        {
+            var device = new NativeMethods.DISPLAY_DEVICE();
+            device.Initialize();
+
+            return NativeMethods.EnumDisplayDevices(
+                    adapterDeviceName,
+                    0,
+                    ref device,
+                    NativeMethods.EDD_GET_DEVICE_INTERFACE_NAME) &&
+                !string.IsNullOrWhiteSpace(device.DeviceID)
+                ? device.DeviceID
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
