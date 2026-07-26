@@ -24,6 +24,26 @@ public class ProfileActivationColorPlanTests
     }
 
     [Fact]
+    public async Task BuildColorPlan_ActiveProfileMissingDisplay_FallsBackToGlobalColor()
+    {
+        var manager = await CreateManagerAsync();
+        var activeProfile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        EnableDisplayColor(manager.ColorProfile, "DISPLAY1", 60);
+        EnableDisplayColor(manager.ColorProfile, "DISPLAY2", 80);
+        EnableDisplayColor(activeProfile, "DISPLAY1", 75);
+
+        var plan = ProfileActivationService.BuildColorPlan(
+            activeProfile,
+            [CreateDisplay("DISPLAY1"), CreateDisplay("DISPLAY2")],
+            manager);
+
+        Assert.Collection(
+            plan.Displays,
+            primary => { Assert.Equal("DISPLAY1", primary.DisplayId); Assert.Equal(75, primary.Brightness); },
+            secondary => { Assert.Equal("DISPLAY2", secondary.DisplayId); Assert.Equal(80, secondary.Brightness); });
+    }
+
+    [Fact]
     public async Task BuildColorPlan_NoActiveProfile_UsesGlobalColor()
     {
         var manager = await CreateManagerAsync();

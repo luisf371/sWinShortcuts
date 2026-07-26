@@ -586,11 +586,17 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         ArgumentNullException.ThrowIfNull(displays);
         ArgumentNullException.ThrowIfNull(profileManager);
 
-        var settingsToApply = ResolveColorSettings(activeProfile, profileManager);
-        var profiles = settingsToApply?.SnapshotProfiles();
+        var overrides = activeProfile is not null && activeProfile.IsEnabled && activeProfile.ColorSettings.IsEnabled
+            ? activeProfile.ColorSettings.SnapshotProfiles()
+            : null;
+        var globalColorProfile = profileManager.ColorProfile;
+        var fallbacks = globalColorProfile.IsEnabled && globalColorProfile.ColorSettings.IsEnabled
+            ? globalColorProfile.ColorSettings.SnapshotProfiles()
+            : null;
+
         var plans = displays
             .OrderBy(display => display.Id, StringComparer.OrdinalIgnoreCase)
-            .Select(display => BuildDisplayColorPlan(display.Id, profiles))
+            .Select(display => BuildDisplayColorPlan(display.Id, overrides, fallbacks))
             .ToImmutableArray();
 
         return plans.IsEmpty ? ColorPlan.Empty : new ColorPlan(plans);
@@ -614,19 +620,32 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
     private static DisplayColorPlan BuildDisplayColorPlan(
         string displayId,
-        IReadOnlyDictionary<string, DisplayColorProfile>? profiles)
+        IReadOnlyDictionary<string, DisplayColorProfile>? overrides,
+        IReadOnlyDictionary<string, DisplayColorProfile>? fallbacks)
     {
-        if (profiles is not null &&
-            profiles.TryGetValue(displayId, out var existingProfile) &&
-            existingProfile.IsEnabled)
+        DisplayColorProfile? profile = null;
+        if (overrides is not null &&
+            overrides.TryGetValue(displayId, out var overrideProfile) &&
+            overrideProfile.IsEnabled)
+        {
+            profile = overrideProfile;
+        }
+        else if (fallbacks is not null &&
+                 fallbacks.TryGetValue(displayId, out var fallbackProfile) &&
+                 fallbackProfile.IsEnabled)
+        {
+            profile = fallbackProfile;
+        }
+
+        if (profile is not null)
         {
             return new DisplayColorPlan(
                 displayId,
-                existingProfile.IsEnabled,
-                existingProfile.Brightness,
-                existingProfile.Contrast,
-                existingProfile.Gamma,
-                existingProfile.DigitalVibrance);
+                profile.IsEnabled,
+                profile.Brightness,
+                profile.Contrast,
+                profile.Gamma,
+                profile.DigitalVibrance);
         }
 
         return new DisplayColorPlan(
