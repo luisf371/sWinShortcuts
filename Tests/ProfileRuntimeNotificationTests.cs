@@ -27,7 +27,8 @@ public sealed class ProfileRuntimeNotificationTests
 
         await viewModel.InitializeAsync();
         viewModel.SelectedProfile = Assert.Single(
-            viewModel.Profiles.Where(x => ReferenceEquals(x.Model, profile)));
+            viewModel.Profiles,
+            x => ReferenceEquals(x.Model, profile));
 
         await viewModel.SaveProfileCommand.ExecuteAsync(null);
 
@@ -64,7 +65,7 @@ public sealed class ProfileRuntimeNotificationTests
             runtime);
 
         await viewModel.InitializeAsync();
-        var game = Assert.Single(viewModel.Profiles.Where(x => ReferenceEquals(x.Model, profile)));
+        var game = Assert.Single(viewModel.Profiles, x => ReferenceEquals(x.Model, profile));
 
         ApplyEdit(game, expectedKind);
 
