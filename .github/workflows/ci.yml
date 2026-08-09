@@ -21,10 +21,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Resolve the SDK from global.json so the pin has exactly one source of truth. A hardcoded
+      # version here can drift from the pin, and `dotnet` would then hard-fail on an SDK-not-found
+      # rather than build with the version CI claims to install.
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          global-json-file: global.json
 
       - name: Restore
         run: dotnet restore sWinShortcuts.sln
@@ -56,7 +59,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          global-json-file: global.json
 
       - name: Restore
         run: dotnet restore sWinShortcuts.csproj
