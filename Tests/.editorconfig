@@ -1,0 +1,11 @@
+# Scoped to the test project only.
+#
+# xUnit1051 ("pass TestContext.Current.CancellationToken") is a new, style-only analyzer rule
+# introduced by the xUnit v3 migration (F-019b). It flags ~120 async test calls that omit a
+# CancellationToken. Threading the token across every call site is a separate, behavior-neutral
+# refactor; until that lands, downgrade it to a suggestion so it does not pollute the build output
+# while still surfacing as an IDE hint for incremental adoption.
+#
+# This is a scoped, single-rule severity adjustment — not a blanket NoWarn.
+[*.cs]
+dotnet_diagnostic.xUnit1051.severity = suggestion

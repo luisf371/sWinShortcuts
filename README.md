@@ -20,7 +20,7 @@ sWinShortcuts is a high-performance Windows utility designed to enhance producti
 ## Quick Start
 
 ### Prerequisites
-- .NET 8.0 SDK
+- .NET 10.0 SDK
 - Windows 10/11
 
 ### Installation and Execution
@@ -43,7 +43,7 @@ dotnet test Tests/Tests.csproj
 
 ## Overview
 
-sWinShortcuts is built on .NET 8 using the WPF framework for its user interface and WinForms for system tray integration. The architecture follows the MVVM pattern, leveraging `CommunityToolkit.Mvvm` for state management and `Microsoft.Extensions.Hosting` for dependency injection. 
+sWinShortcuts is built on .NET 10 using the WPF framework for its user interface and WinForms for system tray integration. The architecture follows the MVVM pattern, leveraging `CommunityToolkit.Mvvm` for state management and `Microsoft.Extensions.Hosting` for dependency injection. 
 
 Technical highlights include:
 - **Hot-Path Optimization**: The `InputHookService` is designed for zero-allocation execution to ensure stability during high-frequency input events.
@@ -88,11 +88,11 @@ Here is a reference of the available build and publish commands for different us
 ### Publishing Single Executables
 Publishing outputs compiled packages ready for distribution.
 
-* **Self-Contained Single EXE**: Compiles all binaries and the .NET 8 runtime into a single executable. No .NET runtime installation is required on the user's machine.
+* **Self-Contained Single EXE**: Compiles all binaries and the .NET 10 runtime into a single executable. No .NET runtime installation is required on the user's machine.
   ```powershell
   dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true
   ```
-* **Framework-Dependent Single EXE**: Compiles into a single executable but does not bundle the runtime, yielding a significantly smaller file size. Requires the .NET 8 runtime to be installed on the target machine.
+* **Framework-Dependent Single EXE**: Compiles into a single executable but does not bundle the runtime, yielding a significantly smaller file size. Requires the .NET 10 runtime to be installed on the target machine.
   ```powershell
   dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
   ```

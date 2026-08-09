@@ -1,8 +1,8 @@
 # F-022: Windows CI gate — Release build + full test run + dependency advisory scans on every
 # push/PR to main. Documented follow-ups (see IMPLEMENTATION_PLAN.md): pin actions by commit SHA;
 # add `--locked-mode` restore once F-019a commits packages.lock.json; enforce (fail on) the vulnerable
-# scan once F-019b (xUnit v3) clears the two test-only High advisories; add signing/SBOM/provenance
-# when a release channel is defined.
+# scan once the production graph regresses; add signing/SBOM/provenance when a release channel is
+# defined. F-019b (xUnit v3) is now in place, clearing the previously-flagged test-only High advisories.
 name: CI
 
 on:
@@ -21,10 +21,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Resolve the SDK from global.json so the pin has exactly one source of truth. A hardcoded
+      # version here can drift from the pin, and `dotnet` would then hard-fail on an SDK-not-found
+      # rather than build with the version CI claims to install.
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          global-json-file: global.json
 
       - name: Restore
         run: dotnet restore sWinShortcuts.sln
@@ -35,8 +38,8 @@ jobs:
       - name: Test (Release)
         run: dotnet test sWinShortcuts.sln -c Release --no-build
 
-      # Informational for now (these commands exit 0 even on findings). Production graph is clean; the
-      # test graph still surfaces two High advisories until F-019b migrates to xUnit v3.
+      # Informational (these commands exit 0 even on findings). The xUnit v3 migration (F-019b)
+      # cleared the previously-flagged test-only High advisories; production graph remains clean.
       - name: Vulnerable package scan
         run: dotnet list sWinShortcuts.sln package --vulnerable --include-transitive
 
@@ -56,7 +59,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          global-json-file: global.json
 
       - name: Restore
         run: dotnet restore sWinShortcuts.csproj
@@ -67,6 +70,18 @@ jobs:
           -p:PublishSingleFile=true
           -p:DebugType=None -p:DebugSymbols=false -o publish
 
+      # Validates single-file codegen produced a non-trivial executable. The full GUI launch smoke
+      # test (notably the SDK 10.0.202 folder-name-sensitive startup regression) cannot run headlessly
+      # in CI and is performed locally from a path containing spaces before each release.
+      - name: Verify single-file publish output
+        shell: pwsh
+        run: |
+          $exe = "publish/sWinShortcuts.exe"
+          if (-not (Test-Path $exe)) { throw "Expected publish output not found: $exe" }
+          $len = (Get-Item $exe).Length
+          if ($len -lt 1MB) { throw "Single-file exe unexpectedly small ($len bytes)" }
+          Write-Host "Single-file exe OK: $len bytes"
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,5 +91,5 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag publish/sWinShortcuts.exe --clobber
           } else {
-            gh release create $tag publish/sWinShortcuts.exe --target "${{ github.sha }}" --title "sWinShortcuts build ${{ github.run_number }}" --notes "Requires .NET 8 Desktop Runtime (x64)."
+            gh release create $tag publish/sWinShortcuts.exe --target "${{ github.sha }}" --title "sWinShortcuts build ${{ github.run_number }}" --notes "Requires .NET 10 Desktop Runtime (x64)."
           }
