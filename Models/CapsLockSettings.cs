@@ -8,6 +8,8 @@ public sealed class CapsLockSettings
 
     public CapsLockMode Mode { get; set; } = CapsLockMode.Normal;
 
+    public bool IsRemapEnabled { get; set; }
+
     public Key? RemapTarget { get; set; }
 }
 
@@ -15,6 +17,5 @@ public enum CapsLockMode
 {
     Normal = 0,
     Disabled = 1,
-    Hold = 2,
-    Remap = 3
+    DoubleNormal = 2
 }

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Windows.Input;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
@@ -10,6 +11,30 @@ namespace Tests;
 
 public sealed class ProfileRuntimeNotificationTests
 {
+    [Fact]
+    public void CapsLockRemapAvailability_FollowsModeAndToggle()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(
+            profile,
+            new FakeDisplayService(),
+            new RecordingColorControlService());
+
+        viewModel.CapsLockMode = CapsLockMode.Normal;
+        Assert.True(viewModel.CanRemapCapsLock);
+        Assert.False(viewModel.CanSelectCapsLockRemapKey);
+
+        viewModel.CapsLockRemapEnabled = true;
+        Assert.True(viewModel.CanSelectCapsLockRemapKey);
+
+        viewModel.CapsLockMode = CapsLockMode.Disabled;
+        Assert.False(viewModel.CanRemapCapsLock);
+        Assert.False(viewModel.CanSelectCapsLockRemapKey);
+
+        viewModel.CapsLockRemapKey = Key.None;
+        Assert.Null(profile.CapsLock.RemapTarget);
+    }
+
     [Fact]
     public async Task ManualSave_WithoutNewEdit_DoesNotReconcileRuntimeState()
     {

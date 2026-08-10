@@ -454,10 +454,31 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.CapsLock.Mode = value;
                 OnPropertyChanged();
+                OnPropertyChanged(nameof(CanRemapCapsLock));
+                OnPropertyChanged(nameof(CanSelectCapsLockRemapKey));
                 OnProfileChanged(ProfileChangeKind.CapsLock);
             }
         }
     }
+
+    public bool CapsLockRemapEnabled
+    {
+        get => Model.CapsLock.IsRemapEnabled;
+        set
+        {
+            if (Model.CapsLock.IsRemapEnabled != value)
+            {
+                Model.CapsLock.IsRemapEnabled = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(CanSelectCapsLockRemapKey));
+                OnProfileChanged(ProfileChangeKind.CapsLock);
+            }
+        }
+    }
+
+    public bool CanRemapCapsLock => CapsLockMode != CapsLockMode.Disabled;
+
+    public bool CanSelectCapsLockRemapKey => CanRemapCapsLock && CapsLockRemapEnabled;
 
     public Key CapsLockRemapKey
     {
@@ -704,7 +725,10 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.AntiAfk.IntervalMinutes = AntiAfkIntervalMinutes;
             Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
-            Model.CapsLock.RemapTarget = CapsLockRemapKey;
+            Model.CapsLock.IsRemapEnabled = CapsLockRemapEnabled;
+            Model.CapsLock.RemapTarget = CapsLockRemapKey == Key.None
+                ? null
+                : CapsLockRemapKey;
             Model.WindowsLauncher.IsEnabled = WindowsLauncherEnabled;
             Model.Executable = Executable;
             Model.ColorSettings.IsEnabled = ColorSettings.IsEnabled;

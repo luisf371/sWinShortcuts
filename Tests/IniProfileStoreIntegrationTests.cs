@@ -283,7 +283,8 @@ public class IniProfileStoreIntegrationTests : IDisposable
     {
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "capslock.exe");
         profile.CapsLock.IsEnabled = true;
-        profile.CapsLock.Mode = CapsLockMode.Remap;
+        profile.CapsLock.Mode = CapsLockMode.DoubleNormal;
+        profile.CapsLock.IsRemapEnabled = true;
         profile.CapsLock.RemapTarget = Key.Escape;
         _createdProfiles.Add(profile);
 
@@ -293,7 +294,48 @@ public class IniProfileStoreIntegrationTests : IDisposable
 
         Assert.NotNull(loaded);
         Assert.True(loaded.CapsLock.IsEnabled);
-        Assert.Equal(CapsLockMode.Remap, loaded.CapsLock.Mode);
+        Assert.Equal(CapsLockMode.DoubleNormal, loaded.CapsLock.Mode);
+        Assert.True(loaded.CapsLock.IsRemapEnabled);
+        Assert.Equal(Key.Escape, loaded.CapsLock.RemapTarget);
+    }
+
+    [Theory]
+    [InlineData("Hold")]
+    [InlineData("MomentaryShift")]
+    [InlineData("2")]
+    public async Task LoadProfiles_LegacyHoldNames_MigrateToDoubleNormal(string legacyMode)
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "LegacyHold.ini"),
+            $"[Profile]\nName=Legacy Hold\nExecutable=legacyhold.exe\nEnabled=true\n\n" +
+            $"[CapsLock]\nEnabled=true\nMode={legacyMode}\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = Assert.Single(profiles, p => p.NormalizedExecutable == "legacyhold");
+
+        Assert.Equal(CapsLockMode.DoubleNormal, loaded.CapsLock.Mode);
+        Assert.False(loaded.CapsLock.IsRemapEnabled);
+    }
+
+    [Theory]
+    [InlineData("Remap")]
+    [InlineData("3")]
+    public async Task LoadProfiles_LegacyRemapMode_MigratesToNormalWithRemapEnabled(string legacyMode)
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "LegacyRemap.ini"),
+            $"[Profile]\nName=Legacy Remap\nExecutable=legacyremap.exe\nEnabled=true\n\n" +
+            $"[CapsLock]\nEnabled=true\nMode={legacyMode}\nRemapTarget=Escape\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = Assert.Single(profiles, p => p.NormalizedExecutable == "legacyremap");
+
+        Assert.Equal(CapsLockMode.Normal, loaded.CapsLock.Mode);
+        Assert.True(loaded.CapsLock.IsRemapEnabled);
         Assert.Equal(Key.Escape, loaded.CapsLock.RemapTarget);
     }
 

@@ -24,7 +24,8 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IReadOnlyList<Key> _keyOptions = KeyCatalog.GetCommonKeys();
     private readonly IReadOnlyList<Key> _keyOptionsWithNone;
     private readonly IReadOnlyList<InputTrigger> _holdBreathPanicTriggers;
-    private readonly IReadOnlyList<CapsLockMode> _capsLockModes = Enum.GetValues<CapsLockMode>();
+    private readonly IReadOnlyList<CapsLockMode> _capsLockModes =
+        [CapsLockMode.Normal, CapsLockMode.DoubleNormal, CapsLockMode.Disabled];
     private readonly IReadOnlyList<HoldBreathMode> _holdBreathModes = Enum.GetValues<HoldBreathMode>();
     private readonly IReadOnlyList<SprintActivation> _sprintActivationModes = Enum.GetValues<SprintActivation>();
     private readonly IReadOnlyList<AutoRunSendMode> _autoRunSendModes = Enum.GetValues<AutoRunSendMode>();

@@ -437,6 +437,332 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public async Task CapsLock_NormalWithoutRemap_PassesPhysicalTransitions()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.Normal),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.False(service.HandleCapsLockForTesting(isDown: true));
+            Assert.False(service.HandleCapsLockForTesting(isDown: true));
+            Assert.False(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Empty(sender.Transitions);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_NormalRemap_MirrorsDownRepeatsAndUp()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.Normal, remapEnabled: true, Key.Escape),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            var expected = new[]
+            {
+                (Key.Escape, true),
+                (Key.Escape, true),
+                (Key.Escape, false)
+            };
+            Assert.True(expected.SequenceEqual(
+                sender.Transitions.Select(x => (x.Key, x.IsDown))));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_NormalRemapForceRelease_ReleasesHeldOutputOnce()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.Normal, remapEnabled: true, Key.Escape),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 1);
+            service.ForceReleaseCapsLockForTesting();
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            var expected = new[]
+            {
+                (Key.Escape, true),
+                (Key.Escape, false)
+            };
+            Assert.True(expected.SequenceEqual(
+                sender.Transitions.Select(x => (x.Key, x.IsDown))));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_HardBoundaryWithoutPhysicalUp_AllowsNextFreshPress()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.Normal, remapEnabled: true, Key.Escape),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 1);
+            service.ForceReleaseCapsLockForTesting(preservePhysicalPairing: false);
+
+            // The first physical UP was swallowed by the session boundary. This DOWN must still be fresh.
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            var expected = new[]
+            {
+                (Key.Escape, true),
+                (Key.Escape, false),
+                (Key.Escape, true),
+                (Key.Escape, false)
+            };
+            Assert.True(expected.SequenceEqual(
+                sender.Transitions.Select(x => (x.Key, x.IsDown))));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapsLock_DoubleNormal_TapsOnPhysicalDownAndUp(bool remapEnabled)
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var output = remapEnabled ? Key.Escape : Key.CapsLock;
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal, remapEnabled, Key.Escape),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            var expected = new[]
+            {
+                (output, true),
+                (output, false),
+                (output, true),
+                (output, false)
+            };
+            Assert.True(expected.SequenceEqual(
+                sender.Transitions.Select(x => (x.Key, x.IsDown))));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_Disabled_SuppressesWithoutOutput()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.Disabled, remapEnabled: true, Key.Escape),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Empty(sender.Transitions);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_DoubleNormalForceRelease_CompletesSecondTapOnce()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            service.ForceReleaseCapsLockForTesting();
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            var expected = new[]
+            {
+                (Key.CapsLock, true),
+                (Key.CapsLock, false),
+                (Key.CapsLock, true),
+                (Key.CapsLock, false)
+            };
+            Assert.True(expected.SequenceEqual(
+                sender.Transitions.Select(x => (x.Key, x.IsDown))));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_DoubleNormalInvalidatedBeforeInitialTap_SkipsBothTaps()
+    {
+        var sender = new RecordingInputSender(blockDummy: true);
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var blocker = service.EnqueueDummyForTesting();
+            Assert.True(sender.DummyEntered.Wait(TimeSpan.FromSeconds(2)));
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            service.ForceReleaseCapsLockForTesting();
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+
+            sender.ReleaseDummy.Set();
+            Assert.True(await blocker.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Empty(sender.Transitions);
+        }
+        finally
+        {
+            sender.ReleaseDummy.Set();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_DoubleNormalFailedInitialDown_SkipsReleaseTap()
+    {
+        var sender = new RecordingInputSender(failFirstDown: true);
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.Equal(2, sender.Transitions.Count);
+            Assert.All(sender.Transitions, item => Assert.Equal(Key.CapsLock, item.Key));
+            Assert.Equal(new[] { true, false }, sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_DoubleNormalConsecutivePresses_EmitTwoTapsEach()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            for (var press = 0; press < 2; press++)
+            {
+                Assert.True(service.HandleCapsLockForTesting(isDown: true));
+                Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            }
+
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(8, sender.Transitions.Count);
+            Assert.All(sender.Transitions, item => Assert.Equal(Key.CapsLock, item.Key));
+            Assert.Equal(
+                new[] { true, false, true, false, true, false, true, false },
+                sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
     public async Task AutoRun_LiveDisable_ReleasesRecordedMoveAndSprint()
     {
         var sender = new RecordingInputSender();
@@ -701,6 +1027,25 @@ public sealed class InputExecutorReliabilityTests
                         HoldKey = Key.B
                     }
                 }
+            }
+        };
+    }
+
+    private static Profile CreateCapsLockProfile(
+        CapsLockMode mode,
+        bool remapEnabled = false,
+        Key? remapTarget = null)
+    {
+        return new Profile
+        {
+            Name = "Game",
+            Executable = "game.exe",
+            CapsLock =
+            {
+                IsEnabled = true,
+                Mode = mode,
+                IsRemapEnabled = remapEnabled,
+                RemapTarget = remapTarget
             }
         };
     }

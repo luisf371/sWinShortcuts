@@ -159,6 +159,7 @@ internal static class ProfilePersistenceSnapshot
         {
             IsEnabled = source.IsEnabled,
             Mode = source.Mode,
+            IsRemapEnabled = source.IsRemapEnabled,
             RemapTarget = source.RemapTarget
         };
     }

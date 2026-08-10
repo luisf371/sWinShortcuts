@@ -112,8 +112,10 @@ public sealed class InputHookService : IInputHookService
     // must never be reorderable with its recorded release (same proven pattern as _holdBreathLock;
     // caps events occur at human frequency, so the lock costs nothing on the hot path).
     private readonly object _capsLockStateLock = new();
-    private bool _capsShiftEngaged;
-    private Key? _capsRemappedKey;
+    private Key? _capsHeldOutputKey;
+    private Key? _capsSecondTapKey;
+    private long _capsSecondTapToken;
+    private long _capsTapTokenSequence;
     // F-012 (codex #4): the suppression decision recorded at the Caps key-DOWN, replayed on the matching
     // key-UP so the UP is suppressed iff the DOWN was — even if the mode/enable changed while Caps was held.
     private bool _capsDownSuppressed;
@@ -185,7 +187,7 @@ public sealed class InputHookService : IInputHookService
     private enum InputInjectionKind
     {
         KeyTransition,
-        EnsureCapsLockState,
+        CapsLockTap,
         DummyKey
     }
 
@@ -198,14 +200,14 @@ public sealed class InputHookService : IInputHookService
         string? ExpectedForegroundExe = null,
         long HoldBreathGeneration = 0,
         InputInjectionKind Kind = InputInjectionKind.KeyTransition,
-        bool DesiredCapsLockState = false,
         TaskCompletionSource<bool>? Completion = null,
         long ForegroundGeneration = 0,
         long AltMouseGeneration = 0,
         long CombinedGeneration = 0,
         long LauncherGeneration = 0,
         long CapsGeneration = 0,
-        Profile? ExpectedProfile = null);
+        Profile? ExpectedProfile = null,
+        long CapsPressToken = 0);
 
     // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
     private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
@@ -560,6 +562,19 @@ public sealed class InputHookService : IInputHookService
         };
 
         return HandleAltMouse(message, 0);
+    }
+
+    internal bool HandleCapsLockForTesting(bool isDown)
+    {
+        return HandleCapsLock(
+            NativeMethods.VK_CAPITAL,
+            isKeyDown: isDown,
+            isKeyUp: !isDown);
+    }
+
+    internal void ForceReleaseCapsLockForTesting(bool preservePhysicalPairing = true)
+    {
+        ReleaseCapsState(preservePhysicalPairing);
     }
 
     internal void ConfigureForegroundAutoRunForTesting(
@@ -2428,53 +2443,48 @@ public sealed class InputHookService : IInputHookService
 
     
 
-        private bool HandleCapsLock(int vkCode, bool isKeyDown, bool isKeyUp)
-        {
-        // Only handle CapsLock key events (VK_CAPITAL = 0x14)
+    private bool HandleCapsLock(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        // Only handle CapsLock key events (VK_CAPITAL = 0x14).
         if (vkCode != 0x14)
         {
             return false;
         }
 
-        // F-012: on key-up, release any RECORDED caps state FIRST — before consulting the current
-        // enable/mode gates. If the feature was disabled, or the mode/target changed, while Caps was
-        // physically held, this still releases the engaged state (Caps-forced-ON and/or the injected remap
-        // key) by the RECORDED state, so it can never stick. Mirrors the H2 combined-mapping pattern.
+        // Release RECORDED output before consulting current settings. A live mode/target/profile change
+        // can therefore never strand a mirrored key or lose the second half of a committed 2x press.
         if (isKeyUp)
         {
             lock (_capsLockStateLock)
             {
-                // Release any RECORDED injected state FIRST — regardless of current mode.
-                if (_capsShiftEngaged)
-                {
-                    _capsShiftEngaged = false;
-                    ForceCapsLockState(false);
-                    LogDebug("CapsLock → FORCED OFF (recorded Hold release)");
-                }
-
-                if (_capsRemappedKey is { } recorded)
+                if (_capsHeldOutputKey is { } heldOutput)
                 {
                     EnqueueHoldBreathInjection(
-                        new HoldBreathInjection(recorded, IsDown: false, PreSleepMs: 0));
-                    _capsRemappedKey = null;
-                    LogDebug($"CapsLock → {recorded} UP (recorded Remap release)");
+                        new HoldBreathInjection(heldOutput, IsDown: false, PreSleepMs: 0));
+                    _capsHeldOutputKey = null;
+                    LogDebug($"CapsLock → {heldOutput} UP (recorded Normal release)");
                 }
 
-                // Return the PAIRED suppress decision latched at the matching DOWN (codex #4), so the UP's
-                // suppression matches the DOWN's even if the mode/enable changed while held.
+                if (_capsSecondTapKey is { } secondTap)
+                {
+                    EnqueueCapsLockTap(secondTap, _capsSecondTapToken, isInitialTap: false);
+                    _capsSecondTapKey = null;
+                    _capsSecondTapToken = 0;
+                    LogDebug($"CapsLock → {secondTap} TAP (2x Normal physical UP)");
+                }
+
+                // Return the suppression decision latched at the matching physical DOWN, even if the
+                // configuration changed while CapsLock was held.
                 var suppressUp = _capsDownSuppressed;
                 _capsDownSuppressed = false;
-                _capsPhysicallyDown = false; // codex-final #2: physical press ended — next DOWN re-latches.
+                _capsPhysicallyDown = false;
                 return suppressUp;
             }
         }
 
-        // Key-DOWN: on the INITIAL physical press, decide suppression from CURRENT settings and LATCH it for
-        // EVERY later event of this press (typematic repeats + the matching UP). Repeats must NOT re-decide:
-        // a mode/enable change while Caps is held would otherwise desync the UP from its DOWN — leaking a
-        // physical Caps to Windows (stuck CapsLock) or stranding the injected remap (codex-final #2).
-        var capsConfigurationGeneration =
-            Volatile.Read(ref _capsConfigurationGeneration);
+        // Decide once per physical press. Typematic DOWNs reuse that decision; Normal+Remap mirrors those
+        // repeats to the recorded output key, while 2x Normal deliberately fires only on the physical edges.
+        var capsConfigurationGeneration = Volatile.Read(ref _capsConfigurationGeneration);
         var settings = GetEffectiveCapsLockSettings();
         var capsForegroundGeneration =
             ReferenceEquals(settings, _activeProfile?.CapsLock)
@@ -2495,18 +2505,30 @@ public sealed class InputHookService : IInputHookService
                 }
 
                 _capsPhysicallyDown = true;
-                _capsDownSuppressed = settings is { IsEnabled: true } && settings.Mode != CapsLockMode.Normal;
+                _capsDownSuppressed = settings is { IsEnabled: true } &&
+                    (settings.Mode != CapsLockMode.Normal || settings.IsRemapEnabled);
             }
 
             suppressDown = _capsDownSuppressed;
         }
 
-        // Typematic repeat: mirror the latched decision WITHOUT re-running the mode switch. The initial press
-        // already engaged the mode (and injected any remap DOWN, which stays held until the UP releases it);
-        // re-entering the switch here with possibly-changed settings could fire a different mode's action
-        // mid-hold. Trades Remap auto-repeat of the target for a guaranteed matched DOWN/UP pair.
+        // Typematic repeat: only Normal+Remap mirrors repeated DOWN events. Never re-read settings here;
+        // the exact output key was recorded on the initial physical DOWN.
         if (!isInitialPress)
         {
+            if (suppressDown && isKeyDown)
+            {
+                lock (_capsLockStateLock)
+                {
+                    if (_capsHeldOutputKey is { } repeatedOutput)
+                    {
+                        EnqueueHoldBreathInjection(
+                            new HoldBreathInjection(repeatedOutput, IsDown: true, PreSleepMs: 0));
+                        LogDebug($"CapsLock → {repeatedOutput} DOWN (Normal repeat)");
+                    }
+                }
+            }
+
             return suppressDown;
         }
 
@@ -2515,91 +2537,83 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        switch (settings!.Mode)
+        if (settings!.Mode == CapsLockMode.Disabled)
         {
-            case CapsLockMode.Disabled:
-                LogDebug("CapsLock suppressed (Disabled mode)");
-                return true;
-
-            case CapsLockMode.Hold:
-                lock (_capsLockStateLock)
-                {
-                    // _isRunning re-check under the lock: an in-flight callback racing Stop() must not
-                    // toggle CapsLock after ReleaseCapsState already ran. Key-UP release is handled by the
-                    // recorded-state block at the top of this method (F-012).
-                    if (isKeyDown && !_capsShiftEngaged && _isRunning &&
-                        capsConfigurationGeneration ==
-                        Volatile.Read(ref _capsConfigurationGeneration))
-                    {
-                        _capsShiftEngaged = true;
-                        ForceCapsLockState(
-                            true,
-                            capsForegroundGeneration,
-                            capsConfigurationGeneration);
-                        LogDebug("CapsLock → FORCED ON (Hold mode)");
-                    }
-                }
-                return true;
-
-            case CapsLockMode.Remap:
-                var target = settings.RemapTarget;
-                if (!target.HasValue)
-                {
-                    return true;
-                }
-
-                lock (_capsLockStateLock)
-                {
-                    if (isKeyDown)
-                    {
-                        // A repeat after the remap target changed would overwrite the recorded key
-                        // and orphan the previously injected one — release it before injecting anew.
-                        if (_capsRemappedKey is { } previous && previous != target.Value)
-                        {
-                            EnqueueHoldBreathInjection(
-                                new HoldBreathInjection(previous, IsDown: false, PreSleepMs: 0));
-                            _capsRemappedKey = null;
-                            LogDebug($"CapsLock remap retarget: released {previous}");
-                        }
-
-                        // _isRunning re-check under the lock (see Hold mode above): never inject a
-                        // DOWN that a completed Stop() can no longer pair with a release.
-                        if (_isRunning &&
-                            capsConfigurationGeneration ==
-                            Volatile.Read(ref _capsConfigurationGeneration))
-                        {
-                            _capsRemappedKey = target;
-                            EnqueueHoldBreathInjection(
-                                new HoldBreathInjection(
-                                    target.Value,
-                                    IsDown: true,
-                                    PreSleepMs: 0,
-                                    ForegroundGeneration: capsForegroundGeneration,
-                                    CapsGeneration: capsConfigurationGeneration));
-                            LogDebug($"CapsLock → {target.Value} DOWN (Remap mode)");
-                        }
-                    }
-                    // Key-UP release is handled by the recorded-state block at the top of this method (F-012).
-                }
-                return true;
-
-            default:
-                return false;
+            LogDebug("CapsLock suppressed (Disabled mode)");
+            return true;
         }
+
+        var outputKey = settings.IsRemapEnabled
+            ? settings.RemapTarget
+            : Key.CapsLock;
+        if (outputKey is null)
+        {
+            LogDebug("CapsLock suppressed (Remap Key enabled without a target)");
+            return true;
+        }
+
+        lock (_capsLockStateLock)
+        {
+            // Stop/configuration may have raced the callback after its initial snapshot. Do not create new
+            // synthetic state once that boundary has completed; the physical UP still uses the latched
+            // suppression decision.
+            if (!isKeyDown || !_isRunning ||
+                capsConfigurationGeneration != Volatile.Read(ref _capsConfigurationGeneration))
+            {
+                return true;
+            }
+
+            switch (settings.Mode)
+            {
+                case CapsLockMode.Normal:
+                    _capsHeldOutputKey = outputKey.Value;
+                    EnqueueHoldBreathInjection(
+                        new HoldBreathInjection(
+                            outputKey.Value,
+                            IsDown: true,
+                            PreSleepMs: 0,
+                            ForegroundGeneration: capsForegroundGeneration,
+                            CapsGeneration: capsConfigurationGeneration));
+                    LogDebug($"CapsLock → {outputKey.Value} DOWN (Normal remap)");
+                    break;
+
+                case CapsLockMode.DoubleNormal:
+                    var token = Interlocked.Increment(ref _capsTapTokenSequence);
+                    _capsSecondTapKey = outputKey.Value;
+                    _capsSecondTapToken = token;
+                    EnqueueCapsLockTap(
+                        outputKey.Value,
+                        token,
+                        isInitialTap: true,
+                        capsForegroundGeneration,
+                        capsConfigurationGeneration);
+                    LogDebug($"CapsLock → {outputKey.Value} TAP (2x Normal physical DOWN)");
+                    break;
+
+                default:
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private CapsLockSettings? GetEffectiveCapsLockSettings()
     {
         var activeProfile = ProfileInputGenerationIsCurrent() ? _activeProfile : null;
         var active = activeProfile is { IsEnabled: true } ? activeProfile.CapsLock : null;
-        if (active is { IsEnabled: true } enabledActive && enabledActive.Mode != CapsLockMode.Normal)
+        if (active is { IsEnabled: true } enabledActive &&
+            (enabledActive.Mode != CapsLockMode.Normal || enabledActive.IsRemapEnabled))
         {
             return enabledActive;
         }
 
         var windowsProfile = _windowsProfile;
         var global = windowsProfile is { IsEnabled: true } ? windowsProfile.CapsLock : null;
-        if (global is { IsEnabled: true } enabledGlobal && enabledGlobal.Mode != CapsLockMode.Normal)
+        if (global is { IsEnabled: true } enabledGlobal &&
+            (enabledGlobal.Mode != CapsLockMode.Normal || enabledGlobal.IsRemapEnabled))
         {
             return enabledGlobal;
         }
@@ -2617,73 +2631,58 @@ public sealed class InputHookService : IInputHookService
         return null;
     }
 
-    private void ReleaseCapsState()
+    private void ReleaseCapsState(bool preservePhysicalPairing = true)
     {
         lock (_capsLockStateLock)
         {
             Interlocked.Increment(ref _capsConfigurationGeneration);
-            if (_capsShiftEngaged)
-            {
-                _capsShiftEngaged = false;
-                // F-012: ALWAYS the matching Caps-off action. The engaged state is Caps-forced-ON regardless
-                // of what the mode currently says (it may have changed since engage). The old mode-dependent
-                // else sent an unrelated LeftShift UP, which left Caps stuck ON.
-                ForceCapsLockState(false);
-                LogDebug("Force-release CapsLock (forced OFF)");
-            }
 
-            if (_capsRemappedKey.HasValue)
+            if (_capsHeldOutputKey is { } heldOutput)
             {
                 EnqueueHoldBreathInjection(
-                    new HoldBreathInjection(_capsRemappedKey.Value, IsDown: false, PreSleepMs: 0));
-                LogDebug($"Force-release CapsLock remap: {_capsRemappedKey.Value}");
-                _capsRemappedKey = null;
+                    new HoldBreathInjection(heldOutput, IsDown: false, PreSleepMs: 0));
+                _capsHeldOutputKey = null;
+                LogDebug($"Force-release CapsLock Normal output: {heldOutput}");
             }
 
-            // codex-final #2: do NOT reset _capsPhysicallyDown / _capsDownSuppressed here. ReleaseCapsState
-            // runs on every profile switch AND watchdog reinstall while the hook keeps running and Caps may
-            // still be PHYSICALLY held — clearing the latch there would reclassify the next typematic repeat
-            // as a fresh (suppressed) press whose UP no longer pairs with the original DOWN, leaking a Caps
-            // DOWN to Windows with a suppressed UP = stuck CapsLock. The latch is cleared only in Start()
-            // (the genuine fresh-session boundary; the reinstall path re-hooks WITHOUT calling Start()).
+            if (_capsSecondTapKey is { } secondTap)
+            {
+                EnqueueCapsLockTap(secondTap, _capsSecondTapToken, isInitialTap: false);
+                _capsSecondTapKey = null;
+                _capsSecondTapToken = 0;
+                LogDebug($"Force-complete CapsLock 2x Normal output: {secondTap}");
+            }
+
+            // Profile/config/watchdog changes preserve a physical press so its eventual UP keeps the original
+            // suppression decision. Stop and hard session-away boundaries reset it because secure-desktop
+            // transitions can swallow the physical UP entirely.
+            if (!preservePhysicalPairing)
+            {
+                _capsPhysicallyDown = false;
+                _capsDownSuppressed = false;
+            }
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsCapsLockOn()
-    {
-        return (NativeMethods.GetKeyState(NativeMethods.VK_CAPITAL) & 1) != 0;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ForceCapsLockState(
-        bool enabled,
+    private void EnqueueCapsLockTap(
+        Key key,
+        long pressToken,
+        bool isInitialTap,
         long foregroundGeneration = 0,
         long capsGeneration = 0)
     {
+        var rng = _random.Value!;
+        var duration = rng.Next(KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS + 1);
         EnqueueHoldBreathInjection(
             new HoldBreathInjection(
-                Key.None,
-                IsDown: false,
-                PreSleepMs: 0,
-                Kind: InputInjectionKind.EnsureCapsLockState,
-                DesiredCapsLockState: enabled,
+                key,
+                IsDown: isInitialTap,
+                PreSleepMs: duration,
+                Kind: InputInjectionKind.CapsLockTap,
                 ForegroundGeneration: foregroundGeneration,
-                CapsGeneration: capsGeneration));
-    }
-
-    private void EnsureCapsLockStateOnExecutor(bool enabled)
-    {
-        if (IsCapsLockOn() != enabled)
-        {
-            if (!_inputSender.SendVirtualKeyTap(NativeMethods.VK_CAPITAL))
-            {
-                LogDebug($"ForceCapsLockState FAILED while toggling {(enabled ? "ON" : "OFF")}");
-                return;
-            }
-
-            LogDebug($"ForceCapsLockState: toggled Caps Lock {(enabled ? "ON" : "OFF")}");
-        }
+                CapsGeneration: capsGeneration,
+                CapsPressToken: pressToken));
     }
 
     // ==================== HOLD BREATH HANDLING ====================
@@ -3016,6 +3015,11 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
+        // Executor-owned acknowledgement for 2x Normal. The release tap runs only if its matching
+        // initial tap actually reached SendInput; this keeps profile/shutdown invalidation from turning
+        // a skipped first tap into one stray tap on release.
+        long activeCapsTapToken = 0;
+
         try
         {
             foreach (var injection in queue.GetConsumingEnumerable())
@@ -3082,12 +3086,12 @@ public sealed class InputHookService : IInputHookService
                         continue;
                     }
 
-                    if (injection.Kind == InputInjectionKind.EnsureCapsLockState)
+                    if (injection.Kind == InputInjectionKind.CapsLockTap)
                     {
-                        // Enabling is a new action and can be invalidated; disabling is a recorded release
-                        // and is therefore unconditional.
-                        if (injection.DesiredCapsLockState &&
-                            (queue.IsAddingCompleted ||
+                        var isInitialTap = injection.IsDown;
+                        if (isInitialTap &&
+                            (!_isRunning ||
+                             queue.IsAddingCompleted ||
                              (injection.CapsGeneration != 0 &&
                               injection.CapsGeneration !=
                               Volatile.Read(ref _capsConfigurationGeneration)) ||
@@ -3095,10 +3099,53 @@ public sealed class InputHookService : IInputHookService
                               (injection.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
                                injection.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration)))))
                         {
+                            if (IsDebugEnabled)
+                            {
+                                LogDebug($"CapsLock initial TAP skipped (stale boundary): {injection.Key}");
+                            }
                             continue;
                         }
 
-                        EnsureCapsLockStateOnExecutor(injection.DesiredCapsLockState);
+                        if (!isInitialTap && activeCapsTapToken != injection.CapsPressToken)
+                        {
+                            if (IsDebugEnabled)
+                            {
+                                LogDebug($"CapsLock release TAP skipped (initial tap not sent): {injection.Key}");
+                            }
+                            continue;
+                        }
+
+                        var downSent = _inputSender.SendKey(injection.Key, isKeyDown: true);
+                        if (!downSent)
+                        {
+                            LogDebug($"CapsLock TAP DOWN failed: {injection.Key}");
+                        }
+
+                        try
+                        {
+                            Thread.Sleep(injection.PreSleepMs);
+                        }
+                        finally
+                        {
+                            if (!_inputSender.SendKey(injection.Key, isKeyDown: false))
+                            {
+                                LogDebug($"CapsLock TAP UP failed: {injection.Key}");
+                            }
+                        }
+
+                        if (isInitialTap)
+                        {
+                            activeCapsTapToken = downSent ? injection.CapsPressToken : 0;
+                        }
+                        else
+                        {
+                            activeCapsTapToken = 0;
+                        }
+
+                        if (IsDebugEnabled)
+                        {
+                            LogDebug($"CapsLock 2x Normal {(isInitialTap ? "initial" : "release")} TAP: {injection.Key}");
+                        }
                         continue;
                     }
 
@@ -4104,19 +4151,16 @@ public sealed class InputHookService : IInputHookService
             targetIsHung,
             forceAttach);
 
-        // AttachThreadInput RESETS the calling thread's GetKeyState/GetKeyboardState table (per MSDN).
-        // Snapshot it first and restore it after, so a Background post can't corrupt a same-thread
-        // key-state reader — notably CapsLock Hold mode's GetKeyState(VK_CAPITAL) on the dispatcher/hook
-        // thread (codex). The reset window is confined to this method, which completes on the thread
-        // before any other key-state reader can run.
+        // AttachThreadInput resets the calling thread's keyboard-state table. Snapshot and restore it so
+        // this short-lived Background post does not corrupt other same-thread keyboard-state consumers.
         byte[]? savedKeyState = null;
         if (willAttach)
         {
             savedKeyState = new byte[256];
             if (!NativeMethods.GetKeyboardState(savedKeyState))
             {
-                // No snapshot → do NOT attach: attach would reset a key-state table we can't restore,
-                // corrupting a same-thread reader (CapsLock-Hold). A bare best-effort post is safer. B3.
+                // No snapshot means do not attach: a bare best-effort post is safer than resetting a
+                // keyboard-state table that cannot be restored. B3.
                 savedKeyState = null;
                 willAttach = false;
             }
@@ -5168,7 +5212,7 @@ public sealed class InputHookService : IInputHookService
         
         ReleaseAllOverrides(preserveSuppression: preservePhysicalPairing);
         ResetMouseStates(preserveSuppressedUps: preservePhysicalPairing);
-        ReleaseCapsState();
+        ReleaseCapsState(preservePhysicalPairing);
         ReleaseHoldBreathState();
         lock (_holdBreathLock)
         {

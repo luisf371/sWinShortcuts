@@ -81,9 +81,8 @@ internal static class NativeMethods
     [DllImport("kernel32.dll")]
     internal static extern uint GetCurrentThreadId();
 
-    // AttachThreadInput RESETS the calling thread's GetKeyState/GetKeyboardState table (per MSDN), so
-    // Background posts snapshot it before the attach and restore it after — otherwise a post on the
-    // dispatcher/hook thread would corrupt CapsLock-Hold's GetKeyState(VK_CAPITAL) read.
+    // AttachThreadInput resets the calling thread's keyboard-state table, so Background posts snapshot
+    // it before the attach and restore it afterward.
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetKeyboardState(byte[] lpKeyState);
@@ -215,9 +214,6 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int vKey);
-
-    [DllImport("user32.dll")]
-    internal static extern short GetKeyState(int nVirtKey);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);

@@ -503,13 +503,25 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.IsEnabled = document.GetBoolean("CapsLock", "Enabled", settings.IsEnabled);
 
-        // Migration: legacy master stored CapsLockMode.MomentaryShift (renamed to Hold, same value=2).
-        // Old INIs persist the NAME, so Enum.TryParse fails and would silently reset to Normal.
+        // Compatibility: Hold and its older MomentaryShift name both used numeric value 2, which is now
+        // DoubleNormal. The former fourth Remap mode becomes Normal + the independent RemapEnabled flag.
         var rawMode = document.GetString("CapsLock", "Mode", string.Empty);
-        settings.Mode = string.Equals(rawMode, "MomentaryShift", StringComparison.OrdinalIgnoreCase)
-            ? CapsLockMode.Hold
-            : document.GetEnum("CapsLock", "Mode", settings.Mode);
+        var legacyDoubleNormal =
+            string.Equals(rawMode, "Hold", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(rawMode, "MomentaryShift", StringComparison.OrdinalIgnoreCase);
+        var legacyRemap =
+            string.Equals(rawMode, "Remap", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(rawMode, "3", StringComparison.OrdinalIgnoreCase);
+        settings.Mode = legacyDoubleNormal
+            ? CapsLockMode.DoubleNormal
+            : legacyRemap
+                ? CapsLockMode.Normal
+                : document.GetEnum("CapsLock", "Mode", settings.Mode);
 
+        settings.IsRemapEnabled = document.GetBoolean(
+            "CapsLock",
+            "RemapEnabled",
+            legacyRemap);
         settings.RemapTarget = document.GetKey("CapsLock", "RemapTarget");
     }
 
@@ -649,6 +661,7 @@ public sealed class IniProfileStore : IProfileStore
         var capsLock = profile.CapsLock;
         document.SetBoolean("CapsLock", "Enabled", capsLock.IsEnabled);
         document.SetEnum("CapsLock", "Mode", capsLock.Mode);
+        document.SetBoolean("CapsLock", "RemapEnabled", capsLock.IsRemapEnabled);
         document.SetKey("CapsLock", "RemapTarget", capsLock.RemapTarget);
 
         WriteColorSection(document, profile.ColorSettings);
@@ -705,6 +718,7 @@ public sealed class IniProfileStore : IProfileStore
         var capsLock = profile.CapsLock;
         document.SetBoolean("CapsLock", "Enabled", capsLock.IsEnabled);
         document.SetEnum("CapsLock", "Mode", capsLock.Mode);
+        document.SetBoolean("CapsLock", "RemapEnabled", capsLock.IsRemapEnabled);
         document.SetKey("CapsLock", "RemapTarget", capsLock.RemapTarget);
 
         foreach (var (key, binding) in profile.WindowsLauncher.Launchers)
