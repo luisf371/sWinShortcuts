@@ -47,6 +47,7 @@ public partial class App : System.Windows.Application
         {
             var settingsPath = AppSettings.GetSettingsPath();
             inputHook.SetColorToggleKey(AppSettings.LoadColorToggleKey(settingsPath));
+            inputHook.SetRapidFireToggleKey(AppSettings.LoadRapidFireToggleKey(settingsPath));
             AppSettings.MigrateLegacyColorToggleKey(settingsPath);
         }
         catch

@@ -19,6 +19,28 @@ public sealed class AppSettingsTests
     }
 
     [Fact]
+    public void RapidFireToggleKey_RoundTripsAndUsesExplicitNoneMarker()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var settingsPath = Path.Combine(root, "sWinShortcuts.ini");
+            var document = new IniDocument();
+            AppSettings.SetRapidFireToggleKey(document, Key.F8);
+            document.Save(settingsPath);
+
+            Assert.Equal(Key.F8, AppSettings.LoadRapidFireToggleKey(settingsPath));
+
+            AppSettings.SetRapidFireToggleKey(document, Key.None);
+            Assert.Equal("None", document.GetValue("App", AppSettings.RapidFireToggleKeyName));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void LoadColorToggleKey_PrefersAppValueOverLegacyColorValue()
     {
         var root = CreateTempDirectory();

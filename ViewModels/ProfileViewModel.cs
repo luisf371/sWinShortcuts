@@ -402,6 +402,58 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public bool RapidFireEnabled
+    {
+        get => Model.RapidFire.IsEnabled;
+        set
+        {
+            if (Model.RapidFire.IsEnabled != value)
+            {
+                Model.RapidFire.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.RapidFire);
+            }
+        }
+    }
+
+    public int RapidFireIntervalMilliseconds
+    {
+        get => Model.RapidFire.IntervalMilliseconds;
+        set
+        {
+            var clamped = Math.Clamp(
+                value,
+                RapidFireSettings.MinIntervalMilliseconds,
+                RapidFireSettings.MaxIntervalMilliseconds);
+            if (Model.RapidFire.IntervalMilliseconds != clamped)
+            {
+                Model.RapidFire.IntervalMilliseconds = clamped;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RapidFireTimingRange));
+                OnProfileChanged(ProfileChangeKind.RapidFire);
+            }
+        }
+    }
+
+    public int RapidFireJitterMilliseconds
+    {
+        get => Model.RapidFire.JitterMilliseconds;
+        set
+        {
+            var clamped = Math.Clamp(value, 0, RapidFireSettings.MaxJitterMilliseconds);
+            if (Model.RapidFire.JitterMilliseconds != clamped)
+            {
+                Model.RapidFire.JitterMilliseconds = clamped;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RapidFireTimingRange));
+                OnProfileChanged(ProfileChangeKind.RapidFire);
+            }
+        }
+    }
+
+    public string RapidFireTimingRange =>
+        $"{RapidFireIntervalMilliseconds}–{RapidFireIntervalMilliseconds + RapidFireJitterMilliseconds} ms";
+
     public bool AntiAfkEnabled
     {
         get => Model.AntiAfk.IsEnabled;
@@ -721,6 +773,9 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.AutoRun.SprintKey = AutoRunSprintKey;
             Model.AutoRun.SprintMode = AutoRunSprintMode;
             Model.AutoRun.SendMode = AutoRunSendMode;
+            Model.RapidFire.IsEnabled = RapidFireEnabled;
+            Model.RapidFire.IntervalMilliseconds = RapidFireIntervalMilliseconds;
+            Model.RapidFire.JitterMilliseconds = RapidFireJitterMilliseconds;
             Model.AntiAfk.IsEnabled = AntiAfkEnabled;
             Model.AntiAfk.IntervalMinutes = AntiAfkIntervalMinutes;
             Model.CapsLock.IsEnabled = CapsLockEnabled;

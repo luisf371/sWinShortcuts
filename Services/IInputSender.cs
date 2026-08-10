@@ -11,5 +11,7 @@ public interface IInputSender
 
     bool SendVirtualKeyTap(int virtualKey);
 
+    bool SendLeftClick();
+
     bool SendDummyKey();
 }

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:sWinShortcuts.Converters"
         xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
-        Title="Settings" Width="380" Height="490"
+        Title="Settings" Width="380" Height="590"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{DynamicResource BackgroundElevatedBrush}">
@@ -85,6 +85,39 @@
                 <ComboBox Grid.Column="1"
                           ItemsSource="{Binding ColorToggleKeyOptions}"
                           SelectedItem="{Binding ColorToggleKey, Mode=TwoWay}"
+                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                          VerticalAlignment="Center"
+                          Width="132">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}"/>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+            </Grid>
+
+            <Separator Margin="0,8,0,8" Background="{DynamicResource BorderBrush}"/>
+
+            <TextBlock Text="Rapid Fire"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,8"
+                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <Grid Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="132"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                    <TextBlock Text="Rapid-fire toggle key" FontWeight="SemiBold"/>
+                    <TextBlock Text="Toggles Rapid Fire for the current profile when Advanced Mode is enabled. The key still reaches the active app."
+                               Foreground="{DynamicResource ForegroundSecondaryBrush}"
+                               FontSize="11"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+                <ComboBox Grid.Column="1"
+                          ItemsSource="{Binding ColorToggleKeyOptions}"
+                          SelectedItem="{Binding RapidFireToggleKey, Mode=TwoWay}"
                           behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                           VerticalAlignment="Center"
                           Width="132">

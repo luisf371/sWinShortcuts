@@ -121,6 +121,13 @@ public sealed class FakeInputHookService : IInputHookService
         LastColorToggleKey = key;
     }
 
+    public Key? LastRapidFireToggleKey { get; private set; }
+
+    public void SetRapidFireToggleKey(Key? key)
+    {
+        LastRapidFireToggleKey = key;
+    }
+
     /// <summary>Test helper: simulate the user pressing the assigned global color-toggle key.</summary>
     public void RaiseColorVariantToggle()
     {

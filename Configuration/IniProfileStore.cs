@@ -294,6 +294,7 @@ public sealed class IniProfileStore : IProfileStore
         DeserializeCombinedMappings(document, profile.CombinedMappings);
         DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
         DeserializeAutoRun(document, profile.AutoRun);
+        DeserializeRapidFire(document, profile.RapidFire);
         DeserializeAntiAfk(document, profile.AntiAfk);
         DeserializeCapsLock(document, profile.CapsLock);
         DeserializeColorSettings(document, profile.ColorSettings);
@@ -518,6 +519,19 @@ public sealed class IniProfileStore : IProfileStore
         settings.RemapTarget = document.GetKey("CapsLock", "RemapTarget");
     }
 
+    private static void DeserializeRapidFire(IniDocument document, RapidFireSettings settings)
+    {
+        settings.IsEnabled = document.GetBoolean("RapidFire", "Enabled", settings.IsEnabled);
+        settings.IntervalMilliseconds = Math.Clamp(
+            document.GetInt32("RapidFire", "IntervalMilliseconds", settings.IntervalMilliseconds),
+            RapidFireSettings.MinIntervalMilliseconds,
+            RapidFireSettings.MaxIntervalMilliseconds);
+        settings.JitterMilliseconds = Math.Clamp(
+            document.GetInt32("RapidFire", "JitterMilliseconds", settings.JitterMilliseconds),
+            0,
+            RapidFireSettings.MaxJitterMilliseconds);
+    }
+
     private static void DeserializeColorSettings(IniDocument document, ColorSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("Color", "Enabled", settings.IsEnabled);
@@ -646,6 +660,11 @@ public sealed class IniProfileStore : IProfileStore
         document.SetKey("AutoRun", "SprintKey", autoRun.SprintKey);
         document.SetEnum("AutoRun", "SprintMode", autoRun.SprintMode);
         document.SetEnum("AutoRun", "SendMode", autoRun.SendMode);
+
+        var rapidFire = profile.RapidFire;
+        document.SetBoolean("RapidFire", "Enabled", rapidFire.IsEnabled);
+        document.SetInt32("RapidFire", "IntervalMilliseconds", rapidFire.IntervalMilliseconds);
+        document.SetInt32("RapidFire", "JitterMilliseconds", rapidFire.JitterMilliseconds);
 
         var antiAfk = profile.AntiAfk;
         document.SetBoolean("AntiAfk", "Enabled", antiAfk.IsEnabled);

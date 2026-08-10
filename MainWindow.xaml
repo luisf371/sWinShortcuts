@@ -586,6 +586,86 @@
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Rapid Fire"
+                                                          IsChecked="{Binding RapidFireEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="While armed with the app-level toggle key, holding the left mouse button sends repeated left clicks at the interval configured below."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                                <TextBlock Style="{StaticResource WarningIconStyle}"
+                                                           ToolTip="⚠️ WARNING: Rapid-fire automation may violate game or anti-cheat rules. Timing jitter is not ban protection. Use at your own risk."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding RapidFireEnabled}"
+                                                    Tag="{Binding RapidFireEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <TextBlock Margin="0,0,0,8"
+                                                       Foreground="{StaticResource ForegroundSecondaryBrush}">
+                                                <Run Text="Toggle key: " />
+                                                <Run Text="{Binding DataContext.RapidFireToggleKey, ElementName=RootWindow, Converter={StaticResource KeyDisplayConverter}, Mode=OneWay}" />
+                                                <Run Text=" — assigned in Settings" />
+                                            </TextBlock>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <TextBlock Text="Click interval (ms)"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <Slider Value="{Binding RapidFireIntervalMilliseconds, UpdateSourceTrigger=PropertyChanged}"
+                                                        Minimum="50"
+                                                        Maximum="250"
+                                                        TickFrequency="5"
+                                                        IsSnapToTickEnabled="True"
+                                                        Width="200"
+                                                        VerticalAlignment="Center"
+                                                        Margin="0,0,8,0" />
+                                                <TextBlock Text="{Binding RapidFireIntervalMilliseconds, StringFormat='{}{0} ms'}"
+                                                           VerticalAlignment="Center"
+                                                           Width="55"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           FontWeight="SemiBold" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Jitter (ms)"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <Slider Value="{Binding RapidFireJitterMilliseconds, UpdateSourceTrigger=PropertyChanged}"
+                                                        Minimum="0"
+                                                        Maximum="20"
+                                                        TickFrequency="1"
+                                                        IsSnapToTickEnabled="True"
+                                                        Width="200"
+                                                        VerticalAlignment="Center"
+                                                        Margin="0,0,8,0" />
+                                                <TextBlock Text="{Binding RapidFireJitterMilliseconds, StringFormat='{}{0} ms'}"
+                                                           VerticalAlignment="Center"
+                                                           Width="55"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           FontWeight="SemiBold" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right">
+                                                    <TextBlock.ToolTip>
+                                                        <TextBlock MaxWidth="360" TextWrapping="Wrap">
+                                                            <Run Text="Adds a random 0–" />
+                                                            <Run Text="{Binding RapidFireJitterMilliseconds, Mode=OneWay}" />
+                                                            <Run Text=" ms to the base interval. Current total interval: " />
+                                                            <Run Text="{Binding RapidFireTimingRange, Mode=OneWay}" />
+                                                            <Run Text=". This varies timing only and is not ban protection." />
+                                                        </TextBlock>
+                                                    </TextBlock.ToolTip>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </GroupBox>
+                                    <GroupBox Padding="16" Margin="0,0,0,8"
+                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
+                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal">
                                                 <CheckBox Content="Right Click - Hold Breath"
                                                           IsChecked="{Binding RightClickHoldBreathEnabled}"
                                                           Margin="0"
@@ -939,6 +1019,13 @@
                                             </Style>
                                         </StackPanel.Style>
                                         
+                                        <TextBlock Margin="0,0,0,12"
+                                                   Foreground="{StaticResource ForegroundSecondaryBrush}">
+                                            <Run Text="Toggle key: " />
+                                            <Run Text="{Binding DataContext.ColorToggleKey, ElementName=RootWindow, Converter={StaticResource KeyDisplayConverter}, Mode=OneWay}" />
+                                            <Run Text=" — assigned in Settings" />
+                                        </TextBlock>
+
                                         <!-- Primary/Secondary color presets: edit one set of sliders at a time. -->
                                         <StackPanel Margin="0,0,0,12">
                                             <CheckBox Content="Enable a secondary color preset"

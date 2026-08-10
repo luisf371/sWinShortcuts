@@ -18,6 +18,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     private bool _startMinimized;
     private bool _enableDebugLogging;
     private Key _colorToggleKey = Key.None;
+    private Key _rapidFireToggleKey = Key.None;
     private bool _hookWatchdogEnabled = true;
     private bool _advancedModeEnabled;
     private bool _isStartupLoaded;
@@ -117,6 +118,22 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
 
             _colorToggleKey = value;
             _inputHookService.SetColorToggleKey(value == Key.None ? null : value);
+            OnPropertyChanged();
+        }
+    }
+
+    public Key RapidFireToggleKey
+    {
+        get => _rapidFireToggleKey;
+        set
+        {
+            if (_rapidFireToggleKey == value)
+            {
+                return;
+            }
+
+            _rapidFireToggleKey = value;
+            _inputHookService.SetRapidFireToggleKey(value == Key.None ? null : value);
             OnPropertyChanged();
         }
     }

@@ -24,6 +24,7 @@ public partial class SettingsWindow : Window
     private bool _baselineDebugLogging;
     private bool _baselineWatchdog;
     private Key _baselineColorToggleKey;
+    private Key _baselineRapidFireToggleKey;
     private bool _baselineAdvancedMode;
     private bool _baselineStartWithWindows;
     private bool _baselineStartAsAdmin;
@@ -45,6 +46,7 @@ public partial class SettingsWindow : Window
         // Baseline = the live-apply state the dialog opened with (from INI / the live services). OnClosing
         // rolls the live services back to this on any non-Save close.
         _baselineColorToggleKey = _vm.ColorToggleKey;
+        _baselineRapidFireToggleKey = _vm.RapidFireToggleKey;
         _baselineDebugLogging = _vm.EnableDebugLogging;
         _baselineWatchdog = _vm.HookWatchdogEnabled;
         _baselineAdvancedMode = _vm.AdvancedModeEnabled;
@@ -114,6 +116,7 @@ public partial class SettingsWindow : Window
             var startMinimizedRaw = ini.GetValue("App", "StartMinimized") ?? ini.GetValue("Window", "StartMinimized");
             _vm.StartMinimized = startMinimizedRaw == "true";
             _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;
+            _vm.RapidFireToggleKey = AppSettings.LoadRapidFireToggleKey(_settingsPath) ?? Key.None;
         }
         catch
         {
@@ -124,6 +127,7 @@ public partial class SettingsWindow : Window
             _vm.AdvancedModeEnabled = _inputHookService.AdvancedModeEnabled;
             _vm.StartMinimized = false;
             _vm.ColorToggleKey = Key.None;
+            _vm.RapidFireToggleKey = Key.None;
         }
     }
 
@@ -140,6 +144,7 @@ public partial class SettingsWindow : Window
             ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
             ini.SetValue("App", "AdvancedMode", vm.AdvancedModeEnabled ? "true" : "false");
             AppSettings.SetColorToggleKey(ini, vm.ColorToggleKey);
+            AppSettings.SetRapidFireToggleKey(ini, vm.RapidFireToggleKey);
             ini.Save(_settingsPath);
             return true;
         }
@@ -271,5 +276,6 @@ public partial class SettingsWindow : Window
         _vm.HookWatchdogEnabled = _baselineWatchdog;
         _vm.AdvancedModeEnabled = _baselineAdvancedMode;
         _vm.ColorToggleKey = _baselineColorToggleKey;
+        _vm.RapidFireToggleKey = _baselineRapidFireToggleKey;
     }
 }

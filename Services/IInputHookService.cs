@@ -22,6 +22,12 @@ public interface IInputHookService : IDisposable
     void SetColorToggleKey(Key? key);
 
     /// <summary>
+    /// Sets (or clears, when null) the GLOBAL key that arms or disarms Rapid Fire for the active
+    /// profile. Detected on the low-level keyboard hook and passed through to applications.
+    /// </summary>
+    void SetRapidFireToggleKey(Key? key);
+
+    /// <summary>
     /// Enables the hook-loss watchdog (default true). When false, the watchdog neither probes nor
     /// re-installs hooks — a troubleshooting switch to rule it out as an interference source.
     /// Live-togglable; takes effect on the next watchdog period.
@@ -29,7 +35,7 @@ public interface IInputHookService : IDisposable
     bool HookWatchdogEnabled { get; set; }
 
     /// <summary>
-    /// Global gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, and un-suppressed key
+    /// Global gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and un-suppressed key
     /// mappings). When false those features are inert and any held gated state is released; every
     /// mapping is forced 1:1. Live-togglable from Settings; persisted as [App] AdvancedMode.
     /// </summary>

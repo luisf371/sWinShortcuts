@@ -136,6 +136,26 @@ public sealed class InputHookService : IInputHookService
     private bool _colorToggleDownLatched;
     private int _hookSeenToggleVk; // hook-thread-only; used only to clear the fire-once latch on a re-assign
 
+    // Global Rapid Fire toggle. The key passes through and fires once per physical press, matching the
+    // color-toggle contract above. Runtime armed state is session/profile-owned and never persisted.
+    private volatile int _rapidFireToggleVk;
+    private bool _rapidFireToggleDownLatched;
+    private int _hookSeenRapidFireToggleVk;
+    private volatile bool _rapidFireArmed;
+    private long _rapidFireArmEpoch;
+    private long _rapidFireArmedEpoch;
+    private volatile bool _rapidFirePhysicalLeftDown;
+    private volatile Profile? _rapidFireOwnerProfile;
+    private long _rapidFireGeneration;
+    private long _rapidFireForegroundGeneration;
+    private int _rapidFireIntervalMs;
+    private int _rapidFireJitterMs;
+    private readonly System.Threading.Timer _rapidFireTimer;
+    private int _rapidFireTimerState = TIMER_IDLE;
+    private long _rapidFireTimerGeneration;
+    private long _rapidFireArmedTick;
+    private int _rapidFireArmedDelayMs;
+
     // Per-key "already launched while held" latch. Prevents typematic auto-repeat from spawning a
     // launcher process on every repeated WM_KEYDOWN. Guarded by its own lock because ReleaseAllState()
     // (Clear) runs on the activation-worker POOL thread while the keyboard hook thread does Add/Remove.
@@ -188,7 +208,8 @@ public sealed class InputHookService : IInputHookService
     {
         KeyTransition,
         CapsLockTap,
-        DummyKey
+        DummyKey,
+        MouseClick
     }
 
     private readonly record struct HoldBreathInjection(
@@ -207,7 +228,8 @@ public sealed class InputHookService : IInputHookService
         long LauncherGeneration = 0,
         long CapsGeneration = 0,
         Profile? ExpectedProfile = null,
-        long CapsPressToken = 0);
+        long CapsPressToken = 0,
+        long RapidFireGeneration = 0);
 
     // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
     private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
@@ -417,7 +439,7 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    // Advanced Mode: global [App] gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, and
+    // Advanced Mode: global [App] gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and
     // un-suppressed key mappings). Mirrors HookWatchdogEnabled end-to-end; live-togglable from Settings.
     // volatile for the lock-free gating reads on the hook thread (and the injector thread).
     private volatile bool _advancedModeEnabled;
@@ -443,6 +465,7 @@ public sealed class InputHookService : IInputHookService
             // action — its tick self-gates on _advancedModeEnabled. (Auto-Run release is wired in P3a.)
             if (!value)
             {
+                ReleaseRapidFireState(preservePhysicalPairing: true);
                 ReleaseAutoRunState(includeBackground: true); // gate closed — release Background too
                 ReleaseHoldBreathState();
                 ReleaseUnsuppressedCombinedOverrides();
@@ -469,6 +492,7 @@ public sealed class InputHookService : IInputHookService
 
         // Initialize hold breath timer (pre-allocated, reused throughout lifetime)
         _holdBreathTimer = new System.Threading.Timer(_ => OnHoldBreathTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
+        _rapidFireTimer = new System.Threading.Timer(_ => OnRapidFireTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     internal void StartInputExecutorForTesting()
@@ -486,6 +510,7 @@ public sealed class InputHookService : IInputHookService
                 IsBackground = true,
                 Name = "InputExecutorTest"
             };
+            ReleaseRapidFireState(preservePhysicalPairing: false);
             _isRunning = true;
             _holdBreathInjectionThread.Start();
         }
@@ -496,6 +521,7 @@ public sealed class InputHookService : IInputHookService
         lock (_profileLock)
         {
             _isRunning = false;
+            ReleaseRapidFireState(preservePhysicalPairing: false);
             lock (_inputInjectionEnqueueLock)
             {
                 _holdBreathInjectionQueue?.CompleteAdding();
@@ -724,6 +750,45 @@ public sealed class InputHookService : IInputHookService
     internal void FireHoldBreathTimerForTesting()
     {
         OnHoldBreathTimerFired();
+    }
+
+    internal void ConfigureRapidFireForTesting(
+        Profile profile,
+        long foregroundGeneration,
+        bool armed = true)
+    {
+        ConfigureActiveProfileForTesting(profile, foregroundGeneration, altPressed: false);
+        _advancedModeEnabled = true;
+        ReleaseRapidFireState(preservePhysicalPairing: false);
+        _rapidFireOwnerProfile = armed ? profile : null;
+        Volatile.Write(ref _rapidFireArmedEpoch, Volatile.Read(ref _rapidFireArmEpoch));
+        _rapidFireArmed = armed;
+    }
+
+    internal void HandleRapidFireLeftButtonForTesting(bool isDown, bool consumed = false)
+    {
+        HandleRapidFire(
+            isDown ? NativeMethods.WM_LBUTTONDOWN : NativeMethods.WM_LBUTTONUP,
+            allowStart: !consumed);
+    }
+
+    internal void FireRapidFireTimerForTesting()
+    {
+        Volatile.Write(
+            ref _rapidFireArmedTick,
+            Stopwatch.GetTimestamp() -
+            (long)Math.Ceiling((_rapidFireArmedDelayMs + HOLD_FIRE_TOLERANCE_MS) * Stopwatch.Frequency / 1000.0));
+        OnRapidFireTimerFired();
+    }
+
+    internal bool RapidFireArmedForTesting => RapidFireIsArmed();
+
+    internal void HandleRapidFireToggleForTesting(Key key, bool isDown)
+    {
+        HandleRapidFireToggle(
+            KeyInteropUtilities.ToVirtualKey(key),
+            isKeyDown: isDown,
+            isKeyUp: !isDown);
     }
 
     public event EventHandler<Profile?>? ActiveProfileChanged;
@@ -965,6 +1030,19 @@ public sealed class InputHookService : IInputHookService
             var colorToggleVk = _colorToggleVk;
             _colorToggleDownLatched = colorToggleVk != 0 && (NativeMethods.GetAsyncKeyState(colorToggleVk) & 0x8000) != 0;
             _hookSeenToggleVk = colorToggleVk;
+
+            // Rapid Fire is runtime-only and always starts disarmed. Seed the physical latches so a key or
+            // left button held across restart cannot be mistaken for a fresh press.
+            ReleaseRapidFireState(preservePhysicalPairing: false);
+            var rapidFireToggleVk = _rapidFireToggleVk;
+            _rapidFireToggleDownLatched = rapidFireToggleVk != 0 &&
+                (NativeMethods.GetAsyncKeyState(rapidFireToggleVk) & 0x8000) != 0;
+            _hookSeenRapidFireToggleVk = rapidFireToggleVk;
+            var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
+                ? NativeMethods.VK_RBUTTON
+                : NativeMethods.VK_LBUTTON;
+            _rapidFirePhysicalLeftDown =
+                (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0;
 
             // Seed Auto-Run's movement-edge tracker at the hook-stream boundary. Callbacks are installed
             // but still gated by _isRunning=false, so this baseline cannot overwrite a newer hook event.
@@ -1569,6 +1647,10 @@ public sealed class InputHookService : IInputHookService
             {
                 ReleaseCapsState();
             }
+            if ((changeKind & ProfileChangeKind.RapidFire) != 0)
+            {
+                ReleaseRapidFireState(preservePhysicalPairing: true);
+            }
         }
 
         if (windows &&
@@ -1631,6 +1713,21 @@ public sealed class InputHookService : IInputHookService
         _colorToggleVk = vk;
     }
 
+    public void SetRapidFireToggleKey(Key? key)
+    {
+        var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
+        if (IsModifierVirtualKey(vk))
+        {
+            vk = 0;
+        }
+
+        if (_rapidFireToggleVk != vk)
+        {
+            _rapidFireToggleVk = vk;
+            ReleaseRapidFireState(preservePhysicalPairing: true);
+        }
+    }
+
     private static bool IsModifierVirtualKey(int vk) =>
         vk is 0x10 or 0x11 or 0x12   // VK_SHIFT / VK_CONTROL / VK_MENU
            or 0xA0 or 0xA1           // VK_LSHIFT / VK_RSHIFT
@@ -1647,6 +1744,7 @@ public sealed class InputHookService : IInputHookService
         // Deliberately do NOT dispose _random: queued FireTapKey/hold-breath work items may still
         // deref _random.Value on a pool thread; ThreadLocal<Random> holds no unmanaged resources.
         _holdBreathTimer.Dispose();
+        _rapidFireTimer.Dispose();
     }
 
     // ==================== KEYBOARD HOOK ====================
@@ -1698,6 +1796,7 @@ public sealed class InputHookService : IInputHookService
         // create a wrong binding. Modifiers are rejected as toggle keys (SetColorToggleKey), so this never
         // shadows the Alt-tracking that follows.
         HandleColorToggle(vkCode, isKeyDown, isKeyUp);
+        HandleRapidFireToggle(vkCode, isKeyDown, isKeyUp);
 
         // Physical W/S observation must precede every feature that may consume/early-return this event.
         // In particular, Hold-Breath Early Cancel can own W-UP; Auto-Run still needs to complete its
@@ -2002,6 +2101,10 @@ public sealed class InputHookService : IInputHookService
         var handled = HandleHoldBreathPanicMouse(message, data.mouseData) ||
                       HandleAltMouse(message, data.mouseData);
 
+        // Rapid Fire never consumes the physical click. Existing mouse actions win priority: an Alt+Left
+        // binding or panic action may consume DOWN, in which case Rapid Fire only records the held state.
+        HandleRapidFire(message, allowStart: !handled);
+
         // H6: only arm hold-breath for a genuine right-click, not one suppressed as an Alt+Right binding.
         if (message == NativeMethods.WM_RBUTTONDOWN)
         {
@@ -2018,6 +2121,135 @@ public sealed class InputHookService : IInputHookService
         return handled
             ? (IntPtr)1
             : NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
+    }
+
+    private void HandleRapidFire(int message, bool allowStart)
+    {
+        if (message == NativeMethods.WM_LBUTTONUP)
+        {
+            _rapidFirePhysicalLeftDown = false;
+            CancelRapidFirePress();
+            return;
+        }
+
+        if (message != NativeMethods.WM_LBUTTONDOWN)
+        {
+            return;
+        }
+
+        var freshPress = !_rapidFirePhysicalLeftDown;
+        _rapidFirePhysicalLeftDown = true;
+        if (!freshPress || !allowStart || !RapidFireIsArmed() || !_advancedModeEnabled ||
+            !ProfileInputGenerationIsCurrent())
+        {
+            return;
+        }
+
+        var profile = _activeProfile;
+        if (profile is not { IsEnabled: true } ||
+            !ReferenceEquals(profile, _rapidFireOwnerProfile) ||
+            !profile.RapidFire.IsEnabled)
+        {
+            return;
+        }
+
+        _rapidFireTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        Interlocked.Exchange(ref _rapidFireTimerState, TIMER_CANCELLED);
+        var generation = Interlocked.Increment(ref _rapidFireGeneration);
+        Volatile.Write(ref _rapidFireForegroundGeneration, Volatile.Read(ref _activeProfileGeneration));
+        _rapidFireIntervalMs = Math.Clamp(
+            profile.RapidFire.IntervalMilliseconds,
+            RapidFireSettings.MinIntervalMilliseconds,
+            RapidFireSettings.MaxIntervalMilliseconds);
+        _rapidFireJitterMs = Math.Clamp(
+            profile.RapidFire.JitterMilliseconds,
+            0,
+            RapidFireSettings.MaxJitterMilliseconds);
+        ScheduleRapidFire(generation);
+    }
+
+    private void ScheduleRapidFire(long generation)
+    {
+        var profile = _rapidFireOwnerProfile;
+        var foregroundGeneration = Volatile.Read(ref _rapidFireForegroundGeneration);
+        if (profile is null || !RapidFireIsCurrent(generation, profile, foregroundGeneration))
+        {
+            return;
+        }
+
+        var jitter = _rapidFireJitterMs;
+        var delay = _rapidFireIntervalMs + (jitter == 0 ? 0 : _random.Value!.Next(jitter + 1));
+        Volatile.Write(ref _rapidFireTimerGeneration, generation);
+        Volatile.Write(ref _rapidFireArmedTick, Stopwatch.GetTimestamp());
+        Volatile.Write(ref _rapidFireArmedDelayMs, delay);
+        Interlocked.Exchange(ref _rapidFireTimerState, TIMER_ARMED);
+        _rapidFireTimer.Change(delay, Timeout.Infinite);
+    }
+
+    private void OnRapidFireTimerFired()
+    {
+        var delay = Volatile.Read(ref _rapidFireArmedDelayMs);
+        var elapsedMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _rapidFireArmedTick)) *
+            TickToMilliseconds;
+        if (elapsedMs < delay - HOLD_FIRE_TOLERANCE_MS ||
+            Interlocked.CompareExchange(ref _rapidFireTimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
+        {
+            return;
+        }
+
+        // Use the generation that armed this due-time. A previously queued Timer callback must never
+        // adopt a newer press merely because the current generation changed before it ran.
+        var generation = Volatile.Read(ref _rapidFireTimerGeneration);
+        var foregroundGeneration = Volatile.Read(ref _rapidFireForegroundGeneration);
+        var profile = _rapidFireOwnerProfile;
+        if (profile is null || !RapidFireIsCurrent(generation, profile, foregroundGeneration))
+        {
+            return;
+        }
+
+        EnqueueHoldBreathInjection(
+            new HoldBreathInjection(
+                Key.None,
+                IsDown: false,
+                PreSleepMs: 0,
+                Kind: InputInjectionKind.MouseClick,
+                ForegroundGeneration: foregroundGeneration,
+                ExpectedProfile: profile,
+                RapidFireGeneration: generation));
+    }
+
+    private bool RapidFireIsCurrent(long generation, Profile profile, long foregroundGeneration)
+    {
+        return _isRunning &&
+               _advancedModeEnabled &&
+               RapidFireIsArmed() &&
+               _rapidFirePhysicalLeftDown &&
+               generation == Volatile.Read(ref _rapidFireGeneration) &&
+               foregroundGeneration == Volatile.Read(ref _publishedForegroundGeneration) &&
+               foregroundGeneration == Volatile.Read(ref _activeProfileGeneration) &&
+               ReferenceEquals(_rapidFireOwnerProfile, profile) &&
+               ReferenceEquals(_activeProfile, profile) &&
+               profile.IsEnabled &&
+               profile.RapidFire.IsEnabled;
+    }
+
+    private void CancelRapidFirePress()
+    {
+        Interlocked.Increment(ref _rapidFireGeneration);
+        Interlocked.Exchange(ref _rapidFireTimerState, TIMER_CANCELLED);
+        _rapidFireTimer.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    private void ReleaseRapidFireState(bool preservePhysicalPairing)
+    {
+        Interlocked.Increment(ref _rapidFireArmEpoch);
+        CancelRapidFirePress();
+        _rapidFireArmed = false;
+        _rapidFireOwnerProfile = null;
+        if (!preservePhysicalPairing)
+        {
+            _rapidFirePhysicalLeftDown = false;
+        }
     }
 
     // ==================== ALT+MOUSE HANDLING (LOCK-FREE) ====================
@@ -2664,6 +2896,79 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    private void HandleRapidFireToggle(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        var toggleVk = _rapidFireToggleVk;
+        if (toggleVk != _hookSeenRapidFireToggleVk)
+        {
+            _hookSeenRapidFireToggleVk = toggleVk;
+            _rapidFireToggleDownLatched = false;
+        }
+
+        if (toggleVk == 0 || vkCode != toggleVk)
+        {
+            return;
+        }
+
+        if (isKeyUp)
+        {
+            _rapidFireToggleDownLatched = false;
+            return;
+        }
+
+        if (!isKeyDown || _rapidFireToggleDownLatched)
+        {
+            return;
+        }
+
+        _rapidFireToggleDownLatched = true;
+        if (RapidFireIsArmed())
+        {
+            ReleaseRapidFireState(preservePhysicalPairing: true);
+            return;
+        }
+
+        var armEpoch = Volatile.Read(ref _rapidFireArmEpoch);
+        var expectedProfile = _activeProfile;
+        var expectedActiveGeneration = Volatile.Read(ref _activeProfileGeneration);
+        var expectedPublishedGeneration = Volatile.Read(ref _publishedForegroundGeneration);
+
+        // Serialize only this rare toggle edge with profile publication. ActivateProfile releases old
+        // state before swapping _activeProfile; without this boundary a concurrent toggle could re-arm
+        // the outgoing profile in that narrow gap. No SendInput or subsystem lock is taken inside.
+        lock (_profileLock)
+        {
+            var profile = _activeProfile;
+            if (_rapidFireToggleVk == toggleVk &&
+                armEpoch == Volatile.Read(ref _rapidFireArmEpoch) &&
+                _advancedModeEnabled &&
+                ReferenceEquals(profile, expectedProfile) &&
+                expectedActiveGeneration == expectedPublishedGeneration &&
+                expectedActiveGeneration == Volatile.Read(ref _activeProfileGeneration) &&
+                expectedPublishedGeneration == Volatile.Read(ref _publishedForegroundGeneration) &&
+                profile is { IsEnabled: true } &&
+                profile.RapidFire.IsEnabled)
+            {
+                _rapidFireOwnerProfile = profile;
+                Volatile.Write(ref _rapidFireArmedEpoch, armEpoch);
+                _rapidFireArmed = true;
+                if (IsDebugEnabled) LogDebug($"Rapid Fire armed for profile: {profile.Name}");
+            }
+        }
+    }
+
+    private bool RapidFireIsArmed()
+    {
+        var profile = _rapidFireOwnerProfile;
+        return _rapidFireArmed &&
+               Volatile.Read(ref _rapidFireArmedEpoch) == Volatile.Read(ref _rapidFireArmEpoch) &&
+               _advancedModeEnabled &&
+               ProfileInputGenerationIsCurrent() &&
+               profile is { IsEnabled: true } &&
+               profile.RapidFire.IsEnabled &&
+               ReferenceEquals(_activeProfile, profile);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void EnqueueCapsLockTap(
         Key key,
@@ -3083,6 +3388,29 @@ public sealed class InputHookService : IInputHookService
                             LogDebug("WindowsLauncher dummy key injection failed");
                         }
                         injection.Completion?.TrySetResult(true);
+                        continue;
+                    }
+
+                    if (injection.Kind == InputInjectionKind.MouseClick)
+                    {
+                        if (queue.IsAddingCompleted ||
+                            injection.ExpectedProfile is not { } rapidFireProfile ||
+                            !RapidFireIsCurrent(
+                                injection.RapidFireGeneration,
+                                rapidFireProfile,
+                                injection.ForegroundGeneration))
+                        {
+                            continue;
+                        }
+
+                        if (!_inputSender.SendLeftClick() && IsDebugEnabled)
+                        {
+                            LogDebug("Rapid Fire click injection failed");
+                        }
+
+                        // Completion-driven one-shot scheduling: a stalled SendInput cannot build a queue of
+                        // overdue clicks that burst when the foreign hook resumes.
+                        ScheduleRapidFire(injection.RapidFireGeneration);
                         continue;
                     }
 
@@ -5210,7 +5538,7 @@ public sealed class InputHookService : IInputHookService
     
     private void ReleaseAllState(bool preservePhysicalPairing = true)
     {
-        
+        ReleaseRapidFireState(preservePhysicalPairing);
         ReleaseAllOverrides(preserveSuppression: preservePhysicalPairing);
         ResetMouseStates(preserveSuppressedUps: preservePhysicalPairing);
         ReleaseCapsState(preservePhysicalPairing);

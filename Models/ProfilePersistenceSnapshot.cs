@@ -23,6 +23,7 @@ internal static class ProfilePersistenceSnapshot
             CombinedMappings = CloneCombinedMappings(source.CombinedMappings),
             RightClickHoldBreath = CloneHoldBreath(source.RightClickHoldBreath),
             AutoRun = CloneAutoRun(source.AutoRun),
+            RapidFire = CloneRapidFire(source.RapidFire),
             AntiAfk = CloneAntiAfk(source.AntiAfk),
             ColorSettings = color,
             CapsLock = CloneCapsLock(source.CapsLock),
@@ -111,6 +112,16 @@ internal static class ProfilePersistenceSnapshot
         {
             IsEnabled = source.IsEnabled,
             IntervalMinutes = source.IntervalMinutes
+        };
+    }
+
+    private static RapidFireSettings CloneRapidFire(RapidFireSettings source)
+    {
+        return new RapidFireSettings
+        {
+            IsEnabled = source.IsEnabled,
+            IntervalMilliseconds = source.IntervalMilliseconds,
+            JitterMilliseconds = source.JitterMilliseconds
         };
     }
 

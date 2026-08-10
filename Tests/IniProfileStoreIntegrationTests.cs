@@ -424,6 +424,62 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Equal(10, loaded.AntiAfk.IntervalMinutes);
     }
 
+    [Fact]
+    public async Task SaveAndLoad_RoundTripsRapidFire()
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "rapidfire.exe");
+        profile.RapidFire.IsEnabled = true;
+        profile.RapidFire.IntervalMilliseconds = 75;
+        profile.RapidFire.JitterMilliseconds = 20;
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == profile.Name);
+
+        Assert.True(loaded.RapidFire.IsEnabled);
+        Assert.Equal(75, loaded.RapidFire.IntervalMilliseconds);
+        Assert.Equal(20, loaded.RapidFire.JitterMilliseconds);
+    }
+
+    [Theory]
+    [InlineData(49, -1, 50, 0)]
+    [InlineData(251, 21, 250, 20)]
+    public async Task SaveAndLoad_ClampsRapidFireTiming(
+        int interval,
+        int jitter,
+        int expectedInterval,
+        int expectedJitter)
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "rapidfire-clamp.exe");
+        profile.RapidFire.IntervalMilliseconds = interval;
+        profile.RapidFire.JitterMilliseconds = jitter;
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == profile.Name);
+
+        Assert.False(loaded.RapidFire.IsEnabled);
+        Assert.Equal(expectedInterval, loaded.RapidFire.IntervalMilliseconds);
+        Assert.Equal(expectedJitter, loaded.RapidFire.JitterMilliseconds);
+    }
+
+    [Fact]
+    public async Task LoadProfile_MissingRapidFireSection_UsesDisabledDefaults()
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "Legacy.ini"),
+            "[Profile]\nName=Legacy\nExecutable=legacy.exe\nEnabled=true\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == "Legacy");
+
+        Assert.False(loaded.RapidFire.IsEnabled);
+        Assert.Equal(90, loaded.RapidFire.IntervalMilliseconds);
+        Assert.Equal(10, loaded.RapidFire.JitterMilliseconds);
+    }
+
     [Theory]
     [InlineData(0, 1)]    // below range clamps up to 1
     [InlineData(99, 15)]  // above range clamps down to 15

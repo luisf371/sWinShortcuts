@@ -31,6 +31,8 @@ public sealed class Profile
 
     public AutoRunSettings AutoRun { get; init; } = new();
 
+    public RapidFireSettings RapidFire { get; init; } = new();
+
     public AntiAfkSettings AntiAfk { get; init; } = new();
 
     public ColorSettings ColorSettings { get; init; } = new();

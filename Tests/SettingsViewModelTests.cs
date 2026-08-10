@@ -21,6 +21,19 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void RapidFireToggleKey_UpdatesHookImmediately_AndNoneClearsIt()
+    {
+        var inputHook = new FakeInputHookService();
+        var viewModel = new SettingsViewModel(new NullLoggerService(), inputHook);
+
+        viewModel.RapidFireToggleKey = Key.F8;
+        Assert.Equal(Key.F8, inputHook.LastRapidFireToggleKey);
+
+        viewModel.RapidFireToggleKey = Key.None;
+        Assert.Null(inputHook.LastRapidFireToggleKey);
+    }
+
+    [Fact]
     public void StartMinimized_RoundTripsAndNotifies()
     {
         var viewModel = new SettingsViewModel(new NullLoggerService(), new FakeInputHookService());

@@ -31,6 +31,9 @@ public sealed class ProfilePersistenceSnapshotTests
             Arguments = "--old",
             RunAsAdmin = true
         };
+        profile.RapidFire.IsEnabled = true;
+        profile.RapidFire.IntervalMilliseconds = 80;
+        profile.RapidFire.JitterMilliseconds = 15;
         var display = profile.ColorSettings.GetOrCreateProfile("DISPLAY1");
         display.IsEnabled = true;
         display.Brightness = 61;
@@ -42,6 +45,9 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.AltMouse.Bindings[AppMouseButton.Left].TapKey = Key.F;
         profile.CombinedMappings.Mappings[0].TargetKey = Key.G;
         profile.WindowsLauncher.Launchers[Key.E].Path = "new.exe";
+        profile.RapidFire.IsEnabled = false;
+        profile.RapidFire.IntervalMilliseconds = 200;
+        profile.RapidFire.JitterMilliseconds = 0;
         profile.ColorSettings.UpdateProfile(
             "DISPLAY1",
             color => color.Brightness = 99);
@@ -51,6 +57,9 @@ public sealed class ProfilePersistenceSnapshotTests
         Assert.Equal(Key.A, snapshot.AltMouse.Bindings[AppMouseButton.Left].TapKey);
         Assert.Equal(Key.D, snapshot.CombinedMappings.Mappings[0].TargetKey);
         Assert.Equal("old.exe", snapshot.WindowsLauncher.Launchers[Key.E].Path);
+        Assert.True(snapshot.RapidFire.IsEnabled);
+        Assert.Equal(80, snapshot.RapidFire.IntervalMilliseconds);
+        Assert.Equal(15, snapshot.RapidFire.JitterMilliseconds);
         Assert.Equal(
             61,
             snapshot.ColorSettings

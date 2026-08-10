@@ -47,6 +47,7 @@ public partial class MainWindow : Window
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var rootDirectory = Path.Combine(appData, "sWinShortcuts");
         _settingsPath = Path.Combine(rootDirectory, "sWinShortcuts.ini");
+        RefreshToggleKeys();
         
         // Initialize logger + watchdog state from settings
         try
@@ -272,6 +273,20 @@ public partial class MainWindow : Window
         // The dialog live-applies AdvancedMode to the service (incl. a mid-dialog toggle); mirror the
         // live value back into the view-model so the gray-out agrees after the modal closes.
         _viewModel.AdvancedModeEnabled = _inputHook.AdvancedModeEnabled;
+        RefreshToggleKeys();
+    }
+
+    private void RefreshToggleKeys()
+    {
+        try
+        {
+            _viewModel.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? System.Windows.Input.Key.None;
+            _viewModel.RapidFireToggleKey = AppSettings.LoadRapidFireToggleKey(_settingsPath) ?? System.Windows.Input.Key.None;
+        }
+        catch
+        {
+            // Keep the last known values when settings cannot be read.
+        }
     }
 
     private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)

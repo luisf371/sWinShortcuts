@@ -49,6 +49,21 @@ public sealed class WindowsInputSender : IInputSender
         return NativeMethods.SendInput(2, [down, up], InputStructSize) == 2;
     }
 
+    public bool SendLeftClick()
+    {
+        var down = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTDOWN);
+        var up = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTUP);
+        var sent = NativeMethods.SendInput(2, [down, up], InputStructSize);
+        if (sent == 1)
+        {
+            // SendInput normally accepts the whole serial batch or none of it. If a partial insertion ever
+            // accepts only DOWN, fail safe with a best-effort UP rather than stranding the mouse button.
+            NativeMethods.SendInput(1, [up], InputStructSize);
+        }
+
+        return sent == 2;
+    }
+
     public bool SendDummyKey()
     {
         var input = CreateKeyboardInput(
@@ -74,6 +89,22 @@ public sealed class WindowsInputSender : IInputSender
                     wScan = scanCode,
                     dwFlags = flags,
                     time = 0,
+                    dwExtraInfo = NativeMethods.INPUT_IGNORE
+                }
+            }
+        };
+    }
+
+    private static NativeMethods.INPUT CreateMouseInput(NativeMethods.MouseEventFlags flags)
+    {
+        return new NativeMethods.INPUT
+        {
+            type = NativeMethods.InputType.INPUT_MOUSE,
+            U = new NativeMethods.InputUnion
+            {
+                mi = new NativeMethods.MOUSEINPUT
+                {
+                    dwFlags = flags,
                     dwExtraInfo = NativeMethods.INPUT_IGNORE
                 }
             }

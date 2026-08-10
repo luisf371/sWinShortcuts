@@ -117,6 +117,12 @@ public sealed partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private bool advancedModeEnabled;
 
+    [ObservableProperty]
+    private Key colorToggleKey = Key.None;
+
+    [ObservableProperty]
+    private Key rapidFireToggleKey = Key.None;
+
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         if (_profiles.Count > 0)

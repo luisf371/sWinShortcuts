@@ -7,6 +7,7 @@ namespace sWinShortcuts.Utilities;
 public static class AppSettings
 {
     public const string ColorToggleKeyName = "ColorToggleKey";
+    public const string RapidFireToggleKeyName = "RapidFireToggleKey";
 
     public static string GetRootDirectory()
     {
@@ -60,6 +61,21 @@ public static class AppSettings
 
     public static void SetColorToggleKey(IniDocument document, Key? key)
     {
+        SetToggleKey(document, ColorToggleKeyName, key);
+    }
+
+    public static Key? LoadRapidFireToggleKey(string settingsPath)
+    {
+        return IniDocument.Load(settingsPath).GetKey("App", RapidFireToggleKeyName);
+    }
+
+    public static void SetRapidFireToggleKey(IniDocument document, Key? key)
+    {
+        SetToggleKey(document, RapidFireToggleKeyName, key);
+    }
+
+    private static void SetToggleKey(IniDocument document, string name, Key? key)
+    {
         ArgumentNullException.ThrowIfNull(document);
 
         // Persist None instead of removing the key. That explicit marker prevents a legacy Color.ini
@@ -67,7 +83,7 @@ public static class AppSettings
         var serialized = !key.HasValue || key.Value == Key.None
             ? "None"
             : KeySerializer.Serialize(key);
-        document.SetValue("App", ColorToggleKeyName, serialized);
+        document.SetValue("App", name, serialized);
     }
 
     private static string GetLegacyColorProfilePath(string settingsPath)

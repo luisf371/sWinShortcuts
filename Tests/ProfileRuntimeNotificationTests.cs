@@ -67,6 +67,7 @@ public sealed class ProfileRuntimeNotificationTests
     [InlineData(ProfileChangeKind.CombinedMappings)]
     [InlineData(ProfileChangeKind.HoldBreath)]
     [InlineData(ProfileChangeKind.AutoRun)]
+    [InlineData(ProfileChangeKind.RapidFire)]
     [InlineData(ProfileChangeKind.AntiAfk)]
     [InlineData(ProfileChangeKind.CapsLock)]
     [InlineData(ProfileChangeKind.WindowsLauncher)]
@@ -126,6 +127,9 @@ public sealed class ProfileRuntimeNotificationTests
             case ProfileChangeKind.AutoRun:
                 profile.AutoRunEnabled = true;
                 break;
+            case ProfileChangeKind.RapidFire:
+                profile.RapidFireEnabled = true;
+                break;
             case ProfileChangeKind.AntiAfk:
                 profile.AntiAfkEnabled = true;
                 break;
@@ -141,6 +145,40 @@ public sealed class ProfileRuntimeNotificationTests
             default:
                 throw new ArgumentOutOfRangeException(nameof(changeKind));
         }
+    }
+
+    [Fact]
+    public void RapidFireTiming_ClampsAndReportsInclusiveRange()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(
+            profile,
+            new FakeDisplayService(),
+            new RecordingColorControlService());
+        var changes = new List<ProfileChangeKind>();
+        var rangeNotifications = 0;
+        viewModel.ProfileChanged += (_, e) => changes.Add(e.Kind);
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ProfileViewModel.RapidFireTimingRange))
+            {
+                rangeNotifications++;
+            }
+        };
+
+        Assert.False(viewModel.RapidFireEnabled);
+        Assert.Equal("90–100 ms", viewModel.RapidFireTimingRange);
+
+        viewModel.RapidFireIntervalMilliseconds = 500;
+        viewModel.RapidFireJitterMilliseconds = -1;
+
+        Assert.Equal(250, profile.RapidFire.IntervalMilliseconds);
+        Assert.Equal(0, profile.RapidFire.JitterMilliseconds);
+        Assert.Equal("250–250 ms", viewModel.RapidFireTimingRange);
+        Assert.Equal(2, rangeNotifications);
+        Assert.Equal(
+            [ProfileChangeKind.RapidFire, ProfileChangeKind.RapidFire],
+            changes);
     }
 
     private sealed class RecordingProfileRuntimeService(
