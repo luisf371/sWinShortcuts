@@ -392,11 +392,8 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task SaveAndLoad_CoercesUnsupportedAutoRunModifierToControl()
+    public async Task SaveAndLoad_RoundTripsSingleKeyAutoRunTrigger()
     {
-        // ModifierKeys.None is Enum.IsDefined (so GetEnum accepts it) but is not one of the four supported
-        // single modifiers — a hand-editable value that would leave the chord un-triggerable + a blank UI
-        // ComboBox. DeserializeAutoRun must coerce it back to the default Control on load (E2).
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "arnone.exe");
         profile.AutoRun.IsEnabled = true;
         profile.AutoRun.TriggerModifier = ModifierKeys.None;
@@ -407,7 +404,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
 
         Assert.NotNull(loaded);
-        Assert.Equal(ModifierKeys.Control, loaded.AutoRun.TriggerModifier);
+        Assert.Equal(ModifierKeys.None, loaded.AutoRun.TriggerModifier);
     }
 
     [Fact]

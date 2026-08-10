@@ -3504,7 +3504,7 @@ public sealed class InputHookService : IInputHookService
         }
         _triggerKeyDownVk = vkCode;
 
-        // Require the single side-agnostic modifier physically down.
+        // Require the selected side-agnostic modifier, or no modifier for a single-key trigger.
         if (!IsTriggerModifierDown(settings.TriggerModifier))
         {
             return false; // trigger key without its modifier — pass through to the game
@@ -3551,12 +3551,13 @@ public sealed class InputHookService : IInputHookService
         _sPhysicallyDown = (NativeMethods.GetAsyncKeyState(VK_S) & 0x8000) != 0;
     }
 
-    // Single side-agnostic modifier check (VK_CONTROL/VK_MENU/VK_SHIFT report either side; Windows has
-    // no combined VK, so check both). Combined modifiers are intentionally unsupported (AutoRunSettings).
-    private static bool IsTriggerModifierDown(System.Windows.Input.ModifierKeys modifier)
+    // None is a single-key trigger. VK_CONTROL/VK_MENU/VK_SHIFT report either side; Windows has no
+    // combined VK, so check both. Combined modifiers are intentionally unsupported (AutoRunSettings).
+    internal static bool IsTriggerModifierDown(System.Windows.Input.ModifierKeys modifier)
     {
         return modifier switch
         {
+            System.Windows.Input.ModifierKeys.None => true,
             System.Windows.Input.ModifierKeys.Control => (NativeMethods.GetAsyncKeyState(0x11) & 0x8000) != 0, // VK_CONTROL
             System.Windows.Input.ModifierKeys.Alt => (NativeMethods.GetAsyncKeyState(0x12) & 0x8000) != 0,     // VK_MENU
             System.Windows.Input.ModifierKeys.Shift => (NativeMethods.GetAsyncKeyState(0x10) & 0x8000) != 0,   // VK_SHIFT

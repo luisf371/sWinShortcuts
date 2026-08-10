@@ -620,39 +620,12 @@
                                                 </ComboBox>
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <StackPanel Orientation="Horizontal" Width="140">
-                                                    <TextBlock Text="Early Cancel"
-                                                               VerticalAlignment="Center" />
-                                                    <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                               ToolTip="Press the selected key or button while holding right mouse to cancel hold-breath input before it worsens sway."
-                                                               ToolTipService.InitialShowDelay="0"
-                                                               ToolTipService.Placement="Right" />
-                                                </StackPanel>
-                                                <ComboBox ItemsSource="{Binding DataContext.HoldBreathPanicTriggers, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding RightClickHoldBreathPanicTrigger, Mode=TwoWay}"
-                                                          Width="160">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <TextBlock Text="Suppress Early Cancel"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <CheckBox IsChecked="{Binding RightClickHoldBreathSuppressEarlyCancelInput, Mode=TwoWay}"
-                                                          IsEnabled="{Binding RightClickHoldBreathEarlyCancelConfigured}"
-                                                          VerticalAlignment="Center" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                                 <TextBlock Text="Mode" VerticalAlignment="Center" Width="140" />
                                                 <ComboBox ItemsSource="{Binding DataContext.HoldBreathModes, ElementName=RootWindow}"
                                                           SelectedItem="{Binding RightClickHoldBreathMode, Mode=TwoWay}"
                                                           Width="160" />
                                             </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                                 <TextBlock Text="Delay (ms)"
                                                            VerticalAlignment="Center"
                                                            Width="140" />
@@ -670,6 +643,27 @@
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold" />
                                             </StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Suppress Early Cancel"
+                                                          IsChecked="{Binding RightClickHoldBreathSuppressEarlyCancelInput, Mode=TwoWay}"
+                                                          IsEnabled="{Binding RightClickHoldBreathEarlyCancelConfigured}"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Press the selected key or button while holding right mouse to cancel hold-breath input before it worsens sway."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                                <ComboBox ItemsSource="{Binding DataContext.HoldBreathPanicTriggers, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding RightClickHoldBreathPanicTrigger, Mode=TwoWay}"
+                                                          IsEnabled="{Binding RightClickHoldBreathSuppressEarlyCancelInput}"
+                                                          Margin="8,0,0,0"
+                                                          Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                            </StackPanel>
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
@@ -682,7 +676,7 @@
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Press the trigger combo (modifier + key) to toggle auto-run (continuous forward movement). Enable Sprint to also send a sprint key while auto-running."
+                                                           ToolTip="Press the trigger key to toggle auto-run (continuous forward movement). Choose None to use the key by itself, or select a modifier to require a combo. Enable Sprint to also send a sprint key while auto-running."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                                 <TextBlock Style="{StaticResource WarningIconStyle}"
@@ -718,36 +712,34 @@
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
                                             </StackPanel>
-                                            <CheckBox Content="Sprint"
-                                                      IsChecked="{Binding AutoRunSprintEnabled}"
-                                                      Margin="0,0,0,8"
-                                                      VerticalAlignment="Center" />
-                                            <StackPanel IsEnabled="{Binding AutoRunSprintEnabled}"
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <CheckBox Content="Sprint"
+                                                          IsChecked="{Binding AutoRunSprintEnabled}"
+                                                          VerticalAlignment="Center" />
+                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunSprintKey, Mode=TwoWay}"
+                                                          IsEnabled="{Binding AutoRunSprintEnabled}"
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                                          Margin="8,0,0,0"
+                                                          Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal"
+                                                        Margin="0,0,0,8"
+                                                        IsEnabled="{Binding AutoRunSprintEnabled}"
                                                         Tag="{Binding AutoRunSprintEnabled}"
                                                         Style="{StaticResource FeatureToggleContentStyle}">
-                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                    <TextBlock Text="Sprint key"
-                                                               VerticalAlignment="Center"
-                                                               Width="140" />
-                                                    <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                              SelectedItem="{Binding AutoRunSprintKey, Mode=TwoWay}"
-                                                              behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                              Width="160">
-                                                        <ComboBox.ItemTemplate>
-                                                            <DataTemplate>
-                                                                <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                            </DataTemplate>
-                                                        </ComboBox.ItemTemplate>
-                                                    </ComboBox>
-                                                </StackPanel>
-                                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                    <TextBlock Text="Sprint mode"
-                                                               VerticalAlignment="Center"
-                                                               Width="140" />
-                                                    <ComboBox ItemsSource="{Binding DataContext.SprintActivationModes, ElementName=RootWindow}"
-                                                              SelectedItem="{Binding AutoRunSprintMode, Mode=TwoWay}"
-                                                              Width="160" />
-                                                </StackPanel>
+                                                <TextBlock Text="Sprint mode"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <ComboBox ItemsSource="{Binding DataContext.SprintActivationModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunSprintMode, Mode=TwoWay}"
+                                                          Width="160" />
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal">
                                                 <TextBlock Text="Send mode"

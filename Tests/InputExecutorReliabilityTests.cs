@@ -77,6 +77,12 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public void AutoRunTriggerModifier_NoneAllowsSingleKeyTrigger()
+    {
+        Assert.True(InputHookService.IsTriggerModifierDown(ModifierKeys.None));
+    }
+
+    [Fact]
     public async Task AutoRunForeground_PhysicalWHeldAtActivation_SuppressesReleaseThenStartsScriptedHold()
     {
         var sender = new RecordingInputSender();

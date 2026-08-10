@@ -474,15 +474,8 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.IsEnabled = document.GetBoolean("AutoRun", "Enabled", settings.IsEnabled);
         // GetEnum's Enum.IsDefined guard rejects a combined ModifierKeys flag (e.g. Control|Alt=6)
-        // and falls back to the default, matching the "single side-agnostic modifier only" constraint.
+        // and falls back to the default. None is a supported single-key trigger.
         settings.TriggerModifier = document.GetEnum("AutoRun", "TriggerModifier", settings.TriggerModifier);
-        // ...but IsDefined still accepts ModifierKeys.None (=0), which the UI never offers and which makes
-        // the chord un-triggerable (IsTriggerModifierDown(None) is always false) + shows a blank ComboBox.
-        // Coerce anything outside the supported single-value set back to the default (E2).
-        if (settings.TriggerModifier is not (ModifierKeys.Control or ModifierKeys.Alt or ModifierKeys.Shift or ModifierKeys.Windows))
-        {
-            settings.TriggerModifier = ModifierKeys.Control;
-        }
         settings.TriggerKey = document.GetKey("AutoRun", "TriggerKey") ?? settings.TriggerKey;
         settings.SprintEnabled = document.GetBoolean("AutoRun", "SprintEnabled", settings.SprintEnabled);
         settings.SprintKey = document.GetKey("AutoRun", "SprintKey") ?? settings.SprintKey;

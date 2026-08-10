@@ -6,9 +6,8 @@ public sealed class AutoRunSettings
 {
     public bool IsEnabled { get; set; } = false;
 
-    // Exactly one, side-agnostic modifier. The UI offers only the four single values
-    // (Control/Alt/Shift/Windows); a combined flag (e.g. Control|Alt) is not Enum.IsDefined
-    // and so would not round-trip through SetEnum/GetEnum — combined modifiers are unsupported.
+    // None selects a single-key trigger. Otherwise exactly one side-agnostic modifier is supported;
+    // combined flags (e.g. Control|Alt) do not round-trip through SetEnum/GetEnum.
     public ModifierKeys TriggerModifier { get; set; } = ModifierKeys.Control;
 
     public Key TriggerKey { get; set; } = Key.R;

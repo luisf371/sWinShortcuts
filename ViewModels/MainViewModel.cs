@@ -30,7 +30,7 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IReadOnlyList<SprintActivation> _sprintActivationModes = Enum.GetValues<SprintActivation>();
     private readonly IReadOnlyList<AutoRunSendMode> _autoRunSendModes = Enum.GetValues<AutoRunSendMode>();
     private readonly IReadOnlyList<ModifierKeys> _triggerModifiers =
-        new[] { ModifierKeys.Control, ModifierKeys.Alt, ModifierKeys.Shift, ModifierKeys.Windows };
+        new[] { ModifierKeys.None, ModifierKeys.Control, ModifierKeys.Alt, ModifierKeys.Shift, ModifierKeys.Windows };
     private readonly IDisplayService _displayService;
     private readonly IColorControlService _colorControlService;
     private readonly IProfileRuntimeService? _profileRuntimeService;
