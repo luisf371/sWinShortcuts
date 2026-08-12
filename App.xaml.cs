@@ -43,17 +43,19 @@ public partial class App : System.Windows.Application
         // ProfileActivationService never needs to read it from the Color profile. Read the legacy Color.ini
         // value once for existing users and persist the migrated value when possible.
         var inputHook = _host.Services.GetRequiredService<IInputHookService>();
-        try
-        {
-            var settingsPath = AppSettings.GetSettingsPath();
-            inputHook.SetColorToggleKey(AppSettings.LoadColorToggleKey(settingsPath));
-            inputHook.SetRapidFireToggleKey(AppSettings.LoadRapidFireToggleKey(settingsPath));
-            AppSettings.MigrateLegacyColorToggleKey(settingsPath);
-        }
-        catch
-        {
-            // A settings read failure must not prevent the app or input hooks from starting.
-        }
+        var settingsPath = AppSettings.GetSettingsPath();
+
+        // Each toggle-key source is independent: a read/migrate failure for one must not drop another
+        // feature's key for the whole session. Previously a single broad catch around all three meant a
+        // transiently locked/unreadable Color.ini (LoadColorToggleKey also reads legacy Color.ini) skipped
+        // SetRapidFireToggleKey entirely, silently disabling Rapid Fire despite a readable [App] value.
+        // Never rethrow — the app and input hooks must still start.
+        try { inputHook.SetColorToggleKey(AppSettings.LoadColorToggleKey(settingsPath)); }
+        catch (Exception ex) { LogCrash("App.ToggleKey.Color", ex); }
+        try { inputHook.SetRapidFireToggleKey(AppSettings.LoadRapidFireToggleKey(settingsPath)); }
+        catch (Exception ex) { LogCrash("App.ToggleKey.RapidFire", ex); }
+        try { AppSettings.MigrateLegacyColorToggleKey(settingsPath); }
+        catch (Exception ex) { LogCrash("App.ToggleKey.Migrate", ex); }
 
         await _host.StartAsync();
 
