@@ -3,7 +3,8 @@ using System.Windows.Input;
 namespace sWinShortcuts.Services;
 
 /// <summary>
-/// Native synthetic-input boundary. InputHookService calls this only from its single FIFO executor.
+/// Native synthetic-input boundary. Key work uses one FIFO executor; Rapid Fire may call
+/// SendLeftClick concurrently from its one-shot timer callback.
 /// </summary>
 public interface IInputSender
 {

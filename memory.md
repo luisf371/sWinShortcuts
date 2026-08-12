@@ -477,6 +477,15 @@
 - `.github/workflows/ci.yml` now replaces the Action artifact upload with an idempotent `gh release` step: every successful push to `main` creates `build-<run number>`, attaches only `sWinShortcuts.exe`, and uses the one-line note `Automated standalone build.` Reruns replace the existing asset.
 # 2026-07-16 (framework-dependent release)
 - Release publish now uses `--self-contained false -p:PublishSingleFile=true`, producing one verified `sWinShortcuts.exe` of 4,105,908 bytes. GitHub Release notes state: `Requires .NET 8 Desktop Runtime (x64).`
+# 2026-07-18 (loadout sorter v6)
+- `gzw-loadout-devtools-sorter-v6.js` adds a right-side `TOP STATS ONLY` toggle that keeps every item tied for the highest `stats.total`; existing left-side sort buttons remain independent.
+- The top value is calculated after `UNLOCKED ONLY` and `HIDE PRESETS`, so combined filters rank only the currently eligible items.
+- Syntax validation: `node --check .\gzw-loadout-devtools-sorter-v6.js` passes.
+
+# 2026-07-19 (loadout sorter v7)
+- `gzw-loadout-devtools-sorter-v7.js` color-codes displayed total-stat values with a relative HSL scale: best is green, midpoint yellow, worst red; equal totals are green.
+- The color is included in the summary render key so refreshes update color even when the numeric total is unchanged.
+- Syntax validation: `node --check .\gzw-loadout-devtools-sorter-v7.js` passes.
 
 # 2026-07-21 (Settings: admin awareness, error suppression, start-minimized toggle) — NOT committed, NOT built here
 - Env constraint: this box is Linux with NO dotnet SDK, and the project is net8.0-windows WPF — CANNOT build/test here. All build/test runs happen on the user's Windows machine (`D:\C#\sWinShortcuts`). Did STATIC verification only; user must run `dotnet build` + `dotnet test Tests/Tests.csproj` on Windows.
@@ -486,6 +495,22 @@
 - INI `StartWithWindows`/`StartAsAdmin` are WRITE-ONLY (F-016): startup state is always read from the OS via GetState(), so recording the user's desired-but-unapplied state in INI after a non-admin Apply failure is harmless — no divergence bug; next elevated Settings open re-reads OS truth.
 - Start-minimized toggle: new `SettingsViewModel.StartMinimized` + checkbox under "Start as admin" in SettingsWindow.xaml (IsEnabled=CanEditStartup, NOT admin-gated). Persisted as `[App] StartMinimized` (LoadIniState reads `=="true"`, SaveIni writes it). DESIGN = Option B (sticky authoritative toggle): MainWindow.LoadWindowState reads `[App] StartMinimized` (with legacy `[Window] StartMinimized` fallback for upgrades); tray MinimizeToTray/RestoreFromTray NO LONGER mutate `_startMinimized` or call SaveAppSettings for it; ApplySharedSettings NO LONGER writes StartMinimized (was clobbering Settings changes with stale in-memory value). `_startMinimized` is now read-once-at-launch only. Existing OnLoaded `if(_startMinimized) MinimizeToTray()` still drives the launch hide (works with the new key). SettingsWindow Height 450→490 for the extra checkbox.
 - Added 3 SettingsViewModelTests (StartMinimized round-trip, CanChooseAdmin requires elevation, StartAsAdmin coerced off when non-admin). Could not run them here (no SDK).
+
+# 2026-07-22 (anti-AFK diagnostics)
+- Implemented diagnostic-only foreground decision records from immutable input-worker snapshots and split the throttled Anti-AFK profile-state reason into null, disabled-profile, and disabled-Anti-AFK cases. `ExecutableName.Normalize` intentionally logs extensionless lowercase values; regression coverage asserts that actual contract.
+- Fresh PR review found no medium-or-higher issue. Tightened the new reliability test anyway: wait for the exact foreground generation recorded by `FakeInputHookService` rather than a generic deactivation count, avoiding startup-snapshot races.
+- PR #3 final validation: Release build clean, full suite 192/192, latest GitHub `build-test` passed in 2m04s; fresh-context final review found no findings and no medium-or-higher issues.
+
+# 2026-07-22 (PR #4 merge validation)
+- PR #4 is open, non-draft, mergeable, targets `main` at `bd9618cd21da13361b69ec603c59e2029a2c6daa`, and is the only open PR. Its branch is owned by this repository (`feat/settings-admin-awareness-start-minimized`), so it is eligible for post-merge cleanup.
+
+# 2026-07-22 (PR #4 merged)
+- PR #4 was squash-merged to main as verified commit `ca7f0c4aefde09e96a464b825849838e8361401e` after restoring unrelated foreground/Anti-AFK diagnostics and adding the missing Settings-side fallback from legacy `[Window] StartMinimized` to `[App]`. Release build and full tests passed locally (195/195); GitHub build-test passed (3m13s).
+
+# 2026-07-24 (persistent monitor color identity)
+- Per-monitor color profiles now persist the `EDD_GET_DEVICE_INTERFACE_NAME` monitor interface ID from `EnumDisplayDevices`; `DeviceName` remains the runtime `\\.\DISPLAYn` apply target. Entries without a per-monitor interface ID are skipped rather than falling back to a swap-prone display number. Release build is clean and full tests pass 196/196.
+- `DisplayService.RefreshDisplays()` orders `Screen.AllScreens` with `Primary` first, which flows directly into the Color Settings editor list without changing persistence or the color apply plan. Release build clean; 196/196 tests pass.
+- Per-monitor game color fallback: an enabled game profile now overrides only displays whose per-display profile is enabled; other displays inherit the enabled global Color profile instead of receiving neutral gamma/DVC. Regression test `BuildColorPlan_ActiveProfileMissingDisplay_FallsBackToGlobalColor`; Release build clean and 197/197 tests pass.
 
 # 2026-08-08 (.NET 10 migration review — commit 612f596, branch worktree-net10-migration)
 - Verified on SDK 10.0.302 / Windows: Release solution build 0 warnings 0 errors; 197/197 tests pass and are stable across 5 consecutive `--no-build` runs; test count is IDENTICAL to the net8/xUnit-v2 baseline at 4ab80ee (197), so the xUnit v3 move dropped/skipped nothing.
@@ -499,3 +524,29 @@
 - CI duplicates the SDK pin (`setup-dotnet: 10.0.x` vs `global.json: 10.0.302`). Safe today because global.json is authoritative and hard-fails on a lower feature band; `global-json-file: global.json` would single-source it.
 - xUnit1051 measured properly (flip `Tests/.editorconfig` to `= warning`, build, dedupe by file:line): **116** unique sites across 7 files, and **82 of them (71%) sit in just two** — `ProfileManagerTests.cs` (48) and `ProfileManagerRegressionTests.cs` (34).
 - CORRECTION to the earlier note about the suppression's cost: threading `TestContext.Current.CancellationToken` would NOT change hang behavior today. **Zero of the 177 `[Fact]`/`[Theory]` declarations set `Timeout`**, and in xUnit v3 the per-test token is only signalled by a test timeout or runner-level cancellation. On top of that, the tests that could actually hang already self-bound: `InputExecutorReliabilityTests` uses explicit `.WaitAsync(TimeSpan.FromSeconds(2))` plus a `WaitForAsync` helper with a 2-second deadline. So the suppression is low-risk, and the token refactor only becomes load-bearing AFTER `Timeout` is added to the slow/concurrency tests — that ordering matters if it is ever picked up.
+
+# 2026-08-09 (Caps Lock mode redesign)
+- Caps Lock modes are now `Normal`, `DoubleNormal` (shown as “2x Normal”), and `Disabled`; numeric value `2` is preserved, and legacy `Hold`/`MomentaryShift` names migrate to `DoubleNormal`.
+- Remapping is an independent `RemapEnabled` flag. Legacy `Mode=Remap`/`Mode=3` migrates to `Mode=Normal` plus remapping enabled, preserving the saved target.
+- `Normal` mirrors replacement DOWN/repeat/UP transitions; `2x Normal` emits one complete tap on physical DOWN and one on physical UP. The executor token pairs those taps so a skipped initial tap cannot produce a stray release tap.
+- The old worker-thread `GetKeyState` force-toggle path and its P/Invoke were deleted; focused Caps Lock build/tests passed before the full-suite gate.
+- Final validation: Release build succeeded with 0 warnings/errors; full Debug suite passed 214/214. The two initial full-suite failures were sandbox-only `File.Replace` denials in isolated temp INIs and passed unchanged with normal filesystem access.
+- Hard session/Stop boundaries now clear Caps physical-pairing latches (profile/config/watchdog boundaries still preserve them), preventing the first post-unlock press from being mistaken for a typematic repeat after a swallowed UP.
+# 2026-08-09
+- Auto-Run now treats `ModifierKeys.None` as an intentional single-key trigger; keep `None` in the UI list, preserve it through INI load, and satisfy the modifier gate without querying native key state.
+- Auto-Run Sprint follows the Caps Lock Remap Key layout: the Sprint checkbox and key selector share one horizontal row, while Sprint mode stays on its aligned row below.
+- Hold Breath Early Cancel now places its suppression checkbox, existing tooltip, and trigger selector on one row at the bottom of the section; selecting `None` remains the feature-disable mechanism.
+- The Early Cancel trigger selector is enabled only while `Suppress Early Cancel` is checked; the checkbox remains the recovery control when the selector is grayed out.
+
+# 2026-08-10 (Rapid Fire)
+- Rapid Fire is per-profile eligibility plus a global pass-through toggle key. Eligibility and runtime arming both default off; Advanced Mode, profile/config changes, key reassignment, hook/session lifecycle boundaries, and Stop invalidate pending work and disarm it.
+- Timing is a 50-250 ms base (default 90) plus additive 0-20 ms jitter (default 10), so the UI reports the exact inclusive range such as 90-100 ms. Jitter is presented as cadence variation, not ban protection.
+- Repeated left clicks use the existing FIFO input executor and a completion-driven one-shot timer. Each click is an atomic `SendInput` LEFTDOWN+LEFTUP pair tagged for injected-event filtering; Ctrl and other physical modifiers are never synthesized or released.
+- Color and Rapid Fire profile panes display their app-level assigned toggle keys read-only; keys remain persisted in the app INI rather than profile files.
+- Final Release validation after adversarial timer/cancellation review: solution build succeeded with 0 errors (only NU1900 because the NuGet audit endpoint was unavailable), and the full suite passed 230/230 under normal filesystem permissions.
+- UI correction: the app-level Color toggle key belongs at the top of every non-Windows Color Settings pane, including custom game profiles; do not gate that read-only line with `IsColorProfile`.
+- Rapid Fire implementation was committed locally as `bc1f7fd` (`feat: add profile-based rapid fire controls`); unrelated workspace documents and the pre-existing `memory.md` edits were intentionally excluded.
+- Rapid Fire's minimum base interval is now 25 ms. Activation already follows physical left-down → full interval+jitter → synthetic click, with each successor scheduled only after the previous `SendLeftClick` completes; do not add an immediate synthetic activation click.
+- Rapid Fire cadence diagnosis: actual spacing is configured delay plus `System.Threading.Timer`/ThreadPool lateness, shared injector FIFO wait, and synchronous `SendInput` duration because the next one-shot timer is armed only after `SendLeftClick` returns. The shared injector also runs sleep-bearing Anti-AFK/Caps/key-tap work. Microsoft documents that `System.Threading.Timer` uses the system clock and is unaffected by `timeBeginPeriod`, so the existing 1 ms request does not fix its jitter; measure timer, queue, and send stages before choosing a high-resolution waitable-timer worker.
+- Rapid Fire Plan B: the one-shot timer callback now calls atomic `SendLeftClick` directly, bypassing the shared key FIFO. Successor delay subtracts normal send time using ceiling, but any send-duration overrun waits a fresh full interval to prevent catch-up bursts. UP/reassignment/profile changes during an in-flight click invalidate its successor; sender exceptions are contained, and disposal races are tolerated. Release suite passes 236/236; focused Rapid Fire tests pass 20/20 across five repeated runs.
+- Final Plan B validation after adding explicit successful-successor coverage: Release suite passes 237/237; focused Rapid Fire tests pass 21/21 across five consecutive runs. These counts supersede the preceding checkpoint.

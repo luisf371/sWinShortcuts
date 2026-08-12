@@ -980,6 +980,22 @@ public sealed class InputExecutorReliabilityTests
         }
     }
 
+    [Theory]
+    [InlineData(100, 0, 100)]
+    [InlineData(100, 8.2, 92)]
+    [InlineData(100, 99.9, 1)]
+    [InlineData(100, 100, 100)]
+    [InlineData(100, 300, 100)]
+    public void RapidFireSuccessorDelay_CompensatesNormalSendAndResetsAfterOverrun(
+        int targetDelayMs,
+        double sendElapsedMs,
+        int expectedDelayMs)
+    {
+        Assert.Equal(
+            expectedDelayMs,
+            InputHookService.CalculateRapidFireSuccessorDelay(targetDelayMs, sendElapsedMs));
+    }
+
     [Fact]
     public async Task RapidFire_DefaultOffAndAdvancedOff_DoNotClick()
     {
@@ -1049,7 +1065,7 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
-    public async Task RapidFire_AltLeftWinsAndMatchingUpAllowsNextFreshPress()
+    public void RapidFire_AltLeftWinsAndMatchingUpAllowsNextFreshPress()
     {
         var sender = new RecordingInputSender();
         using var service = new InputHookService(new NullLoggerService(), sender);
@@ -1062,16 +1078,13 @@ public sealed class InputExecutorReliabilityTests
             service.HandleRapidFireLeftButtonForTesting(isDown: true, consumed: true);
             service.FireRapidFireTimerForTesting();
             service.HandleRapidFireLeftButtonForTesting(isDown: false, consumed: true);
-            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
             Assert.Empty(sender.MouseClickThreadIds);
 
             service.HandleRapidFireLeftButtonForTesting(isDown: true);
             service.FireRapidFireTimerForTesting();
-            await WaitForAsync(() => sender.MouseClickThreadIds.Count == 1);
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
 
-            var clickThread = Assert.Single(sender.MouseClickThreadIds);
-            Assert.Equal(Assert.Single(sender.DummyThreadIds), clickThread);
+            Assert.Single(sender.MouseClickThreadIds);
         }
         finally
         {
@@ -1081,7 +1094,7 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
-    public async Task RapidFire_QueuedClickReleasedBeforeExecutorDrain_IsDropped()
+    public async Task RapidFire_ClickDoesNotWaitForSharedExecutor()
     {
         var sender = new RecordingInputSender(blockDummy: true);
         using var service = new InputHookService(new NullLoggerService(), sender);
@@ -1096,11 +1109,10 @@ public sealed class InputExecutorReliabilityTests
             service.HandleRapidFireLeftButtonForTesting(isDown: true);
             service.FireRapidFireTimerForTesting();
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            Assert.Single(sender.MouseClickThreadIds);
 
             sender.ReleaseDummy.Set();
             Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(2)));
-            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
-            Assert.Empty(sender.MouseClickThreadIds);
         }
         finally
         {
@@ -1111,9 +1123,9 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
-    public async Task RapidFire_QueuedClickThenHotkeyReassignment_IsDroppedAndDisarmed()
+    public async Task RapidFire_HotkeyReassignmentDuringClickPreventsSuccessor()
     {
-        var sender = new RecordingInputSender(blockDummy: true);
+        var sender = new RecordingInputSender(blockMouse: true);
         using var service = new InputHookService(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
@@ -1121,60 +1133,27 @@ public sealed class InputExecutorReliabilityTests
         {
             service.SetRapidFireToggleKey(Key.F8);
             service.ConfigureRapidFireForTesting(CreateRapidFireProfile(), foregroundGeneration: 1);
-            var gate = service.EnqueueDummyForTesting();
-            Assert.True(sender.DummyEntered.Wait(TimeSpan.FromSeconds(2)));
-
             service.HandleRapidFireLeftButtonForTesting(isDown: true);
-            service.FireRapidFireTimerForTesting();
+            var fireTask = Task.Run(service.FireRapidFireTimerForTesting);
+            Assert.True(sender.MouseEntered.Wait(TimeSpan.FromSeconds(2)));
             service.SetRapidFireToggleKey(Key.F9);
 
-            sender.ReleaseDummy.Set();
-            Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(2)));
-            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
-            Assert.False(service.RapidFireArmedForTesting);
-            Assert.Empty(sender.MouseClickThreadIds);
-        }
-        finally
-        {
-            sender.ReleaseDummy.Set();
-            service.HandleRapidFireLeftButtonForTesting(isDown: false);
-            service.StopInputExecutorForTesting();
-        }
-    }
-
-    [Fact]
-    public async Task RapidFire_QueuedClickThenProfileSwitch_IsDroppedAndDisarmed()
-    {
-        var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
-        service.StartInputExecutorForTesting();
-
-        try
-        {
-            service.ConfigureRapidFireForTesting(CreateRapidFireProfile(), foregroundGeneration: 1);
-            var gate = service.EnqueueDummyForTesting();
-            Assert.True(sender.DummyEntered.Wait(TimeSpan.FromSeconds(2)));
-
-            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+            sender.ReleaseMouse.Set();
+            await fireTask.WaitAsync(TimeSpan.FromSeconds(2));
             service.FireRapidFireTimerForTesting();
-            service.ActivateProfile(CreateRapidFireProfile(), foregroundGeneration: 2);
-
-            sender.ReleaseDummy.Set();
-            Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(2)));
-            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
             Assert.False(service.RapidFireArmedForTesting);
-            Assert.Empty(sender.MouseClickThreadIds);
+            Assert.Single(sender.MouseClickThreadIds);
         }
         finally
         {
-            sender.ReleaseDummy.Set();
+            sender.ReleaseMouse.Set();
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
             service.StopInputExecutorForTesting();
         }
     }
 
     [Fact]
-    public async Task RapidFire_ClickCompletionSchedulesOnlyOneSuccessor()
+    public async Task RapidFire_ProfileSwitchDuringClickPreventsSuccessor()
     {
         var sender = new RecordingInputSender(blockMouse: true);
         using var service = new InputHookService(new NullLoggerService(), sender);
@@ -1184,21 +1163,101 @@ public sealed class InputExecutorReliabilityTests
         {
             service.ConfigureRapidFireForTesting(CreateRapidFireProfile(), foregroundGeneration: 1);
             service.HandleRapidFireLeftButtonForTesting(isDown: true);
-            service.FireRapidFireTimerForTesting();
-
+            var fireTask = Task.Run(service.FireRapidFireTimerForTesting);
             Assert.True(sender.MouseEntered.Wait(TimeSpan.FromSeconds(2)));
-            await Task.Delay(175);
-            Assert.Single(sender.MouseClickThreadIds);
+            service.ActivateProfile(CreateRapidFireProfile(), foregroundGeneration: 2);
 
-            service.HandleRapidFireLeftButtonForTesting(isDown: false);
             sender.ReleaseMouse.Set();
-            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
-            await Task.Delay(75);
+            await fireTask.WaitAsync(TimeSpan.FromSeconds(2));
+            service.FireRapidFireTimerForTesting();
+            Assert.False(service.RapidFireArmedForTesting);
             Assert.Single(sender.MouseClickThreadIds);
         }
         finally
         {
             sender.ReleaseMouse.Set();
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task RapidFire_BlockedClickStaysSingleFlightAndReleasePreventsSuccessor()
+    {
+        var sender = new RecordingInputSender(blockMouse: true);
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureRapidFireForTesting(CreateRapidFireProfile(), foregroundGeneration: 1);
+            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+            var fireTask = Task.Run(service.FireRapidFireTimerForTesting);
+
+            Assert.True(sender.MouseEntered.Wait(TimeSpan.FromSeconds(2)));
+            service.FireRapidFireTimerForTesting();
+            Assert.Single(sender.MouseClickThreadIds);
+
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            sender.ReleaseMouse.Set();
+            await fireTask.WaitAsync(TimeSpan.FromSeconds(2));
+            service.FireRapidFireTimerForTesting();
+            Assert.Single(sender.MouseClickThreadIds);
+        }
+        finally
+        {
+            sender.ReleaseMouse.Set();
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ClickCompletionRearmsOneSuccessor()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateRapidFireProfile();
+            profile.RapidFire.IntervalMilliseconds = RapidFireSettings.MaxIntervalMilliseconds;
+            service.ConfigureRapidFireForTesting(profile, foregroundGeneration: 1);
+            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+
+            service.FireRapidFireTimerForTesting();
+            service.FireRapidFireTimerForTesting();
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+
+            Assert.Equal(2, sender.MouseClickThreadIds.Count);
+        }
+        finally
+        {
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ClickSenderExceptionIsContainedAndStopsPress()
+    {
+        var sender = new RecordingInputSender(throwMouse: true);
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureRapidFireForTesting(CreateRapidFireProfile(), foregroundGeneration: 1);
+            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+
+            service.FireRapidFireTimerForTesting();
+            service.FireRapidFireTimerForTesting();
+
+            Assert.Empty(sender.MouseClickThreadIds);
+        }
+        finally
+        {
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
             service.StopInputExecutorForTesting();
         }
@@ -1298,7 +1357,8 @@ public sealed class InputExecutorReliabilityTests
     private sealed class RecordingInputSender(
         bool blockDummy = false,
         bool failFirstDown = false,
-        bool blockMouse = false) : IInputSender
+        bool blockMouse = false,
+        bool throwMouse = false) : IInputSender
     {
         private readonly bool _blockDummy = blockDummy;
         private int _failNextDown = failFirstDown ? 1 : 0;
@@ -1335,6 +1395,11 @@ public sealed class InputExecutorReliabilityTests
 
         public bool SendLeftClick()
         {
+            if (throwMouse)
+            {
+                throw new InvalidOperationException("Synthetic click failure");
+            }
+
             MouseClickThreadIds.Enqueue(Environment.CurrentManagedThreadId);
             MouseEntered.Set();
             return !blockMouse || ReleaseMouse.Wait(TimeSpan.FromSeconds(2));

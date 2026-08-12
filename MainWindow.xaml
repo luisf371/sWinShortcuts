@@ -615,7 +615,7 @@
                                                            VerticalAlignment="Center"
                                                            Width="140" />
                                                 <Slider Value="{Binding RapidFireIntervalMilliseconds, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="50"
+                                                        Minimum="25"
                                                         Maximum="250"
                                                         TickFrequency="5"
                                                         IsSnapToTickEnabled="True"

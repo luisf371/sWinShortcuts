@@ -208,8 +208,7 @@ public sealed class InputHookService : IInputHookService
     {
         KeyTransition,
         CapsLockTap,
-        DummyKey,
-        MouseClick
+        DummyKey
     }
 
     private readonly record struct HoldBreathInjection(
@@ -228,8 +227,7 @@ public sealed class InputHookService : IInputHookService
         long LauncherGeneration = 0,
         long CapsGeneration = 0,
         Profile? ExpectedProfile = null,
-        long CapsPressToken = 0,
-        long RapidFireGeneration = 0);
+        long CapsPressToken = 0);
 
     // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
     private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
@@ -2168,7 +2166,7 @@ public sealed class InputHookService : IInputHookService
         ScheduleRapidFire(generation);
     }
 
-    private void ScheduleRapidFire(long generation)
+    private void ScheduleRapidFire(long generation, double sendElapsedMs = 0)
     {
         var profile = _rapidFireOwnerProfile;
         var foregroundGeneration = Volatile.Read(ref _rapidFireForegroundGeneration);
@@ -2178,13 +2176,26 @@ public sealed class InputHookService : IInputHookService
         }
 
         var jitter = _rapidFireJitterMs;
-        var delay = _rapidFireIntervalMs + (jitter == 0 ? 0 : _random.Value!.Next(jitter + 1));
+        var targetDelay = _rapidFireIntervalMs + (jitter == 0 ? 0 : _random.Value!.Next(jitter + 1));
+        var delay = CalculateRapidFireSuccessorDelay(targetDelay, sendElapsedMs);
         Volatile.Write(ref _rapidFireTimerGeneration, generation);
         Volatile.Write(ref _rapidFireArmedTick, Stopwatch.GetTimestamp());
         Volatile.Write(ref _rapidFireArmedDelayMs, delay);
         Interlocked.Exchange(ref _rapidFireTimerState, TIMER_ARMED);
-        _rapidFireTimer.Change(delay, Timeout.Infinite);
+        try
+        {
+            _rapidFireTimer.Change(delay, Timeout.Infinite);
+        }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            // A direct timer callback can finish SendInput while Dispose tears down the timer.
+        }
     }
+
+    internal static int CalculateRapidFireSuccessorDelay(int targetDelayMs, double sendElapsedMs) =>
+        sendElapsedMs < targetDelayMs
+            ? Math.Max(1, (int)Math.Ceiling(targetDelayMs - sendElapsedMs))
+            : targetDelayMs;
 
     private void OnRapidFireTimerFired()
     {
@@ -2207,15 +2218,22 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
-        EnqueueHoldBreathInjection(
-            new HoldBreathInjection(
-                Key.None,
-                IsDown: false,
-                PreSleepMs: 0,
-                Kind: InputInjectionKind.MouseClick,
-                ForegroundGeneration: foregroundGeneration,
-                ExpectedProfile: profile,
-                RapidFireGeneration: generation));
+        var clickStart = Stopwatch.GetTimestamp();
+        try
+        {
+            if (!_inputSender.SendLeftClick() && IsDebugEnabled)
+            {
+                LogDebug("Rapid Fire click injection failed");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogDebug($"Rapid Fire click injection error: {ex.Message}");
+            return;
+        }
+
+        var sendElapsedMs = (Stopwatch.GetTimestamp() - clickStart) * TickToMilliseconds;
+        ScheduleRapidFire(generation, sendElapsedMs);
     }
 
     private bool RapidFireIsCurrent(long generation, Profile profile, long foregroundGeneration)
@@ -3388,29 +3406,6 @@ public sealed class InputHookService : IInputHookService
                             LogDebug("WindowsLauncher dummy key injection failed");
                         }
                         injection.Completion?.TrySetResult(true);
-                        continue;
-                    }
-
-                    if (injection.Kind == InputInjectionKind.MouseClick)
-                    {
-                        if (queue.IsAddingCompleted ||
-                            injection.ExpectedProfile is not { } rapidFireProfile ||
-                            !RapidFireIsCurrent(
-                                injection.RapidFireGeneration,
-                                rapidFireProfile,
-                                injection.ForegroundGeneration))
-                        {
-                            continue;
-                        }
-
-                        if (!_inputSender.SendLeftClick() && IsDebugEnabled)
-                        {
-                            LogDebug("Rapid Fire click injection failed");
-                        }
-
-                        // Completion-driven one-shot scheduling: a stalled SendInput cannot build a queue of
-                        // overdue clicks that burst when the foreign hook resumes.
-                        ScheduleRapidFire(injection.RapidFireGeneration);
                         continue;
                     }
 

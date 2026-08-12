@@ -442,7 +442,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Theory]
-    [InlineData(49, -1, 50, 0)]
+    [InlineData(24, -1, 25, 0)]
     [InlineData(251, 21, 250, 20)]
     public async Task SaveAndLoad_ClampsRapidFireTiming(
         int interval,
