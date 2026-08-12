@@ -40,6 +40,9 @@ public sealed class InputHookService : IInputHookService
     private const int HOLD_BREATH_TAP_DURATION_MIN_MS = 20;
     private const int HOLD_BREATH_TAP_DURATION_MAX_MS = 30;
 
+    private const int RAPID_FIRE_HOLD_MIN_MS = 10;
+    private const int RAPID_FIRE_HOLD_MAX_MS = 20;
+
     // RNG Warmup (breaks thread-reuse patterns for anti-cheat)
     private const int RNG_WARMUP_MIN_CALLS = 1;
     private const int RNG_WARMUP_MAX_CALLS = 5;
@@ -2221,7 +2224,10 @@ public sealed class InputHookService : IInputHookService
         var clickStart = Stopwatch.GetTimestamp();
         try
         {
-            if (!_inputSender.SendLeftClick() && IsDebugEnabled)
+            var holdMilliseconds = _random.Value!.Next(
+                RAPID_FIRE_HOLD_MIN_MS,
+                RAPID_FIRE_HOLD_MAX_MS + 1);
+            if (!_inputSender.SendLeftClick(holdMilliseconds) && IsDebugEnabled)
             {
                 LogDebug("Rapid Fire click injection failed");
             }

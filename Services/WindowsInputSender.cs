@@ -49,19 +49,35 @@ public sealed class WindowsInputSender : IInputSender
         return NativeMethods.SendInput(2, [down, up], InputStructSize) == 2;
     }
 
-    public bool SendLeftClick()
+    public bool SendLeftClick(int holdMilliseconds)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(holdMilliseconds);
+
         var down = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTDOWN);
         var up = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTUP);
-        var sent = NativeMethods.SendInput(2, [down, up], InputStructSize);
-        if (sent == 1)
+
+        if (NativeMethods.SendInput(1, [down], InputStructSize) != 1)
         {
-            // SendInput normally accepts the whole serial batch or none of it. If a partial insertion ever
-            // accepts only DOWN, fail safe with a best-effort UP rather than stranding the mouse button.
-            NativeMethods.SendInput(1, [up], InputStructSize);
+            return false;
         }
 
-        return sent == 2;
+        var released = false;
+        try
+        {
+            Thread.Sleep(holdMilliseconds);
+        }
+        finally
+        {
+            released = NativeMethods.SendInput(1, [up], InputStructSize) == 1;
+            if (!released)
+            {
+                // A failed UP is the dangerous half of a split click; retry once so a transient failure
+                // cannot leave the logical mouse button held after the physical button is released.
+                released = NativeMethods.SendInput(1, [up], InputStructSize) == 1;
+            }
+        }
+
+        return released;
     }
 
     public bool SendDummyKey()

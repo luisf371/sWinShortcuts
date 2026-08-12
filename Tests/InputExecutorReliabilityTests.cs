@@ -1231,6 +1231,7 @@ public sealed class InputExecutorReliabilityTests
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
 
             Assert.Equal(2, sender.MouseClickThreadIds.Count);
+            Assert.All(sender.MouseHoldMilliseconds, hold => Assert.InRange(hold, 10, 20));
         }
         finally
         {
@@ -1373,6 +1374,8 @@ public sealed class InputExecutorReliabilityTests
 
         public ConcurrentQueue<int> MouseClickThreadIds { get; } = new();
 
+        public ConcurrentQueue<int> MouseHoldMilliseconds { get; } = new();
+
         public ManualResetEventSlim MouseEntered { get; } = new(false);
 
         public ManualResetEventSlim ReleaseMouse { get; } = new(false);
@@ -1393,13 +1396,14 @@ public sealed class InputExecutorReliabilityTests
             return true;
         }
 
-        public bool SendLeftClick()
+        public bool SendLeftClick(int holdMilliseconds)
         {
             if (throwMouse)
             {
                 throw new InvalidOperationException("Synthetic click failure");
             }
 
+            MouseHoldMilliseconds.Enqueue(holdMilliseconds);
             MouseClickThreadIds.Enqueue(Environment.CurrentManagedThreadId);
             MouseEntered.Set();
             return !blockMouse || ReleaseMouse.Wait(TimeSpan.FromSeconds(2));
