@@ -10,13 +10,6 @@ public sealed partial class AltMouseBindingEntryViewModel : ViewModelBase
 {
     public event EventHandler? Changed;
 
-    public AltMouseBindingEntryViewModel()
-    {
-        button = MouseButton.Left;
-        tapKey = Key.None;
-        holdKey = Key.None;
-    }
-
     public AltMouseBindingEntryViewModel(MouseButton button, Key? tapKey, Key? holdKey)
     {
         this.button = button;

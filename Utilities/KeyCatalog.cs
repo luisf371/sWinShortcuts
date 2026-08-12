@@ -11,7 +11,7 @@ public static class KeyCatalog
 
     public static IReadOnlyList<Key> GetCommonKeys() => CommonKeys;
 
-    public static IReadOnlyList<Key> GetNumpadKeys() => NumpadKeys;
+    private static IReadOnlyList<Key> GetNumpadKeys() => NumpadKeys;
 
     public static IEnumerable<Key> SortKeys(IEnumerable<Key> keys)
     {
