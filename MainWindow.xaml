@@ -32,7 +32,6 @@
         <conv:MouseButtonDisplayConverter x:Key="MouseButtonDisplayConverter" />
         <conv:InputTriggerDisplayConverter x:Key="InputTriggerDisplayConverter" />
         <conv:AvailableMouseButtonsConverter x:Key="AvailableMouseButtonsConverter" />
-        <conv:AvailableKeysConverter x:Key="AvailableKeysConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
         
