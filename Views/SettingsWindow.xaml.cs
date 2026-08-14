@@ -28,6 +28,8 @@ public partial class SettingsWindow : Window
     private bool _baselineAdvancedMode;
     private bool _baselineStartWithWindows;
     private bool _baselineStartAsAdmin;
+    private bool _baselineVmStartWithWindows;
+    private bool _baselineVmStartAsAdmin;
     private bool _applied;
     private bool _closed;
 
@@ -73,6 +75,11 @@ public partial class SettingsWindow : Window
             // reverted, and so the dialog can never leave the OS startup state changed on a non-committed close.
             _baselineStartWithWindows = state.StartWithWindows;
             _baselineStartAsAdmin = state.StartAsAdmin;
+            // Capture the POST-COERCION VM values (a non-admin session hard-coerces StartAsAdmin to
+            // false): this is exactly what an untouched dialog presents at Save time, so comparing
+            // against it lets Save skip the schtasks apply entirely when startup was not edited.
+            _baselineVmStartWithWindows = _vm.StartWithWindows;
+            _baselineVmStartAsAdmin = _vm.StartAsAdmin;
             _vm.IsStartupLoaded = true; // enables the startup checkboxes + Save now that the OS state is known
         }
         catch
@@ -157,6 +164,21 @@ public partial class SettingsWindow : Window
         }
     }
 
+    // Startup options are OS state; only (re)apply them when the user actually changed one. An
+    // unchanged save must not run schtasks at all — in a non-admin session with an existing elevated
+    // HIGHEST task the unconditional apply always fails Access-Denied and shows a misleading "run as
+    // administrator" warning for a save that never touched startup. The skip also means an unchanged
+    // save no longer re-asserts startup state against external drift (e.g. the task edited in Task
+    // Scheduler while the dialog was open); Apply itself keeps the Run key and the scheduled task
+    // mutually exclusive whenever a change IS applied.
+    internal static bool ShouldApplyStartup(
+        bool currentStartWithWindows,
+        bool currentStartAsAdmin,
+        bool baselineStartWithWindows,
+        bool baselineStartAsAdmin) =>
+        currentStartWithWindows != baselineStartWithWindows ||
+        currentStartAsAdmin != baselineStartAsAdmin;
+
     private async void OnSaveClick(object sender, RoutedEventArgs e)
     {
         if (_vm.IsSaving)
@@ -174,11 +196,21 @@ public partial class SettingsWindow : Window
             var startWithWindows = _vm.StartWithWindows;
             var startAsAdmin = _vm.StartAsAdmin;
 
-            var (applied, applyError) = await Task.Run(() =>
+            // Run the schtasks apply only when a startup option actually changed from what the dialog
+            // loaded (post-coercion baseline); an untouched save skips the multi-second schtasks
+            // round-trip entirely. See ShouldApplyStartup for the failure this skip removes.
+            var startupApplyRan = ShouldApplyStartup(
+                startWithWindows, startAsAdmin, _baselineVmStartWithWindows, _baselineVmStartAsAdmin);
+            var applied = true;
+            string? applyError = null;
+            if (startupApplyRan)
             {
-                var ok = _startupService.Apply(startWithWindows, startAsAdmin, out var err);
-                return (ok, err);
-            });
+                (applied, applyError) = await Task.Run(() =>
+                {
+                    var ok = _startupService.Apply(startWithWindows, startAsAdmin, out var err);
+                    return (ok, err);
+                });
+            }
 
             if (_closed)
             {
@@ -189,15 +221,18 @@ public partial class SettingsWindow : Window
             // (HIGHEST) startup task cannot remove it (schtasks Access Denied), so the apply fails — but that
             // must NOT block saving the rest of the settings (debug logging, watchdog, advanced mode, color
             // toggle, start-minimized). Surface the startup failure as a non-blocking warning AFTER the INI
-            // save, instead of hard-stopping before it.
-            string? startupWarning = applied ? null : (applyError ?? "Unable to apply startup settings.");
+            // save, instead of hard-stopping before it. When neither startup option changed the apply is
+            // SKIPPED entirely, so this warning can only come from a change the user actually made.
+            string? startupWarning = startupApplyRan && !applied
+                ? applyError ?? "Unable to apply startup settings."
+                : null;
 
             if (!SaveIni(_vm, out var saveError))
             {
                 // F-016 (codex #3): the startup Apply above committed to the OS but the INI didn't persist.
                 // Revert the OS startup task to the baseline OFF the dispatcher so the OS and the (unsaved)
                 // settings can't disagree — otherwise Cancel would leave startup changed. Only if it changed.
-                if (applied && (startWithWindows != _baselineStartWithWindows || startAsAdmin != _baselineStartAsAdmin))
+                if (startupApplyRan && applied && (startWithWindows != _baselineStartWithWindows || startAsAdmin != _baselineStartAsAdmin))
                 {
                     await Task.Run(() => _startupService.Apply(_baselineStartWithWindows, _baselineStartAsAdmin, out _));
                 }
