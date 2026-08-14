@@ -1,8 +1,8 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-01-19
-**Commit:** e3bdec7
-**Branch:** fixupv2
+**Generated:** 2026-01-19 (structure counts, code map, and notes refreshed 2026-08-14)
+**Commit:** e3bdec7 (refresh at 1e2436f)
+**Branch:** fixupv2 (refresh on tekky/bug-hunt-a5364214)
 
 ## OVERVIEW
 
@@ -12,9 +12,9 @@ Windows keyboard/mouse remapping app (.NET 10 WPF) using low-level hooks (`WH_KE
 
 ```
 sWinShortcuts/
-├── Services/         # Business logic, hooks, Windows API (19 files)
+├── Services/         # Business logic, hooks, Windows API (24 files)
 ├── ViewModels/       # MVVM with CommunityToolkit.Mvvm (11 files)
-├── Models/           # Domain models, settings classes (11 files)
+├── Models/           # Domain models, settings classes (17 files)
 ├── Utilities/        # Helpers: KeySerializer, ProcessLauncher, IniDocument
 ├── Configuration/    # IniProfileStore - INI-based persistence
 ├── Interop/          # NativeMethods.cs - ALL P/Invoke centralized
@@ -31,7 +31,7 @@ sWinShortcuts/
 | Task | Location | Notes |
 |------|----------|-------|
 | Add per-profile feature | `Models/` → `Profile.cs` → `ProfileFactory` → `IniProfileStore` → `ProfileViewModel` → `InputHookService` | 7-step pattern |
-| Input hook logic | `Services/InputHookService.cs` | 1199 lines, lock-free hot path |
+| Input hook logic | `Services/InputHookService.cs` | 5664 lines, lock-free hot path |
 | Profile persistence | `Configuration/IniProfileStore.cs` | INI format, handle migrations |
 | P/Invoke declarations | `Interop/NativeMethods.cs` | Keep centralized |
 | Service registration | `App.xaml.cs` | DI via Microsoft.Extensions.Hosting |
@@ -43,12 +43,12 @@ sWinShortcuts/
 
 | File | Lines | Role | Caution |
 |------|-------|------|---------|
-| `InputHookService.cs` | 1199 | Keyboard/mouse callbacks | Lock-free, zero GC in callbacks |
-| `ProfileViewModel.cs` | 529 | Profile editor VM | Auto-saves on property change |
-| `IniProfileStore.cs` | 508 | Profile serialization | Backward compat migrations |
-| `NvidiaColorControlService.cs` | 453 | Display color control | Graceful NVAPI fallback |
-| `MainViewModel.cs` | 408 | Profile list management | - |
-| `MainWindow.xaml.cs` | 399 | UI code-behind | - |
+| `InputHookService.cs` | 5664 | Keyboard/mouse callbacks | Lock-free, zero GC in callbacks; hosts the one-shot Rapid Fire click timer |
+| `ProfileViewModel.cs` | 816 | Profile editor VM | Auto-saves on property change |
+| `IniProfileStore.cs` | 790 | Profile serialization | Backward compat migrations |
+| `NvidiaColorControlService.cs` | 568 | Display color control | Graceful NVAPI fallback |
+| `MainViewModel.cs` | 861 | Profile list management | - |
+| `MainWindow.xaml.cs` | 537 | UI code-behind | - |
 
 ### Service Interfaces
 
@@ -97,10 +97,10 @@ sWinShortcuts/
 ### Forbidden
 ```csharp
 // CRITICAL: Do NOT fall back to standard launch if de-elevation fails
-// (ProcessLauncher.cs:29)
+// (ProcessLauncher.Launch: the catch after LaunchAsDesktopUser throws by design)
 
 // Deprecated but kept for compat:
-// SelectedDisplayId in IniProfileStore (lines 411, 435)
+// SelectedDisplayId in IniProfileStore (legacy [Color] SelectedDisplay read/write)
 ```
 
 ### Type Safety
@@ -167,3 +167,8 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AddProfileAsync_Dupl
 - Windows profile: `%APPDATA%\sWinShortcuts\Win.ini`
 - Color profile: `%APPDATA%\sWinShortcuts\Color.ini`
 - Debug log: `%TEMP%\sWinShortcuts_AltMouse_Debug.log`
+
+### App-Level Toggle Keys & Rapid Fire
+- `ColorToggleKey` and `RapidFireToggleKey` are app-level toggle keys persisted in `sWinShortcuts.ini` `[App]`, assigned via Settings, and shown read-only in profile panes — they are NOT per-profile settings
+- Rapid Fire: per-profile eligibility plus a global arming toggle; `ReleaseRapidFireState` runs on profile/config/key/session boundaries and Stop
+- All INI persist/parse goes through `Utilities/IniExtensions.cs` with `CultureInfo.InvariantCulture` — never use culture-sensitive formatting in new keys
