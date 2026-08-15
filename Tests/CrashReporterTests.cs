@@ -106,8 +106,13 @@ public sealed class CrashReporterTests
             Parallel.For(0, 32, i => CrashReporter.Write("Test.Concurrent", null, $"MARKER-{i:D2}"));
 
             var content = File.ReadAllText(Path.Combine(root, "crash.log"));
+            // Consecutive entries are separated only by the newline between one entry's trailing
+            // separator and the next's leading one, so a RemoveEmptyEntries split keeps those
+            // whitespace-only gap tokens (32 bodies + 31 gaps + 1 trailing = 64). Count the
+            // [REPORT] header lines instead: that is the entry count regardless of separator
+            // placement.
             var entries = content.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
-            Assert.Equal(32, entries.Length);
+            Assert.Equal(32, entries.Count(e => e.Contains("[REPORT]")));
             for (var i = 0; i < 32; i++)
             {
                 var marker = $"MARKER-{i:D2}";
