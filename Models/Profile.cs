@@ -40,6 +40,8 @@ public sealed class Profile
 
     public CapsLockSettings CapsLock { get; init; } = new();
 
+    public CrosshairSettings Crosshair { get; init; } = new();
+
     public WindowsLauncherSettings WindowsLauncher { get; init; } = new();
 
     public string SourcePath { get; set; } = string.Empty;

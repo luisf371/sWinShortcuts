@@ -298,6 +298,7 @@ public sealed class IniProfileStore : IProfileStore
         DeserializeAntiAfk(document, profile.AntiAfk);
         DeserializeCapsLock(document, profile.CapsLock);
         DeserializeColorSettings(document, profile.ColorSettings);
+        DeserializeCrosshair(document, profile.Crosshair);
 
         return profile;
     }
@@ -608,6 +609,13 @@ public sealed class IniProfileStore : IProfileStore
         }
     }
 
+    private static void DeserializeCrosshair(IniDocument document, CrosshairSettings settings)
+    {
+        settings.IsEnabled = document.GetBoolean("Crosshair", "Enabled", settings.IsEnabled);
+        settings.HideWhileRightButtonHeld = document.GetBoolean("Crosshair", "HideWhileRightButtonHeld", settings.HideWhileRightButtonHeld);
+        settings.ImagePath = document.GetString("Crosshair", "ImagePath", settings.ImagePath);
+    }
+
     private static IniDocument SerializeProfile(Profile profile)
     {
         var document = new IniDocument();
@@ -665,6 +673,11 @@ public sealed class IniProfileStore : IProfileStore
         document.SetBoolean("RapidFire", "Enabled", rapidFire.IsEnabled);
         document.SetInt32("RapidFire", "IntervalMilliseconds", rapidFire.IntervalMilliseconds);
         document.SetInt32("RapidFire", "JitterMilliseconds", rapidFire.JitterMilliseconds);
+
+        var crosshair = profile.Crosshair;
+        document.SetBoolean("Crosshair", "Enabled", crosshair.IsEnabled);
+        document.SetBoolean("Crosshair", "HideWhileRightButtonHeld", crosshair.HideWhileRightButtonHeld);
+        document.SetString("Crosshair", "ImagePath", crosshair.ImagePath);
 
         var antiAfk = profile.AntiAfk;
         document.SetBoolean("AntiAfk", "Enabled", antiAfk.IsEnabled);

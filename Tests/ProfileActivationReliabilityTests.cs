@@ -27,6 +27,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             color,
             new FakeDisplayService { Displays = [CreateDisplay("DISPLAY1")] },
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);
@@ -77,6 +78,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             new RecordingColorControlService(),
             new FakeDisplayService(),
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);
@@ -142,6 +144,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             color,
             new FakeDisplayService { Displays = [CreateDisplay("DISPLAY1")] },
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         var restarted = false;
@@ -205,6 +208,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             new RecordingColorControlService(),
             new FakeDisplayService(),
+            new FakeCrosshairService(),
             logger);
 
         await service.StartAsync(CancellationToken.None);
@@ -277,6 +281,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             new RecordingColorControlService(),
             new FakeDisplayService(),
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);
@@ -325,6 +330,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             new RecordingColorControlService(),
             new FakeDisplayService(),
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);
@@ -366,6 +372,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             new RecordingColorControlService(),
             new FakeDisplayService(),
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);
@@ -414,6 +421,7 @@ public sealed class ProfileActivationReliabilityTests
             new FakeSystemTrayService(),
             new RecordingColorControlService(),
             new FakeDisplayService(),
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);

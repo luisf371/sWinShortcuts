@@ -18,8 +18,9 @@ public enum ProfileChangeKind
     Color = 1 << 9,
     Removed = 1 << 10,
     RapidFire = 1 << 11,
+    Crosshair = 1 << 12,
     AllRuntime = Master | Identity | AltMouse | CombinedMappings | HoldBreath |
-                 AutoRun | RapidFire | AntiAfk | CapsLock | WindowsLauncher | Color
+                 AutoRun | RapidFire | AntiAfk | CapsLock | WindowsLauncher | Color | Crosshair
 }
 
 public sealed class ProfileChangedEventArgs(ProfileChangeKind kind) : EventArgs

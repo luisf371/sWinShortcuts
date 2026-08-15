@@ -2,7 +2,13 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Startup="OnStartup"
-             Exit="OnExit">
+             Exit="OnExit"
+             ShutdownMode="OnMainWindowClose">
+    <!-- ShutdownMode=OnMainWindowClose: the crosshair overlay is a SECOND top-level Window that is
+         kept hidden (never closed) for the session. Under the default OnLastWindowClose mode, tray
+         Exit closed MainWindow but the still-alive overlay window suppressed Application.Shutdown,
+         leaving a headless zombie process whose tray clicks then threw "Cannot call Show after a
+         Window has closed". Minimize-to-tray uses Hide() (not Close), so tray behavior is unchanged. -->
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>

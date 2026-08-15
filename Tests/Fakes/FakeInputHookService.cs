@@ -11,6 +11,24 @@ public sealed class FakeInputHookService : IInputHookService
 
     public event EventHandler? ColorVariantToggleRequested;
 
+    public event EventHandler<bool>? RightButtonStateChanged;
+
+    private int _rightButtonObservation;
+
+    /// <summary>Last value passed to SetRightButtonObservation (volatile read).</summary>
+    public bool RightButtonObservation => Volatile.Read(ref _rightButtonObservation) != 0;
+
+    public void SetRightButtonObservation(bool enabled)
+    {
+        Volatile.Write(ref _rightButtonObservation, enabled ? 1 : 0);
+    }
+
+    /// <summary>Test helper: simulate a physical right-button state change on the (armed) hook.</summary>
+    public void RaiseRightButton(bool isDown)
+    {
+        RightButtonStateChanged?.Invoke(this, isDown);
+    }
+
     public bool HookWatchdogEnabled { get; set; } = true;
 
     public bool AdvancedModeEnabled { get; set; }

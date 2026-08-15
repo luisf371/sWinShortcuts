@@ -68,6 +68,7 @@ public static class ProfileFactory
         profile.RightClickHoldBreath.IsEnabled = false;
         profile.CapsLock.IsEnabled = false;
         profile.WindowsLauncher.IsEnabled = false;
+        profile.Crosshair.IsEnabled = false;
 
         return profile;
     }

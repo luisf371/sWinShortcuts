@@ -57,6 +57,26 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool IsWindow(IntPtr hWnd);
 
+    // Crosshair overlay window styling. WS_EX_LAYERED is already set by WPF for AllowsTransparency
+    // windows — callers only OR in the three bits below.
+    internal const int GWL_EXSTYLE = -20;
+    internal const int WS_EX_TRANSPARENT = 0x00000020;   // click-through (mouse hits the game below)
+    internal const int WS_EX_TOOLWINDOW = 0x00000080;    // hidden from alt-tab
+    internal const int WS_EX_NOACTIVATE = 0x08000000;    // never takes focus
+    internal const uint SWP_NOACTIVATE = 0x0010;
+    internal const uint SWP_NOSIZE = 0x0001;
+    internal static readonly IntPtr HWND_TOPMOST = new(-1);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
     // AutoHotkey ControlSend (blank control) posts to the window's TOPMOST CHILD control, not the
     // top-level frame — many games route keyboard input through a child surface. GW_CHILD returns the
     // first (topmost, Z-order) direct child. Focus-independent, so it works while the game is alt-tabbed.

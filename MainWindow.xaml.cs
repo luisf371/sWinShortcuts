@@ -18,6 +18,10 @@ public partial class MainWindow : Window
     private readonly string _settingsPath;
     private bool _isLoaded;
     private bool _allowClose;
+    // Set in OnClosed. A tray click delivered in the gap between MainWindow closing (shutdown begun)
+    // and tray-icon disposal would otherwise call Show() on a closed window and crash
+    // ("Cannot set Visibility or call Show... after a Window has closed").
+    private bool _isClosed;
     private bool _isMinimizingToTray;
     private bool _isInitializingViewModel;
     private bool _startMinimized;
@@ -369,7 +373,7 @@ public partial class MainWindow : Window
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        
+
         // Get the window handle
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd == IntPtr.Zero)
@@ -377,6 +381,12 @@ public partial class MainWindow : Window
 
         // Subscribe to window messages
         HwndSource.FromHwnd(hwnd)?.AddHook(WndProc);
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _isClosed = true;
+        base.OnClosed(e);
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -440,6 +450,12 @@ public partial class MainWindow : Window
 
     public void RestoreFromTray()
     {
+        if (_isClosed)
+        {
+            // Shutdown already closed the window; a late tray click must be a no-op, not a crash.
+            return;
+        }
+
         ShowInTaskbar = true;
         if (!IsVisible)
         {

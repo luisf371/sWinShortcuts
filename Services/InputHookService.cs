@@ -139,6 +139,11 @@ public sealed class InputHookService : IInputHookService
     private bool _colorToggleDownLatched;
     private int _hookSeenToggleVk; // hook-thread-only; used only to clear the fire-once latch on a re-assign
 
+    // Crosshair overlay RMB observation gate. Volatile: published from the activation worker
+    // (SetRightButtonObservation) and read on the hook thread. While false the hook does literally
+    // nothing extra for right-button events beyond its existing bookkeeping.
+    private volatile bool _crosshairRightButtonWatch;
+
     // Global Rapid Fire toggle. The key passes through and fires once per physical press, matching the
     // color-toggle contract above. Runtime armed state is session/profile-owned and never persisted.
     private volatile int _rapidFireToggleVk;
@@ -808,6 +813,10 @@ public sealed class InputHookService : IInputHookService
     public event EventHandler<Profile?>? ActiveProfileChanged;
 
     public event EventHandler? ColorVariantToggleRequested;
+
+    // Crosshair overlay RMB feed — see IInputHookService.RightButtonStateChanged. Observation-only:
+    // fired from the mouse hook at human click frequency while armed, never causes suppression.
+    public event EventHandler<bool>? RightButtonStateChanged;
 
     // ==================== LIFECYCLE ====================
     
@@ -1760,6 +1769,26 @@ public sealed class InputHookService : IInputHookService
         _colorToggleVk = vk;
     }
 
+    public void SetRightButtonObservation(bool enabled)
+    {
+        _crosshairRightButtonWatch = enabled;
+
+        if (!enabled)
+        {
+            return;
+        }
+
+        // Re-sync on arm: a WM_RBUTTONUP swallowed while we were not watching (secure desktop, hook
+        // reinstall, app-start while the button was already held) must not leave the overlay stuck
+        // hidden. Publish the CURRENT physical state once. GetAsyncKeyState reports the PHYSICAL
+        // button, so honor the swap setting exactly like RederivePhysicalModifierState.
+        var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
+            ? NativeMethods.VK_LBUTTON
+            : NativeMethods.VK_RBUTTON;
+        var isDown = (NativeMethods.GetAsyncKeyState(physicalRightVk) & 0x8000) != 0;
+        RightButtonStateChanged?.Invoke(this, isDown);
+    }
+
     public void SetRapidFireToggleKey(Key? key)
     {
         var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
@@ -2138,10 +2167,21 @@ public sealed class InputHookService : IInputHookService
         if (message == NativeMethods.WM_RBUTTONDOWN)
         {
             _rightButtonPressed = true;
+
+            // Crosshair hide-while-RMB-held: observation only, gated so the disabled case costs one
+            // volatile read. The button itself is never suppressed (falls through below).
+            if (_crosshairRightButtonWatch)
+            {
+                RightButtonStateChanged?.Invoke(this, true);
+            }
         }
         else if (message == NativeMethods.WM_RBUTTONUP)
         {
             _rightButtonPressed = false;
+            if (_crosshairRightButtonWatch)
+            {
+                RightButtonStateChanged?.Invoke(this, false);
+            }
             ReleaseRightClickOverrides();
         }
 
@@ -5639,6 +5679,14 @@ public sealed class InputHookService : IInputHookService
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
         _rightButtonPressed = (NativeMethods.GetAsyncKeyState(physicalRightVk) & 0x8000) != 0;
+
+        // Re-publish the derived right-button state to the crosshair gate: a WM_RBUTTONUP swallowed by
+        // a hook reinstall cannot leave the overlay hidden forever. Visibility is idempotent, so an
+        // unchanged re-raise is free.
+        if (_crosshairRightButtonWatch)
+        {
+            RightButtonStateChanged?.Invoke(this, _rightButtonPressed);
+        }
     }
 
     private void CancelAltMouseGestures()

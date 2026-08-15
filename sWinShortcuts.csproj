@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <Resource Include="Icons\Icon.ico" />
+    <Resource Include="Icons\Crosshair.png" />
   </ItemGroup>
 
 </Project>

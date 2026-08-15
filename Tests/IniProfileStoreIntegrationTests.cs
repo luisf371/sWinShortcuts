@@ -464,6 +464,40 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndLoad_RoundTripsCrosshair()
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "crosshair.exe");
+        profile.Crosshair.IsEnabled = true;
+        profile.Crosshair.HideWhileRightButtonHeld = true;
+        profile.Crosshair.ImagePath = @"C:\Screens\My Cross Hair.png";
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == profile.Name);
+
+        Assert.True(loaded.Crosshair.IsEnabled);
+        Assert.True(loaded.Crosshair.HideWhileRightButtonHeld);
+        Assert.Equal(@"C:\Screens\My Cross Hair.png", loaded.Crosshair.ImagePath);
+    }
+
+    [Fact]
+    public async Task LoadProfile_MissingCrosshairSection_UsesDisabledDefaults()
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "LegacyCrosshair.ini"),
+            "[Profile]\nName=LegacyCrosshair\nExecutable=legacy-crosshair.exe\nEnabled=true\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == "LegacyCrosshair");
+
+        Assert.False(loaded.Crosshair.IsEnabled);
+        Assert.False(loaded.Crosshair.HideWhileRightButtonHeld);
+        Assert.Equal(string.Empty, loaded.Crosshair.ImagePath);
+    }
+
+    [Fact]
     public async Task LoadProfile_MissingRapidFireSection_UsesDisabledDefaults()
     {
         var profilesDirectory = Path.Combine(_root, "Profiles");

@@ -454,6 +454,50 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     public string RapidFireTimingRange =>
         $"{RapidFireIntervalMilliseconds}–{RapidFireIntervalMilliseconds + RapidFireJitterMilliseconds} ms";
 
+    public bool CrosshairEnabled
+    {
+        get => Model.Crosshair.IsEnabled;
+        set
+        {
+            if (Model.Crosshair.IsEnabled != value)
+            {
+                Model.Crosshair.IsEnabled = value;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.Crosshair);
+            }
+        }
+    }
+
+    public bool CrosshairHideWhileRightButtonHeld
+    {
+        get => Model.Crosshair.HideWhileRightButtonHeld;
+        set
+        {
+            if (Model.Crosshair.HideWhileRightButtonHeld != value)
+            {
+                Model.Crosshair.HideWhileRightButtonHeld = value;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.Crosshair);
+            }
+        }
+    }
+
+    public string CrosshairImagePath
+    {
+        get => Model.Crosshair.ImagePath;
+        set
+        {
+            // Trim; empty is a legal value meaning "use the bundled default image".
+            var normalized = (value ?? string.Empty).Trim();
+            if (!string.Equals(Model.Crosshair.ImagePath, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                Model.Crosshair.ImagePath = normalized;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.Crosshair);
+            }
+        }
+    }
+
     public bool AntiAfkEnabled
     {
         get => Model.AntiAfk.IsEnabled;
@@ -776,6 +820,9 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.RapidFire.IsEnabled = RapidFireEnabled;
             Model.RapidFire.IntervalMilliseconds = RapidFireIntervalMilliseconds;
             Model.RapidFire.JitterMilliseconds = RapidFireJitterMilliseconds;
+            Model.Crosshair.IsEnabled = CrosshairEnabled;
+            Model.Crosshair.HideWhileRightButtonHeld = CrosshairHideWhileRightButtonHeld;
+            Model.Crosshair.ImagePath = CrosshairImagePath;
             Model.AntiAfk.IsEnabled = AntiAfkEnabled;
             Model.AntiAfk.IntervalMinutes = AntiAfkIntervalMinutes;
             Model.CapsLock.IsEnabled = CapsLockEnabled;

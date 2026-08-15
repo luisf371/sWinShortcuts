@@ -83,6 +83,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IDisplayService, DisplayService>();
         services.AddSingleton<IColorControlService, NvidiaColorControlService>();
         services.AddSingleton<ILoggerService, FileLoggerService>();
+        services.AddSingleton<ICrosshairService, CrosshairService>();
         services.AddSingleton<ProfileActivationService>();
         services.AddSingleton<IProfileRuntimeService>(
             provider => provider.GetRequiredService<ProfileActivationService>());

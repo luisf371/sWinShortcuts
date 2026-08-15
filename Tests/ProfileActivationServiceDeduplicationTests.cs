@@ -25,6 +25,7 @@ public class ProfileActivationServiceDeduplicationTests
             new FakeSystemTrayService(),
             colorControl,
             displayService,
+            new FakeCrosshairService(),
             new NullLoggerService());
 
         await service.StartAsync(CancellationToken.None);

@@ -75,6 +75,16 @@ public class ProfileFactoryTests
     }
 
     [Fact]
+    public void CreateColorProfile_DisablesCrosshair()
+    {
+        var profile = ProfileFactory.CreateColorProfile();
+
+        Assert.False(profile.Crosshair.IsEnabled);
+        Assert.False(profile.Crosshair.HideWhileRightButtonHeld);
+        Assert.Equal(string.Empty, profile.Crosshair.ImagePath);
+    }
+
+    [Fact]
     public void CreateCustomProfile_SetsNameAndExecutable()
     {
         var profile = ProfileFactory.CreateCustomProfile("MyGame", "game.exe");
