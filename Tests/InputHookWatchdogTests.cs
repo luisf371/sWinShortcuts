@@ -139,4 +139,34 @@ public class WatchdogDecisionTests
         Assert.Equal(InputHookService.WatchdogAction.OpenSink, Decide(31_000, 0, sinkOpen: false, rawInputAgeMs: double.MaxValue));
         Assert.Equal(InputHookService.WatchdogAction.Reinstall, Decide(41_000, 0, sinkOpen: true, rawInputAgeMs: 50));
     }
+
+    // ---- Near-crash report throttle (CrashReporter edge/rate gate; pure function, no static state) ----
+
+    [Fact]
+    public void ShouldReportHookLoss_FirstEpisode_Reports()
+    {
+        // Sentinel 0 = no episode in progress: the first confirmed tick of an episode reports.
+        Assert.True(InputHookService.ShouldReportHookLoss(0, 123_456, 60_000));
+    }
+
+    [Fact]
+    public void ShouldReportHookLoss_WithinInterval_DoesNotReport()
+    {
+        Assert.False(InputHookService.ShouldReportHookLoss(1_000, 1_000 + 59_999, 60_000));
+    }
+
+    [Fact]
+    public void ShouldReportHookLoss_AtOrAfterInterval_Reports()
+    {
+        Assert.True(InputHookService.ShouldReportHookLoss(1_000, 1_000 + 60_000, 60_000));
+    }
+
+    [Fact]
+    public void ShouldReportHookLoss_TickCountWrap_ComputesElapsedCorrectly()
+    {
+        // unchecked int subtraction across the ~49.7-day Environment.TickCount rollover: 60_001 and
+        // 50_001 ms elapsed respectively.
+        Assert.True(InputHookService.ShouldReportHookLoss(int.MaxValue - 10_000, int.MinValue + 50_000, 60_000));
+        Assert.False(InputHookService.ShouldReportHookLoss(int.MaxValue - 10_000, int.MinValue + 40_000, 60_000));
+    }
 }

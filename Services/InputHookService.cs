@@ -423,6 +423,13 @@ public sealed class InputHookService : IInputHookService
     // publish the flag writes to the next tick.
     private int _watchdogTickRunning;
 
+    // Near-crash report latch for CrashReporter: Environment.TickCount of the last hook-loss report.
+    // 0 = no episode in progress (sentinel; a tick of exactly 0 is a harmless one-boot-cycle false
+    // "no episode" costing at most one extra report). Plain non-volatile: read/written only inside
+    // WatchdogTick's single-flight CAS section — single writer, fenced by the Interlocked entry/exit
+    // (same discipline as the _keyboardSinkOpen/_mouseSinkOpen flags above).
+    private int _watchdogHookLossReportedAtTick;
+
     // Troubleshooting switch (Settings window, [App] HookWatchdog). The timer keeps ticking so the
     // toggle is live in both directions; a disabled tick only cleans up any open sinks and returns.
     private volatile bool _hookWatchdogEnabled = true;
@@ -478,6 +485,12 @@ public sealed class InputHookService : IInputHookService
     private const int WATCHDOG_PERIOD_MS = 10_000;
     private const double WATCHDOG_STALE_HOOK_THRESHOLD_MS = 30_000;
     private const uint WATCHDOG_FRESH_INPUT_THRESHOLD_MS = 2_000;
+
+    // Near-crash report throttle: confirmed hook loss is edge-triggered into crash.log, then
+    // re-reported at most this often while the loss persists. This guard is the PRIMARY bound —
+    // the 512 KiB crash.log cap is only a backstop, because an unthrottled 10s-tick loop
+    // (~8,640 reports/day) would let the trim evict the onset entry within hours.
+    private const int WATCHDOG_CRASH_REREPORT_MS = 60_000;
 
     // Performance metrics
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
@@ -936,6 +949,9 @@ public sealed class InputHookService : IInputHookService
                 }
                 _keyboardSinkOpen = false;
                 _mouseSinkOpen = false;
+                // Fresh session: the next confirmed hook-loss episode reports immediately (this is a
+                // report throttle, not a key-pairing latch, so a blind clear is safe here).
+                _watchdogHookLossReportedAtTick = 0;
 
                 // Hold-breath injector thread: drains the FIFO injection queue so SendInput's
                 // foreign-hook dispatch (measured up to ~LowLevelHooksTimeout) never runs on a hook
@@ -1239,15 +1255,38 @@ public sealed class InputHookService : IInputHookService
 
             if (!reinstallKeyboard && !reinstallMouse)
             {
+                // Episode boundary (decisions fell back to None/OpenSink/CloseSink — the hook proved
+                // alive or is merely under suspicion): the next confirmed loss reports immediately.
+                _watchdogHookLossReportedAtTick = 0;
                 return;
             }
 
             LogDebug($"Watchdog: hook loss CONFIRMED by raw-input sink (keyboard={reinstallKeyboard}, mouse={reinstallMouse}, " +
                      $"kbIdle={keyboardIdleMs:F0}ms, mouseIdle={mouseIdleMs:F0}ms, kbRawAge={keyboardRawAgeMs:F0}ms, mouseRawAge={mouseRawAgeMs:F0}ms)");
 
+            // Near-crash report (always on, independent of the debug toggle). Neither the episode
+            // boundary above nor the _reinstallCheckPending CAS below bounds this site — the
+            // degraded branch returns before the CAS and this one precedes it — so throttle
+            // directly: a persistent Reinstall decision would otherwise re-fire every 10s tick.
+            if (ShouldReportHookLoss(_watchdogHookLossReportedAtTick, Environment.TickCount, WATCHDOG_CRASH_REREPORT_MS))
+            {
+                CrashReporter.Write("InputHook.Watchdog.HookLossConfirmed", null,
+                    $"keyboard={reinstallKeyboard}, mouse={reinstallMouse}, kbIdle={keyboardIdleMs:F0}ms, mouseIdle={mouseIdleMs:F0}ms, kbRawAge={keyboardRawAgeMs:F0}ms, mouseRawAge={mouseRawAgeMs:F0}ms");
+                _watchdogHookLossReportedAtTick = Environment.TickCount;
+            }
+
             if (!_canReinstallHooks || _hookDispatcher is null)
             {
                 LogDebug("Watchdog: re-install is disabled (hooks were not installed on a dispatcher-pumped thread) — detection only");
+
+                // Same throttle latch as the confirmed site: both describe one underlying hook-loss
+                // episode, so sharing the stamp suppresses double-reporting when they alternate.
+                if (ShouldReportHookLoss(_watchdogHookLossReportedAtTick, Environment.TickCount, WATCHDOG_CRASH_REREPORT_MS))
+                {
+                    CrashReporter.Write("InputHook.Watchdog.ReinstallDisabled", null,
+                        "hooks were not installed on a dispatcher-pumped thread; detection only");
+                    _watchdogHookLossReportedAtTick = Environment.TickCount;
+                }
                 return;
             }
 
@@ -1434,6 +1473,13 @@ public sealed class InputHookService : IInputHookService
             ? WatchdogAction.Reinstall
             : WatchdogAction.None;
     }
+
+    // Pure decision function for the near-crash hook-loss report (unit-tested, DecideWatchdogAction
+    // precedent). Edge-trigger + bounded re-report: fire on the first tick of an episode (sentinel
+    // 0), then at most once per interval while the loss persists. Both operands are
+    // Environment.TickCount values, so unchecked subtraction handles the ~49.7-day wrap.
+    internal static bool ShouldReportHookLoss(int lastReportedAtTick, int nowTick, int rereportIntervalMs)
+        => lastReportedAtTick == 0 || unchecked(nowTick - lastReportedAtTick) >= rereportIntervalMs;
 
     // Must run on _hookDispatcher, under _profileLock, with _isRunning already re-checked by the
     // caller. Install-new-before-unhook-old with a fail-open swap window (see

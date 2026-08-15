@@ -166,7 +166,8 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AddProfileAsync_Dupl
 - Profiles: `%APPDATA%\sWinShortcuts\Profiles\{Name}.ini`
 - Windows profile: `%APPDATA%\sWinShortcuts\Win.ini`
 - Color profile: `%APPDATA%\sWinShortcuts\Color.ini`
-- Debug log: `%TEMP%\sWinShortcuts_AltMouse_Debug.log`
+- Debug log: `%APPDATA%\sWinShortcuts\debug.log`
+- Crash report: `%APPDATA%\sWinShortcuts\crash.log` (always on, independent of debug logging; capped at 512 KiB)
 
 ### App-Level Toggle Keys & Rapid Fire
 - `ColorToggleKey` and `RapidFireToggleKey` are app-level toggle keys persisted in `sWinShortcuts.ini` `[App]`, assigned via Settings, and shown read-only in profile panes — they are NOT per-profile settings

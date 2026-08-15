@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using sWinShortcuts.Configuration;
@@ -11,7 +10,6 @@ namespace sWinShortcuts;
 
 public partial class App : System.Windows.Application
 {
-    private static readonly object CrashLogSync = new();
     // Per-session single-instance guard. Two instances would install independent low-level input hooks +
     // injectors and both write the shared debug.log, producing conflicting input and unreadable logs.
     private const string SingleInstanceMutexName = @"Local\sWinShortcuts_SingleInstance_9E1C0B24-3F5A-4E77-9C2D-7B2A1F6C8D40";
@@ -19,16 +17,23 @@ public partial class App : System.Windows.Application
     private IHost? _host;
     private bool _exceptionHandlersRegistered;
 
+    public App()
+    {
+        // Register before anything else can fail: the generated Main runs new App() ->
+        // InitializeComponent() (App.xaml BAML / merged-dictionary load) -> Run(), so failures that
+        // predate OnStartup now reach crash.log too. The _exceptionHandlersRegistered guard keeps
+        // double registration impossible.
+        RegisterExceptionHandlers();
+    }
+
     private async void OnStartup(object sender, System.Windows.StartupEventArgs e)
     {
-        RegisterExceptionHandlers();
-
         // Single-instance: acquire the named mutex. If a prior instance already owns it, exit immediately
         // (the OS destroys the mutex when the owning process ends/crashes, so a stale lock self-heals).
         _singleInstanceMutex = new System.Threading.Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
         if (!createdNew)
         {
-            LogCrash("SingleInstance", new InvalidOperationException("Another instance of sWinShortcuts is already running; this instance is exiting."));
+            CrashReporter.Write("App.SingleInstance", new InvalidOperationException("Another instance of sWinShortcuts is already running; this instance is exiting."));
             _singleInstanceMutex.Dispose();
             _singleInstanceMutex = null;
             Shutdown();
@@ -51,11 +56,11 @@ public partial class App : System.Windows.Application
         // SetRapidFireToggleKey entirely, silently disabling Rapid Fire despite a readable [App] value.
         // Never rethrow — the app and input hooks must still start.
         try { inputHook.SetColorToggleKey(AppSettings.LoadColorToggleKey(settingsPath)); }
-        catch (Exception ex) { LogCrash("App.ToggleKey.Color", ex); }
+        catch (Exception ex) { CrashReporter.Write("App.ToggleKey.Color", ex); }
         try { inputHook.SetRapidFireToggleKey(AppSettings.LoadRapidFireToggleKey(settingsPath)); }
-        catch (Exception ex) { LogCrash("App.ToggleKey.RapidFire", ex); }
+        catch (Exception ex) { CrashReporter.Write("App.ToggleKey.RapidFire", ex); }
         try { AppSettings.MigrateLegacyColorToggleKey(settingsPath); }
-        catch (Exception ex) { LogCrash("App.ToggleKey.Migrate", ex); }
+        catch (Exception ex) { CrashReporter.Write("App.ToggleKey.Migrate", ex); }
 
         await _host.StartAsync();
 
@@ -90,6 +95,10 @@ public partial class App : System.Windows.Application
 
     private void OnExit(object sender, System.Windows.ExitEventArgs e)
     {
+        // One compact [EXIT] line per termination: any exit-path failure below marks it unclean, so a
+        // degraded shutdown is distinguishable from a clean one in crash.log.
+        var exitClean = true;
+
         try
         {
             if (_host is not null)
@@ -103,19 +112,22 @@ public partial class App : System.Windows.Application
                         var flushTask = Task.Run(() => mainViewModel.FlushPendingSavesAsync());
                         if (!flushTask.Wait(TimeSpan.FromSeconds(3)))
                         {
-                            LogCrash("OnExit.Flush", new TimeoutException("FlushPendingSavesAsync did not complete within 3s; some edits may be unsaved."));
+                            exitClean = false;
+                            CrashReporter.Write("OnExit.Flush", new TimeoutException("FlushPendingSavesAsync did not complete within 3s; some edits may be unsaved."));
                         }
                         else if (flushTask.Result > 0)
                         {
                             // F-014: the flush completed but could not persist every edit (e.g. a locked
                             // file). Report it rather than exiting as if everything saved.
-                            LogCrash("OnExit.Flush", new InvalidOperationException($"{flushTask.Result} profile edit(s) could not be saved before exit."));
+                            exitClean = false;
+                            CrashReporter.Write("OnExit.Flush", new InvalidOperationException($"{flushTask.Result} profile edit(s) could not be saved before exit."));
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    LogCrash("OnExit.Flush", ex);
+                    exitClean = false;
+                    CrashReporter.Write("OnExit.Flush", ex);
                 }
 
                 // StopAsync OFF the dispatcher (avoids the sync-over-async deadlock). Dispose ON the
@@ -126,7 +138,8 @@ public partial class App : System.Windows.Application
                     var stopped = Task.Run(() => _host.StopAsync(TimeSpan.FromSeconds(2))).Wait(TimeSpan.FromSeconds(5));
                     if (!stopped)
                     {
-                        LogCrash("OnExit.Stop", new TimeoutException("Host StopAsync did not complete within 5s; disposing anyway."));
+                        exitClean = false;
+                        CrashReporter.Write("OnExit.Stop", new TimeoutException("Host StopAsync did not complete within 5s; disposing anyway."));
                     }
                 }
                 finally
@@ -137,7 +150,8 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex)
         {
-            LogCrash("OnExit", ex);
+            exitClean = false;
+            CrashReporter.Write("OnExit", ex);
         }
         finally
         {
@@ -148,6 +162,10 @@ public partial class App : System.Windows.Application
                 _singleInstanceMutex.Dispose();
                 _singleInstanceMutex = null;
             }
+
+            // Always-on termination marker (Exit also fires on Windows logoff, so OS-shutdown
+            // terminations are covered without a separate SessionEnding handler).
+            CrashReporter.WriteExitMarker(exitClean);
         }
     }
 
@@ -179,38 +197,23 @@ public partial class App : System.Windows.Application
 
     private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
     {
-        LogCrash("AppDomain.CurrentDomain.UnhandledException", e.ExceptionObject as Exception);
+        // ExceptionObject is not guaranteed to be an Exception (it can be a native/boxed object);
+        // the old 'as Exception' silently logged nothing for those — carry them as detail instead.
+        CrashReporter.Write("AppDomain.UnhandledException", e.ExceptionObject as Exception,
+            e.ExceptionObject is Exception ? null : e.ExceptionObject?.ToString(), fatal: e.IsTerminating);
     }
 
     private static void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
-        LogCrash("TaskScheduler.UnobservedTaskException", e.Exception);
+        CrashReporter.Write("TaskScheduler.UnobservedTaskException", e.Exception,
+            "unobserved task exception (process continues)");
     }
 
     private static void OnDispatcherUnhandledException(
         object sender,
         System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
     {
-        LogCrash("Application.DispatcherUnhandledException", e.Exception);
-    }
-
-    private static void LogCrash(string source, Exception? exception)
-    {
-        try
-        {
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var rootDirectory = Path.Combine(appData, "sWinShortcuts");
-            Directory.CreateDirectory(rootDirectory);
-
-            var entry = $"[{DateTimeOffset.Now:O}] {source}{Environment.NewLine}{exception}{Environment.NewLine}";
-            lock (CrashLogSync)
-            {
-                File.AppendAllText(Path.Combine(rootDirectory, "crash.log"), entry);
-            }
-        }
-        catch
-        {
-            // Ignore crash logging failures.
-        }
+        // Report only — e.Handled is deliberately NOT set, preserving the existing crash semantics.
+        CrashReporter.Write("Application.DispatcherUnhandledException", e.Exception, fatal: true);
     }
 }
