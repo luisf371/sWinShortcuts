@@ -16,6 +16,22 @@ public interface IInputHookService : IDisposable
     event EventHandler? ColorVariantToggleRequested;
 
     /// <summary>
+    /// Raised on the hook thread with the physical right button's new state (true = down), but ONLY while
+    /// armed via <see cref="SetRightButtonObservation"/>. Observation-only (AHK ~RButton semantics): the
+    /// right button is never suppressed and always passes through to the focused game. Fires at human
+    /// click frequency, so the null-checked invoke costs nothing on the mouse-hook path.
+    /// </summary>
+    event EventHandler<bool>? RightButtonStateChanged;
+
+    /// <summary>
+    /// Arms/disarms right-button observation for the crosshair overlay's hide-while-RMB-held mode.
+    /// While disabled (the default, and whenever no crosshair profile is active) the mouse hook does
+    /// zero extra work. Arming re-publishes the CURRENT physical button state once, so a button-up
+    /// swallowed while disarmed cannot leave the overlay stuck hidden.
+    /// </summary>
+    void SetRightButtonObservation(bool enabled);
+
+    /// <summary>
     /// Sets (or clears, when null) the GLOBAL key that toggles the active profile's color preset. Detected
     /// on the low-level keyboard hook and passed through to applications. Live-updatable.
     /// </summary>

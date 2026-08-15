@@ -1,0 +1,21 @@
+<Window x:Class="sWinShortcuts.Views.CrosshairWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Crosshair Overlay"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Focusable="False"
+        IsHitTestVisible="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        Left="0"
+        Top="0">
+    <!-- Click-through overlay: ex-styles (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+         are OR-ed in from code-behind once the HWND exists. Left/Top are pinned non-NaN so WPF's
+         Manual startup location never re-cascades over our raw SetWindowPos positioning. -->
+    <Image x:Name="CrosshairImage" Stretch="Fill"/>
+</Window>

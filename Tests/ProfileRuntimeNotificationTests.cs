@@ -72,6 +72,7 @@ public sealed class ProfileRuntimeNotificationTests
     [InlineData(ProfileChangeKind.CapsLock)]
     [InlineData(ProfileChangeKind.WindowsLauncher)]
     [InlineData(ProfileChangeKind.Color)]
+    [InlineData(ProfileChangeKind.Crosshair)]
     public async Task ProfileEdit_ForwardsSpecificRuntimeChangeBeforeAutosave(
         ProfileChangeKind expectedKind)
     {
@@ -141,6 +142,9 @@ public sealed class ProfileRuntimeNotificationTests
                 break;
             case ProfileChangeKind.Color:
                 profile.ColorSettings.IsEnabled = true;
+                break;
+            case ProfileChangeKind.Crosshair:
+                profile.CrosshairEnabled = true;
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(changeKind));

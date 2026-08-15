@@ -402,6 +402,24 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
+    [RelayCommand]
+    private void BrowseCrosshairImage(ProfileViewModel? profile)
+    {
+        if (profile is null)
+        {
+            return;
+        }
+
+        var path = _dialogService.ShowOpenFileDialog(
+            "Select Crosshair Image",
+            "Image Files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp",
+            profile.CrosshairImagePath);
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            profile.CrosshairImagePath = path;
+        }
+    }
+
     partial void OnSelectedProfileChanged(ProfileViewModel? value)
     {
         RemoveProfileCommand.NotifyCanExecuteChanged();

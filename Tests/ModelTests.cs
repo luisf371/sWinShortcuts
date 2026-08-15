@@ -60,6 +60,17 @@ public class ProfileTests
         Assert.False(profile.IsWindowsProfile);
     }
 
+    [Fact]
+    public void CrosshairSettings_Defaults_AreDisabledAndEmptyImage()
+    {
+        var settings = new CrosshairSettings();
+
+        Assert.False(settings.IsEnabled);
+        Assert.False(settings.HideWhileRightButtonHeld);
+        Assert.Equal(string.Empty, settings.ImagePath);
+        Assert.Equal(0.70, CrosshairSettings.DefaultOpacity, precision: 2);
+    }
+
     // F-007: built-in identity is the immutable Kind, never the display name. A custom INI that declares
     // a reserved Name must NOT be classified as built-in (otherwise it could clobber Win.ini / Color.ini
     // or bypass the deletion guard).

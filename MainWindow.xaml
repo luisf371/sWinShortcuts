@@ -880,6 +880,49 @@
                                                        Opacity="0.7" />
                                         </StackPanel>
                                     </GroupBox>
+                                    <GroupBox Padding="16" Margin="0,0,0,8"
+                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Crosshair Overlay"
+                                                          IsChecked="{Binding CrosshairEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Shows a centered, click-through crosshair over the game while this profile is active."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding CrosshairEnabled}"
+                                                    Tag="{Binding CrosshairEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <CheckBox Content="Hide while right mouse button is held"
+                                                      IsChecked="{Binding CrosshairHideWhileRightButtonHeld}" />
+                                            <!-- Crosshair image is intentionally hardcoded to the bundled
+                                                 default (Icons/Crosshair.png; an empty CrosshairImagePath
+                                                 renders it). Planned: a preset dropdown with a custom-image
+                                                 option. The picker row below is parked for that, and
+                                                 ProfileViewModel.CrosshairImagePath,
+                                                 MainViewModel.BrowseCrosshairImageCommand, and the INI
+                                                 ImagePath key are kept so this UI drops back in as-is.
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Image"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <TextBox Text="{Binding CrosshairImagePath, UpdateSourceTrigger=PropertyChanged}"
+                                                         VerticalAlignment="Center"
+                                                         Width="280" />
+                                                <Button Content="Browse…"
+                                                        Command="{Binding DataContext.BrowseCrosshairImageCommand, ElementName=RootWindow}"
+                                                        CommandParameter="{Binding}"
+                                                        Margin="8,0,0,0"
+                                                        Width="100" />
+                                            </StackPanel>
+                                            -->
+                                        </StackPanel>
+                                    </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal">
