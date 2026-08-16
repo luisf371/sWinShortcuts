@@ -171,5 +171,7 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AddProfileAsync_Dupl
 
 ### App-Level Toggle Keys & Rapid Fire
 - `ColorToggleKey` and `RapidFireToggleKey` are app-level toggle keys persisted in `sWinShortcuts.ini` `[App]`, assigned via Settings, and shown read-only in profile panes — they are NOT per-profile settings
-- Rapid Fire: per-profile eligibility plus a global arming toggle; `ReleaseRapidFireState` runs on profile/config/key/session boundaries and Stop
+- Rapid Fire arm is a sticky SINGLE-OWNER session state: it survives profile switches, same-profile republishes, watchdog hook reinstalls, and `ReleaseForegroundState`, and clicks only while its owner is the settled active profile (`ProfileInputGenerationIsCurrent` + owner == active). Toggling in another RF-capable app RE-TARGETS the owner; toggling on the desktop or in an RF-ineligible profile is a documented silent no-op that KEEPS the old owner; a toggle during a foreground-generation mismatch fails closed
+- Full disarm happens ONLY on: toggle-off, toggle-key reassignment, owner RapidFire-config/Identity edits, owner removal or master-off (both `ReconcileProfileSettings` paths), Advanced Mode off, session switch, and Stop/Start
+- `RapidFireArmChanged` (may-change event; handlers re-query `GetRapidFireArmStatus` and dedup) feeds the status dot overlay (`RapidFireStatusService`): green = Ready, gray = ArmedNotReady, hidden = Off
 - All INI persist/parse goes through `Utilities/IniExtensions.cs` with `CultureInfo.InvariantCulture` — never use culture-sensitive formatting in new keys

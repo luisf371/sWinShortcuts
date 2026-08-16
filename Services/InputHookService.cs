@@ -478,7 +478,12 @@ public sealed class InputHookService : IInputHookService
             // action — its tick self-gates on _advancedModeEnabled. (Auto-Run release is wired in P3a.)
             if (!value)
             {
-                ReleaseRapidFireState(preservePhysicalPairing: true);
+                if (ReleaseRapidFireState(preservePhysicalPairing: true))
+                {
+                    // Gate closed: the arm is gone. Raised only when an arm was actually live;
+                    // handlers are enqueue-only so this stays safe on the dispatcher thread.
+                    RaiseRapidFireArmChanged();
+                }
                 ReleaseAutoRunState(includeBackground: true); // gate closed — release Background too
                 ReleaseHoldBreathState();
                 ReleaseUnsuppressedCombinedOverrides();
@@ -818,6 +823,11 @@ public sealed class InputHookService : IInputHookService
     // fired from the mouse hook at human click frequency while armed, never causes suppression.
     public event EventHandler<bool>? RightButtonStateChanged;
 
+    // Sticky-arm feed — see IInputHookService.RapidFireArmChanged. Raised ONLY on real transitions,
+    // always OUTSIDE _profileLock (the single deliberate exception, documented at the raise site in
+    // SetForegroundIdentity). Handlers are contractually enqueue-only and exception-isolated.
+    public event EventHandler? RapidFireArmChanged;
+
     // ==================== LIFECYCLE ====================
     
     public void Start()
@@ -1057,18 +1067,15 @@ public sealed class InputHookService : IInputHookService
             _colorToggleDownLatched = colorToggleVk != 0 && (NativeMethods.GetAsyncKeyState(colorToggleVk) & 0x8000) != 0;
             _hookSeenToggleVk = colorToggleVk;
 
-            // Rapid Fire is runtime-only and always starts disarmed. Seed the physical latches so a key or
-            // left button held across restart cannot be mistaken for a fresh press.
+            // Rapid Fire is runtime-only and always starts disarmed (Start never raises the arm
+            // event — it is Off by definition). Seed the physical latches so a key or left button
+            // held across restart cannot be mistaken for a fresh press.
             ReleaseRapidFireState(preservePhysicalPairing: false);
             var rapidFireToggleVk = _rapidFireToggleVk;
             _rapidFireToggleDownLatched = rapidFireToggleVk != 0 &&
                 (NativeMethods.GetAsyncKeyState(rapidFireToggleVk) & 0x8000) != 0;
             _hookSeenRapidFireToggleVk = rapidFireToggleVk;
-            var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
-                ? NativeMethods.VK_RBUTTON
-                : NativeMethods.VK_LBUTTON;
-            _rapidFirePhysicalLeftDown =
-                (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0;
+            DeriveRapidFirePhysicalLeftDown();
 
             // Seed Auto-Run's movement-edge tracker at the hook-stream boundary. Callbacks are installed
             // but still gated by _isRunning=false, so this baseline cannot overwrite a newer hook event.
@@ -1082,6 +1089,7 @@ public sealed class InputHookService : IInputHookService
 
     public void Stop()
     {
+        var rapidFireArmCleared = false;
         lock (_profileLock)
         {
             if (!_isRunning)
@@ -1126,7 +1134,7 @@ public sealed class InputHookService : IInputHookService
             // release such a key and it would stay stuck system-wide beyond process exit.
             _isRunning = false;
 
-            ReleaseAllState(preservePhysicalPairing: false);
+            rapidFireArmCleared = ReleaseAllState(preservePhysicalPairing: false);
             // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; Stop() (app exit) must still
             // release it — post the final UP before the injector drains below.
             ReleaseAutoRunState(includeBackground: true);
@@ -1166,6 +1174,12 @@ public sealed class InputHookService : IInputHookService
 
             LogDebug("InputHookService stopped");
         }
+
+        // Raised only after _profileLock closed (Stop is a hard boundary — the arm is gone).
+        if (rapidFireArmCleared)
+        {
+            RaiseRapidFireArmChanged();
+        }
     }
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -1178,6 +1192,7 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
+        var rapidFireArmCleared = false;
         lock (_profileLock)
         {
             if (!_isRunning)
@@ -1185,11 +1200,17 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
-            ReleaseAllState(preservePhysicalPairing: false);
+            rapidFireArmCleared = ReleaseAllState(preservePhysicalPairing: false);
             // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; the desktop is going away
             // (lock/logoff), so release it here too.
             ReleaseAutoRunState(includeBackground: true);
             LogDebug($"Session switch ({e.Reason}): released all injected state");
+        }
+
+        // Raised only after _profileLock closed (hard boundary — the arm is gone).
+        if (rapidFireArmCleared)
+        {
+            RaiseRapidFireArmChanged();
         }
     }
 
@@ -1531,8 +1552,11 @@ public sealed class InputHookService : IInputHookService
         // unprocessed during the fail-open window above. The desktop is NOT going away here (unlike
         // Stop()/OnSessionSwitch), so re-derive afterward (P9) — a physically-held Alt/RMB must not
         // end up inert just because a false-positive watchdog refresh ran.
-        ReleaseAllState();
+        // Sticky arm: preserved across the reinstall; only the in-flight press is cancelled. Recovery
+        // is intentionally invisible (no RapidFireArmChanged raise).
+        ReleaseAllState(preserveRapidFireArm: true);
         RederivePhysicalModifierState();
+        DeriveRapidFirePhysicalLeftDown();
 
         // The fail-open replacement window may have missed W/S transitions. Callbacks remain gated by
         // _keyboardReplacementInProgress until this method returns, so native state is safe as the new
@@ -1573,8 +1597,10 @@ public sealed class InputHookService : IInputHookService
 
         // Missed-release safety + re-derive (see ReinstallKeyboardHookLocked): the desktop is NOT
         // going away here, so a physically-held Alt/RMB must not end up inert after this refresh.
-        ReleaseAllState();
+        // Sticky arm preserved (see ReinstallKeyboardHookLocked); recovery stays invisible.
+        ReleaseAllState(preserveRapidFireArm: true);
         RederivePhysicalModifierState();
+        DeriveRapidFirePhysicalLeftDown();
 
         Volatile.Write(ref _lastMouseEventTick, Stopwatch.GetTimestamp());
         _mouseReplacementInProgress = false;
@@ -1585,6 +1611,7 @@ public sealed class InputHookService : IInputHookService
         ArgumentNullException.ThrowIfNull(profile);
 
         var changed = false;
+        var generationChanged = false;
         lock (_profileLock)
         {
             if (!_isRunning)
@@ -1594,22 +1621,39 @@ public sealed class InputHookService : IInputHookService
 
             if (ReferenceEquals(_activeProfile, profile))
             {
+                // Same-instance republish (same-exe window switch, RepublishLatestForeground,
+                // delayed-callback revalidation): the generation bump can settle the sticky arm
+                // (gray -> ready). Without this raise the dot would stay gray forever after the
+                // focus returned, because the earlier SetForegroundIdentity raised gray against a
+                // generation this profile had not caught up to yet. No early return here — the
+                // raise lives AFTER the lock.
+                generationChanged = Volatile.Read(ref _activeProfileGeneration) != foregroundGeneration;
                 Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
-                return;
             }
+            else
+            {
+                // Sticky arm: preserved across the switch — it only ever clicks while its owner is
+                // the settled active profile, and the SetForegroundIdentity/this-method raises
+                // cover the status flips. No arm raise on THIS path (nothing about the arm changed).
+                ReleaseAllState(preserveRapidFireArm: true);
+                RederivePhysicalModifierState();
+                _activeProfile = profile;
+                Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
+                changed = true;
 
-            ReleaseAllState();
-            RederivePhysicalModifierState();
-            _activeProfile = profile;
-            Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
-            changed = true;
-
-            LogDebug($"Profile activated: {profile.Name}");
+                LogDebug($"Profile activated: {profile.Name}");
+            }
         }
 
         if (changed)
         {
             ActiveProfileChanged?.Invoke(this, profile);
+        }
+        else if (generationChanged)
+        {
+            // Same profile, new generation: ActiveProfileChanged deliberately stays silent — only
+            // the arm status can have flipped.
+            RaiseRapidFireArmChanged();
         }
     }
 
@@ -1626,7 +1670,9 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
-            ReleaseAllState();
+            // Sticky arm: preserved (the owner is simply no longer active -> not ready). The
+            // preceding SetForegroundIdentity raise already flipped the dot to gray.
+            ReleaseAllState(preserveRapidFireArm: true);
             RederivePhysicalModifierState();
             _activeProfile = null;
             Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
@@ -1659,7 +1705,12 @@ public sealed class InputHookService : IInputHookService
             {
                 if (ReferenceEquals(_activeProfile, profile))
                 {
-                    ReleaseAllState();
+                    // Sticky arm: preserved through the in-lock teardown (only the press is
+                    // cancelled); the owner release happens post-lock via the single
+                    // ReleaseRapidFireOwnedBy authority below. Safe window: the active
+                    // generation/profile was already invalidated inside this lock, so no new
+                    // Rapid Fire press can start during the handoff.
+                    ReleaseAllState(preserveRapidFireArm: true);
                     RederivePhysicalModifierState();
                     _activeProfile = null;
                     Volatile.Write(ref _activeProfileGeneration, long.MinValue);
@@ -1668,6 +1719,10 @@ public sealed class InputHookService : IInputHookService
             }
 
             ReleaseAutoRunOwnedBy(profile);
+            if (ReleaseRapidFireOwnedBy(profile))
+            {
+                RaiseRapidFireArmChanged();
+            }
             if (notify)
             {
                 ActiveProfileChanged?.Invoke(this, null);
@@ -1703,9 +1758,17 @@ public sealed class InputHookService : IInputHookService
             {
                 ReleaseCapsState();
             }
-            if ((changeKind & ProfileChangeKind.RapidFire) != 0)
+        }
+
+        // Owner-scoped (NOT active-scoped): an RF-config edit of the ACTIVE profile must not kill
+        // a FOREIGN arm, and an edit of a non-active owner must still disarm it. Identity
+        // (executable edit) invalidates the owner because it changes what "its own app" means.
+        if ((changeKind & (ProfileChangeKind.RapidFire | ProfileChangeKind.Removed | ProfileChangeKind.Identity)) != 0 ||
+            ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
+        {
+            if (ReleaseRapidFireOwnedBy(profile))
             {
-                ReleaseRapidFireState(preservePhysicalPairing: true);
+                RaiseRapidFireArmChanged();
             }
         }
 
@@ -1800,7 +1863,11 @@ public sealed class InputHookService : IInputHookService
         if (_rapidFireToggleVk != vk)
         {
             _rapidFireToggleVk = vk;
-            ReleaseRapidFireState(preservePhysicalPairing: true);
+            if (ReleaseRapidFireState(preservePhysicalPairing: true))
+            {
+                // Key reassignment disarms; raised only when an arm was actually live.
+                RaiseRapidFireArmChanged();
+            }
         }
     }
 
@@ -2365,8 +2432,14 @@ public sealed class InputHookService : IInputHookService
         _rapidFireTimer.Change(Timeout.Infinite, Timeout.Infinite);
     }
 
-    private void ReleaseRapidFireState(bool preservePhysicalPairing)
+    // Full disarm. Returns whether an arm/owner was actually live before this call cleared it —
+    // callers use that to raise RapidFireArmChanged AFTER releasing any held lock. NEVER raises
+    // itself: the public raise contract lives in the callers. Internal test seams
+    // (StartInputExecutorForTesting / StopInputExecutorForTesting / ConfigureRapidFireForTesting)
+    // deliberately ignore the return — they are non-notifying setup/teardown.
+    private bool ReleaseRapidFireState(bool preservePhysicalPairing)
     {
+        var wasArmed = _rapidFireArmed || _rapidFireOwnerProfile is not null;
         Interlocked.Increment(ref _rapidFireArmEpoch);
         CancelRapidFirePress();
         _rapidFireArmed = false;
@@ -2375,7 +2448,28 @@ public sealed class InputHookService : IInputHookService
         {
             _rapidFirePhysicalLeftDown = false;
         }
+
+        return wasArmed;
     }
+
+    // Single owner-release authority for reconcile edits. Atomic with hook-thread re-targeting
+    // (HandleRapidFireToggle writes the owner under _profileLock): a UI edit of P1 that
+    // checked-then-released without the lock could kill a fresh P2 arm in the gap. Returns true
+    // iff THIS call cleared the owner. NEVER raises — callers raise outside.
+    private bool ReleaseRapidFireOwnedBy(Profile profile)
+    {
+        lock (_profileLock)
+        {
+            if (!ReferenceEquals(_rapidFireOwnerProfile, profile))
+            {
+                return false;
+            }
+
+            return ReleaseRapidFireState(preservePhysicalPairing: true);
+        }
+    }
+
+    private void RaiseRapidFireArmChanged() => RapidFireArmChanged?.Invoke(this, EventArgs.Empty);
 
     // ==================== ALT+MOUSE HANDLING (LOCK-FREE) ====================
     
@@ -3049,7 +3143,9 @@ public sealed class InputHookService : IInputHookService
         _rapidFireToggleDownLatched = true;
         if (RapidFireIsArmed())
         {
+            // Toggle-off in the owner's own app: the one user-initiated full disarm.
             ReleaseRapidFireState(preservePhysicalPairing: true);
+            RaiseRapidFireArmChanged();
             return;
         }
 
@@ -3061,6 +3157,7 @@ public sealed class InputHookService : IInputHookService
         // Serialize only this rare toggle edge with profile publication. ActivateProfile releases old
         // state before swapping _activeProfile; without this boundary a concurrent toggle could re-arm
         // the outgoing profile in that narrow gap. No SendInput or subsystem lock is taken inside.
+        var armed = false;
         lock (_profileLock)
         {
             var profile = _activeProfile;
@@ -3074,24 +3171,56 @@ public sealed class InputHookService : IInputHookService
                 profile is { IsEnabled: true } &&
                 profile.RapidFire.IsEnabled)
             {
+                // Arm or RE-TARGET (toggle in another RF-capable app moves the single owner).
+                // The generation triple above makes a mid-publication toggle fail closed instead:
+                // desktop / RF-ineligible-profile presses never reach this arm and silently keep
+                // the existing owner (documented no-op).
                 _rapidFireOwnerProfile = profile;
                 Volatile.Write(ref _rapidFireArmedEpoch, armEpoch);
                 _rapidFireArmed = true;
+                armed = true;
                 if (IsDebugEnabled) LogDebug($"Rapid Fire armed for profile: {profile.Name}");
             }
         }
+
+        if (armed)
+        {
+            // Hook-dispatcher thread, outside _profileLock. Always a real transition: reaching the
+            // arm path means no ready arm existed, so the owner either went null->profile or
+            // foreign->profile.
+            RaiseRapidFireArmChanged();
+        }
+    }
+
+    // Live-owner predicate: ONE owner snapshot per call, gates on the runtime being up. Does NOT
+    // care whether the owner is the active profile — that distinction belongs to the callers.
+    private bool TryGetLiveRapidFireOwner(out Profile? owner)
+    {
+        owner = _rapidFireOwnerProfile;
+        return _isRunning &&
+               _rapidFireArmed &&
+               Volatile.Read(ref _rapidFireArmedEpoch) == Volatile.Read(ref _rapidFireArmEpoch) &&
+               _advancedModeEnabled &&
+               owner is { IsEnabled: true } && owner.RapidFire.IsEnabled;
     }
 
     private bool RapidFireIsArmed()
     {
-        var profile = _rapidFireOwnerProfile;
-        return _rapidFireArmed &&
-               Volatile.Read(ref _rapidFireArmedEpoch) == Volatile.Read(ref _rapidFireArmEpoch) &&
-               _advancedModeEnabled &&
+        return TryGetLiveRapidFireOwner(out var owner) &&
                ProfileInputGenerationIsCurrent() &&
-               profile is { IsEnabled: true } &&
-               profile.RapidFire.IsEnabled &&
-               ReferenceEquals(_activeProfile, profile);
+               ReferenceEquals(_activeProfile, owner);
+    }
+
+    public RapidFireArmStatus GetRapidFireArmStatus()
+    {
+        if (!TryGetLiveRapidFireOwner(out var owner))
+        {
+            return RapidFireArmStatus.Off;
+        }
+
+        return ProfileInputGenerationIsCurrent() && ReferenceEquals(_activeProfile, owner)
+            ? RapidFireArmStatus.Ready
+            : RapidFireArmStatus.ArmedNotReady;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4476,7 +4605,10 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
-            ReleaseAllState();
+            // Sticky arm survives the foreground handoff (its press is cancelled); the preceding
+            // SetForegroundIdentity raise already flipped the dot to gray. Active profile is
+            // deliberately unchanged — activation catches up next.
+            ReleaseAllState(preserveRapidFireArm: true);
             RederivePhysicalModifierState();
         }
     }
@@ -4489,12 +4621,23 @@ public sealed class InputHookService : IInputHookService
         string? normalizedExecutable,
         long foregroundGeneration)
     {
+        var generationChanged = Volatile.Read(ref _publishedForegroundGeneration) != foregroundGeneration;
         _foregroundIdentity = new ForegroundIdentitySnapshot(
             windowHandle,
             processId,
             normalizedExecutable,
             foregroundGeneration);
         Volatile.Write(ref _publishedForegroundGeneration, foregroundGeneration);
+        if (generationChanged)
+        {
+            // The ONLY raise deliberately made under a caller-held lock (the watcher's
+            // _publicationLock — this method owns no lock itself): a publication ahead of
+            // activation is exactly what flips a ready arm to not-ready, and delaying the raise
+            // until after the caller's lock could reorder it behind the matching activation.
+            // Safe because RapidFireArmChanged handlers are contractually enqueue-only and
+            // exception-isolated (see IInputHookService.RapidFireArmChanged).
+            RaiseRapidFireArmChanged();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -5638,9 +5781,24 @@ public sealed class InputHookService : IInputHookService
     }
 // ==================== STATE MANAGEMENT ====================
     
-    private void ReleaseAllState(bool preservePhysicalPairing = true)
+    // preserveRapidFireArm: ordinary switch boundaries (profile switch, watchdog reinstall,
+    // foreground release, hard-deactivate handoff) keep the STICKY arm — the in-flight press is
+    // still cancelled — while hard boundaries (Stop, session switch) disarm fully via
+    // preserveRapidFireArm:false. Returns whether the Rapid Fire arm actually transitioned off,
+    // for callers that must raise RapidFireArmChanged AFTER releasing _profileLock.
+    private bool ReleaseAllState(bool preservePhysicalPairing = true, bool preserveRapidFireArm = false)
     {
-        ReleaseRapidFireState(preservePhysicalPairing);
+        var rapidFireArmCleared = false;
+        if (preserveRapidFireArm)
+        {
+            // Sticky arm: stop any in-flight burst but keep arm + owner.
+            CancelRapidFirePress();
+        }
+        else
+        {
+            rapidFireArmCleared = ReleaseRapidFireState(preservePhysicalPairing);
+        }
+
         ReleaseAllOverrides(preserveSuppression: preservePhysicalPairing);
         ResetMouseStates(preserveSuppressedUps: preservePhysicalPairing);
         ReleaseCapsState(preservePhysicalPairing);
@@ -5672,6 +5830,21 @@ public sealed class InputHookService : IInputHookService
         _rightButtonPressed = false;
 
         LogDebug("All state released");
+        return rapidFireArmCleared;
+    }
+
+    // Swap-aware physical left-button seed for Rapid Fire. The LL hook reports the LOGICAL
+    // (post-swap) button while GetAsyncKeyState reports the PHYSICAL one, so query whichever
+    // physical VK currently maps to "left" — a hold across a restart/reinstall boundary must
+    // neither be mistaken for a fresh press nor lost as an in-progress one. Shared by Start and
+    // the watchdog reinstall paths (which release-then-rederive, same as Start).
+    private void DeriveRapidFirePhysicalLeftDown()
+    {
+        var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
+            ? NativeMethods.VK_RBUTTON
+            : NativeMethods.VK_LBUTTON;
+        _rapidFirePhysicalLeftDown =
+            (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0;
     }
 
     // P9: ReleaseAllState() above force-clears both flags unconditionally, which is correct for

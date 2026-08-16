@@ -1305,6 +1305,430 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public void RapidFire_ProfileSwitch_PreservesArmForOwnerAndCancelsBurst()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile("Owner", RapidFireSettings.MaxIntervalMilliseconds);
+            var other = CreateRapidFireProfile("Other", RapidFireSettings.MaxIntervalMilliseconds);
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+
+            // Burst in flight: exactly one synthetic click lands.
+            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+            service.FireRapidFireTimerForTesting();
+            Assert.Single(sender.MouseClickThreadIds);
+
+            // Focus leaves to another capable app: the press is cancelled (no successor), the arm is kept.
+            SwitchRapidFireForeground(service, other, foregroundGeneration: 2, executable: "other.exe");
+            service.FireRapidFireTimerForTesting();
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            Assert.Single(sender.MouseClickThreadIds);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+
+            // Focus returns to the owner: armed again with NO re-toggle, and a fresh press clicks.
+            SwitchRapidFireForeground(service, owner, foregroundGeneration: 3, executable: "owner.exe");
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+            service.FireRapidFireTimerForTesting();
+            Assert.Equal(2, sender.MouseClickThreadIds.Count);
+        }
+        finally
+        {
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_SameProfileRepublish_GrayThenReadyEventsFire()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateRapidFireProfile();
+            ArmRapidFireViaToggle(service, profile, foregroundGeneration: 1);
+
+            var armRaises = 0;
+            var profileChanges = 0;
+            service.RapidFireArmChanged += (_, _) => armRaises++;
+            service.ActiveProfileChanged += (_, _) => profileChanges++;
+
+            // Same-exe refocus: the watcher republishes a new generation ahead of the worker's
+            // activation — armed, but not ready yet.
+            service.SetForegroundIdentity(new IntPtr(0x101), 42u, "game.exe", 2);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+            Assert.Equal(1, armRaises);
+
+            // Same-instance activation catch-up settles the generation. The raise is the wedge fix:
+            // previously this branch bumped the generation silently and the status could stay
+            // gray forever even though the arm was ready again.
+            service.ActivateProfile(profile, 2);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+            Assert.Equal(2, armRaises);
+            Assert.Equal(0, profileChanges);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ToggleInOtherCapableApp_RetargetsArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var first = CreateRapidFireProfile("First");
+            var second = CreateRapidFireProfile("Second");
+            service.ConfigureActiveProfileForTesting(first, foregroundGeneration: 1, altPressed: false);
+            service.AdvancedModeEnabled = true;
+            service.SetRapidFireToggleKey(Key.F8);
+            PressRapidFireToggle(service, Key.F8);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+
+            SwitchRapidFireForeground(service, second, foregroundGeneration: 2, executable: "second.exe");
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+
+            // Toggle in the second capable app: the single owner re-targets.
+            PressRapidFireToggle(service, Key.F8);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+
+            // ...and toggling there disarms.
+            PressRapidFireToggle(service, Key.F8);
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ToggleOnDesktop_IsSilentNoOpAndKeepsArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+
+            SwitchRapidFireForeground(service, profile: null, foregroundGeneration: 2, executable: "desktop");
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+
+            // Toggle with no profile active: documented silent no-op that KEEPS the old owner.
+            PressRapidFireToggle(service, Key.F8);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+
+            // Refocusing the owner resumes without a re-toggle.
+            SwitchRapidFireForeground(service, owner, foregroundGeneration: 3, executable: "owner.exe");
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ToggleInRfIneligibleProfile_IsSilentNoOpAndKeepsArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            var ineligible = new Profile { Name = "NoRapidFire", Executable = "norf.exe" };
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+
+            SwitchRapidFireForeground(service, ineligible, foregroundGeneration: 2, executable: "norf.exe");
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+
+            // Enabled profile with Rapid Fire disabled: toggle is a no-op, the arm survives.
+            PressRapidFireToggle(service, Key.F8);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ToggleDuringGenerationMismatch_FailsClosed()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            var other = CreateRapidFireProfile("Other");
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+
+            var armRaises = 0;
+            service.RapidFireArmChanged += (_, _) => armRaises++;
+
+            // Publication ahead of activation: the toggle must fail closed (no re-arm, no disarm).
+            service.SetForegroundIdentity(new IntPtr(0x201), 43u, "other.exe", 2);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+            PressRapidFireToggle(service, Key.F8);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+            Assert.Equal(1, armRaises); // only the identity-publish raise
+
+            // Once activation catches up, retargeting works normally.
+            service.ActivateProfile(other, 2);
+            PressRapidFireToggle(service, Key.F8);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_RemovedOwnerProfile_DisarmsStickyArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            SwitchRapidFireForeground(service, CreateRapidFireProfile("Other"), foregroundGeneration: 2, executable: "other.exe");
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+
+            service.ReconcileProfileSettings(owner, ProfileChangeKind.Removed);
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_MasterDisabledOwner_DisarmsStickyArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            var other = CreateRapidFireProfile("Other");
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            SwitchRapidFireForeground(service, other, foregroundGeneration: 2, executable: "other.exe");
+
+            owner.IsEnabled = false;
+            service.ReconcileProfileSettings(owner, ProfileChangeKind.Master);
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_IdentityEditOfOwner_DisarmsStickyArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            SwitchRapidFireForeground(service, CreateRapidFireProfile("Other"), foregroundGeneration: 2, executable: "other.exe");
+
+            // Changing the executable changes what "its own app" means — the owner is invalidated.
+            service.ReconcileProfileSettings(owner, ProfileChangeKind.Identity);
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ActiveOwnerHardDeactivation_DisarmsAndRaises()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+
+            var armRaises = 0;
+            service.RapidFireArmChanged += (_, _) => armRaises++;
+
+            // Exercises the hard-deactivate branch (owner still ACTIVE) through the in-lock arm
+            // preservation and the post-lock ReleaseRapidFireOwnedBy handoff.
+            service.ReconcileProfileSettings(owner, ProfileChangeKind.Removed);
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+            Assert.Equal(1, armRaises);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ForeignOwnerSurvivesActiveHardDeactivation()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            var other = CreateRapidFireProfile("Other");
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            SwitchRapidFireForeground(service, other, foregroundGeneration: 2, executable: "other.exe");
+
+            // Hard-deactivating the ACTIVE profile must not touch a FOREIGN arm.
+            service.ReconcileProfileSettings(other, ProfileChangeKind.Removed);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_RapidFireEditOfNonOwnerProfile_KeepsArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            var other = CreateRapidFireProfile("Other"); // RF-ENABLED and active
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+            SwitchRapidFireForeground(service, other, foregroundGeneration: 2, executable: "other.exe");
+
+            // An RF-config edit of the ACTIVE profile only releases state the EDITED profile owns.
+            service.ReconcileProfileSettings(other, ProfileChangeKind.RapidFire);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_AdvancedModeOff_DisarmsStickyArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            ArmRapidFireViaToggle(service, CreateRapidFireProfile(), foregroundGeneration: 1);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+
+            service.AdvancedModeEnabled = false;
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_ReleaseForegroundState_PreservesArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var owner = CreateRapidFireProfile();
+            ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
+
+            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+            service.ReleaseForegroundState();
+
+            // The PRESS is cancelled — a stale timer callback cannot click...
+            service.FireRapidFireTimerForTesting();
+            Assert.Empty(sender.MouseClickThreadIds);
+
+            // ...but the ARM survives (separate call-site argument from Activate/Deactivate).
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+        }
+        finally
+        {
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFire_Stop_DisarmsStickyArm()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            ArmRapidFireViaToggle(service, CreateRapidFireProfile(), foregroundGeneration: 1);
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+
+            var armRaises = 0;
+            service.RapidFireArmChanged += (_, _) => armRaises++;
+
+            // Stop's default-parameter safety contract: full release (the arm does not survive a
+            // stopped hook service). The raise is delivered after _profileLock closes.
+            service.Stop();
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+            Assert.Equal(1, armRaises);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
     public void Launcher_DisabledWhileHeld_StillConsumesAndClearsKeyUp()
     {
         var sender = new RecordingInputSender();
@@ -1380,19 +1804,63 @@ public sealed class InputExecutorReliabilityTests
         };
     }
 
-    private static Profile CreateRapidFireProfile()
+    private static Profile CreateRapidFireProfile(
+        string name = "Game",
+        int intervalMs = RapidFireSettings.MinIntervalMilliseconds)
     {
         return new Profile
         {
-            Name = "Game",
-            Executable = "game.exe",
+            Name = name,
+            Executable = $"{name.ToLowerInvariant()}.exe",
             RapidFire =
             {
                 IsEnabled = true,
-                IntervalMilliseconds = RapidFireSettings.MinIntervalMilliseconds,
+                IntervalMilliseconds = intervalMs,
                 JitterMilliseconds = 0
             }
         };
+    }
+
+    // The Rapid Fire toggle latches on key-down and only re-arms after the key-up — a full
+    // physical press is always down THEN up.
+    private static void PressRapidFireToggle(InputHookService service, Key key)
+    {
+        service.HandleRapidFireToggleForTesting(key, isDown: true);
+        service.HandleRapidFireToggleForTesting(key, isDown: false);
+    }
+
+    // Arms via the REAL toggle path (not ConfigureRapidFireForTesting): settled active profile,
+    // Advanced Mode on, key assigned, one physical toggle press.
+    private static void ArmRapidFireViaToggle(InputHookService service, Profile profile, long foregroundGeneration)
+    {
+        service.ConfigureActiveProfileForTesting(profile, foregroundGeneration, altPressed: false);
+        service.AdvancedModeEnabled = true;
+        service.SetRapidFireToggleKey(Key.F8);
+        PressRapidFireToggle(service, Key.F8);
+    }
+
+    // Foreground switch in PRODUCTION order: the watcher publishes identity (new generation)
+    // BEFORE the worker activates/deactivates — the status dot depends on that publication raising
+    // ahead of activation.
+    private static void SwitchRapidFireForeground(
+        InputHookService service,
+        Profile? profile,
+        long foregroundGeneration,
+        string executable)
+    {
+        service.SetForegroundIdentity(
+            new IntPtr(0x100 + (int)foregroundGeneration),
+            1000u + (uint)foregroundGeneration,
+            executable,
+            foregroundGeneration);
+        if (profile is null)
+        {
+            service.DeactivateProfile(foregroundGeneration);
+        }
+        else
+        {
+            service.ActivateProfile(profile, foregroundGeneration);
+        }
     }
 
     private sealed class RecordingInputSender(
