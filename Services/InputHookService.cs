@@ -2253,6 +2253,14 @@ public sealed class InputHookService : IInputHookService
             0,
             RapidFireSettings.MaxJitterMilliseconds);
         ScheduleRapidFire(generation);
+
+        // Diagnostic pair (1 of 2; the FIRE line is in OnRapidFireTimerFired). The physical click passes
+        // through and the first SYNTHETIC click is one full interval+jitter away by design (the
+        // no-immediate-click rule) — this line makes the armed delay visible when a burst "feels slow".
+        if (IsDebugEnabled)
+        {
+            LogDebug($"Rapid Fire armed: first synthetic click due in {_rapidFireArmedDelayMs} ms (interval={_rapidFireIntervalMs}, jitter={_rapidFireJitterMs})");
+        }
     }
 
     private void ScheduleRapidFire(long generation, double sendElapsedMs = 0)
@@ -2305,6 +2313,13 @@ public sealed class InputHookService : IInputHookService
         if (profile is null || !RapidFireIsCurrent(generation, profile, foregroundGeneration))
         {
             return;
+        }
+
+        // Diagnostic pair (2 of 2; pairs with the ARMED line in HandleRapidFire). elapsed-vs-delay exposes
+        // timer lateness; with log timestamps, consecutive FIRE lines give the real start-to-start cadence.
+        if (IsDebugEnabled)
+        {
+            LogDebug($"Rapid Fire timer fired: elapsed={elapsedMs:F1} ms, armed delay={delay} ms");
         }
 
         var clickStart = Stopwatch.GetTimestamp();

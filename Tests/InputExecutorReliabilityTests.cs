@@ -1265,6 +1265,46 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public void RapidFire_ArmAndFireTiming_AreReportedInDebugLog()
+    {
+        var sender = new RecordingInputSender();
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var service = new InputHookService(logger, sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            // MaxInterval + jitter=0 makes the armed delay exact AND keeps the REAL successor timer's due
+            // time (~250 ms) far beyond the synchronous test window (same discipline as
+            // RapidFire_ClickCompletionRearmsOneSuccessor — a 25 ms successor could race the test thread).
+            var profile = CreateRapidFireProfile();
+            profile.RapidFire.IntervalMilliseconds = RapidFireSettings.MaxIntervalMilliseconds;
+            service.ConfigureRapidFireForTesting(profile, foregroundGeneration: 1);
+
+            service.HandleRapidFireLeftButtonForTesting(isDown: true);
+            service.FireRapidFireTimerForTesting();
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+
+            // ARMED: the first synthetic click is due one full interval after the physical press (the
+            // deliberate no-immediate-click rule) — the line must state it with the resolved delay.
+            var armed = Assert.Single(logger.Messages, m => m.StartsWith("Rapid Fire armed:"));
+            Assert.Contains($"first synthetic click due in {RapidFireSettings.MaxIntervalMilliseconds} ms", armed);
+            Assert.Contains($"interval={RapidFireSettings.MaxIntervalMilliseconds}", armed);
+            Assert.Contains("jitter=0", armed);
+
+            // FIRED: the timer's actual elapsed vs the delay it was armed for.
+            var fired = Assert.Single(logger.Messages, m => m.StartsWith("Rapid Fire timer fired:"));
+            Assert.Contains("elapsed=", fired);
+            Assert.Contains($"armed delay={RapidFireSettings.MaxIntervalMilliseconds} ms", fired);
+        }
+        finally
+        {
+            service.HandleRapidFireLeftButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
     public void Launcher_DisabledWhileHeld_StillConsumesAndClearsKeyUp()
     {
         var sender = new RecordingInputSender();
