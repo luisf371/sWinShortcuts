@@ -3143,7 +3143,7 @@ public sealed class InputHookService : IInputHookService
         _rapidFireToggleDownLatched = true;
         if (RapidFireIsArmed())
         {
-            // Toggle-off in the owner's own app: the one user-initiated full disarm.
+            // Toggle-off in the owner's own app (armed AND ready).
             ReleaseRapidFireState(preservePhysicalPairing: true);
             RaiseRapidFireArmChanged();
             return;
@@ -3158,6 +3158,7 @@ public sealed class InputHookService : IInputHookService
         // state before swapping _activeProfile; without this boundary a concurrent toggle could re-arm
         // the outgoing profile in that narrow gap. No SendInput or subsystem lock is taken inside.
         var armed = false;
+        var disarmed = false;
         lock (_profileLock)
         {
             var profile = _activeProfile;
@@ -3172,22 +3173,38 @@ public sealed class InputHookService : IInputHookService
                 profile.RapidFire.IsEnabled)
             {
                 // Arm or RE-TARGET (toggle in another RF-capable app moves the single owner).
-                // The generation triple above makes a mid-publication toggle fail closed instead:
-                // desktop / RF-ineligible-profile presses never reach this arm and silently keep
-                // the existing owner (documented no-op).
                 _rapidFireOwnerProfile = profile;
                 Volatile.Write(ref _rapidFireArmedEpoch, armEpoch);
                 _rapidFireArmed = true;
                 armed = true;
                 if (IsDebugEnabled) LogDebug($"Rapid Fire armed for profile: {profile.Name}");
             }
+            else if (_rapidFireToggleVk == toggleVk &&
+                     expectedActiveGeneration == expectedPublishedGeneration &&
+                     expectedActiveGeneration == Volatile.Read(ref _activeProfileGeneration) &&
+                     expectedPublishedGeneration == Volatile.Read(ref _publishedForegroundGeneration) &&
+                     TryGetLiveRapidFireOwner(out _))
+            {
+                // Stranded-arm escape hatch: pressing the toggle in a SETTLED but non-eligible
+                // context (desktop after the owner's game was quit, or a focused profile without
+                // Rapid Fire) disarms the live arm. Without this, quitting the game while armed
+                // leaves a permanent gray dot with no primary-key off-switch — retargeting needs
+                // another RF-capable app and every other path is an indirect settings/profile
+                // edit. The key is global and passes through, so an incidental press in an app
+                // that binds the same key also disarms: accepted trade (instantly visible via the
+                // dot hiding, one keypress to undo, avoidable by picking a non-conflicting key).
+                // The generation checks above keep a mid-publication / hard-deactivate press on
+                // the fail-closed path — NEITHER arm nor disarm during transient mismatches.
+                disarmed = ReleaseRapidFireState(preservePhysicalPairing: true);
+            }
         }
 
-        if (armed)
+        if (armed || disarmed)
         {
-            // Hook-dispatcher thread, outside _profileLock. Always a real transition: reaching the
-            // arm path means no ready arm existed, so the owner either went null->profile or
-            // foreign->profile.
+            // Hook-dispatcher thread, outside _profileLock. Always a real transition: the arm
+            // branch only fires with no ready arm (null->profile or foreign->profile), the
+            // disarm branch only when a live arm actually cleared (the bool return guards a
+            // concurrent release winning the race inside the lock).
             RaiseRapidFireArmChanged();
         }
     }

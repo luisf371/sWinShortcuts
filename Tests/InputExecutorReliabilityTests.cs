@@ -1416,7 +1416,7 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
-    public void RapidFire_ToggleOnDesktop_IsSilentNoOpAndKeepsArm()
+    public void RapidFire_ToggleOnDesktop_DisarmsStrandedArm()
     {
         var sender = new RecordingInputSender();
         using var service = new InputHookService(new NullLoggerService(), sender);
@@ -1428,16 +1428,20 @@ public sealed class InputExecutorReliabilityTests
             ArmRapidFireViaToggle(service, owner, foregroundGeneration: 1);
             Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
 
+            // Quitting the game while armed: stranded (not ready), with no eligible context to
+            // retarget from — the toggle key is the primary off-switch for exactly this state.
             SwitchRapidFireForeground(service, profile: null, foregroundGeneration: 2, executable: "desktop");
             Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
 
-            // Toggle with no profile active: documented silent no-op that KEEPS the old owner.
+            var armRaises = 0;
+            service.RapidFireArmChanged += (_, _) => armRaises++;
             PressRapidFireToggle(service, Key.F8);
-            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+            Assert.Equal(1, armRaises);
 
-            // Refocusing the owner resumes without a re-toggle.
+            // A disarmed arm never silently resumes when the owner is refocused later.
             SwitchRapidFireForeground(service, owner, foregroundGeneration: 3, executable: "owner.exe");
-            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
         }
         finally
         {
@@ -1446,7 +1450,7 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
-    public void RapidFire_ToggleInRfIneligibleProfile_IsSilentNoOpAndKeepsArm()
+    public void RapidFire_ToggleInRfIneligibleProfile_DisarmsStrandedArm()
     {
         var sender = new RecordingInputSender();
         using var service = new InputHookService(new NullLoggerService(), sender);
@@ -1461,9 +1465,9 @@ public sealed class InputExecutorReliabilityTests
             SwitchRapidFireForeground(service, ineligible, foregroundGeneration: 2, executable: "norf.exe");
             Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
 
-            // Enabled profile with Rapid Fire disabled: toggle is a no-op, the arm survives.
+            // Settled, enabled, but Rapid Fire disabled: same stranded-arm escape hatch.
             PressRapidFireToggle(service, Key.F8);
-            Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.GetRapidFireArmStatus());
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
         }
         finally
         {
