@@ -27,6 +27,7 @@ internal static class ProfilePersistenceSnapshot
             AntiAfk = CloneAntiAfk(source.AntiAfk),
             ColorSettings = color,
             CapsLock = CloneCapsLock(source.CapsLock),
+            Crosshair = CloneCrosshair(source.Crosshair),
             WindowsLauncher = CloneWindowsLauncher(source.WindowsLauncher),
             SourcePath = source.SourcePath,
             IsPersistenceSuspended = source.IsPersistenceSuspended,
@@ -172,6 +173,16 @@ internal static class ProfilePersistenceSnapshot
             Mode = source.Mode,
             IsRemapEnabled = source.IsRemapEnabled,
             RemapTarget = source.RemapTarget
+        };
+    }
+
+    private static CrosshairSettings CloneCrosshair(CrosshairSettings source)
+    {
+        return new CrosshairSettings
+        {
+            IsEnabled = source.IsEnabled,
+            HideWhileRightButtonHeld = source.HideWhileRightButtonHeld,
+            ImagePath = source.ImagePath
         };
     }
 

@@ -34,6 +34,9 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.RapidFire.IsEnabled = true;
         profile.RapidFire.IntervalMilliseconds = 80;
         profile.RapidFire.JitterMilliseconds = 15;
+        profile.Crosshair.IsEnabled = true;
+        profile.Crosshair.HideWhileRightButtonHeld = true;
+        profile.Crosshair.ImagePath = @"C:\Screens\crosshair.png";
         var display = profile.ColorSettings.GetOrCreateProfile("DISPLAY1");
         display.IsEnabled = true;
         display.Brightness = 61;
@@ -48,6 +51,9 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.RapidFire.IsEnabled = false;
         profile.RapidFire.IntervalMilliseconds = 200;
         profile.RapidFire.JitterMilliseconds = 0;
+        profile.Crosshair.IsEnabled = false;
+        profile.Crosshair.HideWhileRightButtonHeld = false;
+        profile.Crosshair.ImagePath = string.Empty;
         profile.ColorSettings.UpdateProfile(
             "DISPLAY1",
             color => color.Brightness = 99);
@@ -60,6 +66,9 @@ public sealed class ProfilePersistenceSnapshotTests
         Assert.True(snapshot.RapidFire.IsEnabled);
         Assert.Equal(80, snapshot.RapidFire.IntervalMilliseconds);
         Assert.Equal(15, snapshot.RapidFire.JitterMilliseconds);
+        Assert.True(snapshot.Crosshair.IsEnabled);
+        Assert.True(snapshot.Crosshair.HideWhileRightButtonHeld);
+        Assert.Equal(@"C:\Screens\crosshair.png", snapshot.Crosshair.ImagePath);
         Assert.Equal(
             61,
             snapshot.ColorSettings
