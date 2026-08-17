@@ -61,6 +61,20 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     private volatile ColorSettings? _activeColorSettings;
     private bool _reapplyHandlersRegistered;
 
+    // 30s force-preview override (game-profile color editing): while set (and the forced settings
+    // are color-enabled) the color worker builds plans from THIS record instead of the foreground
+    // profile, so slider changes are visible live while tuning in the sWinShortcuts window.
+    // Writers: the UI thread (Set/Clear) and the hook thread (variant retarget on the color-toggle
+    // hotkey) — volatile reference swaps, same pattern as _activeColorSettings. Forced plans use
+    // SnapshotProfiles(explicit variant); the preview NEVER mutates runtime variant state.
+    private sealed record ForcedColorPreview(ColorSettings Settings, ColorVariant Variant);
+
+    private volatile ForcedColorPreview? _forcedColorPreview;
+
+    // Optional (trailing) so the ~10 positional test constructions keep compiling; MS DI injects
+    // the registered singleton. Null (tests) disables the toast.
+    private readonly ColorProfileToastService? _toastService;
+
     public ProfileActivationService(
         IProfileManager profileManager,
         IForegroundWatcher foregroundWatcher,
@@ -69,7 +83,8 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         IColorControlService colorControlService,
         IDisplayService displayService,
         ICrosshairService crosshairService,
-        ILoggerService logger)
+        ILoggerService logger,
+        ColorProfileToastService? toastService = null)
     {
         _profileManager = profileManager;
         _foregroundWatcher = foregroundWatcher;
@@ -79,6 +94,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         _displayService = displayService;
         _crosshairService = crosshairService;
         _logger = logger;
+        _toastService = toastService;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -107,6 +123,10 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 _colorChanges = null;
                 _stopping = false;
                 _initialEventFired = false;
+                // A Set racing a full StopAsync can leave a record assigned after StopAsync's own
+                // clear (its _stopping check passed just before the flag flipped) — a fresh run
+                // must never inherit a stale forced preview.
+                _forcedColorPreview = null;
                 inputChanges = Channel.CreateUnbounded<ForegroundSnapshot>(
                     new UnboundedChannelOptions
                     {
@@ -263,6 +283,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
         _activeProfile = null;
         _activeColorSettings = null;
+        _forcedColorPreview = null; // no restore queued (F-010) — shutdown leaves the last plan on screen
         _lastAppliedColorPlan = ColorPlan.Empty;
         lock (_publicationLock)
         {
@@ -466,6 +487,36 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         RepublishLatestForeground();
     }
 
+    public void SetForcedColorPreview(ColorSettings settings, ColorVariant variant)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        if (_stopping)
+        {
+            return;
+        }
+
+        _forcedColorPreview = new ForcedColorPreview(settings, variant);
+        // Routes through _publicationLock + the _stopping fence — never the channel directly.
+        QueueLatestColor(force: true);
+    }
+
+    public void ClearForcedColorPreview()
+    {
+        _forcedColorPreview = null;
+
+        if (_stopping)
+        {
+            // F-010: no restore is queued during shutdown — same acceptance as every other color
+            // path at exit (the last-applied plan simply stays on screen).
+            return;
+        }
+
+        // The auto-restore: force skips the _lastAppliedColorPlan dedup, so the
+        // foreground-appropriate plan re-applies even if its values coincide with the forced one.
+        QueueLatestColor(force: true);
+    }
+
     private void OnProfileRemoved(object? sender, Profile profile)
     {
         NotifyProfileChanged(profile, ProfileChangeKind.Removed);
@@ -482,7 +533,35 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         // without a populated Secondary), then request a re-apply. Flipping here — not deferred to the worker
         // off the coalescing channel — preserves parity (one flip per press) and targets the color that was
         // visible at the instant of the press.
-        _activeColorSettings?.ToggleVariant();
+        var settings = _activeColorSettings;
+        if (settings is not null)
+        {
+            var before = settings.ActiveVariant;
+            var after = settings.ToggleVariant();
+            if (before != after)
+            {
+                // Force preview active on exactly these settings -> RETARGET it to the flipped
+                // variant so toast, screen, and preview stay consistent: the hotkey flips the
+                // color visible on screen, which during a preview IS the forced profile. (When
+                // forced.Settings.IsEnabled == false, ProcessColorChange's publication left
+                // _activeColorSettings at the GLOBAL settings, so this branch simply doesn't
+                // fire — the plan and its publication never disagree.)
+                var forced = _forcedColorPreview;
+                if (forced is not null && ReferenceEquals(forced.Settings, settings))
+                {
+                    _forcedColorPreview = new ForcedColorPreview(settings, after);
+                }
+
+                // Real flip -> toast the new variant. Raised HERE (press time, post-flip) because it is the
+                // only path that encodes hotkey intent; a post-apply raise would fire spurious toasts on
+                // foreground swaps between profiles with different active variants. Show is enqueue-only, so
+                // this is safe on the hook thread. Trade-off: if the subsequent apply fails, the toast names
+                // the queued variant; the failed apply stays un-deduped and retries, so screen and toast
+                // converge.
+                _toastService?.Show(after);
+            }
+        }
+
         QueueLatestColor(force: true);
     }
 
@@ -592,8 +671,19 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             return;
         }
 
+        // SINGLE read per iteration: a second volatile read could race a concurrent Set/Clear/
+        // retarget and make the plan build and the publication below disagree. forcedIsActive gates
+        // BOTH — preserving the publication invariant that _activeColorSettings names the settings
+        // whose plan is actually on screen: when the forced settings are color-disabled the
+        // rendered plan degenerates to the global fallback, so the hotkey must target the GLOBAL
+        // settings, not the disabled game settings.
+        var forced = _forcedColorPreview;
+        var forcedIsActive = forced is { Settings.IsEnabled: true };
+
         var displays = _displayService.GetDisplays();
-        var plan = BuildColorPlan(snapshot.Profile, displays, _profileManager);
+        var plan = forcedIsActive
+            ? BuildColorPlan(forced!.Settings, forced.Variant, displays, _profileManager)
+            : BuildColorPlan(snapshot.Profile, displays, _profileManager);
 
         var force = Interlocked.Exchange(ref _forceReapply, 0) == 1;
         var planOnScreen = true;
@@ -617,7 +707,9 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         latest = _latestForeground;
         if (planOnScreen && latest is not null && latest.Generation == snapshot.Generation)
         {
-            _activeColorSettings = ResolveColorSettings(snapshot.Profile, _profileManager);
+            _activeColorSettings = forcedIsActive
+                ? forced!.Settings
+                : ResolveColorSettings(snapshot.Profile, _profileManager);
         }
     }
 
@@ -632,11 +724,45 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         var overrides = activeProfile is not null && activeProfile.IsEnabled && activeProfile.ColorSettings.IsEnabled
             ? activeProfile.ColorSettings.SnapshotProfiles()
             : null;
-        var globalColorProfile = profileManager.ColorProfile;
-        var fallbacks = globalColorProfile.IsEnabled && globalColorProfile.ColorSettings.IsEnabled
-            ? globalColorProfile.ColorSettings.SnapshotProfiles()
+
+        return BuildColorPlanCore(overrides, GlobalColorFallbacks(profileManager), displays);
+    }
+
+    // Forced-preview plan: the EDITED profile's settings at the explicitly chosen variant (never
+    // SetActiveVariant — the preview must not mutate runtime variant state). Unchecking the
+    // profile's color mid-preview degenerates overrides to null, so the global look is previewed —
+    // faithful to what real activation would render. Fallbacks stay global: displays the profile
+    // doesn't own show the global values (same semantics as the active-profile path).
+    internal static ColorPlan BuildColorPlan(
+        ColorSettings forcedSettings,
+        ColorVariant forcedVariant,
+        IReadOnlyList<DisplayInfo> displays,
+        IProfileManager profileManager)
+    {
+        ArgumentNullException.ThrowIfNull(forcedSettings);
+        ArgumentNullException.ThrowIfNull(displays);
+        ArgumentNullException.ThrowIfNull(profileManager);
+
+        var overrides = forcedSettings.IsEnabled
+            ? forcedSettings.SnapshotProfiles(forcedVariant)
             : null;
 
+        return BuildColorPlanCore(overrides, GlobalColorFallbacks(profileManager), displays);
+    }
+
+    private static IReadOnlyDictionary<string, DisplayColorProfile>? GlobalColorFallbacks(IProfileManager profileManager)
+    {
+        var globalColorProfile = profileManager.ColorProfile;
+        return globalColorProfile.IsEnabled && globalColorProfile.ColorSettings.IsEnabled
+            ? globalColorProfile.ColorSettings.SnapshotProfiles()
+            : null;
+    }
+
+    private static ColorPlan BuildColorPlanCore(
+        IReadOnlyDictionary<string, DisplayColorProfile>? overrides,
+        IReadOnlyDictionary<string, DisplayColorProfile>? fallbacks,
+        IReadOnlyList<DisplayInfo> displays)
+    {
         var plans = displays
             .OrderBy(display => display.Id, StringComparer.OrdinalIgnoreCase)
             .Select(display => BuildDisplayColorPlan(display.Id, overrides, fallbacks))

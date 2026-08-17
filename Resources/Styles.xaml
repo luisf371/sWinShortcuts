@@ -120,10 +120,13 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
+                            <!-- Unchecked (IsChecked=False/Null) = Primary selected: highlighted by this
+                                 default; the IsChecked=True trigger below mirrors the state to Secondary. -->
                             <Border x:Name="PrimarySegment"
                                     Grid.Column="0"
                                     CornerRadius="3"
-                                    Padding="6,3">
+                                    Padding="6,3"
+                                    Background="{StaticResource AccentBrush}">
                                 <TextBlock x:Name="PrimaryLabel"
                                            Text="Primary"
                                            HorizontalAlignment="Center"

@@ -20,7 +20,12 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     // re-added to the dirty set (which would otherwise hit the manager's "not managed" throw at exit).
     public bool IsDetached { get; set; }
 
-    public ProfileViewModel(Profile model, IDisplayService displayService, IColorControlService colorControlService, IReadOnlyList<Key>? keyOptions = null)
+    public ProfileViewModel(
+        Profile model,
+        IDisplayService displayService,
+        IColorControlService colorControlService,
+        IReadOnlyList<Key>? keyOptions = null,
+        IProfileRuntimeService? profileRuntimeService = null)
     {
         Model = model ?? throw new ArgumentNullException(nameof(model));
         ArgumentNullException.ThrowIfNull(displayService);
@@ -62,7 +67,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             displayService,
             colorControlService,
             Model.IsColorProfile,
-            parentEnabledCheck: Model.IsColorProfile ? () => IsEnabled : null);
+            parentEnabledCheck: Model.IsColorProfile ? () => IsEnabled : null,
+            profileRuntimeService: profileRuntimeService);
 
         ColorSettings.Changed += (_, _) => OnProfileChanged(ProfileChangeKind.Color);
 

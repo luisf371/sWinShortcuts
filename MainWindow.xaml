@@ -649,11 +649,15 @@
                                                            ToolTipService.Placement="Right">
                                                     <TextBlock.ToolTip>
                                                         <TextBlock MaxWidth="360" TextWrapping="Wrap">
-                                                            <Run Text="Adds a random 0–" />
+                                                            <Run Text="Adds a random 0 –" />
                                                             <Run Text="{Binding RapidFireJitterMilliseconds, Mode=OneWay}" />
-                                                            <Run Text=" ms to the base interval. Current total interval: " />
+                                                            <Run Text=" ms to the base interval." />
+                                                            <LineBreak />
+                                                            <Run Text="Current total interval: " />
                                                             <Run Text="{Binding RapidFireTimingRange, Mode=OneWay}" />
-                                                            <Run Text=". This varies timing only and is not ban protection." />
+                                                            <Run Text="." />
+                                                            <LineBreak />
+                                                            <Run Text="This varies timing only and is not ban protection." />
                                                         </TextBlock>
                                                     </TextBlock.ToolTip>
                                                 </TextBlock>
@@ -1084,6 +1088,22 @@
                                                               Width="176"
                                                               ToolTip="Choose which color preset the display controls below edit."
                                                               AutomationProperties.Name="Color preset to edit" />
+                                            </StackPanel>
+                                            <!-- Game profiles only (the global Color profile is already live):
+                                                 temporarily force-apply the edited profile's colors while tuning. -->
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
+                                                        Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
+                                                <CheckBox Content="Force preview"
+                                                          IsChecked="{Binding ColorSettings.IsForcePreviewEnabled}"
+                                                          IsEnabled="{Binding ColorSettings.IsForcePreviewAvailable}"
+                                                          ToolTip="Temporarily apply this profile's colors while editing (30 s), then restore the colors for the current foreground app. Requires this profile's Color Settings to be enabled first."
+                                                          VerticalAlignment="Center"
+                                                          Margin="0" />
+                                                <TextBlock Text="{Binding ColorSettings.ForcePreviewCountdown}"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           FontWeight="SemiBold"
+                                                           Margin="8,0,0,0"
+                                                           VerticalAlignment="Center" />
                                             </StackPanel>
                                             <TextBlock Text="Primary is the default look. Secondary is an optional alternate preset."
                                                        Foreground="{StaticResource ForegroundSecondaryBrush}"

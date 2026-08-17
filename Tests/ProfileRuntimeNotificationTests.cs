@@ -190,10 +190,24 @@ public sealed class ProfileRuntimeNotificationTests
     {
         public List<(Profile Profile, ProfileChangeKind Kind)> Changes { get; } = [];
 
+        public List<(ColorSettings Settings, ColorVariant Variant)> ForcedPreviews { get; } = [];
+
+        public int ClearedPreviews { get; private set; }
+
         public void NotifyProfileChanged(Profile profile, ProfileChangeKind changeKind)
         {
             onChange();
             Changes.Add((profile, changeKind));
+        }
+
+        public void SetForcedColorPreview(ColorSettings settings, ColorVariant variant)
+        {
+            ForcedPreviews.Add((settings, variant));
+        }
+
+        public void ClearForcedColorPreview()
+        {
+            ClearedPreviews++;
         }
     }
 }

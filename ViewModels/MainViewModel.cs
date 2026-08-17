@@ -136,7 +136,7 @@ public sealed partial class MainViewModel : ViewModelBase
             await _profileManager.InitializeAsync(cancellationToken);
             _profiles.Clear();
 
-            foreach (var profile in _profileManager.Profiles.Select(p => new ProfileViewModel(p, _displayService, _colorControlService, _keyOptions)))
+            foreach (var profile in _profileManager.Profiles.Select(p => new ProfileViewModel(p, _displayService, _colorControlService, _keyOptions, _profileRuntimeService)))
             {
                 AttachProfile(profile);
                 _profiles.Add(profile);
@@ -420,8 +420,12 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    partial void OnSelectedProfileChanged(ProfileViewModel? value)
+    // Two-arg partial (CommunityToolkit 8.2+): cancel the deselected profile's force preview so
+    // its temporary color override never outlives the editing session.
+    partial void OnSelectedProfileChanged(ProfileViewModel? oldValue, ProfileViewModel? newValue)
     {
+        oldValue?.ColorSettings.EndForcePreview();
+
         RemoveProfileCommand.NotifyCanExecuteChanged();
         SaveProfileCommand.NotifyCanExecuteChanged();
         AddAltMouseBindingCommand.NotifyCanExecuteChanged();
@@ -450,7 +454,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private void OnProfileAddedCore(Profile profile)
     {
-        var viewModel = new ProfileViewModel(profile, _displayService, _colorControlService, _keyOptions);
+        var viewModel = new ProfileViewModel(profile, _displayService, _colorControlService, _keyOptions, _profileRuntimeService);
         AttachProfile(viewModel);
         _profiles.Add(viewModel);
         SelectedProfile = viewModel;

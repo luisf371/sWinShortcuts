@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Windows.Threading;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 
@@ -11,14 +12,25 @@ namespace sWinShortcuts.ViewModels;
 /// </summary>
 public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
 {
+    private const int ForcePreviewSeconds = 30;
+
     private readonly ColorSettings _model;
     private readonly IColorControlService _colorService;
     private readonly IDisplayService _displayService;
     private readonly bool _allowLiveUpdates;
     private readonly Func<bool>? _parentEnabledCheck;
+    // Owns the preview UI state (checkbox + countdown); ProfileActivationService owns the forced
+    // runtime state (what the worker applies). Null (tests / no runtime) hides the feature.
+    private readonly IProfileRuntimeService? _runtimeService;
     private bool _isEnabled;
     private bool _disposed;
     private ColorVariant _editingVariant = ColorVariant.Primary;
+
+    // Force-preview UI state. The DispatcherTimer is created ONLY when a dispatcher exists —
+    // headless tests drive PreviewTick directly (see StartForcePreview).
+    private bool _isForcePreviewActive;
+    private int _forcePreviewRemainingSeconds;
+    private DispatcherTimer? _previewCountdownTimer;
 
     public event EventHandler? Changed;
 
@@ -27,13 +39,15 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         IDisplayService displayService,
         IColorControlService colorService,
         bool allowLiveUpdates = false,
-        Func<bool>? parentEnabledCheck = null)
+        Func<bool>? parentEnabledCheck = null,
+        IProfileRuntimeService? profileRuntimeService = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
         _allowLiveUpdates = allowLiveUpdates;
         _parentEnabledCheck = parentEnabledCheck;
+        _runtimeService = profileRuntimeService;
 
         _isEnabled = model.IsEnabled;
 
@@ -143,6 +157,13 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
             {
                 _model.IsEnabled = value;
 
+                if (!value)
+                {
+                    // Unchecking grays the whole panel (XAML MultiDataTrigger), so the user can no
+                    // longer uncheck Force preview manually — cancel it here instead.
+                    EndForcePreview();
+                }
+
                 // Notify all display VMs so they can update their AreControlsEnabled
                 foreach (var displayVm in DisplayViewModels)
                 {
@@ -186,6 +207,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
                 // Turning Secondary off snaps editing AND the applied preset back to Primary.
                 IsEditingSecondary = false;
                 _model.SetActiveVariant(ColorVariant.Primary);
+                EndForcePreview(); // a preset that no longer exists has nothing to preview
             }
 
             Changed?.Invoke(this, EventArgs.Empty);
@@ -210,7 +232,117 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
             _editingVariant = target;
             OnPropertyChanged();
             RebuildDisplayViewModels();
+
+            if (_isForcePreviewActive)
+            {
+                // The preview follows the Edit-preset selection: flipping the segmented toggle
+                // during a preview switches the previewed variant live.
+                _runtimeService?.SetForcedColorPreview(_model, target);
+            }
         }
+    }
+
+    // ── 30 s force preview (game profiles) ───────────────────────────────────────────────────────────
+    // A game profile's colors normally apply only while its exe is foreground; while editing, the
+    // GLOBAL Color profile is what's on screen. The preview force-applies the edited profile so
+    // slider drags are visible live, then auto-restores the foreground-appropriate colors at
+    // expiry/cancel. The runtime owns the forced override (never mutates runtime variant state);
+    // this VM owns only the checkbox + countdown.
+
+    /// <summary>Game profiles only — the global Color profile is already live (<c>allowLiveUpdates</c>).</summary>
+    public bool IsForcePreviewAvailable => _runtimeService is not null && !_allowLiveUpdates;
+
+    /// <summary>Bound two-way to the Force preview checkbox. Checking starts (or keeps) the preview;
+    /// unchecking cancels it and restores the foreground-appropriate colors.</summary>
+    public bool IsForcePreviewEnabled
+    {
+        get => _isForcePreviewActive;
+        set
+        {
+            if (value)
+            {
+                StartForcePreview();
+            }
+            else
+            {
+                EndForcePreview();
+            }
+        }
+    }
+
+    /// <summary>Countdown label, e.g. "12s"; empty while no preview is active.</summary>
+    public string ForcePreviewCountdown => _isForcePreviewActive ? $"{_forcePreviewRemainingSeconds}s" : string.Empty;
+
+    private void StartForcePreview()
+    {
+        if (!IsForcePreviewAvailable || _isForcePreviewActive)
+        {
+            return;
+        }
+
+        _forcePreviewRemainingSeconds = ForcePreviewSeconds;
+        _isForcePreviewActive = true;
+        OnPropertyChanged(nameof(IsForcePreviewEnabled));
+        OnPropertyChanged(nameof(IsForcePreviewAvailable));
+        OnPropertyChanged(nameof(ForcePreviewCountdown));
+
+        _runtimeService!.SetForcedColorPreview(_model, _editingVariant);
+
+        // Headless tests drive PreviewTick directly — never construct a DispatcherTimer without a
+        // dispatcher (it would throw, and its ticks could never fire anyway). DispatcherObject
+        // affinity: created and stopped only on this (UI) thread.
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null)
+        {
+            if (_previewCountdownTimer is null)
+            {
+                _previewCountdownTimer = new DispatcherTimer(DispatcherPriority.Render)
+                {
+                    Interval = TimeSpan.FromSeconds(1)
+                };
+                _previewCountdownTimer.Tick += (_, _) => PreviewTick();
+            }
+
+            _previewCountdownTimer.Stop();
+            _previewCountdownTimer.Start();
+        }
+    }
+
+    // Test seam for the countdown: one tick per second while a preview is active.
+    internal void PreviewTick()
+    {
+        if (!_isForcePreviewActive)
+        {
+            return;
+        }
+
+        _forcePreviewRemainingSeconds--;
+        OnPropertyChanged(nameof(ForcePreviewCountdown));
+
+        if (_forcePreviewRemainingSeconds <= 0)
+        {
+            EndForcePreview(); // raises IsForcePreviewEnabled, so the bound checkbox unchecks
+        }
+    }
+
+    /// <summary>Cancels the preview (manual uncheck, expiry, profile/color disable, selection change,
+    /// removal, dispose) — the runtime then re-applies the foreground-appropriate colors.</summary>
+    public void EndForcePreview()
+    {
+        if (!_isForcePreviewActive)
+        {
+            return;
+        }
+
+        _previewCountdownTimer?.Stop();
+        _isForcePreviewActive = false;
+        _forcePreviewRemainingSeconds = 0;
+        OnPropertyChanged(nameof(IsForcePreviewEnabled));
+        OnPropertyChanged(nameof(IsForcePreviewAvailable));
+        OnPropertyChanged(nameof(ForcePreviewCountdown));
+
+        // The service performs the auto-restore.
+        _runtimeService?.ClearForcedColorPreview();
     }
 
 
@@ -225,6 +357,10 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         {
             return;
         }
+
+        // Cancel an active preview BEFORE the _disposed fence: stop the countdown timer (this is
+        // its dispatcher thread) and restore the foreground-appropriate colors.
+        EndForcePreview();
 
         _disposed = true;
         _displayService.DisplaysChanged -= OnDisplaysChanged;

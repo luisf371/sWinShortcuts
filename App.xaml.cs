@@ -73,6 +73,10 @@ public partial class App : System.Windows.Application
         // the host starts and any arm event can fire. Disposal is owned by the host.
         _ = _host.Services.GetRequiredService<RapidFireStatusService>();
 
+        // Eager (symmetry with the dot): resolve before the host starts so the first color-preset
+        // hotkey press never pays the window-build jank. Disposal is owned by the host.
+        _ = _host.Services.GetRequiredService<ColorProfileToastService>();
+
         await _host.StartAsync();
 
         var tray = _host.Services.GetRequiredService<ISystemTrayService>();
@@ -95,6 +99,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<ILoggerService, FileLoggerService>();
         services.AddSingleton<ICrosshairService, CrosshairService>();
         services.AddSingleton<RapidFireStatusService>();
+        services.AddSingleton<ColorProfileToastService>();
         services.AddSingleton<ProfileActivationService>();
         services.AddSingleton<IProfileRuntimeService>(
             provider => provider.GetRequiredService<ProfileActivationService>());
