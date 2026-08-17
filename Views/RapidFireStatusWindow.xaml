@@ -1,0 +1,22 @@
+<Window x:Class="sWinShortcuts.Views.RapidFireStatusWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Rapid Fire Status"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Focusable="False"
+        IsHitTestVisible="False"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        Left="0"
+        Top="0">
+    <!-- Click-through status dot (~2 mm / 8 raw px @96 dpi) for the sticky Rapid Fire arm.
+         Ex-styles (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) are OR-ed in from
+         code-behind once the HWND exists. Left/Top are pinned non-NaN so WPF's Manual startup
+         location never re-cascades over our raw SetWindowPos positioning. -->
+    <Ellipse x:Name="StatusDot"/>
+</Window>

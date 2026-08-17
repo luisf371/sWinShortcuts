@@ -24,6 +24,19 @@ public interface IInputHookService : IDisposable
     event EventHandler<bool>? RightButtonStateChanged;
 
     /// <summary>
+    /// Raised when the Rapid Fire arm or its status MAY have changed (arm/disarm/re-target, owner
+    /// release, foreground publication, activation generation catch-up, session boundaries).
+    /// The event carries no payload on purpose: handlers must re-query GetRapidFireArmStatus()
+    /// and dedup — spurious raises are permitted. Raised from many threads (hook dispatcher,
+    /// input worker, reconcile/UI thread, SystemEvents, pool); handlers must be non-blocking
+    /// (enqueue-only) and exception-isolated.
+    /// </summary>
+    event EventHandler? RapidFireArmChanged;
+
+    /// <summary>Current Rapid Fire arm snapshot (see <see cref="RapidFireArmStatus"/>).</summary>
+    RapidFireArmStatus GetRapidFireArmStatus();
+
+    /// <summary>
     /// Arms/disarms right-button observation for the crosshair overlay's hide-while-RMB-held mode.
     /// While disabled (the default, and whenever no crosshair profile is active) the mouse hook does
     /// zero extra work. Arming re-publishes the CURRENT physical button state once, so a button-up

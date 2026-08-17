@@ -13,6 +13,8 @@ public sealed class FakeInputHookService : IInputHookService
 
     public event EventHandler<bool>? RightButtonStateChanged;
 
+    public event EventHandler? RapidFireArmChanged;
+
     private int _rightButtonObservation;
 
     /// <summary>Last value passed to SetRightButtonObservation (volatile read).</summary>
@@ -27,6 +29,23 @@ public sealed class FakeInputHookService : IInputHookService
     public void RaiseRightButton(bool isDown)
     {
         RightButtonStateChanged?.Invoke(this, isDown);
+    }
+
+    /// <summary>Settable status returned by GetRapidFireArmStatus().</summary>
+    public RapidFireArmStatus RapidFireArmStatus { get; set; } = RapidFireArmStatus.Off;
+
+    public RapidFireArmStatus GetRapidFireArmStatus() => RapidFireArmStatus;
+
+    /// <summary>Test helper: fire RapidFireArmChanged (handlers must re-query, as in production).</summary>
+    public void RaiseRapidFireArmChanged()
+    {
+        RapidFireArmChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Test helper: fire ActiveProfileChanged with a specific (or null) profile.</summary>
+    public void RaiseActiveProfileChanged(Profile? profile)
+    {
+        ActiveProfileChanged?.Invoke(this, profile);
     }
 
     public bool HookWatchdogEnabled { get; set; } = true;

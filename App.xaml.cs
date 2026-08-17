@@ -62,9 +62,19 @@ public partial class App : System.Windows.Application
         try { AppSettings.MigrateLegacyColorToggleKey(settingsPath); }
         catch (Exception ex) { CrashReporter.Write("App.ToggleKey.Migrate", ex); }
 
+        // Explicit ownership BEFORE anything can instantiate an overlay: WPF auto-assigns
+        // Application.MainWindow to the FIRST-created Window, so the status dot (resolved below)
+        // or the crosshair could become the MainWindow — under ShutdownMode=OnMainWindowClose,
+        // closing that overlay would shut the whole app down.
+        var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+        MainWindow = mainWindow;
+
+        // Eager: the status dot subscribes RapidFireArmChanged/ActiveProfileChanged here, before
+        // the host starts and any arm event can fire. Disposal is owned by the host.
+        _ = _host.Services.GetRequiredService<RapidFireStatusService>();
+
         await _host.StartAsync();
 
-        var mainWindow = _host.Services.GetRequiredService<MainWindow>();
         var tray = _host.Services.GetRequiredService<ISystemTrayService>();
         tray.Initialize(mainWindow);
 
@@ -84,6 +94,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IColorControlService, NvidiaColorControlService>();
         services.AddSingleton<ILoggerService, FileLoggerService>();
         services.AddSingleton<ICrosshairService, CrosshairService>();
+        services.AddSingleton<RapidFireStatusService>();
         services.AddSingleton<ProfileActivationService>();
         services.AddSingleton<IProfileRuntimeService>(
             provider => provider.GetRequiredService<ProfileActivationService>());
