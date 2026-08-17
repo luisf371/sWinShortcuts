@@ -153,6 +153,10 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public bool IsColorProfile => Model.IsColorProfile;
 
+    // A regular game profile (neither the Windows nor the global Color built-in). Profile kind is
+    // immutable per instance, so no change notifications are needed.
+    public bool IsCustomProfile => !IsWindowsProfile && !IsColorProfile;
+
     public AltMouseViewModel AltMouse { get; }
 
     public ObservableCollection<AltMouseBindingEntryViewModel> AltMouseBindings => AltMouse.Bindings;

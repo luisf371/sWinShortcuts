@@ -117,6 +117,18 @@ public sealed partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private bool advancedModeEnabled;
 
+    // Profile-editor tab strip (MainWindow.xaml). Positional indices — must match the TabItem
+    // order there. Keys/Advanced are custom-profile only; Display hides for Windows; System hides
+    // for Color. Not persisted: in-session retention is free and a saved index adds write churn
+    // for no value (it is coerced per profile kind anyway).
+    public const int TabIndexKeys = 0;
+    public const int TabIndexAdvanced = 1;
+    public const int TabIndexDisplay = 2;
+    public const int TabIndexSystem = 3;
+
+    [ObservableProperty]
+    private int selectedTabIndex;
+
     [ObservableProperty]
     private Key colorToggleKey = Key.None;
 
@@ -143,6 +155,7 @@ public sealed partial class MainViewModel : ViewModelBase
             }
 
             SelectedProfile = _profiles.FirstOrDefault();
+            CoerceSelectedTabIndex(); // startup may restore LastProfile = Color/Windows below
         }
         finally
         {
@@ -426,6 +439,8 @@ public sealed partial class MainViewModel : ViewModelBase
     {
         oldValue?.ColorSettings.EndForcePreview();
 
+        CoerceSelectedTabIndex();
+
         RemoveProfileCommand.NotifyCanExecuteChanged();
         SaveProfileCommand.NotifyCanExecuteChanged();
         AddAltMouseBindingCommand.NotifyCanExecuteChanged();
@@ -435,6 +450,39 @@ public sealed partial class MainViewModel : ViewModelBase
         AddCombinedMappingCommand.NotifyCanExecuteChanged();
         RemoveCombinedMappingCommand.NotifyCanExecuteChanged();
         RemoveAllCombinedMappingsCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnAdvancedModeEnabledChanged(bool value) => CoerceSelectedTabIndex();
+
+    // Pure tab-index coercion: WPF keeps rendering a collapsed-but-selected tab, so every
+    // profile-kind / advanced-mode change must re-land the selection on a visible tab.
+    public static int CoerceTabIndex(int requested, bool isWindowsProfile, bool isColorProfile, bool advancedModeEnabled)
+    {
+        var visibleKeys = !isWindowsProfile && !isColorProfile;
+        var visibleAdvanced = visibleKeys && advancedModeEnabled;
+        var visibleDisplay = !isWindowsProfile;
+        var visibleSystem = !isColorProfile;
+
+        return requested switch
+        {
+            TabIndexKeys when visibleKeys => TabIndexKeys,
+            TabIndexAdvanced when visibleAdvanced => TabIndexAdvanced,
+            TabIndexDisplay when visibleDisplay => TabIndexDisplay,
+            TabIndexSystem when visibleSystem => TabIndexSystem,
+            _ => isColorProfile ? TabIndexDisplay
+               : isWindowsProfile ? TabIndexSystem
+               : TabIndexKeys
+        };
+    }
+
+    private void CoerceSelectedTabIndex()
+    {
+        var profile = SelectedProfile;
+        SelectedTabIndex = CoerceTabIndex(
+            SelectedTabIndex,
+            profile?.IsWindowsProfile ?? false,
+            profile?.IsColorProfile ?? false,
+            AdvancedModeEnabled);
     }
 
     private void OnProfileAdded(object? sender, Profile profile)

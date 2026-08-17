@@ -77,7 +77,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,12,0">
                     <TextBlock Text="Preset toggle key" FontWeight="SemiBold"/>
-                    <TextBlock Text="Switches the active profile between Primary and Secondary. Choose an unused key; it still reaches the active app."
+                    <TextBlock Text="Switches the active profile between Primary and Secondary."
                                Foreground="{DynamicResource ForegroundSecondaryBrush}"
                                FontSize="11"
                                TextWrapping="Wrap"/>
@@ -110,7 +110,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,12,0">
                     <TextBlock Text="Rapid-fire toggle key" FontWeight="SemiBold"/>
-                    <TextBlock Text="Toggles Rapid Fire for the current profile when Advanced Mode is enabled. The key still reaches the active app."
+                    <TextBlock Text="Toggles Rapid Fire for the current profile."
                                Foreground="{DynamicResource ForegroundSecondaryBrush}"
                                FontSize="11"
                                TextWrapping="Wrap"/>

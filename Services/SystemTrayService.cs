@@ -187,8 +187,11 @@ public sealed class SystemTrayService : ISystemTrayService
 
             _mainWindow.Show();
             _mainWindow.Activate();
+            // End the foreground flash at the window's pinned preference, not blindly at false —
+            // otherwise a tray restore would silently unpin an always-on-top window.
+            var restoreTopmost = _mainWindow is MainWindow pinnedWindow ? pinnedWindow.AlwaysOnTopDesired : false;
             _mainWindow.Topmost = true;
-            _mainWindow.Topmost = false;
+            _mainWindow.Topmost = restoreTopmost;
             _mainWindow.Focus();
         });
     }
@@ -210,8 +213,10 @@ public sealed class SystemTrayService : ISystemTrayService
 
             _mainWindow.Show();
             _mainWindow.Activate();
+            // Same pinned-preference restore as ShowMainWindow above.
+            var restoreTopmost = _mainWindow is MainWindow pinnedWindow ? pinnedWindow.AlwaysOnTopDesired : false;
             _mainWindow.Topmost = true;
-            _mainWindow.Topmost = false;
+            _mainWindow.Topmost = restoreTopmost;
             _mainWindow.Focus();
             _application.Shutdown();
         });

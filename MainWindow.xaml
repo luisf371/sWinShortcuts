@@ -51,6 +51,52 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
+
+        <!-- Keyed (window-local on purpose: promoting it would restyle the Settings dialog).
+             Page scroller for the profile editor tabs; overlays the minimal scrollbar inside
+             the right padding. Pages set their own Padding (the old single-scroller
+             24,16,28,24). -->
+        <Style x:Key="SettingsScrollViewerStyle" TargetType="ScrollViewer">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollViewer">
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}" />
+                            <Border Margin="{TemplateBinding Padding}">
+                                <ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
+                                                        CanContentScroll="{TemplateBinding CanContentScroll}"
+                                                        Content="{TemplateBinding Content}"
+                                                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                        ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                            </Border>
+                            <ScrollBar x:Name="PART_VerticalScrollBar"
+                                       HorizontalAlignment="Right"
+                                       Margin="0,16,1,16"
+                                       Orientation="Vertical"
+                                       Minimum="0"
+                                       Maximum="{TemplateBinding ScrollableHeight}"
+                                       ViewportSize="{TemplateBinding ViewportHeight}"
+                                       Value="{TemplateBinding VerticalOffset}"
+                                       Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
+                            <ScrollBar x:Name="PART_HorizontalScrollBar"
+                                       VerticalAlignment="Bottom"
+                                       Margin="16,0,16,16"
+                                       Orientation="Horizontal"
+                                       Minimum="0"
+                                       Maximum="{TemplateBinding ScrollableWidth}"
+                                       ViewportSize="{TemplateBinding ViewportWidth}"
+                                       Value="{TemplateBinding HorizontalOffset}"
+                                       Visibility="Collapsed" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
@@ -75,6 +121,15 @@
                 <StackPanel Orientation="Horizontal"
                              HorizontalAlignment="Right"
                              VerticalAlignment="Top">
+                    <Button x:Name="PinButton"
+                            Click="PinButton_Click"
+                            Style="{StaticResource TitleBarButtonStyle}"
+                            WindowChrome.IsHitTestVisibleInChrome="True"
+                            ToolTipService.InitialShowDelay="0"
+                            ToolTipService.Placement="Right"
+                            Margin="0,0,4,0">
+                        <TextBlock x:Name="PinGlyph" Text="&#xE718;" FontSize="12" FontFamily="Segoe MDL2 Assets" />
+                    </Button>
                     <Button Click="SettingsButton_Click"
                             Style="{StaticResource TitleBarButtonStyle}"
                             WindowChrome.IsHitTestVisibleInChrome="True"
@@ -159,12 +214,58 @@
                 Background="{DynamicResource BackgroundElevatedBrush}"
                 CornerRadius="12"
                 ClipToBounds="True">
-            <ScrollViewer Margin="0"
-                          Padding="24,16,28,24"
-                          Background="Transparent"
-                          VerticalScrollBarVisibility="Auto"
-                          HorizontalScrollBarVisibility="Disabled">
-                <ScrollViewer.Resources>
+                <ContentControl Content="{Binding SelectedProfile}">
+                                        <ContentControl.ContentTemplate>
+                        <DataTemplate DataType="{x:Type vm:ProfileViewModel}">
+                            <!-- Docked root, NOT a vertical StackPanel: a StackPanel measures its
+                                 children with infinite height, which makes the tab pages'
+                                 ScrollViewers see an unbounded viewport — no scrolling, content
+                                 overflows the card. Docked header + filling content keeps the
+                                 TabControl's height finite. -->
+                            <DockPanel Margin="0">
+                                <CheckBox DockPanel.Dock="Top" Margin="24,16,24,8"
+                                          IsChecked="{Binding IsEnabled}"
+                                          IsEnabled="{Binding CanToggleEnabled}"
+                                          VerticalAlignment="Center"
+                                          HorizontalAlignment="Left"
+                                          VerticalContentAlignment="Center"
+                                          Padding="5">
+                                    <TextBlock Text="{Binding Name}"
+                                               FontSize="20"
+                                               FontWeight="Bold"
+                                               Margin="0,0,0,5"
+                                               VerticalAlignment="Center" />
+                                </CheckBox>
+
+                                <DockPanel IsEnabled="{Binding CanEditContent}"
+                                           Style="{StaticResource DisabledContentShadeStyle}">
+                                        <StackPanel DockPanel.Dock="Top" Margin="24,0,28,8"
+                                                    Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
+                                        <TextBlock Text="Executable" Margin="0,0,0,4" />
+                                        <DockPanel>
+                                            <Button Content="Modify"
+                                                    Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
+                                                    DockPanel.Dock="Right"
+                                                    Margin="8,0,0,0"
+                                                    Width="100" />
+                                            <!-- F-017: display-only. The inline PropertyChanged binding
+                                                 let unvalidated (empty / non-.exe / duplicate) targets
+                                                 persist straight to the model on every keystroke. All
+                                                 executable edits now go through the validated Modify flow. -->
+                                            <TextBox Text="{Binding Executable, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     ToolTip="Use Modify to change the target executable (validated)." />
+                                        </DockPanel>
+                                    </StackPanel>
+
+                    <!-- Pinned tab strip; each tab page brings its own ScrollViewer so the
+                         strip never scrolls away. Direct-content TabItems keep state (scroll
+                         position, DataGrid selection) across tab switches. -->
+                    <TabControl Margin="0,12,0,0"
+                                Style="{StaticResource SettingsTabControlStyle}"
+                                ItemContainerStyle="{StaticResource SettingsTabItemStyle}"
+                                SelectedIndex="{Binding DataContext.SelectedTabIndex, ElementName=RootWindow, Mode=TwoWay}">
+                        <TabControl.Resources>
                     <SolidColorBrush x:Key="ScrollBarTrackBrush" Color="#331E2A3B" />
                     <SolidColorBrush x:Key="ScrollBarThumbBrush" Color="#88E1E1E1" />
                     <Style x:Key="MinimalScrollBarButtonStyle" TargetType="RepeatButton">
@@ -236,86 +337,17 @@
                             </Trigger>
                         </Style.Triggers>
                     </Style>
-                </ScrollViewer.Resources>
-                <ScrollViewer.Template>
-                    <ControlTemplate TargetType="ScrollViewer">
-                        <Grid>
-                            <Border Background="{TemplateBinding Background}" />
-                            <Border Margin="{TemplateBinding Padding}">
-                                <ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
-                                                        CanContentScroll="{TemplateBinding CanContentScroll}"
-                                                        Content="{TemplateBinding Content}"
-                                                        ContentTemplate="{TemplateBinding ContentTemplate}"
-                                                        ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
-                                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
-                            </Border>
-                            <ScrollBar x:Name="PART_VerticalScrollBar"
-                                       HorizontalAlignment="Right"
-                                       Margin="0,16,1,16"
-                                       Orientation="Vertical"
-                                       Minimum="0"
-                                       Maximum="{TemplateBinding ScrollableHeight}"
-                                       ViewportSize="{TemplateBinding ViewportHeight}"
-                                       Value="{TemplateBinding VerticalOffset}"
-                                       Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
-                            <ScrollBar x:Name="PART_HorizontalScrollBar"
-                                       VerticalAlignment="Bottom"
-                                       Margin="16,0,16,16"
-                                       Orientation="Horizontal"
-                                       Minimum="0"
-                                       Maximum="{TemplateBinding ScrollableWidth}"
-                                       ViewportSize="{TemplateBinding ViewportWidth}"
-                                       Value="{TemplateBinding HorizontalOffset}"
-                                       Visibility="Collapsed" />
-                        </Grid>
-                    </ControlTemplate>
-                </ScrollViewer.Template>
-                <ContentControl Content="{Binding SelectedProfile}">
-                                        <ContentControl.ContentTemplate>
-                        <DataTemplate DataType="{x:Type vm:ProfileViewModel}">
-                            <StackPanel Margin="0">
-                                <CheckBox Margin="0,0,0,8"
-                                          IsChecked="{Binding IsEnabled}"
-                                          IsEnabled="{Binding CanToggleEnabled}"
-                                          VerticalAlignment="Center"
-                                          HorizontalAlignment="Left"
-                                          VerticalContentAlignment="Center"
-                                          Padding="5">
-                                    <TextBlock Text="{Binding Name}"
-                                               FontSize="20"
-                                               FontWeight="Bold"
-                                               Margin="0,0,0,5"
-                                               VerticalAlignment="Center" />
-                                </CheckBox>
-
-                                <StackPanel IsEnabled="{Binding CanEditContent}"
-                                            Style="{StaticResource DisabledContentShadeStyle}">
-                                    <StackPanel Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
-                                        <StackPanel Margin="0,0,0,8"
-                                                    Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
-                                        <TextBlock Text="Executable" Margin="0,0,0,4" />
-                                        <DockPanel>
-                                            <Button Content="Modify"
-                                                    Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
-                                                    DockPanel.Dock="Right"
-                                                    Margin="8,0,0,0"
-                                                    Width="100" />
-                                            <!-- F-017: display-only. The inline PropertyChanged binding
-                                                 let unvalidated (empty / non-.exe / duplicate) targets
-                                                 persist straight to the model on every keystroke. All
-                                                 executable edits now go through the validated Modify flow. -->
-                                            <TextBox Text="{Binding Executable, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     ToolTip="Use Modify to change the target executable (validated)." />
-                                        </DockPanel>
-                                    </StackPanel>
-
+                        </TabControl.Resources>
+                        <TabItem Header="Keys"
+                                 Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
+                            <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
+                                          Padding="24,16,28,24">
+                                <StackPanel>
                                     <!-- Combined Key Mappings (Global + Right-click) -->
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
                                                 <CheckBox Content="Key Mappings"
                                                           IsChecked="{Binding CombinedKeyMappingsEnabled, Mode=TwoWay}"
                                                           Margin="0"
@@ -472,7 +504,7 @@
                                                         IsSnapToTickEnabled="True"
                                                         Width="200"
                                                         VerticalAlignment="Center"
-                                                        Margin="8,0,8,0" />
+                                                        Margin="0,0,8,0" />
                                                 <TextBlock Text="{Binding AltMouse.HoldThresholdMilliseconds, StringFormat='{}{0} ms'}"
                                                            VerticalAlignment="Center"
                                                            Width="50"
@@ -580,11 +612,35 @@
                                             </Grid>
                                         </StackPanel>
                                     </GroupBox>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                        <!-- Custom profiles only, and only while Advanced Mode is on. The
+                             per-GroupBox AdvancedModeEnabled bindings below remain as
+                             belt-and-suspenders. -->
+                        <TabItem Header="Advanced">
+                            <TabItem.Style>
+                                <Style TargetType="TabItem" BasedOn="{StaticResource SettingsTabItemStyle}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding IsCustomProfile}" Value="True" />
+                                                <Condition Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=DataContext.AdvancedModeEnabled}" Value="True" />
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </MultiDataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TabItem.Style>
+                            <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
+                                          Padding="24,16,28,24">
+                                <StackPanel>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
                                                 <CheckBox Content="Rapid Fire"
                                                           IsChecked="{Binding RapidFireEnabled}"
                                                           Margin="0"
@@ -623,7 +679,7 @@
                                                         Margin="0,0,8,0" />
                                                 <TextBlock Text="{Binding RapidFireIntervalMilliseconds, StringFormat='{}{0} ms'}"
                                                            VerticalAlignment="Center"
-                                                           Width="55"
+                                                           Width="50"
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold" />
                                             </StackPanel>
@@ -641,7 +697,7 @@
                                                         Margin="0,0,8,0" />
                                                 <TextBlock Text="{Binding RapidFireJitterMilliseconds, StringFormat='{}{0} ms'}"
                                                            VerticalAlignment="Center"
-                                                           Width="55"
+                                                           Width="50"
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
@@ -884,10 +940,18 @@
                                                        Opacity="0.7" />
                                         </StackPanel>
                                     </GroupBox>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                        <TabItem Header="Display"
+                                 Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                            <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
+                                          Padding="24,16,28,24">
+                                <StackPanel>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                              Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                                         <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
                                                 <CheckBox Content="Crosshair Overlay"
                                                           IsChecked="{Binding CrosshairEnabled}"
                                                           Margin="0"
@@ -927,102 +991,6 @@
                                             -->
                                         </StackPanel>
                                     </GroupBox>
-                                    <GroupBox Padding="16" Margin="0,0,0,8">
-                                        <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
-                                                <CheckBox Content="Caps Lock"
-                                                          IsChecked="{Binding CapsLockEnabled}"
-                                                          Margin="0"
-                                                          VerticalAlignment="Center" />
-                                                <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Normal mirrors Caps Lock down/up. 2x Normal sends one full key press on Caps Lock down and another on release. Disabled suppresses the key. Remap Key substitutes the selected output key."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
-                                            </StackPanel>
-                                        </GroupBox.Header>
-                                        <StackPanel Margin="0,8,0,0"
-                                                    IsEnabled="{Binding CapsLockEnabled}"
-                                                    Tag="{Binding CapsLockEnabled}"
-                                                    Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <TextBlock Text="Mode" VerticalAlignment="Center" />
-                                                <ComboBox ItemsSource="{Binding DataContext.CapsLockModes, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding CapsLockMode, Mode=TwoWay}"
-                                                          Margin="8,0,0,0" Width="160">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock>
-                                                                <TextBlock.Style>
-                                                                    <Style TargetType="TextBlock">
-                                                                        <Setter Property="Text" Value="{Binding}" />
-                                                                        <Style.Triggers>
-                                                                            <DataTrigger Binding="{Binding}"
-                                                                                         Value="{x:Static models:CapsLockMode.DoubleNormal}">
-                                                                                <Setter Property="Text" Value="2x Normal" />
-                                                                            </DataTrigger>
-                                                                        </Style.Triggers>
-                                                                    </Style>
-                                                                </TextBlock.Style>
-                                                            </TextBlock>
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <CheckBox Content="Remap Key"
-                                                          IsChecked="{Binding CapsLockRemapEnabled}"
-                                                          IsEnabled="{Binding CanRemapCapsLock}"
-                                                          VerticalAlignment="Center" />
-                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding CapsLockRemapKey, Mode=TwoWay}"
-                                                          IsEnabled="{Binding CanSelectCapsLockRemapKey}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="8,0,0,0" Width="160">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
-                                            </StackPanel>
-                                        </StackPanel>
-                                    </GroupBox>
-
-                                    <GroupBox Padding="16" Margin="0,0,0,8"
-                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfTrue}}">
-                                        <GroupBox.Header>
-                                            <CheckBox Content="Windows Launcher"
-                                                      IsChecked="{Binding WindowsLauncherEnabled}"
-                                                      Margin="0"
-                                                      VerticalAlignment="Center" />
-                                        </GroupBox.Header>
-                                        <StackPanel Margin="0,8,0,0"
-                                                    IsEnabled="{Binding WindowsLauncherEnabled}"
-                                                    Tag="{Binding WindowsLauncherEnabled}"
-                                                    Style="{StaticResource FeatureToggleContentStyle}">
-                                            <ItemsControl ItemsSource="{Binding WindowsLaunchers}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate DataType="{x:Type vm:WindowsLauncherEntryViewModel}">
-                                                        <DockPanel Margin="0,4,0,4">
-                                                            <StackPanel Orientation="Horizontal" Width="140" DockPanel.Dock="Left" VerticalAlignment="Center">
-                                                                <TextBlock Text="Win+" Foreground="{StaticResource ForegroundPrimaryBrush}" />
-                                                                <TextBlock Text="{Binding Key, Converter={StaticResource KeyDisplayConverter}}" Foreground="{StaticResource ForegroundPrimaryBrush}" />
-                                                            </StackPanel>
-                                                            <CheckBox Content="Run as admin" IsChecked="{Binding RunAsAdministrator}" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" />
-                                                            <Button Content="Browse"
-                                                                    Command="{Binding DataContext.BrowseLauncherTargetCommand, ElementName=RootWindow}"
-                                                                    CommandParameter="{Binding}"
-                                                                    DockPanel.Dock="Right"
-                                                                    Margin="8,0,0,0"
-                                                                    Width="100" />
-                                                            <TextBox Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}" />
-                                                        </DockPanel>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </GroupBox>
-                                </StackPanel>
 
                                 <GroupBox Padding="16" Margin="0,0,0,8"
                                           Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
@@ -1266,13 +1234,119 @@
                                         </ItemsControl>
                                     </StackPanel>
                                 </GroupBox>
-                            </StackPanel>
-                        </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                        <TabItem Header="System"
+                                 Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
+                            <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
+                                          Padding="24,16,28,24">
+                                <StackPanel>
+                                    <GroupBox Padding="16" Margin="0,0,0,8">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
+                                                <CheckBox Content="Caps Lock"
+                                                          IsChecked="{Binding CapsLockEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Normal mirrors Caps Lock down/up. 2x Normal sends one full key press on Caps Lock down and another on release. Disabled suppresses the key. Remap Key substitutes the selected output key."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding CapsLockEnabled}"
+                                                    Tag="{Binding CapsLockEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                <TextBlock Text="Mode" VerticalAlignment="Center" Width="140" />
+                                                <ComboBox ItemsSource="{Binding DataContext.CapsLockModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding CapsLockMode, Mode=TwoWay}"
+                                                          Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock>
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Text" Value="{Binding}" />
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding}"
+                                                                                         Value="{x:Static models:CapsLockMode.DoubleNormal}">
+                                                                                <Setter Property="Text" Value="2x Normal" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Remap Key"
+                                                          IsChecked="{Binding CapsLockRemapEnabled}"
+                                                          IsEnabled="{Binding CanRemapCapsLock}"
+                                                          VerticalAlignment="Center" />
+                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding CapsLockRemapKey, Mode=TwoWay}"
+                                                          IsEnabled="{Binding CanSelectCapsLockRemapKey}"
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                                          Margin="8,0,0,0" Width="160">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </GroupBox>
+
+                                    <GroupBox Padding="16" Margin="0,0,0,8"
+                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfTrue}}">
+                                        <GroupBox.Header>
+                                            <CheckBox Content="Windows Launcher"
+                                                      IsChecked="{Binding WindowsLauncherEnabled}"
+                                                      Margin="0"
+                                                      VerticalAlignment="Center" />
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding WindowsLauncherEnabled}"
+                                                    Tag="{Binding WindowsLauncherEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <ItemsControl ItemsSource="{Binding WindowsLaunchers}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type vm:WindowsLauncherEntryViewModel}">
+                                                        <DockPanel Margin="0,4,0,4">
+                                                            <StackPanel Orientation="Horizontal" Width="140" DockPanel.Dock="Left" VerticalAlignment="Center">
+                                                                <TextBlock Text="Win+" Foreground="{StaticResource ForegroundPrimaryBrush}" />
+                                                                <TextBlock Text="{Binding Key, Converter={StaticResource KeyDisplayConverter}}" Foreground="{StaticResource ForegroundPrimaryBrush}" />
+                                                            </StackPanel>
+                                                            <CheckBox Content="Run as admin" IsChecked="{Binding RunAsAdministrator}" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" />
+                                                            <Button Content="Browse"
+                                                                    Command="{Binding DataContext.BrowseLauncherTargetCommand, ElementName=RootWindow}"
+                                                                    CommandParameter="{Binding}"
+                                                                    DockPanel.Dock="Right"
+                                                                    Margin="8,0,0,0"
+                                                                    Width="100" />
+                                                            <TextBox Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}" />
+                                                        </DockPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </GroupBox>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+                    </TabControl>
+                            </DockPanel>
+                        </DockPanel>
                         </DataTemplate>
                     </ContentControl.ContentTemplate>
 
                 </ContentControl>
-            </ScrollViewer>
         </Border>
         </Grid>
     </Grid>

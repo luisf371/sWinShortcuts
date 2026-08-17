@@ -31,6 +31,13 @@ public partial class MainWindow : Window
     private System.Windows.Threading.DispatcherTimer? _windowStateSaveTimer;
     private const int WM_NCLBUTTONDBLCLK = 0x00A3; // Non-client double-click message
 
+    // User's always-on-top preference (persisted under [App] AlwaysOnTop; default ON). Kept apart
+    // from the live Topmost property because the tray-restore foreground flash temporarily forces
+    // Topmost=true and must then restore the pinned state, not blindly clear it.
+    private bool _alwaysOnTopDesired = true;
+
+    public bool AlwaysOnTopDesired => _alwaysOnTopDesired;
+
     public MainWindow(MainViewModel viewModel, Services.IStartupService startupService, Services.ILoggerService logger, Services.IInputHookService inputHook)
     {
         InitializeComponent();
@@ -171,6 +178,9 @@ public partial class MainWindow : Window
             _startupProfileName = ini.GetValue("App", "LastProfile")?.Trim();
             _lastProfileName = _startupProfileName;
 
+            // Always-on-top default-on: only the literal "false" disables (missing key = pinned).
+            _alwaysOnTopDesired = ini.GetValue("App", "AlwaysOnTop") != "false";
+
             // Start-minimized is an explicit user preference persisted under [App] by the Settings dialog.
             // Fall back to the legacy [Window] StartMinimized value once for upgrades, then stop using it.
             var startMinimizedRaw = ini.GetValue("App", "StartMinimized");
@@ -226,6 +236,9 @@ public partial class MainWindow : Window
         {
             // Ignore errors loading window state
         }
+
+        // Outside the try so a settings-load failure still applies the default (pinned).
+        ApplyAlwaysOnTop();
     }
 
     private void SaveWindowState()
@@ -278,6 +291,33 @@ public partial class MainWindow : Window
         // live value back into the view-model so the gray-out agrees after the modal closes.
         _viewModel.AdvancedModeEnabled = _inputHook.AdvancedModeEnabled;
         RefreshToggleKeys();
+    }
+
+    private void PinButton_Click(object sender, RoutedEventArgs e)
+    {
+        _alwaysOnTopDesired = !_alwaysOnTopDesired;
+        ApplyAlwaysOnTop();
+
+        // Single mutation point: AlwaysOnTop is written ONLY on an explicit toggle here — NOT in
+        // ApplySharedSettings, which runs on every profile switch and would add write churn.
+        UpdateSettings(ini => ini.SetValue("App", "AlwaysOnTop", _alwaysOnTopDesired ? "true" : "false"));
+    }
+
+    private void ApplyAlwaysOnTop()
+    {
+        Topmost = _alwaysOnTopDesired;
+        PinGlyph.Text = _alwaysOnTopDesired ? "" : ""; // Segoe MDL2: Pin / Unpin
+        PinButton.ToolTip = _alwaysOnTopDesired
+            ? "Always on top (click to disable)"
+            : "Always on top (click to enable)";
+    }
+
+    // Brief topmost flash to force the window above the foreground app, then restore the pinned
+    // state — a blind `Topmost = false` would silently unpin an always-on-top window.
+    private void FlashToForeground()
+    {
+        Topmost = true;
+        Topmost = _alwaysOnTopDesired;
     }
 
     private void RefreshToggleKeys()
@@ -473,8 +513,7 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(new Action(() =>
         {
             Activate();
-            Topmost = true;
-            Topmost = false;
+            FlashToForeground();
             Focus();
         }));
     }
