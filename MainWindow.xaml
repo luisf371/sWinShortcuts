@@ -230,33 +230,34 @@
                                           HorizontalAlignment="Left"
                                           VerticalContentAlignment="Center"
                                           Padding="5">
-                                    <TextBlock Text="{Binding Name}"
-                                               FontSize="20"
-                                               FontWeight="Bold"
-                                               Margin="0,0,0,5"
-                                               VerticalAlignment="Center" />
+                                    <!-- Edit icon sits immediately right of the name (StackPanel
+                                         layout follows the name's length). F-017: executable edits
+                                         go through the validated Modify flow only. -->
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}"
+                                                   FontSize="20"
+                                                   FontWeight="Bold"
+                                                   Margin="0,0,0,5"
+                                                   VerticalAlignment="Center" />
+                                        <Button Content="&#xE70F;"
+                                                FontFamily="Segoe MDL2 Assets"
+                                                FontSize="14"
+                                                Width="24"
+                                                Height="24"
+                                                Padding="0"
+                                                Margin="8,0,0,5"
+                                                VerticalAlignment="Center"
+                                                Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
+                                                Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}"
+                                                ToolTip="Edit executable target (validated)"
+                                                ToolTipService.InitialShowDelay="0"
+                                                ToolTipService.Placement="Right"
+                                                AutomationProperties.Name="Edit executable" />
+                                    </StackPanel>
                                 </CheckBox>
 
                                 <DockPanel IsEnabled="{Binding CanEditContent}"
                                            Style="{StaticResource DisabledContentShadeStyle}">
-                                        <StackPanel DockPanel.Dock="Top" Margin="24,0,28,8"
-                                                    Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
-                                        <TextBlock Text="Executable" Margin="0,0,0,4" />
-                                        <DockPanel>
-                                            <Button Content="Modify"
-                                                    Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
-                                                    DockPanel.Dock="Right"
-                                                    Margin="8,0,0,0"
-                                                    Width="100" />
-                                            <!-- F-017: display-only. The inline PropertyChanged binding
-                                                 let unvalidated (empty / non-.exe / duplicate) targets
-                                                 persist straight to the model on every keystroke. All
-                                                 executable edits now go through the validated Modify flow. -->
-                                            <TextBox Text="{Binding Executable, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     ToolTip="Use Modify to change the target executable (validated)." />
-                                        </DockPanel>
-                                    </StackPanel>
 
                     <!-- Pinned tab strip; each tab page brings its own ScrollViewer so the
                          strip never scrolls away. Direct-content TabItems keep state (scroll
@@ -615,21 +616,32 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <!-- Custom profiles only, and only while Advanced Mode is on. The
-                             per-GroupBox AdvancedModeEnabled bindings below remain as
-                             belt-and-suspenders. -->
-                        <TabItem Header="Advanced">
+                        <!-- Custom profiles only. When Advanced Mode is off the tab stays visible
+                             but is blocked (disabled) with a tooltip explaining why; Windows and
+                             Color profiles keep it fully hidden. The per-GroupBox
+                             AdvancedModeEnabled bindings below remain as belt-and-suspenders. -->
+                        <TabItem>
+                            <TabItem.Header>
+                                <StackPanel Orientation="Horizontal"
+                                            ToolTip="Advanced features are locked. Enable Advanced Mode in Settings to use them."
+                                            ToolTipService.ShowOnDisabled="True"
+                                            ToolTipService.InitialShowDelay="0">
+                                    <TextBlock Text="Advanced" />
+                                </StackPanel>
+                            </TabItem.Header>
                             <TabItem.Style>
                                 <Style TargetType="TabItem" BasedOn="{StaticResource SettingsTabItemStyle}">
                                     <Setter Property="Visibility" Value="Collapsed" />
+                                    <!-- Setter (not local value) so the AdvancedModeEnabled trigger
+                                         below can re-enable the tab. -->
+                                    <Setter Property="IsEnabled" Value="False" />
                                     <Style.Triggers>
-                                        <MultiDataTrigger>
-                                            <MultiDataTrigger.Conditions>
-                                                <Condition Binding="{Binding IsCustomProfile}" Value="True" />
-                                                <Condition Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=DataContext.AdvancedModeEnabled}" Value="True" />
-                                            </MultiDataTrigger.Conditions>
+                                        <DataTrigger Binding="{Binding IsCustomProfile}" Value="True">
                                             <Setter Property="Visibility" Value="Visible" />
-                                        </MultiDataTrigger>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=DataContext.AdvancedModeEnabled}" Value="True">
+                                            <Setter Property="IsEnabled" Value="True" />
+                                        </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </TabItem.Style>
@@ -1204,7 +1216,13 @@
                                                                         <ColumnDefinition Width="*" />
                                                                         <ColumnDefinition Width="Auto" />
                                                                     </Grid.ColumnDefinitions>
-                                                                    <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
+                                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                        <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
+                                                                        <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                                                   ToolTip="Digital Vibrance is NVIDIA-only (requires NVIDIA GPU/drivers)."
+                                                                                   ToolTipService.InitialShowDelay="0"
+                                                                                   ToolTipService.Placement="Right" />
+                                                                    </StackPanel>
                                                                     <StackPanel Grid.Column="1" Orientation="Horizontal">
                                                                         <Slider Value="{Binding DigitalVibrance, UpdateSourceTrigger=PropertyChanged}"
                                                                                 Minimum="50"

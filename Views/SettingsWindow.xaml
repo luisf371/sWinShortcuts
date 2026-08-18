@@ -135,11 +135,23 @@
                        Margin="0,0,0,8"
                        Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
 
-            <CheckBox Content="Enable Advanced Mode"
-                      IsChecked="{Binding AdvancedModeEnabled, Mode=TwoWay}"
-                      ToolTip="Enables non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, and un-suppressed key mappings). Off = only game-safe 1:1 remaps."
-                      Margin="0,0,0,8"
-                      Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <CheckBox Content="Enable Advanced Mode"
+                          IsChecked="{Binding AdvancedModeEnabled, Mode=TwoWay}"
+                          ToolTip="&#x26A0; WARNING: Advanced Mode enables automation that can violate '1 key = 1 action' rules in competitive or anti-cheat restricted games (Rapid Fire, Auto-Run, Anti-AFK, Hold-Breath, un-suppressed mappings). Use at your own risk.&#x0A;Enables non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, and un-suppressed key mappings). Off = only game-safe 1:1 remaps."
+                          ToolTipService.InitialShowDelay="0"
+                          Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+                <TextBlock Text="&#xE7BA;"
+                           FontFamily="Segoe MDL2 Assets"
+                           FontSize="14"
+                           Margin="6,0,0,0"
+                           VerticalAlignment="Center"
+                           Foreground="Orange"
+                           ToolTip="&#x26A0; WARNING: Advanced Mode enables automation that can violate '1 key = 1 action' rules in competitive or anti-cheat restricted games (Rapid Fire, Auto-Run, Anti-AFK, Hold-Breath, un-suppressed mappings). Use at your own risk."
+                           ToolTipService.InitialShowDelay="0"
+                           ToolTipService.Placement="Right"
+                           AutomationProperties.Name="Advanced Mode warning" />
+            </StackPanel>
         </StackPanel>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
