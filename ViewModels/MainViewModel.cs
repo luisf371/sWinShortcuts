@@ -452,21 +452,23 @@ public sealed partial class MainViewModel : ViewModelBase
         RemoveAllCombinedMappingsCommand.NotifyCanExecuteChanged();
     }
 
-    partial void OnAdvancedModeEnabledChanged(bool value) => CoerceSelectedTabIndex();
+    // AdvancedModeEnabled no longer affects tab visibility (the Advanced page grays out
+    // in place instead), so there is no mode-change coercion hook here anymore.
 
     // Pure tab-index coercion: WPF keeps rendering a collapsed-but-selected tab, so every
-    // profile-kind / advanced-mode change must re-land the selection on a visible tab.
-    public static int CoerceTabIndex(int requested, bool isWindowsProfile, bool isColorProfile, bool advancedModeEnabled)
+    // profile-kind change must re-land the selection on a visible tab. The Advanced tab is
+    // clickable regardless of Advanced Mode (a locked mode grays the page out instead of
+    // hiding it), so visibility depends on profile kind only.
+    public static int CoerceTabIndex(int requested, bool isWindowsProfile, bool isColorProfile)
     {
         var visibleKeys = !isWindowsProfile && !isColorProfile;
-        var visibleAdvanced = visibleKeys && advancedModeEnabled;
         var visibleDisplay = !isWindowsProfile;
         var visibleSystem = !isColorProfile;
 
         return requested switch
         {
             TabIndexKeys when visibleKeys => TabIndexKeys,
-            TabIndexAdvanced when visibleAdvanced => TabIndexAdvanced,
+            TabIndexAdvanced when visibleKeys => TabIndexAdvanced,
             TabIndexDisplay when visibleDisplay => TabIndexDisplay,
             TabIndexSystem when visibleSystem => TabIndexSystem,
             _ => isColorProfile ? TabIndexDisplay
@@ -481,8 +483,7 @@ public sealed partial class MainViewModel : ViewModelBase
         SelectedTabIndex = CoerceTabIndex(
             SelectedTabIndex,
             profile?.IsWindowsProfile ?? false,
-            profile?.IsColorProfile ?? false,
-            AdvancedModeEnabled);
+            profile?.IsColorProfile ?? false);
     }
 
     private void OnProfileAdded(object? sender, Profile profile)

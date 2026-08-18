@@ -51,6 +51,27 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
+        <!-- Heavier than DisabledContentShadeStyle (0.6): the Advanced page under a locked
+             Advanced Mode must read unmistakably disabled, not merely idle. -->
+        <Style x:Key="LockedContentShadeStyle" TargetType="FrameworkElement">
+            <Setter Property="Opacity" Value="1" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.4" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <!-- Advanced tab header dim while Advanced Mode is off. Tag+DataTrigger idiom (cf.
+             FeatureToggleContentStyle): TabItem.Style setters/triggers proved unreliable on
+             these tab containers — only local attribute bindings behave there. -->
+        <Style x:Key="LockedTabHeaderStyle" TargetType="FrameworkElement">
+            <Setter Property="Opacity" Value="1" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Tag}" Value="False">
+                    <Setter Property="Opacity" Value="0.45" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
 
         <!-- Keyed (window-local on purpose: promoting it would restyle the Settings dialog).
              Page scroller for the profile editor tabs; overlays the minimal scrollbar inside
@@ -616,40 +637,46 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <!-- Custom profiles only. When Advanced Mode is off the tab stays visible
-                             but is blocked (disabled) with a tooltip explaining why; Windows and
-                             Color profiles keep it fully hidden. The per-GroupBox
-                             AdvancedModeEnabled bindings below remain as belt-and-suspenders. -->
-                        <TabItem>
+                        <!-- Custom profiles only; Windows and Color profiles hide it entirely.
+                             Visibility uses the SAME local-binding pattern as the Keys tab —
+                             style-based Visibility setters on these TabItem containers do not
+                             hide the tab reliably at runtime (empirically verified 2026-08-18;
+                             the sibling local bindings behave). With Advanced Mode off the tab
+                             stays clickable: the page is gated + shaded (root panel gate +
+                             LockedContentShadeStyle) with a lock notice up top, and the header
+                             dims via the Tag-driven style on the header panel below. -->
+                        <TabItem Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                             <TabItem.Header>
                                 <StackPanel Orientation="Horizontal"
+                                            Tag="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
+                                            Style="{StaticResource LockedTabHeaderStyle}"
                                             ToolTip="Advanced features are locked. Enable Advanced Mode in Settings to use them."
-                                            ToolTipService.ShowOnDisabled="True"
-                                            ToolTipService.InitialShowDelay="0">
+                                            ToolTipService.InitialShowDelay="0"
+                                            AutomationProperties.Name="Advanced">
                                     <TextBlock Text="Advanced" />
                                 </StackPanel>
                             </TabItem.Header>
-                            <TabItem.Style>
-                                <Style TargetType="TabItem" BasedOn="{StaticResource SettingsTabItemStyle}">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <!-- Setter (not local value) so the AdvancedModeEnabled trigger
-                                         below can re-enable the tab. -->
-                                    <Setter Property="IsEnabled" Value="False" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsCustomProfile}" Value="True">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=DataContext.AdvancedModeEnabled}" Value="True">
-                                            <Setter Property="IsEnabled" Value="True" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TabItem.Style>
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
                                 <StackPanel>
+                                    <!-- Lock notice: sits OUTSIDE the gated panel below so it stays
+                                         full-contrast while the options are shaded. -->
+                                    <Border Visibility="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow, Converter={StaticResource VisibleIfFalse}}"
+                                            Background="{StaticResource SurfaceBrush}"
+                                            BorderBrush="{StaticResource BorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="12,8"
+                                            Margin="0,0,0,12">
+                                        <TextBlock Text="🔒 Advanced features are locked — enable Advanced Mode in Settings to use them."
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{StaticResource ForegroundSecondaryBrush}" />
+                                    </Border>
+                                    <!-- Single gate for the whole page (child IsEnabled bindings
+                                         would be redundant: IsEnabled inherits down the tree). -->
+                                    <StackPanel IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
+                                                Style="{StaticResource LockedContentShadeStyle}">
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal" MinHeight="22">
@@ -733,7 +760,6 @@
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal">
@@ -818,7 +844,6 @@
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal">
@@ -907,7 +932,6 @@
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal">
@@ -952,6 +976,7 @@
                                                        Opacity="0.7" />
                                         </StackPanel>
                                     </GroupBox>
+                                    </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
