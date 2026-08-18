@@ -47,7 +47,7 @@ public class ProfileManagerRegressionTests
 
         Assert.Equal(ProfileKind.Windows, manager.WindowsProfile.Kind);
         var custom = manager.Profiles.Single(p => p.Kind == ProfileKind.Custom);
-        Assert.Equal("Windows (2)", custom.Name);
+        Assert.Equal("Window [Default] (2)", custom.Name);
         Assert.False(ReferenceEquals(custom, manager.WindowsProfile));
     }
 
@@ -69,9 +69,11 @@ public class ProfileManagerRegressionTests
     }
 
     [Fact]
-    public async Task Initialize_ReservedColorName_IsReclassifiedCustom_AndSuffixed()
+    public async Task Initialize_ReservedLegacyColorName_IsSuffixed_AndStaysCustom()
     {
-        // F-007: the OTHER reserved name gets the same treatment as "Windows".
+        // F-007: the retired Color built-in's name stays reserved (a custom profile claiming it could
+        // hijack an old LastProfile value), so an on-disk custom carrying it is suffixed — same
+        // treatment as the current built-in name.
         var store = new InMemoryProfileStore();
         store.Profiles.Add(new Profile
         {
@@ -83,9 +85,27 @@ public class ProfileManagerRegressionTests
         var manager = new ProfileManager(store);
         await manager.InitializeAsync();
 
-        Assert.Equal(ProfileKind.Color, manager.ColorProfile.Kind);
+        Assert.Single(manager.Profiles, p => p.IsWindowsProfile); // the only built-in
         var custom = manager.Profiles.Single(p => p.Kind == ProfileKind.Custom);
         Assert.Equal("Color Settings (2)", custom.Name);
+    }
+
+    [Theory]
+    [InlineData("Windows")]            // legacy built-in name — free now, but still reserved
+    [InlineData("Color Settings")]     // retired built-in name — still reserved
+    [InlineData("Window [Default]")]   // current built-in name (also blocked by the duplicate check)
+    public async Task AddProfileAsync_ReservedName_Throws(string name)
+    {
+        var store = new InMemoryProfileStore();
+        var manager = new ProfileManager(store);
+        await manager.InitializeAsync();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => manager.AddProfileAsync(name, "reserved.exe"));
+
+        // "Windows"/"Color Settings" trip the reserved-name guard; "Window [Default]" (the live
+        // built-in's name) can also trip the duplicate-name guard. Either way, the add is refused.
+        Assert.Contains(name, ex.Message);
     }
 
     [Fact]
@@ -178,7 +198,7 @@ public class ProfileManagerRegressionTests
         await manager.InitializeAsync();
 
         var customNames = manager.Profiles
-            .Where(p => !p.IsWindowsProfile && !p.IsColorProfile)
+            .Where(p => !p.IsWindowsProfile)
             .Select(p => p.Name)
             .OrderBy(n => n)
             .ToList();

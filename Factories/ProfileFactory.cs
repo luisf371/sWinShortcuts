@@ -30,6 +30,10 @@ public static class ProfileFactory
             IsEnabled = true
         };
 
+        // The merged built-in also carries the global color fallback (the retired Color profile's
+        // role); its color-only switch defaults to ON, matching the old built-in's default.
+        profile.ColorSettings.IsEnabled = true;
+
         foreach (var key in NumpadKeys)
         {
             profile.WindowsLauncher.Launchers[key] = new LauncherBinding();
@@ -49,27 +53,6 @@ public static class ProfileFactory
         };
 
         profile.CapsLock.IsEnabled = false;
-        return profile;
-    }
-
-    public static Profile CreateColorProfile()
-    {
-        var profile = new Profile
-        {
-            Kind = ProfileKind.Color,
-            Name = ProfileConstants.ColorProfileName,
-            Executable = string.Empty,
-            IsEnabled = true
-        };
-
-        // Disable unrelated features for the dedicated color profile
-        profile.AltMouse.IsEnabled = false;
-        profile.CombinedMappings.IsEnabled = false;
-        profile.RightClickHoldBreath.IsEnabled = false;
-        profile.CapsLock.IsEnabled = false;
-        profile.WindowsLauncher.IsEnabled = false;
-        profile.Crosshair.IsEnabled = false;
-
         return profile;
     }
 }

@@ -9,18 +9,16 @@ namespace Tests;
 public class ProfileManagerTests
 {
     [Fact]
-    public async Task InitializeAsync_CreatesWindowsAndColorProfiles_WhenStoreIsEmpty()
+    public async Task InitializeAsync_CreatesWindowsProfile_WhenStoreIsEmpty()
     {
         var store = new InMemoryProfileStore();
         var manager = new ProfileManager(store);
 
         await manager.InitializeAsync();
 
-        Assert.Equal(2, manager.Profiles.Count);
+        Assert.Single(manager.Profiles);
         Assert.NotNull(manager.WindowsProfile);
-        Assert.NotNull(manager.ColorProfile);
         Assert.True(manager.WindowsProfile.IsWindowsProfile);
-        Assert.True(manager.ColorProfile.IsColorProfile);
     }
 
     [Fact]
@@ -33,7 +31,7 @@ public class ProfileManagerTests
         var manager = new ProfileManager(store);
         await manager.InitializeAsync();
 
-        Assert.Equal(3, manager.Profiles.Count); // Windows + Color + MyGame
+        Assert.Equal(2, manager.Profiles.Count); // Window [Default] + MyGame
         Assert.Contains(manager.Profiles, p => p.Name == "MyGame");
     }
 
@@ -164,21 +162,8 @@ public class ProfileManagerTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => manager.RemoveProfileAsync(manager.WindowsProfile));
-        
-        Assert.Contains("Windows", ex.Message);
-    }
 
-    [Fact]
-    public async Task RemoveProfileAsync_ColorProfile_ThrowsInvalidOperationException()
-    {
-        var store = new InMemoryProfileStore();
-        var manager = new ProfileManager(store);
-        await manager.InitializeAsync();
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => manager.RemoveProfileAsync(manager.ColorProfile));
-        
-        Assert.Contains("Color", ex.Message);
+        Assert.Contains("Window [Default]", ex.Message);
     }
 
     [Fact]

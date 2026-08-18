@@ -244,7 +244,7 @@
                                  overflows the card. Docked header + filling content keeps the
                                  TabControl's height finite. -->
                             <DockPanel Margin="0">
-                                <CheckBox DockPanel.Dock="Top" Margin="24,16,24,8"
+                                <CheckBox DockPanel.Dock="Top" Margin="24,16,24,4"
                                           IsChecked="{Binding IsEnabled}"
                                           IsEnabled="{Binding CanToggleEnabled}"
                                           VerticalAlignment="Center"
@@ -258,7 +258,6 @@
                                         <TextBlock Text="{Binding Name}"
                                                    FontSize="20"
                                                    FontWeight="Bold"
-                                                   Margin="0,0,0,5"
                                                    VerticalAlignment="Center" />
                                         <Button Content="&#xE70F;"
                                                 FontFamily="Segoe MDL2 Assets"
@@ -266,7 +265,7 @@
                                                 Width="24"
                                                 Height="24"
                                                 Padding="0"
-                                                Margin="8,0,0,5"
+                                                Margin="8,0,0,0"
                                                 VerticalAlignment="Center"
                                                 Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
                                                 Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}"
@@ -283,7 +282,7 @@
                     <!-- Pinned tab strip; each tab page brings its own ScrollViewer so the
                          strip never scrolls away. Direct-content TabItems keep state (scroll
                          position, DataGrid selection) across tab switches. -->
-                    <TabControl Margin="0,12,0,0"
+                    <TabControl Margin="0,6,0,0"
                                 Style="{StaticResource SettingsTabControlStyle}"
                                 ItemContainerStyle="{StaticResource SettingsTabItemStyle}"
                                 SelectedIndex="{Binding DataContext.SelectedTabIndex, ElementName=RootWindow, Mode=TwoWay}">
@@ -980,8 +979,9 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <TabItem Header="Display"
-                                 Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                        <!-- Display is always visible: the built-in default profile edits the GLOBAL
+                             color settings here, and game profiles edit their foreground overrides. -->
+                        <TabItem Header="Display">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
                                 <StackPanel>
@@ -1029,43 +1029,29 @@
                                         </StackPanel>
                                     </GroupBox>
 
-                                <GroupBox Padding="16" Margin="0,0,0,8"
-                                          Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                <GroupBox Padding="16" Margin="0,0,0,8">
                                     <GroupBox.Header>
                                         <StackPanel Orientation="Horizontal">
-                                            <!-- For Color Profile: just show text label (profile list has its own toggle) -->
-                                            <TextBlock Text="Color Settings"
-                                                       Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfTrue}}"
-                                                       VerticalAlignment="Center"
-                                                       FontWeight="SemiBold" />
-                                            <!-- For Game Profiles: show checkbox to enable/disable color settings -->
                                             <CheckBox Content="Color Settings"
                                                       IsChecked="{Binding ColorSettings.IsEnabled}"
-                                                      Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}"
                                                       Margin="0"
                                                       VerticalAlignment="Center" />
                                             <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                       ToolTip="Adjust display color settings (NVIDIA only). For game profiles, these settings apply when the game is active. Check individual monitors to enable adjustments."
+                                                       ToolTip="Adjust display color settings (NVIDIA only). On the default profile these are the global settings; on game profiles they apply when the game is active. Check individual monitors to enable adjustments."
                                                        ToolTipService.InitialShowDelay="0"
                                                        ToolTipService.Placement="Right" />
                                         </StackPanel>
                                     </GroupBox.Header>
-                                    <!-- For Color Profile: always enabled. For Game Profiles: enabled based on master toggle -->
                                     <StackPanel Margin="0,8,0,0">
                                         <StackPanel.Style>
                                             <Style TargetType="StackPanel">
                                                 <Setter Property="IsEnabled" Value="True" />
                                                 <Setter Property="Opacity" Value="1" />
                                                 <Style.Triggers>
-                                                    <!-- Only apply graying for non-Color profiles when disabled -->
-                                                    <MultiDataTrigger>
-                                                        <MultiDataTrigger.Conditions>
-                                                            <Condition Binding="{Binding IsColorProfile}" Value="False" />
-                                                            <Condition Binding="{Binding ColorSettings.IsEnabled}" Value="False" />
-                                                        </MultiDataTrigger.Conditions>
+                                                    <DataTrigger Binding="{Binding ColorSettings.IsEnabled}" Value="False">
                                                         <Setter Property="IsEnabled" Value="False" />
                                                         <Setter Property="Opacity" Value="0.75" />
-                                                    </MultiDataTrigger>
+                                                    </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </StackPanel.Style>
@@ -1094,10 +1080,10 @@
                                                               ToolTip="Choose which color preset the display controls below edit."
                                                               AutomationProperties.Name="Color preset to edit" />
                                             </StackPanel>
-                                            <!-- Game profiles only (the global Color profile is already live):
-                                                 temporarily force-apply the edited profile's colors while tuning. -->
+                                            <!-- Game profiles only (the default profile's colors are already
+                                                 live): temporarily force-apply the edited profile's colors while tuning. -->
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
-                                                        Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
+                                                        Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                                                 <CheckBox Content="Force preview"
                                                           IsChecked="{Binding ColorSettings.IsForcePreviewEnabled}"
                                                           IsEnabled="{Binding ColorSettings.IsForcePreviewAvailable}"
@@ -1280,8 +1266,9 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <TabItem Header="System"
-                                 Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
+                        <!-- System is always visible: Caps Lock applies to every profile kind; the
+                             Windows Launcher group inside is built-in-only. -->
+                        <TabItem Header="System">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
                                 <StackPanel>

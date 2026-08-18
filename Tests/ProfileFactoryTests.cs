@@ -12,9 +12,8 @@ public class ProfileFactoryTests
     {
         var profile = ProfileFactory.CreateWindowsProfile();
 
-        Assert.Equal(ProfileConstants.WindowsProfileName, profile.Name);
+        Assert.Equal("Window [Default]", profile.Name);
         Assert.True(profile.IsWindowsProfile);
-        Assert.False(profile.IsColorProfile);
     }
 
     [Fact]
@@ -44,44 +43,22 @@ public class ProfileFactoryTests
     }
 
     [Fact]
+    public void CreateWindowsProfile_ColorSettingsEnabledByDefault()
+    {
+        // The merged built-in carries the global color fallback; the color-only switch defaults
+        // to ON, matching the retired Color profile's default.
+        var profile = ProfileFactory.CreateWindowsProfile();
+
+        Assert.True(profile.ColorSettings.IsEnabled);
+    }
+
+    [Fact]
     public void CreateWindowsProfile_HasEmptyExecutable()
     {
         var profile = ProfileFactory.CreateWindowsProfile();
 
         Assert.Equal(string.Empty, profile.Executable);
         Assert.Equal(string.Empty, profile.NormalizedExecutable);
-    }
-
-    [Fact]
-    public void CreateColorProfile_HasCorrectName()
-    {
-        var profile = ProfileFactory.CreateColorProfile();
-
-        Assert.Equal(ProfileConstants.ColorProfileName, profile.Name);
-        Assert.True(profile.IsColorProfile);
-        Assert.False(profile.IsWindowsProfile);
-    }
-
-    [Fact]
-    public void CreateColorProfile_HasAllFeaturesDisabled()
-    {
-        var profile = ProfileFactory.CreateColorProfile();
-
-        Assert.False(profile.AltMouse.IsEnabled);
-        Assert.False(profile.CombinedMappings.IsEnabled);
-        Assert.False(profile.RightClickHoldBreath.IsEnabled);
-        Assert.False(profile.CapsLock.IsEnabled);
-        Assert.False(profile.WindowsLauncher.IsEnabled);
-    }
-
-    [Fact]
-    public void CreateColorProfile_DisablesCrosshair()
-    {
-        var profile = ProfileFactory.CreateColorProfile();
-
-        Assert.False(profile.Crosshair.IsEnabled);
-        Assert.False(profile.Crosshair.HideWhileRightButtonHeld);
-        Assert.Equal(string.Empty, profile.Crosshair.ImagePath);
     }
 
     [Fact]
@@ -116,6 +93,5 @@ public class ProfileFactoryTests
         var profile = ProfileFactory.CreateCustomProfile("MyGame", "game.exe");
 
         Assert.False(profile.IsWindowsProfile);
-        Assert.False(profile.IsColorProfile);
     }
 }

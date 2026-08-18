@@ -62,12 +62,16 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             AttachLauncherEntry(launcher);
         }
 
+        // The merged "Window [Default]" built-in is the GLOBAL color profile: its slider edits apply to
+        // hardware live (allowLiveUpdates) and its sidebar enable is the master switch for the whole
+        // default profile, so the color editor must re-evaluate when it flips (parentEnabledCheck).
+        // Game profiles keep the preview-based flow.
         ColorSettings = new ColorSettingsViewModel(
             Model.ColorSettings,
             displayService,
             colorControlService,
-            Model.IsColorProfile,
-            parentEnabledCheck: Model.IsColorProfile ? () => IsEnabled : null,
+            Model.IsWindowsProfile,
+            parentEnabledCheck: Model.IsWindowsProfile ? () => IsEnabled : null,
             profileRuntimeService: profileRuntimeService);
 
         ColorSettings.Changed += (_, _) => OnProfileChanged(ProfileChangeKind.Color);
@@ -139,10 +143,11 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
                 OnPropertyChanged(nameof(CanEditContent));
                 OnProfileChanged(ProfileChangeKind.Master);
 
-                if (IsColorProfile)
+                if (IsWindowsProfile)
                 {
-                    // For the dedicated Color Profile, this sidebar toggle acts as the Master Switch.
-                    // We must notify the color settings to re-evaluate (revert to defaults if disabled).
+                    // On the merged default profile this sidebar toggle is the master switch for the
+                    // whole profile (including the global color fallback), so the color editor must
+                    // re-evaluate its per-display enabled state.
                     ColorSettings.RefreshMasterEnabledState();
                 }
             }
@@ -151,11 +156,9 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public bool IsWindowsProfile => Model.IsWindowsProfile;
 
-    public bool IsColorProfile => Model.IsColorProfile;
-
-    // A regular game profile (neither the Windows nor the global Color built-in). Profile kind is
-    // immutable per instance, so no change notifications are needed.
-    public bool IsCustomProfile => !IsWindowsProfile && !IsColorProfile;
+    // A regular game profile (not the built-in default). Profile kind is immutable per instance, so
+    // no change notifications are needed.
+    public bool IsCustomProfile => !IsWindowsProfile;
 
     public AltMouseViewModel AltMouse { get; }
 

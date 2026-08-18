@@ -125,13 +125,15 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
-    /// Force updates the master enabled state logic (used when parent profile toggle changes)
+    /// Force updates the master enabled state logic (used when parent profile toggle changes).
+    /// UI-state only (F-006 / codex P1): the hardware transition for a master toggle is owned by
+    /// ProfileActivationService's plan-diff, which restores only previously-owned displays.
     /// </summary>
     public void RefreshMasterEnabledState()
     {
         foreach (var displayVm in DisplayViewModels)
         {
-            displayVm.NotifyMasterEnabledChanged();
+            displayVm.NotifyControlsEnabledChanged();
         }
     }
 
@@ -164,10 +166,12 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
                     EndForcePreview();
                 }
 
-                // Notify all display VMs so they can update their AreControlsEnabled
+                // Notify all display VMs so they can update their AreControlsEnabled. UI-state only
+                // (F-006 / codex P1): the Changed event routes to the activation worker, whose
+                // plan-diff performs the hardware transition for previously-owned displays only.
                 foreach (var displayVm in DisplayViewModels)
                 {
-                    displayVm.NotifyMasterEnabledChanged();
+                    displayVm.NotifyControlsEnabledChanged();
                 }
 
                 Changed?.Invoke(this, EventArgs.Empty);
@@ -244,12 +248,13 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
 
     // ── 30 s force preview (game profiles) ───────────────────────────────────────────────────────────
     // A game profile's colors normally apply only while its exe is foreground; while editing, the
-    // GLOBAL Color profile is what's on screen. The preview force-applies the edited profile so
-    // slider drags are visible live, then auto-restores the foreground-appropriate colors at
-    // expiry/cancel. The runtime owns the forced override (never mutates runtime variant state);
-    // this VM owns only the checkbox + countdown.
+    // GLOBAL fallback (the Window [Default] built-in) is what's on screen. The preview force-applies
+    // the edited profile so slider drags are visible live, then auto-restores the
+    // foreground-appropriate colors at expiry/cancel. The runtime owns the forced override (never
+    // mutates runtime variant state); this VM owns only the checkbox + countdown.
 
-    /// <summary>Game profiles only — the global Color profile is already live (<c>allowLiveUpdates</c>).</summary>
+    /// <summary>Game profiles only — the Window [Default] built-in's global color is already live
+    /// (<c>allowLiveUpdates</c>).</summary>
     public bool IsForcePreviewAvailable => _runtimeService is not null && !_allowLiveUpdates;
 
     /// <summary>Bound two-way to the Force preview checkbox. Checking starts (or keeps) the preview;

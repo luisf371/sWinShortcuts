@@ -45,7 +45,7 @@ public class ColorPlanTests
     public void BuildColorPlan_PersistentIds_KeepProfilesWithTheirPhysicalMonitor()
     {
         var manager = CreateInitializedManager();
-        var settings = manager.ColorProfile.ColorSettings;
+        var settings = manager.WindowsProfile.ColorSettings;
         settings.IsEnabled = true;
         settings.SetProfile(new DisplayColorProfile { DisplayId = "monitor-a", IsEnabled = true, Brightness = 40 });
         settings.SetProfile(new DisplayColorProfile { DisplayId = "monitor-b", IsEnabled = true, Brightness = 90 });

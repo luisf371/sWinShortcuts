@@ -118,9 +118,10 @@ public sealed partial class MainViewModel : ViewModelBase
     private bool advancedModeEnabled;
 
     // Profile-editor tab strip (MainWindow.xaml). Positional indices — must match the TabItem
-    // order there. Keys/Advanced are custom-profile only; Display hides for Windows; System hides
-    // for Color. Not persisted: in-session retention is free and a saved index adds write churn
-    // for no value (it is coerced per profile kind anyway).
+    // order there. Keys/Advanced are custom-profile only; Display/System are always visible (the
+    // built-in default uses both: Display = global color, System = Caps Lock / launchers). Not
+    // persisted: in-session retention is free and a saved index adds write churn for no value
+    // (it is coerced per profile kind anyway).
     public const int TabIndexKeys = 0;
     public const int TabIndexAdvanced = 1;
     public const int TabIndexDisplay = 2;
@@ -218,7 +219,7 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private bool CanRemoveProfile() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
+    private bool CanRemoveProfile() => SelectedProfile is { IsWindowsProfile: false };
 
     [RelayCommand(CanExecute = nameof(CanSaveProfile))]
     private async Task SaveProfileAsync()
@@ -256,7 +257,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private bool CanSaveProfile() => SelectedProfile is { Model.IsPersistenceSuspended: false };
 
-    private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
+    private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false };
 
     // Combined mappings (global + right-click) commands
 
@@ -320,7 +321,7 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
+    private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false };
 
     [RelayCommand(CanExecute = nameof(CanModifyProfile))]
     private async Task ModifyProfile()
@@ -398,7 +399,7 @@ public sealed partial class MainViewModel : ViewModelBase
         }
     }
 
-    private bool CanModifyProfile() => SelectedProfile is { IsWindowsProfile: false, IsColorProfile: false };
+    private bool CanModifyProfile() => SelectedProfile is { IsWindowsProfile: false };
 
     [RelayCommand]
     private void BrowseLauncherTarget(WindowsLauncherEntryViewModel? launcher)
@@ -459,21 +460,17 @@ public sealed partial class MainViewModel : ViewModelBase
     // profile-kind change must re-land the selection on a visible tab. The Advanced tab is
     // clickable regardless of Advanced Mode (a locked mode grays the page out instead of
     // hiding it), so visibility depends on profile kind only.
-    public static int CoerceTabIndex(int requested, bool isWindowsProfile, bool isColorProfile)
+    public static int CoerceTabIndex(int requested, bool isWindowsProfile)
     {
-        var visibleKeys = !isWindowsProfile && !isColorProfile;
-        var visibleDisplay = !isWindowsProfile;
-        var visibleSystem = !isColorProfile;
+        var visibleKeys = !isWindowsProfile;
 
         return requested switch
         {
             TabIndexKeys when visibleKeys => TabIndexKeys,
             TabIndexAdvanced when visibleKeys => TabIndexAdvanced,
-            TabIndexDisplay when visibleDisplay => TabIndexDisplay,
-            TabIndexSystem when visibleSystem => TabIndexSystem,
-            _ => isColorProfile ? TabIndexDisplay
-               : isWindowsProfile ? TabIndexSystem
-               : TabIndexKeys
+            TabIndexDisplay => TabIndexDisplay,
+            TabIndexSystem => TabIndexSystem,
+            _ => isWindowsProfile ? TabIndexSystem : TabIndexKeys
         };
     }
 
@@ -482,8 +479,7 @@ public sealed partial class MainViewModel : ViewModelBase
         var profile = SelectedProfile;
         SelectedTabIndex = CoerceTabIndex(
             SelectedTabIndex,
-            profile?.IsWindowsProfile ?? false,
-            profile?.IsColorProfile ?? false);
+            profile?.IsWindowsProfile ?? false);
     }
 
     private void OnProfileAdded(object? sender, Profile profile)

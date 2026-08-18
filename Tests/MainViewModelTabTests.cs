@@ -9,31 +9,28 @@ namespace Tests;
 // dispatcher or profile construction is needed.
 public sealed class MainViewModelTabTests
 {
-    // Windows profile: only the System tab is visible — everything else coerces to System.
+    // Built-in default profile: Keys/Advanced are custom-only, so they coerce to System (its
+    // home tab — Display for the global color settings is one tab away).
     [Theory]
     [InlineData(MainViewModel.TabIndexKeys)]
     [InlineData(MainViewModel.TabIndexAdvanced)]
-    [InlineData(MainViewModel.TabIndexDisplay)]
-    [InlineData(MainViewModel.TabIndexSystem)]
-    public void WindowsProfile_AnyRequestedIndex_LandsOnSystem(int requested)
+    public void WindowsProfile_HiddenTabRequested_LandsOnSystem(int requested)
     {
         Assert.Equal(
             MainViewModel.TabIndexSystem,
-            MainViewModel.CoerceTabIndex(requested, isWindowsProfile: true, isColorProfile: false));
+            MainViewModel.CoerceTabIndex(requested, isWindowsProfile: true));
     }
 
-    // Color profile: only the Display tab is visible (advanced mode is irrelevant — the tab
-    // requires a custom profile regardless).
+    // Built-in default profile: Display and System are both visible, so a still-valid
+    // selection passes through unchanged.
     [Theory]
-    [InlineData(MainViewModel.TabIndexKeys)]
-    [InlineData(MainViewModel.TabIndexAdvanced)]
     [InlineData(MainViewModel.TabIndexDisplay)]
     [InlineData(MainViewModel.TabIndexSystem)]
-    public void ColorProfile_AnyRequestedIndex_LandsOnDisplay(int requested)
+    public void WindowsProfile_VisibleSelection_PassesThroughUnchanged(int requested)
     {
         Assert.Equal(
-            MainViewModel.TabIndexDisplay,
-            MainViewModel.CoerceTabIndex(requested, isWindowsProfile: false, isColorProfile: true));
+            requested,
+            MainViewModel.CoerceTabIndex(requested, isWindowsProfile: true));
     }
 
     // A locked Advanced Mode grays the Advanced page out in place rather than hiding the tab,
@@ -44,11 +41,11 @@ public sealed class MainViewModelTabTests
     {
         Assert.Equal(
             MainViewModel.TabIndexAdvanced,
-            MainViewModel.CoerceTabIndex(MainViewModel.TabIndexAdvanced, isWindowsProfile: false, isColorProfile: false));
+            MainViewModel.CoerceTabIndex(MainViewModel.TabIndexAdvanced, isWindowsProfile: false));
     }
 
-    // Custom profile: any still-visible selection passes through unchanged (in-session tab
-    // retention across profile switches).
+    // Custom profile: every tab is visible, so any selection passes through unchanged
+    // (in-session tab retention across profile switches).
     [Theory]
     [InlineData(MainViewModel.TabIndexKeys)]
     [InlineData(MainViewModel.TabIndexAdvanced)]
@@ -58,6 +55,6 @@ public sealed class MainViewModelTabTests
     {
         Assert.Equal(
             requested,
-            MainViewModel.CoerceTabIndex(requested, isWindowsProfile: false, isColorProfile: false));
+            MainViewModel.CoerceTabIndex(requested, isWindowsProfile: false));
     }
 }

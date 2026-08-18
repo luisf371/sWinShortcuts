@@ -168,19 +168,13 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
     public ICommand ResetDigitalVibranceCommand { get; }
     public ICommand ResetAllCommand { get; }
 
-    /// <summary>
-    /// Called when the master toggle changes to update the AreControlsEnabled property
-    /// </summary>
-    public void NotifyMasterEnabledChanged()
-    {
-        OnPropertyChanged(nameof(AreControlsEnabled));
-        ApplyToHardwareOrRevert();
-    }
-
-    // F-006: UI-state ONLY — refresh whether the sliders are enabled, with NO hardware side effect. Used by
-    // a display-list rebuild (hot-plug): re-enumerating monitors must not write a neutral gamma/DVC to
-    // displays the user never opted into. Topology re-apply for owned displays is handled by
-    // ProfileActivationService's DisplaySettingsChanged handler (its plan-diff skips never-owned displays).
+    // F-006: UI-state ONLY — refresh whether the sliders are enabled, with NO hardware side effect.
+    // Used by display-list rebuilds (hot-plug) AND master-toggle changes (sidebar enable / Color
+    // Settings checkbox): the old master variant also called ApplyToHardwareOrRevert(), which wrote a
+    // NEUTRAL gamma/DVC to every display — including ones the user never opted into — whenever a
+    // master switch flipped (codex P1). Hardware transitions for master toggles belong to
+    // ProfileActivationService's plan-diff (Master/Color change kinds force-queue it): it restores
+    // only displays that were previously enabled and never touches unowned ones.
     public void NotifyControlsEnabledChanged()
     {
         OnPropertyChanged(nameof(AreControlsEnabled));

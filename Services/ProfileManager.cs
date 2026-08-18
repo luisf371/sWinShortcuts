@@ -32,8 +32,6 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
 
     public Profile WindowsProfile => _snapshot.First(p => p.IsWindowsProfile);
 
-    public Profile ColorProfile => _snapshot.First(p => p.IsColorProfile);
-
     // Must be called while holding _gate.
     private void RebuildSnapshot() => _snapshot = _profiles.ToArray();
 
@@ -57,13 +55,6 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 _profiles.Insert(0, windowsProfile);
             }
 
-            if (!_profiles.Any(p => p.IsColorProfile))
-            {
-                var colorProfile = ProfileFactory.CreateColorProfile();
-                var insertIndex = _profiles.Any() && _profiles[0].IsWindowsProfile ? 1 : 0;
-                _profiles.Insert(insertIndex, colorProfile);
-            }
-
             DeduplicateProfileNames();
             RebuildSnapshot();
         }
@@ -78,15 +69,15 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
     // on its own file (identity = SourcePath) and only rename the colliding display name.
     private void DeduplicateProfileNames()
     {
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var reserved in ProfileConstants.ReservedProfileNames)
         {
-            ProfileConstants.WindowsProfileName,
-            ProfileConstants.ColorProfileName
-        };
+            used.Add(reserved);
+        }
 
         // Deterministic order (by file path) so suffixes stay stable across restarts.
         var custom = _profiles
-            .Where(p => !p.IsWindowsProfile && !p.IsColorProfile)
+            .Where(p => !p.IsWindowsProfile)
             .OrderBy(p => p.SourcePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -123,6 +114,14 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException($"Profile named '{name}' already exists.");
             }
 
+            // Reserved names stay blocked even when no profile currently carries them: the legacy
+            // built-in names ("Windows"/"Color Settings") must never be claimable by a custom profile,
+            // which could otherwise hijack an old app-level LastProfile value (restore matches by name).
+            if (ProfileConstants.IsReservedProfileName(profile.Name))
+            {
+                throw new InvalidOperationException($"'{profile.Name}' is a reserved profile name.");
+            }
+
             ValidateCustomProfile(profile);
 
             await _store.SaveProfileAsync(profile, cancellationToken).ConfigureAwait(false);
@@ -147,12 +146,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
         {
             if (profile.IsWindowsProfile)
             {
-                throw new InvalidOperationException("The Windows profile cannot be removed.");
-            }
-            
-            if (profile.IsColorProfile)
-            {
-                throw new InvalidOperationException("The Color Settings profile cannot be removed.");
+                throw new InvalidOperationException("The Window [Default] profile cannot be removed.");
             }
 
             if (!_profiles.Contains(profile))
@@ -188,7 +182,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (profile.IsWindowsProfile || profile.IsColorProfile)
+            if (profile.IsWindowsProfile)
             {
                 throw new InvalidOperationException("Built-in profiles cannot be renamed.");
             }
@@ -198,8 +192,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException("Profile is not managed by this manager.");
             }
 
-            if (string.Equals(trimmed, ProfileConstants.WindowsProfileName, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(trimmed, ProfileConstants.ColorProfileName, StringComparison.OrdinalIgnoreCase))
+            if (ProfileConstants.IsReservedProfileName(trimmed))
             {
                 throw new InvalidOperationException($"'{trimmed}' is a reserved profile name.");
             }
