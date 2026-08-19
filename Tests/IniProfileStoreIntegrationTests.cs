@@ -470,6 +470,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         profile.Crosshair.IsEnabled = true;
         profile.Crosshair.HideWhileRightButtonHeld = true;
         profile.Crosshair.ImagePath = @"C:\Screens\My Cross Hair.png";
+        profile.Crosshair.SizeAdjustment = -25;
 
         await _store.SaveProfileAsync(profile, CancellationToken.None);
         var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
@@ -478,6 +479,43 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.True(loaded.Crosshair.IsEnabled);
         Assert.True(loaded.Crosshair.HideWhileRightButtonHeld);
         Assert.Equal(@"C:\Screens\My Cross Hair.png", loaded.Crosshair.ImagePath);
+        Assert.Equal(-25, loaded.Crosshair.SizeAdjustment);
+    }
+
+    [Theory]
+    [InlineData(80, 50)]
+    [InlineData(-90, -50)]
+    [InlineData(50, 50)]
+    [InlineData(-50, -50)]
+    public async Task LoadProfile_OutOfRangeCrosshairSizeAdjustment_IsClamped(int iniValue, int expected)
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "CrosshairSize.ini"),
+            "[Profile]\nName=CrosshairSize\nExecutable=crosshair-size.exe\nEnabled=true\n" +
+            "[Crosshair]\nEnabled=true\nSizeAdjustment=" + iniValue + "\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == "CrosshairSize");
+
+        Assert.Equal(expected, loaded.Crosshair.SizeAdjustment);
+    }
+
+    [Fact]
+    public async Task LoadProfile_MissingCrosshairSizeAdjustment_DefaultsToZero()
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "CrosshairSizeMissing.ini"),
+            "[Profile]\nName=CrosshairSizeMissing\nExecutable=crosshair-size-missing.exe\nEnabled=true\n" +
+            "[Crosshair]\nEnabled=true\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == "CrosshairSizeMissing");
+
+        Assert.Equal(0, loaded.Crosshair.SizeAdjustment);
     }
 
     [Fact]
@@ -495,6 +533,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.False(loaded.Crosshair.IsEnabled);
         Assert.False(loaded.Crosshair.HideWhileRightButtonHeld);
         Assert.Equal(string.Empty, loaded.Crosshair.ImagePath);
+        Assert.Equal(0, loaded.Crosshair.SizeAdjustment);
     }
 
     [Fact]

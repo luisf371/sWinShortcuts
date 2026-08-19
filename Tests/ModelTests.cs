@@ -68,6 +68,8 @@ public class ProfileTests
         Assert.False(settings.IsEnabled);
         Assert.False(settings.HideWhileRightButtonHeld);
         Assert.Equal(string.Empty, settings.ImagePath);
+        Assert.Equal(CrosshairSettings.DefaultSizeAdjustment, settings.SizeAdjustment);
+        Assert.Equal(0, settings.SizeAdjustment);
         Assert.Equal(0.70, CrosshairSettings.DefaultOpacity, precision: 2);
     }
 

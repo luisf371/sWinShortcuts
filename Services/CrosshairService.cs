@@ -20,6 +20,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
     private bool _shown;
     private bool _reportsRightButton;
     private string _appliedImagePath = string.Empty;
+    private int _appliedSizeAdjustment = CrosshairSettings.DefaultSizeAdjustment;
     private IntPtr _appliedHwnd;
 
     // Window reference: created/closed only on the dispatcher. The hwnd is compared in the dedup so a
@@ -44,6 +45,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         var shouldShow = CrosshairDecision.ShouldShow(profile);
         var reportsRightButton = CrosshairDecision.ReportsRightButton(profile);
         var imagePath = profile?.Crosshair.ImagePath ?? string.Empty;
+        var sizeAdjustment = profile?.Crosshair.SizeAdjustment ?? CrosshairSettings.DefaultSizeAdjustment;
 
         var skipApply = false;
         lock (_gate)
@@ -55,6 +57,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
                 shouldShow == _shown &&
                 reportsRightButton == _reportsRightButton &&
                 string.Equals(imagePath, _appliedImagePath, StringComparison.OrdinalIgnoreCase) &&
+                sizeAdjustment == _appliedSizeAdjustment &&
                 (!shouldShow || foregroundHwnd == _appliedHwnd))
             {
                 skipApply = true;
@@ -64,13 +67,14 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
                 _shown = shouldShow;
                 _reportsRightButton = reportsRightButton;
                 _appliedImagePath = imagePath;
+                _appliedSizeAdjustment = sizeAdjustment;
                 _appliedHwnd = foregroundHwnd;
             }
         }
 
         if (!skipApply)
         {
-            RunOnDispatcher(() => ApplyOnDispatcher(shouldShow, foregroundHwnd, imagePath), synchronous: _window is null);
+            RunOnDispatcher(() => ApplyOnDispatcher(shouldShow, foregroundHwnd, imagePath, sizeAdjustment), synchronous: _window is null);
         }
 
         // Always (re-)sync the hook gate, even on a deduped apply: while false the hook pays nothing,
@@ -121,12 +125,12 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         }, synchronous: false, priority: DispatcherPriority.Input);
     }
 
-    private void ApplyOnDispatcher(bool shouldShow, IntPtr foregroundHwnd, string imagePath)
+    private void ApplyOnDispatcher(bool shouldShow, IntPtr foregroundHwnd, string imagePath, int sizeAdjustment)
     {
         if (shouldShow)
         {
             var window = _window ??= new CrosshairWindow();
-            window.ApplyConfiguration(foregroundHwnd, imagePath);
+            window.ApplyConfiguration(foregroundHwnd, imagePath, sizeAdjustment);
             if (_rightButtonHeld)
             {
                 // An RMB-down delivered before this apply must keep winning.
