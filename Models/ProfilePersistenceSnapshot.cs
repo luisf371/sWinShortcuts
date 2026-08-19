@@ -31,6 +31,7 @@ internal static class ProfilePersistenceSnapshot
             WindowsLauncher = CloneWindowsLauncher(source.WindowsLauncher),
             SourcePath = source.SourcePath,
             IsPersistenceSuspended = source.IsPersistenceSuspended,
+            LegacyColorImportCompleted = source.LegacyColorImportCompleted,
             Kind = source.Kind
         };
 

@@ -13,7 +13,7 @@ public class ProfileActivationColorPlanTests
     {
         var manager = await CreateManagerAsync();
         var activeProfile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY1", 60);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY1", 60);
         EnableDisplayColor(activeProfile, "DISPLAY1", 75);
 
         var plan = ProfileActivationService.BuildColorPlan(activeProfile, [CreateDisplay("DISPLAY1")], manager);
@@ -28,8 +28,8 @@ public class ProfileActivationColorPlanTests
     {
         var manager = await CreateManagerAsync();
         var activeProfile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY1", 60);
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY2", 80);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY1", 60);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY2", 80);
         EnableDisplayColor(activeProfile, "DISPLAY1", 75);
 
         var plan = ProfileActivationService.BuildColorPlan(
@@ -47,7 +47,7 @@ public class ProfileActivationColorPlanTests
     public async Task BuildColorPlan_NoActiveProfile_UsesGlobalColor()
     {
         var manager = await CreateManagerAsync();
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY1", 60);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY1", 60);
 
         var plan = ProfileActivationService.BuildColorPlan(null, [CreateDisplay("DISPLAY1")], manager);
 
@@ -57,8 +57,10 @@ public class ProfileActivationColorPlanTests
     }
 
     [Fact]
-    public async Task BuildColorPlan_NoEnabledColorProfile_UsesDefaults()
+    public async Task BuildColorPlan_NoConfiguredGlobalColor_UsesDefaults()
     {
+        // The merged default profile's color switch is on, but no per-display entries are
+        // configured — every display falls through to the disabled/neutral defaults.
         var manager = await CreateManagerAsync();
 
         var plan = ProfileActivationService.BuildColorPlan(null, [CreateDisplay("DISPLAY1")], manager);
@@ -69,6 +71,22 @@ public class ProfileActivationColorPlanTests
         Assert.Equal(DisplayColorProfile.DefaultContrast, display.Contrast);
         Assert.Equal(DisplayColorProfile.DefaultGamma, display.Gamma);
         Assert.Equal(DisplayColorProfile.DefaultDigitalVibrance, display.DigitalVibrance);
+    }
+
+    [Fact]
+    public async Task BuildColorPlan_GlobalColorSwitchOff_OmitsFallbackEntirely()
+    {
+        // The default profile is ENABLED but its Color Settings checkbox is off: the fallback must
+        // be omitted (null), so even configured per-display entries never apply.
+        var manager = await CreateManagerAsync();
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY1", 60);
+        manager.WindowsProfile.ColorSettings.IsEnabled = false;
+
+        var plan = ProfileActivationService.BuildColorPlan(null, [CreateDisplay("DISPLAY1")], manager);
+
+        var display = Assert.Single(plan.Displays);
+        Assert.False(display.IsEnabled);
+        Assert.Equal(DisplayColorProfile.DefaultBrightness, display.Brightness);
     }
 
     [Fact]

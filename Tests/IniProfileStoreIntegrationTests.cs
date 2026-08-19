@@ -69,26 +69,25 @@ public class IniProfileStoreIntegrationTests : IDisposable
     public async Task BuiltInLoadFailure_DegradesToDefaults_AndSuspendsPersistence()
     {
         // F-008: an unreadable built-in must NOT abort startup. Occupy Win.ini's path with a directory so
-        // its load fails, then assert: the Windows profile still loads (defaults, persistence suspended),
-        // the OTHER built-in (Color) loads normally, and saving the suspended profile is refused rather
-        // than overwriting the preserved path with defaults.
+        // its load fails, then assert: the Windows profile still loads (defaults, persistence suspended)
+        // and saving the suspended profile is refused rather than overwriting the preserved path with
+        // defaults.
         Directory.CreateDirectory(Path.Combine(_root, "Win.ini"));
 
         var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
 
         var windows = profiles.Single(p => p.IsWindowsProfile);
-        var color = profiles.Single(p => p.IsColorProfile);
         Assert.True(windows.IsPersistenceSuspended);
-        Assert.False(color.IsPersistenceSuspended);
 
         await Assert.ThrowsAsync<PersistenceSuspendedException>(
             () => _store.SaveProfileAsync(windows, CancellationToken.None));
     }
 
     [Fact]
-    public async Task ReservedColorName_CustomFile_StaysCustom_AndCannotClobberColorIni()
+    public async Task ReservedColorName_CustomFile_StaysCustom_AndNeverCreatesColorIni()
     {
-        // F-007: the OTHER reserved name ("Color Settings") gets the same protection as "Windows".
+        // F-007: the retired built-in's name ("Color Settings") stays reserved; a custom file carrying
+        // it loads as Custom. There is no Color built-in anymore, so nothing may create Color.ini.
         var profilesDir = Path.Combine(_root, "Profiles");
         Directory.CreateDirectory(profilesDir);
         File.WriteAllText(
@@ -96,39 +95,23 @@ public class IniProfileStoreIntegrationTests : IDisposable
             "[Profile]\nName=Color Settings\nExecutable=reservedcolor.exe\nEnabled=true\n");
 
         var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
-        var colorIniPath = Path.Combine(_root, "Color.ini");
-        var colorIniBefore = File.ReadAllText(colorIniPath);
 
         var custom = profiles.Single(p =>
             string.Equals(p.NormalizedExecutable, "reservedcolor", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(ProfileKind.Custom, custom.Kind);
-        Assert.False(custom.IsColorProfile);
+        Assert.False(custom.IsWindowsProfile);
 
         await _store.SaveProfileAsync(custom, CancellationToken.None);
-        Assert.Equal(colorIniBefore, File.ReadAllText(colorIniPath));
+        Assert.False(File.Exists(Path.Combine(_root, "Color.ini")));
     }
 
     [Fact]
-    public async Task ColorBuiltInLoadFailure_DegradesIndependently_WindowsStillLoads()
-    {
-        // F-008: each built-in is isolated — a failed Color.ini must not prevent Win.ini from loading.
-        Directory.CreateDirectory(Path.Combine(_root, "Color.ini"));
-
-        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
-
-        var windows = profiles.Single(p => p.IsWindowsProfile);
-        var color = profiles.Single(p => p.IsColorProfile);
-        Assert.False(windows.IsPersistenceSuspended); // the other built-in loaded normally
-        Assert.True(color.IsPersistenceSuspended);
-    }
-
-    [Fact]
-    public async Task LoadProfilesAsync_ReturnsWindowsAndColorProfiles()
+    public async Task LoadProfilesAsync_ReturnsSingleWindowsBuiltIn()
     {
         var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
 
-        Assert.Contains(profiles, p => p.IsWindowsProfile);
-        Assert.Contains(profiles, p => p.IsColorProfile);
+        Assert.Single(profiles, p => p.IsWindowsProfile);
+        Assert.Equal(1, profiles.Count(p => p.IsWindowsProfile));
     }
 
     [Fact]
@@ -597,17 +580,327 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Contains(profiles, p => p.IsWindowsProfile);
     }
 
+    // ── Merged built-in: color sections live in Win.ini ─────────────────────────────────────────────
+
     [Fact]
-    public async Task DeleteProfileAsync_ColorProfile_DoesNothing()
+    public async Task MissingWinIni_CreatesDefaultsWithColorEnabled()
+    {
+        // A fresh install writes Win.ini immediately; its color-only switch defaults to ON (the
+        // retired Color built-in's default).
+        Assert.False(File.Exists(Path.Combine(_root, "Win.ini")));
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+
+        var windows = profiles.Single(p => p.IsWindowsProfile);
+        Assert.True(windows.ColorSettings.IsEnabled);
+        Assert.True(File.Exists(Path.Combine(_root, "Win.ini")));
+        Assert.False(File.Exists(Path.Combine(_root, "Color.ini"))); // never created anymore
+
+        var iniText = File.ReadAllText(Path.Combine(_root, "Win.ini"));
+        Assert.Contains("[Color]", iniText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task WindowsProfile_RoundTripsColorSections_InWinIni()
     {
         var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
-        var colorProfile = profiles.First(p => p.IsColorProfile);
+        var windows = profiles.Single(p => p.IsWindowsProfile);
 
-        // Should not throw
-        await _store.DeleteProfileAsync(colorProfile, CancellationToken.None);
+        windows.IsEnabled = false;
+        windows.WindowsLauncher.IsEnabled = true;
+        windows.ColorSettings.IsEnabled = true;
+        windows.ColorSettings.HasSecondary = true;
+        windows.ColorSettings.SetProfile(
+            new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 40, Contrast = 60, Gamma = 1.25, DigitalVibrance = 65 },
+            ColorVariant.Primary);
+        windows.ColorSettings.SetProfile(
+            new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 90, Gamma = 0.9, DigitalVibrance = 85 },
+            ColorVariant.Secondary);
 
-        // Should still exist
-        profiles = await _store.LoadProfilesAsync(CancellationToken.None);
-        Assert.Contains(profiles, p => p.IsColorProfile);
+        await _store.SaveProfileAsync(windows, CancellationToken.None);
+
+        var reloaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+        Assert.False(reloaded.IsEnabled);
+        Assert.True(reloaded.WindowsLauncher.IsEnabled);
+        Assert.True(reloaded.ColorSettings.IsEnabled);
+        Assert.True(reloaded.ColorSettings.HasSecondary);
+        Assert.True(reloaded.LegacyColorImportCompleted); // completed migration never re-fires
+
+        var primary = reloaded.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
+        Assert.Equal(40, primary.Brightness);
+        Assert.Equal(60, primary.Contrast);
+        Assert.Equal(65, primary.DigitalVibrance);
+
+        var secondary = reloaded.ColorSettings.SnapshotProfiles(ColorVariant.Secondary)["DISPLAY1"];
+        Assert.Equal(90, secondary.Brightness);
+        Assert.Equal(85, secondary.DigitalVibrance);
+    }
+
+    [Fact]
+    public async Task MissingWinIni_WithLegacyColorIni_ImportsBeforeCreatingDefaults()
+    {
+        // codex P2: a legacy Color.ini must be imported even when Win.ini is missing (partial restore,
+        // manual deletion, failed write) — creating Win.ini with [Color] DEFAULTS first would mark the
+        // migration complete and abandon the legacy presets forever.
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=true\n\n" +
+            "[Color]\nEnabled=true\n\n" +
+            "[ColorDisplays]\nDISPLAY1=1|40|60|1.25|65\n");
+
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+
+        Assert.True(loaded.LegacyColorImportCompleted);
+        Assert.True(loaded.ColorSettings.IsEnabled);
+        var imported = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
+        Assert.Equal(40, imported.Brightness);
+        Assert.Equal(65, imported.DigitalVibrance);
+        Assert.Contains("ColorImported", File.ReadAllText(Path.Combine(_root, "Win.ini")), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MigrationFailure_AutosaveWritesDefaults_StillRetriesImport()
+    {
+        // codex P2: a transiently locked Color.ini fails the import; if the user then edits the
+        // default profile, the autosave writes [Color] DEFAULTS to Win.ini. The explicit ColorImported
+        // marker (not [Color] presence) must keep the import retryable — the legacy presets are
+        // restored on the next launch once the lock is gone.
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=true\n");
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=true\n\n" +
+            "[Color]\nEnabled=true\n\n" +
+            "[ColorDisplays]\nDISPLAY1=1|40|60|1.25|65\n");
+
+        Profile loaded;
+        var colorIniPath = Path.Combine(_root, "Color.ini");
+        using (new FileStream(colorIniPath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+                .Single(p => p.IsWindowsProfile);
+            Assert.False(loaded.LegacyColorImportCompleted); // import pending
+            Assert.False(loaded.IsPersistenceSuspended);     // session still fully usable
+        }
+
+        // User edits the profile before restarting: autosave persists [Color] defaults...
+        await _store.SaveProfileAsync(loaded, CancellationToken.None);
+        var winIniText = File.ReadAllText(Path.Combine(_root, "Win.ini"));
+        Assert.Contains("[Color]", winIniText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ColorImported=False", winIniText, StringComparison.OrdinalIgnoreCase); // ...but NOT completion
+
+        // ...and the next launch still imports the legacy presets.
+        var retried = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+        Assert.True(retried.LegacyColorImportCompleted);
+        var restored = retried.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
+        Assert.Equal(40, restored.Brightness);
+        Assert.Equal(65, restored.DigitalVibrance);
+    }
+
+    [Fact]
+    public async Task PreMergeWinIni_ImportsLegacyColorIni_Once()
+    {
+        // A Win.ini from before the merge has no [Color] section; the legacy Color.ini's presets
+        // are imported into the merged profile and Win.ini is persisted immediately — so a SECOND
+        // load reads Win.ini and never re-imports (edits to Color.ini afterwards are ignored).
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=true\n\n[WindowsLauncher]\nEnabled=true\n\n" +
+            "[CapsLock]\nEnabled=true\nMode=0\n");
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=true\n\n" +
+            "[Color]\nEnabled=true\nHasSecondary=false\n\n" +
+            "[ColorDisplays]\nDISPLAY1=1|40|60|1.25|65\n");
+
+        var first = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+
+        // The import landed: legacy color values + the preserved Win.ini system settings.
+        Assert.True(first.ColorSettings.IsEnabled);
+        var imported = first.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
+        Assert.Equal(40, imported.Brightness);
+        Assert.Equal(65, imported.DigitalVibrance);
+        Assert.True(first.CapsLock.IsEnabled);
+
+        // ...and Win.ini now carries the [Color] sections (the one-time import is durable).
+        var winIniText = File.ReadAllText(Path.Combine(_root, "Win.ini"));
+        Assert.Contains("[ColorDisplays]", winIniText, StringComparison.OrdinalIgnoreCase);
+
+        // Second load: values come from Win.ini — mutating the legacy Color.ini changes nothing.
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=true\n\n[Color]\nEnabled=false\n\n" +
+            "[ColorDisplays]\nDISPLAY1=1|10|10|1|50\n");
+        var second = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+        Assert.True(second.ColorSettings.IsEnabled);
+        var stable = second.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
+        Assert.Equal(40, stable.Brightness);
+    }
+
+    [Fact]
+    public async Task PreMergeWinIni_DisabledLegacyColorMaster_ImportsAsColorDisabled()
+    {
+        // The legacy sidebar master ([Profile] Enabled) and the color-only switch ([Color] Enabled)
+        // collapse into the one remaining color switch: either being off leaves color off.
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=true\n");
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=false\n\n" +
+            "[Color]\nEnabled=true\n");
+
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+
+        Assert.False(loaded.ColorSettings.IsEnabled);
+    }
+
+    [Fact]
+    public async Task PreMergeWinIni_WindowsDisabled_ColorEnabled_KeepsColorAlive()
+    {
+        // codex P2: a user who disabled the old Windows profile but kept the Color profile must not
+        // lose global color to the merge. The merged sidebar master follows "either side was on";
+        // the disabled Windows master folds into its feature switches so Caps Lock / launchers stay
+        // off exactly as before.
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=false\n\n" +
+            "[CapsLock]\nEnabled=true\nMode=0\n");
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=true\n\n" +
+            "[Color]\nEnabled=true\n\n" +
+            "[ColorDisplays]\nDISPLAY1=1|40|60|1.25|65\n");
+
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+
+        Assert.True(loaded.IsEnabled);                       // merged master on via the color side
+        Assert.True(loaded.ColorSettings.IsEnabled);         // global color survives the merge
+        Assert.Equal(40, loaded.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"].Brightness);
+        Assert.False(loaded.CapsLock.IsEnabled);             // folded: was master-gated off pre-merge
+        Assert.False(loaded.WindowsLauncher.IsEnabled);
+    }
+
+    [Fact]
+    public async Task PreMergeWinIni_WindowsEnabled_ColorDisabled_KeepsSystemFeatures()
+    {
+        // The mirror case: color off, Windows features on — Caps Lock must keep working (the merged
+        // master stays on via the Windows side) while color imports as disabled.
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=true\n\n" +
+            "[CapsLock]\nEnabled=true\nMode=0\n");
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=false\n\n" +
+            "[Color]\nEnabled=true\n");
+
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+
+        Assert.True(loaded.IsEnabled);
+        Assert.True(loaded.CapsLock.IsEnabled);
+        Assert.False(loaded.ColorSettings.IsEnabled);
+    }
+
+    [Fact]
+    public async Task PreMergeWinIni_BothMastersDisabled_ImportsAllOff()
+    {
+        // Completes the migration master truth table: both legacy masters off -> merged master off,
+        // system features folded off, color off.
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=false\n\n" +
+            "[CapsLock]\nEnabled=true\nMode=0\n");
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=false\n\n" +
+            "[Color]\nEnabled=true\n");
+
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+
+        Assert.False(loaded.IsEnabled);
+        Assert.False(loaded.CapsLock.IsEnabled);
+        Assert.False(loaded.WindowsLauncher.IsEnabled);
+        Assert.False(loaded.ColorSettings.IsEnabled);
+    }
+
+    [Fact]
+    public async Task MigrationFailure_ColorIniUnreadable_KeepsLoadedWinIni()
+    {
+        // codex P2: the optional import must not take down the Win.ini load (the two legacy built-ins
+        // failed independently pre-merge). A transiently locked Color.ini keeps the loaded launcher /
+        // Caps Lock settings, no persistence suspension, and the import retries next launch.
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=true\n\n" +
+            "[WindowsLauncher]\nEnabled=true\n\n" +
+            "[CapsLock]\nEnabled=true\nMode=1\n");
+        File.WriteAllText(
+            Path.Combine(_root, "Color.ini"),
+            "[Profile]\nEnabled=true\n\n[Color]\nEnabled=true\n");
+
+        var colorIniPath = Path.Combine(_root, "Color.ini");
+        using (new FileStream(colorIniPath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+                .Single(p => p.IsWindowsProfile);
+
+            Assert.False(loaded.IsPersistenceSuspended); // Win.ini itself loaded fine
+            Assert.True(loaded.CapsLock.IsEnabled);      // its settings survive
+            Assert.True(loaded.WindowsLauncher.IsEnabled);
+            Assert.True(loaded.ColorSettings.IsEnabled); // color stays at its enabled default
+        }
+
+        // Win.ini was never persisted with [Color] (the save is part of the failed migration), so the
+        // import retries once the lock is gone.
+        Assert.DoesNotContain("[Color]", File.ReadAllText(Path.Combine(_root, "Win.ini")), StringComparison.OrdinalIgnoreCase);
+
+        var retried = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+        Assert.True(retried.CapsLock.IsEnabled); // still the loaded Win.ini settings after the retry
+        Assert.Contains("[Color]", File.ReadAllText(Path.Combine(_root, "Win.ini")), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PreMergeWinIni_WithoutLegacyColorIni_KeepsColorDefaults()
+    {
+        // No legacy Color.ini (e.g. manually deleted): the merged profile keeps the factory default
+        // (color enabled) and Win.ini is persisted with the [Color] sections so the check never re-fires.
+        File.WriteAllText(
+            Path.Combine(_root, "Win.ini"),
+            "[Profile]\nEnabled=true\n");
+
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None))
+            .Single(p => p.IsWindowsProfile);
+
+        Assert.True(loaded.ColorSettings.IsEnabled);
+        var winIniText = File.ReadAllText(Path.Combine(_root, "Win.ini"));
+        Assert.Contains("[Color]", winIniText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LegacyColorIni_IsNeverWrittenOrDeletedByTheStore()
+    {
+        // The migration reads Color.ini and leaves it untouched on disk.
+        File.WriteAllText(Path.Combine(_root, "Win.ini"), "[Profile]\nEnabled=true\n");
+        var legacyContent = "[Profile]\nEnabled=true\n\n[Color]\nEnabled=true\n";
+        var colorIniPath = Path.Combine(_root, "Color.ini");
+        File.WriteAllText(colorIniPath, legacyContent);
+
+        await _store.LoadProfilesAsync(CancellationToken.None);
+        var windows = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.IsWindowsProfile);
+        await _store.SaveProfileAsync(windows, CancellationToken.None);
+
+        Assert.Equal(legacyContent, File.ReadAllText(colorIniPath));
     }
 }

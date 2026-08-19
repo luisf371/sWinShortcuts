@@ -19,7 +19,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     private bool _enableDebugLogging;
     private Key _colorToggleKey = Key.None;
     private Key _rapidFireToggleKey = Key.None;
-    private bool _hookWatchdogEnabled = true;
+    private bool _hookWatchdogEnabled;
     private bool _advancedModeEnabled;
     private bool _isStartupLoaded;
     private bool _isSaving;

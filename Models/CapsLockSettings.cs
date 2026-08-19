@@ -4,7 +4,7 @@ namespace sWinShortcuts.Models;
 
 public sealed class CapsLockSettings
 {
-    public bool IsEnabled { get; set; } = true;
+    public bool IsEnabled { get; set; } = false;
 
     public CapsLockMode Mode { get; set; } = CapsLockMode.Normal;
 

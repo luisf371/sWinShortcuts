@@ -11,8 +11,6 @@ public interface IProfileManager
     IReadOnlyList<Profile> Profiles { get; }
 
     Profile WindowsProfile { get; }
-    
-    Profile ColorProfile { get; }
 
     event EventHandler<Profile>? ProfileAdded;
 

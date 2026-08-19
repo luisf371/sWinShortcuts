@@ -27,7 +27,6 @@
         <Setter Property="Padding" Value="8,4" />
         <Setter Property="Margin" Value="4" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -537,7 +536,6 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="MinWidth" Value="96" />
         <Setter Property="Height" Value="36" />
-        <Setter Property="Cursor" Value="Hand" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TabItem">

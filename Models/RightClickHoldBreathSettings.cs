@@ -10,7 +10,9 @@ public sealed class RightClickHoldBreathSettings
 
     public HoldBreathMode Mode { get; set; } = HoldBreathMode.Hold;
 
-    public int DelayMilliseconds { get; set; } = 5;
+    public const int DefaultDelayMilliseconds = 50;
+
+    public int DelayMilliseconds { get; set; } = DefaultDelayMilliseconds;
 
     public InputTrigger PanicTrigger { get; set; } = InputTrigger.None;
 
