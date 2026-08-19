@@ -1191,24 +1191,47 @@
                                                     Tag="{Binding CrosshairEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
                                             <CheckBox Content="Hide while right mouse button is held"
-                                                      IsChecked="{Binding CrosshairHideWhileRightButtonHeld}" />
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="Size"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <Slider Minimum="-50"
-                                                        Maximum="50"
-                                                        Value="{Binding CrosshairSizeAdjustment, UpdateSourceTrigger=PropertyChanged}"
-                                                        IsSnapToTickEnabled="True"
-                                                        TickFrequency="1"
-                                                        Width="280"
-                                                        VerticalAlignment="Center"
-                                                        ToolTip="Scales the crosshair overlay from -50% to +50% relative to its source size (0 = original). The overlay stays centered and symmetrical while dragging." />
-                                                <TextBlock Text="{Binding CrosshairSizeAdjustment, StringFormat={}{0:+0 '%';-0 '%';'0 %'}}"
-                                                           VerticalAlignment="Center"
-                                                           Margin="8,0,0,0"
-                                                           Width="48" />
-                                            </StackPanel>
+                                                      IsChecked="{Binding CrosshairHideWhileRightButtonHeld}"
+                                                      Margin="0,0,0,8" />
+                                            <!-- Standard setting row (140 label / * control / Auto reset),
+                                                 same as every other slider row in the editor: the slider
+                                                 stretches to the card edge instead of a fixed width, and
+                                                 the value readout uses the shared accent W60 style. -->
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Crosshair Size"
+                                                           VerticalAlignment="Center" />
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding CrosshairSizeAdjustment, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="-50"
+                                                            Maximum="50"
+                                                            TickFrequency="1"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0"
+                                                            ToolTip="Scales the crosshair overlay from -50% to +50% relative to its source size (0 = original). The overlay stays centered and symmetrical while dragging." />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding CrosshairSizeAdjustment, StringFormat={}{0:+0 '%';-0 '%';'0 %'}}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ResetCrosshairSizeCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
                                             <!-- Crosshair image is intentionally hardcoded to the bundled
                                                  default (Icons/Crosshair.png; an empty CrosshairImagePath
                                                  renders it). Planned: a preset dropdown with a custom-image

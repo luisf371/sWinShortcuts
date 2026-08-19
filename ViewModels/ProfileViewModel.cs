@@ -90,6 +90,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             () => RightClickHoldBreathDelay = RightClickHoldBreathSettings.DefaultDelayMilliseconds);
         ResetAntiAfkIntervalCommand = new RelayCommand(
             () => AntiAfkIntervalMinutes = AntiAfkSettings.DefaultIntervalMinutes);
+        ResetCrosshairSizeCommand = new RelayCommand(
+            () => CrosshairSizeAdjustment = CrosshairSettings.DefaultSizeAdjustment);
 
         UpdateSelectableKeys();
     }
@@ -98,6 +100,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     public ICommand ResetRapidFireJitterCommand { get; }
     public ICommand ResetHoldBreathDelayCommand { get; }
     public ICommand ResetAntiAfkIntervalCommand { get; }
+
+    public ICommand ResetCrosshairSizeCommand { get; }
 
     public event EventHandler<ProfileChangedEventArgs>? ProfileChanged;
 
