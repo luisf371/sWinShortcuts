@@ -117,11 +117,11 @@ public class ProfileTests
 public class AltMouseSettingsTests
 {
     [Fact]
-    public void DefaultHoldThreshold_Is50Ms()
+    public void DefaultHoldThreshold_Is150Ms()
     {
         var settings = new AltMouseSettings();
 
-        Assert.Equal(50, settings.HoldThresholdMilliseconds);
+        Assert.Equal(150, settings.HoldThresholdMilliseconds);
     }
 
     [Fact]

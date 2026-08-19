@@ -118,14 +118,15 @@ public sealed partial class MainViewModel : ViewModelBase
     private bool advancedModeEnabled;
 
     // Profile-editor tab strip (MainWindow.xaml). Positional indices — must match the TabItem
-    // order there. Keys/Advanced are custom-profile only; Display/System are always visible (the
-    // built-in default uses both: Display = global color, System = Caps Lock / launchers). Not
-    // persisted: in-session retention is free and a saved index adds write churn for no value
-    // (it is coerced per profile kind anyway).
-    public const int TabIndexKeys = 0;
-    public const int TabIndexAdvanced = 1;
-    public const int TabIndexDisplay = 2;
-    public const int TabIndexSystem = 3;
+    // order there. Launcher is built-in-only and FIRST (the built-in default opens on it:
+    // Launcher, Display, System); Keys/Advanced are custom-profile only; Display/System are
+    // always visible. Not persisted: in-session retention is free and a saved index adds write
+    // churn for no value (it is coerced per profile kind anyway).
+    public const int TabIndexLauncher = 0;
+    public const int TabIndexKeys = 1;
+    public const int TabIndexAdvanced = 2;
+    public const int TabIndexDisplay = 3;
+    public const int TabIndexSystem = 4;
 
     [ObservableProperty]
     private int selectedTabIndex;
@@ -466,6 +467,7 @@ public sealed partial class MainViewModel : ViewModelBase
 
         return requested switch
         {
+            TabIndexLauncher when isWindowsProfile => TabIndexLauncher,
             TabIndexKeys when visibleKeys => TabIndexKeys,
             TabIndexAdvanced when visibleKeys => TabIndexAdvanced,
             TabIndexDisplay => TabIndexDisplay,

@@ -21,9 +21,10 @@ public sealed class MainViewModelTabTests
             MainViewModel.CoerceTabIndex(requested, isWindowsProfile: true));
     }
 
-    // Built-in default profile: Display and System are both visible, so a still-valid
+    // Built-in default profile: Launcher, Display and System are all visible, so a still-valid
     // selection passes through unchanged.
     [Theory]
+    [InlineData(MainViewModel.TabIndexLauncher)]
     [InlineData(MainViewModel.TabIndexDisplay)]
     [InlineData(MainViewModel.TabIndexSystem)]
     public void WindowsProfile_VisibleSelection_PassesThroughUnchanged(int requested)
@@ -31,6 +32,16 @@ public sealed class MainViewModelTabTests
         Assert.Equal(
             requested,
             MainViewModel.CoerceTabIndex(requested, isWindowsProfile: true));
+    }
+
+    // Custom profile: Launcher is built-in-only, so a retained Launcher selection (e.g. session
+    // tab retention across a Windows → custom switch) lands on the first custom tab.
+    [Fact]
+    public void CustomProfile_LauncherRequested_LandsOnKeys()
+    {
+        Assert.Equal(
+            MainViewModel.TabIndexKeys,
+            MainViewModel.CoerceTabIndex(MainViewModel.TabIndexLauncher, isWindowsProfile: false));
     }
 
     // A locked Advanced Mode grays the Advanced page out in place rather than hiding the tab,

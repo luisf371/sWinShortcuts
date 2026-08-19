@@ -2,6 +2,8 @@ using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Linq;
+using System.Windows.Input;
+using CommunityToolkit.Mvvm.Input;
 using sWinShortcuts.Models;
 using MouseButton = sWinShortcuts.Models.MouseButton;
 
@@ -29,7 +31,12 @@ public sealed class AltMouseViewModel : ViewModelBase
 
         _isEnabled = _model.IsEnabled;
         _holdThresholdMilliseconds = _model.HoldThresholdMilliseconds;
+
+        ResetHoldThresholdCommand = new RelayCommand(
+            () => HoldThresholdMilliseconds = AltMouseSettings.DefaultHoldThresholdMilliseconds);
     }
+
+    public ICommand ResetHoldThresholdCommand { get; }
 
     public bool IsEnabled
     {

@@ -24,7 +24,9 @@ public sealed class AltMouseSettings
     /// <summary>
     /// Tap-hold split threshold in milliseconds.
     /// </summary>
-    public int HoldThresholdMilliseconds { get; set; } = 50;
+    public const int DefaultHoldThresholdMilliseconds = 150;
+
+    public int HoldThresholdMilliseconds { get; set; } = DefaultHoldThresholdMilliseconds;
 }
 
 public sealed class MouseButtonBinding
