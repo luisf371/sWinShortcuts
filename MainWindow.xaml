@@ -7,9 +7,10 @@
         xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
         Title="sWinShortcuts"
         Icon="pack://application:,,,/Icons/Icon.ico"
-        Width="1100"
+        Width="960"
         Height="720"
         MinWidth="960"
+        MaxWidth="960"
         MinHeight="640"
         ResizeMode="CanResizeWithGrip"
         WindowStartupLocation="CenterScreen"
@@ -19,8 +20,13 @@
         SizeChanged="Window_SizeChanged"
         LocationChanged="Window_LocationChanged">
     <WindowChrome.WindowChrome>
+        <!-- ResizeBorderThickness sides are 0 on purpose: the window's width is locked
+             (MinWidth == MaxWidth), so side/corner hit zones would only produce
+             no-op or diagonal (width) resize cursors. Top/bottom bands remain for
+             height resizing; zero-width side bands make the corner hit tests
+             resolve to the vertical edges instead of HTBOTTOMRIGHT/HTTOPLEFT. -->
         <WindowChrome CaptionHeight="32"
-                      ResizeBorderThickness="5"
+                      ResizeBorderThickness="0,5,0,5"
                       GlassFrameThickness="0"
                       CornerRadius="0"
                       UseAeroCaptionButtons="False"
@@ -51,6 +57,16 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
+        <!-- Heavier than DisabledContentShadeStyle (0.6): the Advanced page under a locked
+             Advanced Mode must read unmistakably disabled, not merely idle. -->
+        <Style x:Key="LockedContentShadeStyle" TargetType="FrameworkElement">
+            <Setter Property="Opacity" Value="1" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.4" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
 
         <!-- Keyed (window-local on purpose: promoting it would restyle the Settings dialog).
              Page scroller for the profile editor tabs; overlays the minimal scrollbar inside
@@ -66,12 +82,16 @@
                         <Grid>
                             <Border Background="{TemplateBinding Background}" />
                             <Border Margin="{TemplateBinding Padding}">
+                                <!-- No HorizontalAlignment binding on purpose: binding to
+                                     HorizontalContentAlignment (Control default = Left) left-aligns
+                                     the presenter and arranges the page at its DESIRED width, so
+                                     the GroupBoxes/setting rows shrink-wrap to their widest child
+                                     instead of stretching to the card edge. -->
                                 <ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
                                                         CanContentScroll="{TemplateBinding CanContentScroll}"
                                                         Content="{TemplateBinding Content}"
                                                         ContentTemplate="{TemplateBinding ContentTemplate}"
                                                         ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
-                                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                                         VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
                             </Border>
                             <ScrollBar x:Name="PART_VerticalScrollBar"
@@ -223,45 +243,45 @@
                                  overflows the card. Docked header + filling content keeps the
                                  TabControl's height finite. -->
                             <DockPanel Margin="0">
-                                <CheckBox DockPanel.Dock="Top" Margin="24,16,24,8"
+                                <CheckBox DockPanel.Dock="Top" Margin="24,16,24,4"
                                           IsChecked="{Binding IsEnabled}"
                                           IsEnabled="{Binding CanToggleEnabled}"
                                           VerticalAlignment="Center"
                                           HorizontalAlignment="Left"
                                           VerticalContentAlignment="Center"
                                           Padding="5">
-                                    <TextBlock Text="{Binding Name}"
-                                               FontSize="20"
-                                               FontWeight="Bold"
-                                               Margin="0,0,0,5"
-                                               VerticalAlignment="Center" />
+                                    <!-- Edit icon sits immediately right of the name (StackPanel
+                                         layout follows the name's length). F-017: executable edits
+                                         go through the validated Modify flow only. -->
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}"
+                                                   FontSize="20"
+                                                   FontWeight="Bold"
+                                                   VerticalAlignment="Center" />
+                                        <Button Content="&#xE70F;"
+                                                FontFamily="Segoe MDL2 Assets"
+                                                FontSize="14"
+                                                Width="24"
+                                                Height="24"
+                                                Padding="0"
+                                                Margin="8,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
+                                                Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}"
+                                                ToolTip="Edit executable target (validated)"
+                                                ToolTipService.InitialShowDelay="0"
+                                                ToolTipService.Placement="Right"
+                                                AutomationProperties.Name="Edit executable" />
+                                    </StackPanel>
                                 </CheckBox>
 
                                 <DockPanel IsEnabled="{Binding CanEditContent}"
                                            Style="{StaticResource DisabledContentShadeStyle}">
-                                        <StackPanel DockPanel.Dock="Top" Margin="24,0,28,8"
-                                                    Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
-                                        <TextBlock Text="Executable" Margin="0,0,0,4" />
-                                        <DockPanel>
-                                            <Button Content="Modify"
-                                                    Command="{Binding DataContext.ModifyProfileCommand, ElementName=RootWindow}"
-                                                    DockPanel.Dock="Right"
-                                                    Margin="8,0,0,0"
-                                                    Width="100" />
-                                            <!-- F-017: display-only. The inline PropertyChanged binding
-                                                 let unvalidated (empty / non-.exe / duplicate) targets
-                                                 persist straight to the model on every keystroke. All
-                                                 executable edits now go through the validated Modify flow. -->
-                                            <TextBox Text="{Binding Executable, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     ToolTip="Use Modify to change the target executable (validated)." />
-                                        </DockPanel>
-                                    </StackPanel>
 
                     <!-- Pinned tab strip; each tab page brings its own ScrollViewer so the
                          strip never scrolls away. Direct-content TabItems keep state (scroll
                          position, DataGrid selection) across tab switches. -->
-                    <TabControl Margin="0,12,0,0"
+                    <TabControl Margin="0,6,0,0"
                                 Style="{StaticResource SettingsTabControlStyle}"
                                 ItemContainerStyle="{StaticResource SettingsTabItemStyle}"
                                 SelectedIndex="{Binding DataContext.SelectedTabIndex, ElementName=RootWindow, Mode=TwoWay}">
@@ -338,6 +358,56 @@
                         </Style.Triggers>
                     </Style>
                         </TabControl.Resources>
+                        <!-- Launcher is built-in-only (hosts the Windows Launcher group) and first
+                             in the strip, so the built-in default opens on it: Launcher, Display,
+                             System. Local Visibility binding — same pattern as Keys below. -->
+                        <TabItem Header="Launcher"
+                                 Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfTrue}}">
+                            <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
+                                          Padding="24,16,28,24">
+                                <StackPanel>
+                                    <GroupBox Padding="16" Margin="0,0,0,8">
+                                        <GroupBox.Header>
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
+                                                <CheckBox Content="Windows Launcher"
+                                                          IsChecked="{Binding WindowsLauncherEnabled}"
+                                                          Margin="0"
+                                                          VerticalAlignment="Center" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Press Win plus the listed key to launch the configured application. Run as admin starts it elevated."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
+                                            </StackPanel>
+                                        </GroupBox.Header>
+                                        <StackPanel Margin="0,8,0,0"
+                                                    IsEnabled="{Binding WindowsLauncherEnabled}"
+                                                    Tag="{Binding WindowsLauncherEnabled}"
+                                                    Style="{StaticResource FeatureToggleContentStyle}">
+                                            <ItemsControl ItemsSource="{Binding WindowsLaunchers}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate DataType="{x:Type vm:WindowsLauncherEntryViewModel}">
+                                                        <DockPanel Margin="0,4,0,4">
+                                                            <StackPanel Orientation="Horizontal" Width="140" DockPanel.Dock="Left" VerticalAlignment="Center">
+                                                                <TextBlock Text="Win+" Foreground="{StaticResource ForegroundPrimaryBrush}" />
+                                                                <TextBlock Text="{Binding Key, Converter={StaticResource KeyDisplayConverter}}" Foreground="{StaticResource ForegroundPrimaryBrush}" />
+                                                            </StackPanel>
+                                                            <CheckBox Content="Run as admin" IsChecked="{Binding RunAsAdministrator}" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" />
+                                                            <Button Content="Browse"
+                                                                    Command="{Binding DataContext.BrowseLauncherTargetCommand, ElementName=RootWindow}"
+                                                                    CommandParameter="{Binding}"
+                                                                    DockPanel.Dock="Right"
+                                                                    Margin="8,0,0,0"
+                                                                    Width="100" />
+                                                            <TextBox Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}" />
+                                                        </DockPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </GroupBox>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
                         <TabItem Header="Keys"
                                  Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
@@ -348,7 +418,7 @@
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal" MinHeight="22">
-                                                <CheckBox Content="Key Mappings"
+                                                <CheckBox Content="Key Re-Mappings"
                                                           IsChecked="{Binding CombinedKeyMappingsEnabled, Mode=TwoWay}"
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
@@ -407,7 +477,16 @@
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="Right-click" Width="Auto">
+                                                    <DataGridTemplateColumn Width="Auto">
+                                                        <DataGridTemplateColumn.Header>
+                                                            <StackPanel Orientation="Horizontal"
+                                                                        ToolTip="When checked, the mapping applies only while the right mouse button is held. Unchecked mappings are always active (global)."
+                                                                        ToolTipService.InitialShowDelay="0"
+                                                                        ToolTipService.Placement="Right">
+                                                                <TextBlock Text="Right-click" VerticalAlignment="Center" />
+                                                                <TextBlock Style="{StaticResource InfoIconStyle}" Margin="4,0,0,0" />
+                                                            </StackPanel>
+                                                        </DataGridTemplateColumn.Header>
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <CheckBox IsChecked="{Binding RightClickOnly, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -419,7 +498,7 @@
                                                     <DataGridTemplateColumn Width="Auto">
                                                         <DataGridTemplateColumn.Header>
                                                             <StackPanel Orientation="Horizontal"
-                                                                        ToolTip="⚠️ WARNING: Turning Suppression Off violates '1 key = 1 action' rules in competitive or anti-cheat restricted games. Use at your own risk."
+                                                                        ToolTip="⚠️ WARNING: Turning Suppression Off violates '1 key = 1 action' gaming rules. Use at your own risk."
                                                                         ToolTipService.InitialShowDelay="0"
                                                                         ToolTipService.Placement="Right">
                                                                 <TextBlock Text="Suppress" VerticalAlignment="Center" />
@@ -478,8 +557,8 @@
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
-                                                <CheckBox Content="Alt + Mouse"
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
+                                                <CheckBox Content="Alt + Mouse Shortcuts"
                                                           IsChecked="{Binding AltMouse.IsEnabled}"
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
@@ -493,24 +572,44 @@
                                                     IsEnabled="{Binding AltMouse.IsEnabled}"
                                                     Tag="{Binding AltMouse.IsEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <!-- Setting rows are Grids: 140px label column + * control
+                                                 column, so every group's controls span the full card
+                                                 width like the Keys tab DataGrid instead of stopping
+                                                 at each control's fixed width. -->
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Hold threshold (ms)"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <Slider Value="{Binding AltMouse.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="10"
-                                                        Maximum="1000"
-                                                        TickFrequency="5"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="200"
-                                                        VerticalAlignment="Center"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding AltMouse.HoldThresholdMilliseconds, StringFormat='{}{0} ms'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="50"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                            </StackPanel>
+                                                           VerticalAlignment="Center" />
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding AltMouse.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="10"
+                                                            Maximum="1000"
+                                                            TickFrequency="5"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding AltMouse.HoldThresholdMilliseconds, StringFormat='{}{0} ms'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding AltMouse.ResetHoldThresholdCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
 
                                             <DataGrid ItemsSource="{Binding AltMouseBindings}"
                                                       AutoGenerateColumns="False"
@@ -615,29 +714,41 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <!-- Custom profiles only, and only while Advanced Mode is on. The
-                             per-GroupBox AdvancedModeEnabled bindings below remain as
-                             belt-and-suspenders. -->
-                        <TabItem Header="Advanced">
-                            <TabItem.Style>
-                                <Style TargetType="TabItem" BasedOn="{StaticResource SettingsTabItemStyle}">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <MultiDataTrigger>
-                                            <MultiDataTrigger.Conditions>
-                                                <Condition Binding="{Binding IsCustomProfile}" Value="True" />
-                                                <Condition Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=DataContext.AdvancedModeEnabled}" Value="True" />
-                                            </MultiDataTrigger.Conditions>
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </MultiDataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TabItem.Style>
+                        <!-- Custom profiles only; Windows and Color profiles hide it entirely.
+                             Visibility uses the SAME local-binding pattern as the Keys tab —
+                             style-based Visibility setters on these TabItem containers do not
+                             hide the tab reliably at runtime (empirically verified 2026-08-18;
+                             the sibling local bindings behave). With Advanced Mode off the tab
+                             stays clickable at full contrast: the page is gated + shaded (root
+                             panel gate + LockedContentShadeStyle) with a lock notice up top. -->
+                        <TabItem Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
+                            <TabItem.Header>
+                                <StackPanel Orientation="Horizontal"
+                                            AutomationProperties.Name="Advanced">
+                                    <TextBlock Text="Advanced" />
+                                </StackPanel>
+                            </TabItem.Header>
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
                                 <StackPanel>
+                                    <!-- Lock notice: sits OUTSIDE the gated panel below so it stays
+                                         full-contrast while the options are shaded. -->
+                                    <Border Visibility="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow, Converter={StaticResource VisibleIfFalse}}"
+                                            Background="{StaticResource SurfaceBrush}"
+                                            BorderBrush="{StaticResource BorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="12,8"
+                                            Margin="0,0,0,12">
+                                        <TextBlock Text="🔒 Advanced features are locked — enable Advanced Mode in Settings to use them."
+                                                   TextWrapping="Wrap"
+                                                   Foreground="{StaticResource ForegroundSecondaryBrush}" />
+                                    </Border>
+                                    <!-- Single gate for the whole page (child IsEnabled bindings
+                                         would be redundant: IsEnabled inherits down the tree). -->
+                                    <StackPanel IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
+                                                Style="{StaticResource LockedContentShadeStyle}">
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal" MinHeight="22">
@@ -665,66 +776,99 @@
                                                 <Run Text="{Binding DataContext.RapidFireToggleKey, ElementName=RootWindow, Converter={StaticResource KeyDisplayConverter}, Mode=OneWay}" />
                                                 <Run Text=" — assigned in Settings" />
                                             </TextBlock>
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Click interval (ms)"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <Slider Value="{Binding RapidFireIntervalMilliseconds, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="25"
-                                                        Maximum="250"
-                                                        TickFrequency="5"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="200"
-                                                        VerticalAlignment="Center"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding RapidFireIntervalMilliseconds, StringFormat='{}{0} ms'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="50"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="Jitter (ms)"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <Slider Value="{Binding RapidFireJitterMilliseconds, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="0"
-                                                        Maximum="20"
-                                                        TickFrequency="1"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="200"
-                                                        VerticalAlignment="Center"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding RapidFireJitterMilliseconds, StringFormat='{}{0} ms'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="50"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                                <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right">
-                                                    <TextBlock.ToolTip>
-                                                        <TextBlock MaxWidth="360" TextWrapping="Wrap">
-                                                            <Run Text="Adds a random 0 –" />
-                                                            <Run Text="{Binding RapidFireJitterMilliseconds, Mode=OneWay}" />
-                                                            <Run Text=" ms to the base interval." />
-                                                            <LineBreak />
-                                                            <Run Text="Current total interval: " />
-                                                            <Run Text="{Binding RapidFireTimingRange, Mode=OneWay}" />
-                                                            <Run Text="." />
-                                                            <LineBreak />
-                                                            <Run Text="This varies timing only and is not ban protection." />
-                                                        </TextBlock>
-                                                    </TextBlock.ToolTip>
-                                                </TextBlock>
-                                            </StackPanel>
+                                                           VerticalAlignment="Center" />
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding RapidFireIntervalMilliseconds, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="25"
+                                                            Maximum="250"
+                                                            TickFrequency="5"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding RapidFireIntervalMilliseconds, StringFormat='{}{0} ms'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ResetRapidFireIntervalCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="Jitter (ms)"
+                                                               VerticalAlignment="Center" />
+                                                    <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                               ToolTipService.InitialShowDelay="0"
+                                                               ToolTipService.Placement="Right">
+                                                        <TextBlock.ToolTip>
+                                                            <TextBlock MaxWidth="360" TextWrapping="Wrap">
+                                                                <Run Text="Adds a random 0 –" />
+                                                                <Run Text="{Binding RapidFireJitterMilliseconds, Mode=OneWay}" />
+                                                                <Run Text=" ms to the base interval." />
+                                                                <LineBreak />
+                                                                <Run Text="Current total interval: " />
+                                                                <Run Text="{Binding RapidFireTimingRange, Mode=OneWay}" />
+                                                                <Run Text="." />
+                                                                <LineBreak />
+                                                                <Run Text="This varies timing only and is not ban protection." />
+                                                            </TextBlock>
+                                                        </TextBlock.ToolTip>
+                                                    </TextBlock>
+                                                </StackPanel>
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding RapidFireJitterMilliseconds, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="0"
+                                                            Maximum="20"
+                                                            TickFrequency="1"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding RapidFireJitterMilliseconds, StringFormat='{}{0} ms'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ResetRapidFireJitterCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
                                                 <CheckBox Content="Right Click - Hold Breath"
                                                           IsChecked="{Binding RightClickHoldBreathEnabled}"
                                                           Margin="0"
@@ -743,73 +887,106 @@
                                                     IsEnabled="{Binding RightClickHoldBreathEnabled}"
                                                     Tag="{Binding RightClickHoldBreathEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Hold breath key"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                           VerticalAlignment="Center" />
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
                                                           SelectedItem="{Binding RightClickHoldBreathKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Width="160">
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                     <ComboBox.ItemTemplate>
                                                         <DataTemplate>
                                                             <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
                                                         </DataTemplate>
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <TextBlock Text="Mode" VerticalAlignment="Center" Width="140" />
-                                                <ComboBox ItemsSource="{Binding DataContext.HoldBreathModes, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding RightClickHoldBreathMode, Mode=TwoWay}"
-                                                          Width="160" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            </Grid>
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Mode" VerticalAlignment="Center" />
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.HoldBreathModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding RightClickHoldBreathMode, Mode=TwoWay}" />
+                                            </Grid>
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Delay (ms)"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <Slider Value="{Binding RightClickHoldBreathDelay, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="0"
-                                                        Maximum="500"
-                                                        TickFrequency="5"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="200"
-                                                        VerticalAlignment="Center"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding RightClickHoldBreathDelay, StringFormat='{}{0} ms'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="50"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <CheckBox Content="Suppress Early Cancel"
-                                                          IsChecked="{Binding RightClickHoldBreathSuppressEarlyCancelInput, Mode=TwoWay}"
-                                                          IsEnabled="{Binding RightClickHoldBreathEarlyCancelConfigured}"
-                                                          VerticalAlignment="Center" />
-                                                <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Press the selected key or button while holding right mouse to cancel hold-breath input before it worsens sway."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
-                                                <ComboBox ItemsSource="{Binding DataContext.HoldBreathPanicTriggers, ElementName=RootWindow}"
+                                                           VerticalAlignment="Center" />
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding RightClickHoldBreathDelay, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="0"
+                                                            Maximum="500"
+                                                            TickFrequency="5"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding RightClickHoldBreathDelay, StringFormat='{}{0} ms'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ResetHoldBreathDelayCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <CheckBox Content="Early Cancel"
+                                                              IsChecked="{Binding RightClickHoldBreathSuppressEarlyCancelInput, Mode=TwoWay}"
+                                                              IsEnabled="{Binding RightClickHoldBreathEarlyCancelConfigured}"
+                                                              VerticalAlignment="Center" />
+                                                    <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                               ToolTip="Press the selected key while holding right mouse to cancel hold-breath."
+                                                               ToolTipService.InitialShowDelay="0"
+                                                               ToolTipService.Placement="Right" />
+                                                </StackPanel>
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.HoldBreathPanicTriggers, ElementName=RootWindow}"
                                                           SelectedItem="{Binding RightClickHoldBreathPanicTrigger, Mode=TwoWay}"
-                                                          IsEnabled="{Binding RightClickHoldBreathSuppressEarlyCancelInput}"
-                                                          Margin="8,0,0,0"
-                                                          Width="160">
+                                                          IsEnabled="{Binding RightClickHoldBreathSuppressEarlyCancelInput}">
                                                     <ComboBox.ItemTemplate>
                                                         <DataTemplate>
                                                             <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
                                                         </DataTemplate>
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
-                                            </StackPanel>
+                                            </Grid>
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
                                                 <CheckBox Content="Auto-Run"
                                                           IsChecked="{Binding AutoRunEnabled}"
                                                           Margin="0"
@@ -828,83 +1005,108 @@
                                                     IsEnabled="{Binding AutoRunEnabled}"
                                                     Tag="{Binding AutoRunEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Trigger modifier"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <ComboBox ItemsSource="{Binding DataContext.TriggerModifiers, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AutoRunTriggerModifier, Mode=TwoWay}"
-                                                          Width="160" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                                           VerticalAlignment="Center" />
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.TriggerModifiers, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunTriggerModifier, Mode=TwoWay}" />
+                                            </Grid>
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Trigger key"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                           VerticalAlignment="Center" />
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
                                                           SelectedItem="{Binding AutoRunTriggerKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Width="160">
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                     <ComboBox.ItemTemplate>
                                                         <DataTemplate>
                                                             <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
                                                         </DataTemplate>
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <CheckBox Content="Sprint"
+                                            </Grid>
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox Content="Auto-Sprint"
                                                           IsChecked="{Binding AutoRunSprintEnabled}"
                                                           VerticalAlignment="Center" />
-                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
                                                           SelectedItem="{Binding AutoRunSprintKey, Mode=TwoWay}"
                                                           IsEnabled="{Binding AutoRunSprintEnabled}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="8,0,0,0"
-                                                          Width="160">
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                     <ComboBox.ItemTemplate>
                                                         <DataTemplate>
                                                             <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
                                                         </DataTemplate>
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal"
-                                                        Margin="0,0,0,8"
-                                                        IsEnabled="{Binding AutoRunSprintEnabled}"
-                                                        Tag="{Binding AutoRunSprintEnabled}"
-                                                        Style="{StaticResource FeatureToggleContentStyle}">
+                                            </Grid>
+                                            <Grid Margin="0,0,0,8"
+                                                  IsEnabled="{Binding AutoRunSprintEnabled}"
+                                                  Tag="{Binding AutoRunSprintEnabled}"
+                                                  Style="{StaticResource FeatureToggleContentStyle}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Sprint mode"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <ComboBox ItemsSource="{Binding DataContext.SprintActivationModes, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AutoRunSprintMode, Mode=TwoWay}"
-                                                          Width="160" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="Send mode"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <ComboBox ItemsSource="{Binding DataContext.AutoRunSendModes, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AutoRunSendMode, Mode=TwoWay}"
-                                                          Width="160" />
-                                                <TextBlock Style="{StaticResource WarningIconStyle}"
-                                                           ToolTip="⚠️ EXPERIMENTAL: Background send posts key messages to the game window (like AutoHotkey ControlSend), so it keeps moving while alt-tabbed. Works with many games (incl. GZW); a few pure raw-input / DirectInput titles ignore it — test per game. Carries anti-cheat risk."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
-                                            </StackPanel>
+                                                           VerticalAlignment="Center" />
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.SprintActivationModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunSprintMode, Mode=TwoWay}" />
+                                            </Grid>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="Send mode"
+                                                               VerticalAlignment="Center" />
+                                                    <TextBlock Style="{StaticResource WarningIconStyle}"
+                                                               ToolTip="⚠️ EXPERIMENTAL: Background mode sends keys directly to the application allowing for movement while alt-tabbed."
+                                                               ToolTipService.InitialShowDelay="0"
+                                                               ToolTipService.Placement="Right" />
+                                                </StackPanel>
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.AutoRunSendModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AutoRunSendMode, Mode=TwoWay}" />
+                                            </Grid>
                                         </StackPanel>
                                     </GroupBox>
                                     <GroupBox Padding="16" Margin="0,0,0,8"
-                                              IsEnabled="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow}"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal">
+                                            <StackPanel Orientation="Horizontal" MinHeight="22">
                                                 <CheckBox Content="Anti-AFK"
                                                           IsChecked="{Binding AntiAfkEnabled}"
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Prevents idle / AFK kicks by sending a brief net-zero WASD tap — but ONLY after your KEYBOARD has been genuinely inactive for the set interval (mouse movement does NOT reset it). Any real keypress resets the timer, so it never fires while you're actively playing, and it only runs while this game is focused."
+                                                           ToolTip="Prevents idle kicks by sending WASD tap — but ONLY after your KEYBOARD has been genuinely inactive for the set interval (mouse movement does NOT reset it). Any real keypress resets the timer, so it never fires while you're actively playing, and it only runs while this game is focused."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                             </StackPanel>
@@ -913,38 +1115,60 @@
                                                     IsEnabled="{Binding AntiAfkEnabled}"
                                                     Tag="{Binding AntiAfkEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="Interval (min)"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <Slider Value="{Binding AntiAfkIntervalMinutes, UpdateSourceTrigger=PropertyChanged}"
-                                                        Minimum="1"
-                                                        Maximum="15"
-                                                        TickFrequency="1"
-                                                        IsSnapToTickEnabled="True"
-                                                        Width="200"
-                                                        VerticalAlignment="Center"
-                                                        Margin="0,0,8,0" />
-                                                <TextBlock Text="{Binding AntiAfkIntervalMinutes, StringFormat='{}{0} min'}"
-                                                           VerticalAlignment="Center"
-                                                           Width="50"
-                                                           Foreground="{StaticResource AccentBrush}"
-                                                           FontWeight="SemiBold" />
-                                            </StackPanel>
-                                            <TextBlock Text="Only fires after real KEYBOARD inactivity — any keypress resets the timer (mouse movement does not), so it never triggers while you're actively playing."
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="Interval (min)"
+                                                               VerticalAlignment="Center" />
+                                                    <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                               ToolTip="How long the keyboard must be genuinely inactive before the WASD tap fires. Mouse movement does NOT reset the timer; any real keypress does. Only runs while the application is in the foreground."
+                                                               ToolTipService.InitialShowDelay="0"
+                                                               ToolTipService.Placement="Right" />
+                                                </StackPanel>
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding AntiAfkIntervalMinutes, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="1"
+                                                            Maximum="15"
+                                                            TickFrequency="1"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding AntiAfkIntervalMinutes, StringFormat='{}{0} min'}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ResetAntiAfkIntervalCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
+                                            <TextBlock Text="Only triggers after real KEYBOARD inactivity (mouse movement does not). Application must in be in foreground."
                                                        TextWrapping="Wrap"
-                                                       MaxWidth="420"
-                                                       HorizontalAlignment="Left"
                                                        Margin="0,10,0,0"
                                                        FontSize="11"
                                                        Opacity="0.7" />
                                         </StackPanel>
                                     </GroupBox>
+                                    </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <TabItem Header="Display"
-                                 Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                        <!-- Display is always visible: the built-in default profile edits the GLOBAL
+                             color settings here, and game profiles edit their foreground overrides. -->
+                        <TabItem Header="Display">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
                                 <StackPanel>
@@ -957,7 +1181,7 @@
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Shows a centered, click-through crosshair over the game while this profile is active."
+                                                           ToolTip="Shows a centered crosshair overlay while profile is active."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                             </StackPanel>
@@ -975,60 +1199,51 @@
                                                  ProfileViewModel.CrosshairImagePath,
                                                  MainViewModel.BrowseCrosshairImageCommand, and the INI
                                                  ImagePath key are kept so this UI drops back in as-is.
-                                            <StackPanel Orientation="Horizontal">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Image"
-                                                           VerticalAlignment="Center"
-                                                           Width="140" />
-                                                <TextBox Text="{Binding CrosshairImagePath, UpdateSourceTrigger=PropertyChanged}"
-                                                         VerticalAlignment="Center"
-                                                         Width="280" />
-                                                <Button Content="Browse…"
+                                                           VerticalAlignment="Center" />
+                                                <TextBox Grid.Column="1"
+                                                         Text="{Binding CrosshairImagePath, UpdateSourceTrigger=PropertyChanged}"
+                                                         VerticalAlignment="Center" />
+                                                <Button Grid.Column="2"
+                                                        Content="Browse…"
                                                         Command="{Binding DataContext.BrowseCrosshairImageCommand, ElementName=RootWindow}"
                                                         CommandParameter="{Binding}"
                                                         Margin="8,0,0,0"
                                                         Width="100" />
-                                            </StackPanel>
+                                            </Grid>
                                             -->
                                         </StackPanel>
                                     </GroupBox>
 
-                                <GroupBox Padding="16" Margin="0,0,0,8"
-                                          Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
+                                <GroupBox Padding="16" Margin="0,0,0,8">
                                     <GroupBox.Header>
-                                        <StackPanel Orientation="Horizontal">
-                                            <!-- For Color Profile: just show text label (profile list has its own toggle) -->
-                                            <TextBlock Text="Color Settings"
-                                                       Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfTrue}}"
-                                                       VerticalAlignment="Center"
-                                                       FontWeight="SemiBold" />
-                                            <!-- For Game Profiles: show checkbox to enable/disable color settings -->
-                                            <CheckBox Content="Color Settings"
+                                        <StackPanel Orientation="Horizontal" MinHeight="22">
+                                            <CheckBox Content="Color Profiles"
                                                       IsChecked="{Binding ColorSettings.IsEnabled}"
-                                                      Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}"
                                                       Margin="0"
                                                       VerticalAlignment="Center" />
                                             <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                       ToolTip="Adjust display color settings (NVIDIA only). For game profiles, these settings apply when the game is active. Check individual monitors to enable adjustments."
+                                                       ToolTip="Adjust display color settings. Application profiles apply only when the application is in foreground. Check individual monitors to enable adjustments."
                                                        ToolTipService.InitialShowDelay="0"
                                                        ToolTipService.Placement="Right" />
                                         </StackPanel>
                                     </GroupBox.Header>
-                                    <!-- For Color Profile: always enabled. For Game Profiles: enabled based on master toggle -->
                                     <StackPanel Margin="0,8,0,0">
                                         <StackPanel.Style>
                                             <Style TargetType="StackPanel">
                                                 <Setter Property="IsEnabled" Value="True" />
                                                 <Setter Property="Opacity" Value="1" />
                                                 <Style.Triggers>
-                                                    <!-- Only apply graying for non-Color profiles when disabled -->
-                                                    <MultiDataTrigger>
-                                                        <MultiDataTrigger.Conditions>
-                                                            <Condition Binding="{Binding IsColorProfile}" Value="False" />
-                                                            <Condition Binding="{Binding ColorSettings.IsEnabled}" Value="False" />
-                                                        </MultiDataTrigger.Conditions>
+                                                    <DataTrigger Binding="{Binding ColorSettings.IsEnabled}" Value="False">
                                                         <Setter Property="IsEnabled" Value="False" />
                                                         <Setter Property="Opacity" Value="0.75" />
-                                                    </MultiDataTrigger>
+                                                    </DataTrigger>
                                                 </Style.Triggers>
                                             </Style>
                                         </StackPanel.Style>
@@ -1045,28 +1260,34 @@
                                             <CheckBox Content="Enable a secondary color preset"
                                                       IsChecked="{Binding ColorSettings.HasSecondary}"
                                                       Margin="0,0,0,6" />
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                            <Grid Margin="0,0,0,6">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Edit preset"
                                                            FontWeight="SemiBold"
-                                                           VerticalAlignment="Center"
-                                                           Margin="0,0,10,0" />
-                                                <ToggleButton Style="{StaticResource PresetVariantToggleStyle}"
+                                                           VerticalAlignment="Center" />
+                                                <ToggleButton Grid.Column="1"
+                                                              Style="{StaticResource PresetVariantToggleStyle}"
                                                               IsChecked="{Binding ColorSettings.IsEditingSecondary, Mode=TwoWay}"
                                                               IsEnabled="{Binding ColorSettings.CanEditSecondary}"
-                                                              Width="176"
-                                                              ToolTip="Choose which color preset the display controls below edit."
+                                                              ToolTip="Choose which color profile to edit."
                                                               AutomationProperties.Name="Color preset to edit" />
-                                            </StackPanel>
-                                            <!-- Game profiles only (the global Color profile is already live):
-                                                 temporarily force-apply the edited profile's colors while tuning. -->
+                                            </Grid>
+                                            <!-- Game profiles only (the default profile's colors are already
+                                                 live): temporarily force-apply the edited profile's colors while tuning. -->
                                             <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
-                                                        Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
+                                                        Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                                                 <CheckBox Content="Force preview"
                                                           IsChecked="{Binding ColorSettings.IsForcePreviewEnabled}"
                                                           IsEnabled="{Binding ColorSettings.IsForcePreviewAvailable}"
-                                                          ToolTip="Temporarily apply this profile's colors while editing (30 s), then restore the colors for the current foreground app. Requires this profile's Color Settings to be enabled first."
                                                           VerticalAlignment="Center"
                                                           Margin="0" />
+                                                <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                           ToolTip="Temporarily (30s) force activate color profile to faciliate live editing."
+                                                           ToolTipService.InitialShowDelay="0"
+                                                           ToolTipService.Placement="Right" />
                                                 <TextBlock Text="{Binding ColorSettings.ForcePreviewCountdown}"
                                                            Foreground="{StaticResource AccentBrush}"
                                                            FontWeight="SemiBold"
@@ -1090,10 +1311,15 @@
                                                       Visibility="{Binding ColorSettings.HasDisplays, Converter={StaticResource VisibleIfTrue}}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
+                                                    <!-- Asymmetric padding: LEFT 4 keeps the slider
+                                                         start lined up with the other tabs' rows (a
+                                                         large left inset shortens the slider); RIGHT 12
+                                                         floats the Reset buttons off the card border
+                                                         instead of gluing them to its edge. -->
                                                     <Border BorderBrush="{StaticResource BorderBrush}"
                                                             BorderThickness="1"
                                                             CornerRadius="4"
-                                                            Padding="12"
+                                                            Padding="4,12,12,12"
                                                             Margin="0,0,0,12">
                                                         <StackPanel>
                                                             <!-- Monitor header with checkbox -->
@@ -1115,21 +1341,26 @@
                                                                         <ColumnDefinition Width="Auto" />
                                                                     </Grid.ColumnDefinitions>
                                                                     <TextBlock Text="Brightness" VerticalAlignment="Center" />
-                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                                    <Grid Grid.Column="1">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
                                                                         <Slider Value="{Binding Brightness, UpdateSourceTrigger=PropertyChanged}"
                                                                                 Minimum="0"
                                                                                 Maximum="100"
                                                                                 TickFrequency="1"
                                                                                 IsSnapToTickEnabled="True"
-                                                                                Width="240"
+                                                                                VerticalAlignment="Center"
                                                                                 Margin="0,0,8,0" />
-                                                                        <TextBlock Text="{Binding Brightness, StringFormat='{}{0}%'}"
+                                                                        <TextBlock Grid.Column="1"
+                                                                                   Text="{Binding Brightness, StringFormat='{}{0}%'}"
                                                                                    VerticalAlignment="Center"
                                                                                    Width="60"
                                                                                    TextAlignment="Left"
                                                                                    Foreground="{StaticResource AccentBrush}"
                                                                                    FontWeight="SemiBold" />
-                                                                    </StackPanel>
+                                                                    </Grid>
                                                                     <Button Grid.Column="2"
                                                                             Content="Reset"
                                                                             Command="{Binding ResetBrightnessCommand}"
@@ -1145,21 +1376,26 @@
                                                                         <ColumnDefinition Width="Auto" />
                                                                     </Grid.ColumnDefinitions>
                                                                     <TextBlock Text="Contrast" VerticalAlignment="Center" />
-                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                                    <Grid Grid.Column="1">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
                                                                         <Slider Value="{Binding Contrast, UpdateSourceTrigger=PropertyChanged}"
                                                                                 Minimum="0"
                                                                                 Maximum="100"
                                                                                 TickFrequency="1"
                                                                                 IsSnapToTickEnabled="True"
-                                                                                Width="240"
+                                                                                VerticalAlignment="Center"
                                                                                 Margin="0,0,8,0" />
-                                                                        <TextBlock Text="{Binding Contrast, StringFormat='{}{0}%'}"
+                                                                        <TextBlock Grid.Column="1"
+                                                                                   Text="{Binding Contrast, StringFormat='{}{0}%'}"
                                                                                    VerticalAlignment="Center"
                                                                                    Width="60"
                                                                                    TextAlignment="Left"
                                                                                    Foreground="{StaticResource AccentBrush}"
                                                                                    FontWeight="SemiBold" />
-                                                                    </StackPanel>
+                                                                    </Grid>
                                                                     <Button Grid.Column="2"
                                                                             Content="Reset"
                                                                             Command="{Binding ResetContrastCommand}"
@@ -1175,21 +1411,26 @@
                                                                         <ColumnDefinition Width="Auto" />
                                                                     </Grid.ColumnDefinitions>
                                                                     <TextBlock Text="Gamma" VerticalAlignment="Center" />
-                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                                    <Grid Grid.Column="1">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
                                                                         <Slider Value="{Binding Gamma, UpdateSourceTrigger=PropertyChanged}"
                                                                                 Minimum="0.5"
                                                                                 Maximum="3"
                                                                                 TickFrequency="0.05"
                                                                                 IsSnapToTickEnabled="True"
-                                                                                Width="240"
+                                                                                VerticalAlignment="Center"
                                                                                 Margin="0,0,8,0" />
-                                                                        <TextBlock Text="{Binding Gamma, StringFormat='{}{0:F2}'}"
+                                                                        <TextBlock Grid.Column="1"
+                                                                                   Text="{Binding Gamma, StringFormat='{}{0:F2}'}"
                                                                                    VerticalAlignment="Center"
                                                                                    Width="60"
                                                                                    TextAlignment="Left"
-                                                                                    Foreground="{StaticResource AccentBrush}"
-                                                                                    FontWeight="SemiBold" />
-                                                                    </StackPanel>
+                                                                                   Foreground="{StaticResource AccentBrush}"
+                                                                                   FontWeight="SemiBold" />
+                                                                    </Grid>
                                                                     <Button Grid.Column="2"
                                                                             Content="Reset"
                                                                             Command="{Binding ResetGammaCommand}"
@@ -1204,22 +1445,33 @@
                                                                         <ColumnDefinition Width="*" />
                                                                         <ColumnDefinition Width="Auto" />
                                                                     </Grid.ColumnDefinitions>
-                                                                    <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
-                                                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                                        <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
+                                                                        <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                                                   ToolTip="Digital Vibrance is NVIDIA-only (requires NVIDIA GPU/drivers)."
+                                                                                   ToolTipService.InitialShowDelay="0"
+                                                                                   ToolTipService.Placement="Right" />
+                                                                    </StackPanel>
+                                                                    <Grid Grid.Column="1">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
                                                                         <Slider Value="{Binding DigitalVibrance, UpdateSourceTrigger=PropertyChanged}"
                                                                                 Minimum="50"
                                                                                 Maximum="100"
                                                                                 TickFrequency="1"
                                                                                 IsSnapToTickEnabled="True"
-                                                                                Width="240"
+                                                                                VerticalAlignment="Center"
                                                                                 Margin="0,0,8,0" />
-                                                                        <TextBlock Text="{Binding DigitalVibrance, StringFormat='{}{0}%'}"
+                                                                        <TextBlock Grid.Column="1"
+                                                                                   Text="{Binding DigitalVibrance, StringFormat='{}{0}%'}"
                                                                                    VerticalAlignment="Center"
                                                                                    Width="60"
                                                                                    TextAlignment="Left"
                                                                                    Foreground="{StaticResource AccentBrush}"
                                                                                    FontWeight="SemiBold" />
-                                                                    </StackPanel>
+                                                                    </Grid>
                                                                     <Button Grid.Column="2"
                                                                             Content="Reset"
                                                                             Command="{Binding ResetDigitalVibranceCommand}"
@@ -1237,8 +1489,10 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <TabItem Header="System"
-                                 Visibility="{Binding IsColorProfile, Converter={StaticResource VisibleIfFalse}}">
+                        <!-- System is always visible: Caps Lock applies to every profile kind.
+                             (The built-in-only Windows Launcher group lives in its own Launcher
+                             tab at the head of the strip.) -->
+                        <TabItem Header="System">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
                                 <StackPanel>
@@ -1259,11 +1513,23 @@
                                                     IsEnabled="{Binding CapsLockEnabled}"
                                                     Tag="{Binding CapsLockEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                                <TextBlock Text="Mode" VerticalAlignment="Center" Width="140" />
-                                                <ComboBox ItemsSource="{Binding DataContext.CapsLockModes, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding CapsLockMode, Mode=TwoWay}"
-                                                          Width="160">
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="Mode" VerticalAlignment="Center" />
+                                                    <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                               ToolTip="Normal mirrors Caps Lock down/up. 2x Normal sends one full key press on Caps Lock down and another on release. Disabled suppresses the key entirely."
+                                                               ToolTipService.InitialShowDelay="0"
+                                                               ToolTipService.Placement="Right" />
+                                                </StackPanel>
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.CapsLockModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding CapsLockMode, Mode=TwoWay}">
                                                     <ComboBox.ItemTemplate>
                                                         <DataTemplate>
                                                             <TextBlock>
@@ -1282,59 +1548,30 @@
                                                         </DataTemplate>
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
+                                            </Grid>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
                                                 <CheckBox Content="Remap Key"
                                                           IsChecked="{Binding CapsLockRemapEnabled}"
                                                           IsEnabled="{Binding CanRemapCapsLock}"
                                                           VerticalAlignment="Center" />
-                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                           SelectedItem="{Binding CapsLockRemapKey, Mode=TwoWay}"
                                                           IsEnabled="{Binding CanSelectCapsLockRemapKey}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                          Margin="8,0,0,0" Width="160">
+                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                     <ComboBox.ItemTemplate>
                                                         <DataTemplate>
                                                             <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
                                                         </DataTemplate>
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
-                                            </StackPanel>
-                                        </StackPanel>
-                                    </GroupBox>
-
-                                    <GroupBox Padding="16" Margin="0,0,0,8"
-                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfTrue}}">
-                                        <GroupBox.Header>
-                                            <CheckBox Content="Windows Launcher"
-                                                      IsChecked="{Binding WindowsLauncherEnabled}"
-                                                      Margin="0"
-                                                      VerticalAlignment="Center" />
-                                        </GroupBox.Header>
-                                        <StackPanel Margin="0,8,0,0"
-                                                    IsEnabled="{Binding WindowsLauncherEnabled}"
-                                                    Tag="{Binding WindowsLauncherEnabled}"
-                                                    Style="{StaticResource FeatureToggleContentStyle}">
-                                            <ItemsControl ItemsSource="{Binding WindowsLaunchers}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate DataType="{x:Type vm:WindowsLauncherEntryViewModel}">
-                                                        <DockPanel Margin="0,4,0,4">
-                                                            <StackPanel Orientation="Horizontal" Width="140" DockPanel.Dock="Left" VerticalAlignment="Center">
-                                                                <TextBlock Text="Win+" Foreground="{StaticResource ForegroundPrimaryBrush}" />
-                                                                <TextBlock Text="{Binding Key, Converter={StaticResource KeyDisplayConverter}}" Foreground="{StaticResource ForegroundPrimaryBrush}" />
-                                                            </StackPanel>
-                                                            <CheckBox Content="Run as admin" IsChecked="{Binding RunAsAdministrator}" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" />
-                                                            <Button Content="Browse"
-                                                                    Command="{Binding DataContext.BrowseLauncherTargetCommand, ElementName=RootWindow}"
-                                                                    CommandParameter="{Binding}"
-                                                                    DockPanel.Dock="Right"
-                                                                    Margin="8,0,0,0"
-                                                                    Width="100" />
-                                                            <TextBox Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}" />
-                                                        </DockPanel>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
+                                            </Grid>
                                         </StackPanel>
                                     </GroupBox>
                                 </StackPanel>

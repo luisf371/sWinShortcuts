@@ -752,9 +752,11 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
     private static IReadOnlyDictionary<string, DisplayColorProfile>? GlobalColorFallbacks(IProfileManager profileManager)
     {
-        var globalColorProfile = profileManager.ColorProfile;
-        return globalColorProfile.IsEnabled && globalColorProfile.ColorSettings.IsEnabled
-            ? globalColorProfile.ColorSettings.SnapshotProfiles()
+        // The merged "Window [Default]" built-in supplies the global fallback (the retired Color
+        // profile's role); its sidebar enable is the master switch for the whole default profile.
+        var globalProfile = profileManager.WindowsProfile;
+        return globalProfile.IsEnabled && globalProfile.ColorSettings.IsEnabled
+            ? globalProfile.ColorSettings.SnapshotProfiles()
             : null;
     }
 
@@ -778,10 +780,10 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             return activeProfile.ColorSettings;
         }
 
-        var globalColorProfile = profileManager.ColorProfile;
-        if (globalColorProfile.IsEnabled && globalColorProfile.ColorSettings.IsEnabled)
+        var globalProfile = profileManager.WindowsProfile;
+        if (globalProfile.IsEnabled && globalProfile.ColorSettings.IsEnabled)
         {
-            return globalColorProfile.ColorSettings;
+            return globalProfile.ColorSettings;
         }
 
         return null;

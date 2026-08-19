@@ -48,16 +48,6 @@ public class ProfileTests
         var profile = new Profile { Kind = ProfileKind.Windows, Name = ProfileConstants.WindowsProfileName };
 
         Assert.True(profile.IsWindowsProfile);
-        Assert.False(profile.IsColorProfile);
-    }
-
-    [Fact]
-    public void IsColorProfile_TrueForColorKind()
-    {
-        var profile = new Profile { Kind = ProfileKind.Color, Name = ProfileConstants.ColorProfileName };
-
-        Assert.True(profile.IsColorProfile);
-        Assert.False(profile.IsWindowsProfile);
     }
 
     [Fact]
@@ -72,24 +62,33 @@ public class ProfileTests
     }
 
     // F-007: built-in identity is the immutable Kind, never the display name. A custom INI that declares
-    // a reserved Name must NOT be classified as built-in (otherwise it could clobber Win.ini / Color.ini
-    // or bypass the deletion guard).
+    // a reserved Name must NOT be classified as built-in (otherwise it could clobber Win.ini or bypass
+    // the deletion guard).
     [Fact]
     public void CustomProfile_WithReservedName_IsNotBuiltIn()
     {
-        var fakeWindows = new Profile { Name = ProfileConstants.WindowsProfileName };
-        var fakeColor = new Profile { Name = ProfileConstants.ColorProfileName.ToUpper() };
+        var fakeDefault = new Profile { Name = ProfileConstants.WindowsProfileName };
+        var fakeLegacyColor = new Profile { Name = ProfileConstants.ColorProfileName.ToUpper() };
 
-        Assert.Equal(ProfileKind.Custom, fakeWindows.Kind);
-        Assert.False(fakeWindows.IsWindowsProfile);
-        Assert.False(fakeColor.IsColorProfile);
+        Assert.Equal(ProfileKind.Custom, fakeDefault.Kind);
+        Assert.False(fakeDefault.IsWindowsProfile);
+        Assert.False(fakeLegacyColor.IsWindowsProfile);
+    }
+
+    [Fact]
+    public void ReservedProfileNames_CoverCurrentAndLegacyBuiltIns()
+    {
+        Assert.Contains("Window [Default]", ProfileConstants.ReservedProfileNames);
+        Assert.Contains("Windows", ProfileConstants.ReservedProfileNames);
+        Assert.Contains("Color Settings", ProfileConstants.ReservedProfileNames);
+        Assert.True(ProfileConstants.IsReservedProfileName("windows")); // case-insensitive
+        Assert.False(ProfileConstants.IsReservedProfileName("My Game"));
     }
 
     [Fact]
     public void Factory_AssignsBuiltInKinds()
     {
         Assert.True(ProfileFactory.CreateWindowsProfile().IsWindowsProfile);
-        Assert.True(ProfileFactory.CreateColorProfile().IsColorProfile);
         Assert.Equal(ProfileKind.Custom, ProfileFactory.CreateCustomProfile("X", "x.exe").Kind);
     }
 
@@ -118,11 +117,11 @@ public class ProfileTests
 public class AltMouseSettingsTests
 {
     [Fact]
-    public void DefaultHoldThreshold_Is50Ms()
+    public void DefaultHoldThreshold_Is150Ms()
     {
         var settings = new AltMouseSettings();
 
-        Assert.Equal(50, settings.HoldThresholdMilliseconds);
+        Assert.Equal(150, settings.HoldThresholdMilliseconds);
     }
 
     [Fact]

@@ -26,7 +26,7 @@ public sealed class ForcePreviewTests
     public async Task ForcedPlan_OverridesGlobalColor()
     {
         var manager = await CreateManagerAsync();
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY1", 60);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY1", 60);
         var game = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         EnableDisplayColor(game, "DISPLAY1", 75);
 
@@ -42,8 +42,8 @@ public sealed class ForcePreviewTests
     public async Task ForcedPlan_MissingDisplay_FallsBackToGlobalColor()
     {
         var manager = await CreateManagerAsync();
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY1", 60);
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY2", 80);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY1", 60);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY2", 80);
         var game = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         EnableDisplayColor(game, "DISPLAY1", 75);
 
@@ -63,7 +63,7 @@ public sealed class ForcePreviewTests
     public async Task ForcedPlan_DisabledForcedSettings_UsesGlobalFallback()
     {
         var manager = await CreateManagerAsync();
-        EnableDisplayColor(manager.ColorProfile, "DISPLAY1", 60);
+        EnableDisplayColor(manager.WindowsProfile, "DISPLAY1", 60);
         var game = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         EnableDisplayColor(game, "DISPLAY1", 75);
         game.ColorSettings.IsEnabled = false; // unchecking profile color mid-preview previews the global look
@@ -344,16 +344,17 @@ public sealed class ForcePreviewTests
     }
 
     [Fact]
-    public void ForcePreview_GlobalColorProfile_NotAvailable()
+    public void ForcePreview_GlobalDefaultProfile_NotAvailable()
     {
         var runtime = new RecordingPreviewRuntimeService();
         using var viewModel = new ProfileViewModel(
-            ProfileFactory.CreateColorProfile(),
+            ProfileFactory.CreateWindowsProfile(),
             new FakeDisplayService(),
             new RecordingColorControlService(),
             profileRuntimeService: runtime);
 
-        // The global Color profile is already live — no preview checkbox.
+        // The merged default profile IS the global color profile — its edits are already live,
+        // so no preview checkbox.
         Assert.False(viewModel.ColorSettings.IsForcePreviewAvailable);
 
         viewModel.ColorSettings.IsForcePreviewEnabled = true; // no-op
@@ -469,13 +470,13 @@ public sealed class ForcePreviewTests
         store.Profiles.Add(gameProfile);
         var manager = new ProfileManager(store);
 
-        // Populate the manager's snapshot first (it synthesizes the global Color profile only
+        // Populate the manager's snapshot first (it synthesizes the built-in default profile only
         // during InitializeAsync; the store's profile instances are kept by reference).
         await manager.InitializeAsync();
 
-        // Populate the global Color profile Primary 60 (optionally Secondary 80) so restores are
-        // observable.
-        var global = manager.ColorProfile;
+        // Populate the global (default profile) Primary 60 (optionally Secondary 80) so restores
+        // are observable.
+        var global = manager.WindowsProfile;
         global.ColorSettings.IsEnabled = true;
         SetDisplayColor(global, "DISPLAY1", ColorVariant.Primary, 60);
         if (globalSecondary)

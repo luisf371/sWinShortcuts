@@ -1,4 +1,5 @@
 using System.Linq;
+using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
 using sWinShortcuts.ViewModels;
 using Tests.Fakes;
@@ -141,5 +142,44 @@ public class ColorSettingsTests
 
         Assert.NotEmpty(color.AppliedProfiles);
         vm.Dispose();
+    }
+
+    [Fact]
+    public void MasterToggles_MakeNoHardwareCall()
+    {
+        // codex P1: a MASTER switch flip (the Color Settings checkbox on the default profile) must be
+        // UI-only on the editor side — the old NotifyMasterEnabledChanged wrote a NEUTRAL gamma/DVC to
+        // every display, including ones the user never opted into. The hardware transition belongs to
+        // ProfileActivationService's plan-diff (force-queued via the Color change kind), which restores
+        // only previously-owned displays.
+        var (vm, color, _) = BuildLiveVm();
+
+        vm.IsEnabled = false; // uncheck "Color Settings" on the live (default) profile
+        Assert.Empty(color.AppliedProfiles);
+
+        vm.IsEnabled = true; // re-check
+        Assert.Empty(color.AppliedProfiles);
+
+        vm.Dispose();
+    }
+
+    [Fact]
+    public void SidebarMasterToggle_OnDefaultProfile_MakesNoHardwareCall()
+    {
+        // codex P1: the merged profile's sidebar enable is a master for the WHOLE profile — a user
+        // toggling it (e.g. just to disable the Windows Launcher) must not get hardware writes from
+        // the editor's per-display VMs.
+        var display = new DisplayInfo { Id = @"\\.\DISPLAY1", Name = "Mon", DeviceName = @"\\.\DISPLAY1" };
+        var displays = new FakeDisplayService { Displays = [display] };
+        var color = new RecordingColorControlService();
+        using var viewModel = new ProfileViewModel(
+            ProfileFactory.CreateWindowsProfile(),
+            displays,
+            color);
+
+        color.AppliedProfiles.Clear(); // ignore construction-time activity
+        viewModel.IsEnabled = false;
+
+        Assert.Empty(color.AppliedProfiles);
     }
 }
