@@ -687,6 +687,10 @@ public sealed class IniProfileStore : IProfileStore
         settings.IsEnabled = document.GetBoolean("Crosshair", "Enabled", settings.IsEnabled);
         settings.HideWhileRightButtonHeld = document.GetBoolean("Crosshair", "HideWhileRightButtonHeld", settings.HideWhileRightButtonHeld);
         settings.ImagePath = document.GetString("Crosshair", "ImagePath", settings.ImagePath);
+        // Clamp on read: a hand-edited INI must never produce a negative/oversized overlay.
+        settings.SizeAdjustment = Math.Max(CrosshairSettings.MinSizeAdjustment,
+            Math.Min(CrosshairSettings.MaxSizeAdjustment,
+                document.GetInt32("Crosshair", "SizeAdjustment", settings.SizeAdjustment)));
     }
 
     private static IniDocument SerializeProfile(Profile profile)
@@ -751,6 +755,7 @@ public sealed class IniProfileStore : IProfileStore
         document.SetBoolean("Crosshair", "Enabled", crosshair.IsEnabled);
         document.SetBoolean("Crosshair", "HideWhileRightButtonHeld", crosshair.HideWhileRightButtonHeld);
         document.SetString("Crosshair", "ImagePath", crosshair.ImagePath);
+        document.SetInt32("Crosshair", "SizeAdjustment", crosshair.SizeAdjustment);
 
         var antiAfk = profile.AntiAfk;
         document.SetBoolean("AntiAfk", "Enabled", antiAfk.IsEnabled);

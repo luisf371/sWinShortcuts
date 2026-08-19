@@ -37,6 +37,7 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.Crosshair.IsEnabled = true;
         profile.Crosshair.HideWhileRightButtonHeld = true;
         profile.Crosshair.ImagePath = @"C:\Screens\crosshair.png";
+        profile.Crosshair.SizeAdjustment = 40;
         var display = profile.ColorSettings.GetOrCreateProfile("DISPLAY1");
         display.IsEnabled = true;
         display.Brightness = 61;
@@ -54,6 +55,7 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.Crosshair.IsEnabled = false;
         profile.Crosshair.HideWhileRightButtonHeld = false;
         profile.Crosshair.ImagePath = string.Empty;
+        profile.Crosshair.SizeAdjustment = CrosshairSettings.DefaultSizeAdjustment;
         profile.ColorSettings.UpdateProfile(
             "DISPLAY1",
             color => color.Brightness = 99);
@@ -69,6 +71,7 @@ public sealed class ProfilePersistenceSnapshotTests
         Assert.True(snapshot.Crosshair.IsEnabled);
         Assert.True(snapshot.Crosshair.HideWhileRightButtonHeld);
         Assert.Equal(@"C:\Screens\crosshair.png", snapshot.Crosshair.ImagePath);
+        Assert.Equal(40, snapshot.Crosshair.SizeAdjustment);
         Assert.Equal(
             61,
             snapshot.ColorSettings

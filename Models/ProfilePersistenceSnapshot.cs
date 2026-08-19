@@ -183,6 +183,7 @@ internal static class ProfilePersistenceSnapshot
         {
             IsEnabled = source.IsEnabled,
             HideWhileRightButtonHeld = source.HideWhileRightButtonHeld,
+            SizeAdjustment = source.SizeAdjustment,
             ImagePath = source.ImagePath
         };
     }

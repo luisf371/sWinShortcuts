@@ -511,6 +511,22 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public int CrosshairSizeAdjustment
+    {
+        get => Model.Crosshair.SizeAdjustment;
+        set
+        {
+            var clamped = Math.Clamp(value,
+                CrosshairSettings.MinSizeAdjustment, CrosshairSettings.MaxSizeAdjustment);
+            if (Model.Crosshair.SizeAdjustment != clamped)
+            {
+                Model.Crosshair.SizeAdjustment = clamped;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.Crosshair);
+            }
+        }
+    }
+
     public string CrosshairImagePath
     {
         get => Model.Crosshair.ImagePath;
@@ -851,6 +867,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.RapidFire.JitterMilliseconds = RapidFireJitterMilliseconds;
             Model.Crosshair.IsEnabled = CrosshairEnabled;
             Model.Crosshair.HideWhileRightButtonHeld = CrosshairHideWhileRightButtonHeld;
+            Model.Crosshair.SizeAdjustment = CrosshairSizeAdjustment;
             Model.Crosshair.ImagePath = CrosshairImagePath;
             Model.AntiAfk.IsEnabled = AntiAfkEnabled;
             Model.AntiAfk.IntervalMinutes = AntiAfkIntervalMinutes;

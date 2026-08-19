@@ -185,6 +185,47 @@ public sealed class ProfileRuntimeNotificationTests
             changes);
     }
 
+    [Fact]
+    public void CrosshairSizeAdjustment_ClampsNotifiesAndDedups()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(
+            profile,
+            new FakeDisplayService(),
+            new RecordingColorControlService());
+        var changes = new List<ProfileChangeKind>();
+        viewModel.ProfileChanged += (_, e) => changes.Add(e.Kind);
+        var notifications = 0;
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ProfileViewModel.CrosshairSizeAdjustment))
+            {
+                notifications++;
+            }
+        };
+
+        Assert.Equal(0, viewModel.CrosshairSizeAdjustment);
+
+        viewModel.CrosshairSizeAdjustment = 999;
+        Assert.Equal(CrosshairSettings.MaxSizeAdjustment, profile.Crosshair.SizeAdjustment);
+
+        viewModel.CrosshairSizeAdjustment = -999;
+        Assert.Equal(CrosshairSettings.MinSizeAdjustment, profile.Crosshair.SizeAdjustment);
+
+        viewModel.CrosshairSizeAdjustment = 12;
+        Assert.Equal(12, profile.Crosshair.SizeAdjustment);
+        // Each distinct clamped result (50, -50, 12) notifies once.
+        Assert.Equal(3, notifications);
+        Assert.Equal(
+            [ProfileChangeKind.Crosshair, ProfileChangeKind.Crosshair, ProfileChangeKind.Crosshair],
+            changes);
+
+        // Same value: no notification, no change event.
+        viewModel.CrosshairSizeAdjustment = 12;
+        Assert.Equal(3, notifications);
+        Assert.Equal(3, changes.Count);
+    }
+
     private sealed class RecordingProfileRuntimeService(
         Action onChange) : IProfileRuntimeService
     {

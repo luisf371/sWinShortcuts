@@ -1192,6 +1192,23 @@
                                                     Style="{StaticResource FeatureToggleContentStyle}">
                                             <CheckBox Content="Hide while right mouse button is held"
                                                       IsChecked="{Binding CrosshairHideWhileRightButtonHeld}" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Size"
+                                                           VerticalAlignment="Center"
+                                                           Width="140" />
+                                                <Slider Minimum="-50"
+                                                        Maximum="50"
+                                                        Value="{Binding CrosshairSizeAdjustment, UpdateSourceTrigger=PropertyChanged}"
+                                                        IsSnapToTickEnabled="True"
+                                                        TickFrequency="1"
+                                                        Width="280"
+                                                        VerticalAlignment="Center"
+                                                        ToolTip="Scales the crosshair overlay from -50% to +50% relative to its source size (0 = original). The overlay stays centered and symmetrical while dragging." />
+                                                <TextBlock Text="{Binding CrosshairSizeAdjustment, StringFormat={}{0:+0 '%';-0 '%';'0 %'}}"
+                                                           VerticalAlignment="Center"
+                                                           Margin="8,0,0,0"
+                                                           Width="48" />
+                                            </StackPanel>
                                             <!-- Crosshair image is intentionally hardcoded to the bundled
                                                  default (Icons/Crosshair.png; an empty CrosshairImagePath
                                                  renders it). Planned: a preset dropdown with a custom-image
