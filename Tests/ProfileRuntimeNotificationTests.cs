@@ -214,13 +214,16 @@ public sealed class ProfileRuntimeNotificationTests
 
         viewModel.CrosshairSizeAdjustment = 12;
         Assert.Equal(12, profile.Crosshair.SizeAdjustment);
-        Assert.Equal(1, notifications);
-        Assert.Equal([ProfileChangeKind.Crosshair], changes);
+        // Each distinct clamped result (50, -50, 12) notifies once.
+        Assert.Equal(3, notifications);
+        Assert.Equal(
+            [ProfileChangeKind.Crosshair, ProfileChangeKind.Crosshair, ProfileChangeKind.Crosshair],
+            changes);
 
         // Same value: no notification, no change event.
         viewModel.CrosshairSizeAdjustment = 12;
-        Assert.Equal(1, notifications);
-        Assert.Single(changes);
+        Assert.Equal(3, notifications);
+        Assert.Equal(3, changes.Count);
     }
 
     private sealed class RecordingProfileRuntimeService(
