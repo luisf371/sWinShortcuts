@@ -30,50 +30,39 @@ jobs:
           global-json-file: global.json
 
       - name: Restore
-        run: dotnet restore sWinShortcuts.sln
+        run: dotnet restore sWinShortcuts.sln -r win-x64
 
       - name: Build (Release)
-        run: dotnet build sWinShortcuts.sln -c Release --no-restore
+        run: >
+          dotnet build Tests/Tests.csproj -c Release -r win-x64 --no-restore
+          -p:SelfContained=false -p:PublishSingleFile=true
+          -p:BuildNumber=${{ github.run_number }}
 
       - name: Test (Release)
-        run: dotnet test sWinShortcuts.sln -c Release --no-build
+        run: dotnet test Tests/Tests.csproj -c Release -r win-x64 --no-build
 
       # Informational (these commands exit 0 even on findings). The xUnit v3 migration (F-019b)
       # cleared the previously-flagged test-only High advisories; production graph remains clean.
       - name: Vulnerable package scan
-        run: dotnet list sWinShortcuts.sln package --vulnerable --include-transitive
+        run: dotnet list sWinShortcuts.sln package --vulnerable --include-transitive --no-restore
 
       - name: Deprecated package scan
-        run: dotnet list sWinShortcuts.sln package --deprecated --include-transitive
+        run: dotnet list sWinShortcuts.sln package --deprecated --include-transitive --no-restore
 
-  publish:
-    needs: build-test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: global.json
-
-      - name: Restore
-        run: dotnet restore sWinShortcuts.csproj
-
+      # Bundle the exact app compilation that passed above; do not compile a second release binary.
       - name: Publish standalone executable
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: >
           dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained false
-          -p:PublishSingleFile=true
+          --no-build -p:PublishSingleFile=true
           -p:DebugType=None -p:DebugSymbols=false -o publish
+          -p:BuildNumber=${{ github.run_number }}
 
       # Validates single-file codegen produced a non-trivial executable. The full GUI launch smoke
       # test (notably the SDK 10.0.202 folder-name-sensitive startup regression) cannot run headlessly
       # in CI and is performed locally from a path containing spaces before each release.
       - name: Verify single-file publish output
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: pwsh
         run: |
           $exe = "publish/sWinShortcuts.exe"
@@ -82,9 +71,32 @@ jobs:
           if ($len -lt 1MB) { throw "Single-file exe unexpectedly small ($len bytes)" }
           Write-Host "Single-file exe OK: $len bytes"
 
+      - name: Preserve release executable
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-executable
+          path: publish/sWinShortcuts.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - name: Download release executable
+        uses: actions/download-artifact@v5
+        with:
+          name: release-executable
+          path: publish
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $tag = "build-${{ github.run_number }}"
           gh release view $tag *> $null

@@ -30,4 +30,30 @@
     <Resource Include="Icons\Crosshair.png" />
   </ItemGroup>
 
+  <!-- Build stamp: CI passes -p:BuildNumber=<run number> to dotnet publish (see ci.yml); local
+       builds get the "dev" fallback. GenerateAssemblyInfo=false above disables the SDK's
+       AssemblyAttribute pipeline, so emit the metadata attribute ourselves into obj/ and hand it
+       to the compiler — Utilities/BuildInfo.cs reads it back at runtime for the Settings label.
+       The file is tiny, so regenerate it for every real app compile; this keeps BuildNumber changes
+       correct in a reused obj while avoiding a second writer from WPF's temporary assembly build. -->
+  <PropertyGroup>
+    <BuildNumber Condition="'$(BuildNumber)' == ''">dev</BuildNumber>
+  </PropertyGroup>
+  <Target Name="GenerateBuildMetadata"
+          BeforeTargets="BeforeCompile"
+          Condition="!$(MSBuildProjectFile.EndsWith('_wpftmp.csproj'))">
+    <ItemGroup>
+      <BuildMetadataAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>BuildNumber</_Parameter1>
+        <_Parameter2>$(BuildNumber)</_Parameter2>
+      </BuildMetadataAttribute>
+    </ItemGroup>
+    <WriteCodeFragment AssemblyAttributes="@(BuildMetadataAttribute)"
+                       Language="C#"
+                       OutputFile="$(IntermediateOutputPath)GeneratedBuildInfo.g.cs">
+      <Output TaskParameter="OutputFile" ItemName="Compile" />
+      <Output TaskParameter="OutputFile" ItemName="FileWrites" />
+    </WriteCodeFragment>
+  </Target>
+
 </Project>

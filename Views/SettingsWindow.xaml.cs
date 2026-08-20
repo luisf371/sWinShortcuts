@@ -36,6 +36,7 @@ public partial class SettingsWindow : Window
     public SettingsWindow(IStartupService startupService, ILoggerService loggerService, IInputHookService inputHookService)
     {
         InitializeComponent();
+        BuildLabel.Text = $"Build {BuildInfo.Number}";
         _startupService = startupService;
         _inputHookService = inputHookService;
         _vm = new SettingsViewModel(loggerService, inputHookService);
