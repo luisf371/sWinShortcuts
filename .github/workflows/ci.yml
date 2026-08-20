@@ -69,6 +69,7 @@ jobs:
           dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained false
           -p:PublishSingleFile=true
           -p:DebugType=None -p:DebugSymbols=false -o publish
+          -p:BuildNumber=${{ github.run_number }}
 
       # Validates single-file codegen produced a non-trivial executable. The full GUI launch smoke
       # test (notably the SDK 10.0.202 folder-name-sensitive startup regression) cannot run headlessly

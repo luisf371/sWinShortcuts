@@ -158,6 +158,17 @@
                       Margin="0,0,0,8"/>
         </StackPanel>
 
+        <!-- Build stamp: CI bakes the workflow run number into the exe (matches the "build-N"
+             GitHub Release tag). "Build dev" = locally built, not from CI. -->
+        <TextBlock x:Name="BuildLabel"
+                   Grid.Row="1"
+                   HorizontalAlignment="Left"
+                   VerticalAlignment="Bottom"
+                   FontSize="11"
+                   Foreground="{DynamicResource ForegroundSecondaryBrush}"
+                   ToolTip="CI build that produced this executable (matches the build-N GitHub release tag). 'Build dev' means a local build."
+                   ToolTipService.InitialShowDelay="0"/>
+
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
             <Button Width="80" Margin="0,0,8,0" MinHeight="28" IsCancel="True">Cancel</Button>
             <Button Width="80" Margin="0" MinHeight="28" IsDefault="True" IsEnabled="{Binding CanSave}" Click="OnSaveClick">Save</Button>
