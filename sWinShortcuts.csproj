@@ -47,6 +47,16 @@
         <_Parameter1>BuildNumber</_Parameter1>
         <_Parameter2>$(BuildNumber)</_Parameter2>
       </BuildMetadataAttribute>
+
+      <!-- Dev-only timestamp (local machine time) so a local exe has a "when did I compile this"
+           reference; numbered CI builds get no wall-clock metadata and their label stays "Build N".
+           WriteCodeFragment rewrites the whole file each real compile, so a reused obj never keeps
+           a stale BuildDate after a switch dev -> N -> dev. -->
+      <BuildMetadataAttribute Include="System.Reflection.AssemblyMetadataAttribute"
+                              Condition="'$(BuildNumber)' == 'dev'">
+        <_Parameter1>BuildDate</_Parameter1>
+        <_Parameter2>$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm'))</_Parameter2>
+      </BuildMetadataAttribute>
     </ItemGroup>
     <WriteCodeFragment AssemblyAttributes="@(BuildMetadataAttribute)"
                        Language="C#"

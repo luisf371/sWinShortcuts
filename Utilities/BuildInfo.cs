@@ -9,16 +9,22 @@ namespace sWinShortcuts.Utilities;
 // Release tag — so the Settings footer label matches the release the exe came from.
 internal static class BuildInfo
 {
-    private const string Fallback = "dev";
+    private const string DevelopmentBuildNumber = "dev";
 
-    public static string Number { get; } = Load();
+    public static string Number { get; } = Load("BuildNumber", DevelopmentBuildNumber);
 
-    private static string Load()
+    // Dev-only compile timestamp; the csproj only emits the BuildDate attribute for "dev" builds.
+    // The runtime gate here is the second layer: a numbered build never exposes a date even if a
+    // BuildDate attribute ever leaked into its binary, keeping the CI label at exactly "Build N".
+    public static string Date { get; } =
+        Number == DevelopmentBuildNumber ? Load("BuildDate", string.Empty) : string.Empty;
+
+    private static string Load(string key, string fallback)
     {
         var attribute = typeof(BuildInfo).Assembly
             .GetCustomAttributes<AssemblyMetadataAttribute>()
-            .FirstOrDefault(a => a.Key == "BuildNumber");
+            .FirstOrDefault(a => a.Key == key);
 
-        return string.IsNullOrWhiteSpace(attribute?.Value) ? Fallback : attribute.Value!;
+        return string.IsNullOrWhiteSpace(attribute?.Value) ? fallback : attribute.Value!;
     }
 }
