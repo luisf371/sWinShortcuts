@@ -443,6 +443,156 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public async Task AltKeyboard_QuickTap_EmitsOnlyTapPair()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateAltKeyboardProfile(holdThresholdMs: 100);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            await Task.Delay(125);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Collection(
+                sender.Transitions,
+                item =>
+                {
+                    Assert.Equal(Key.A, item.Key);
+                    Assert.True(item.IsDown);
+                },
+                item =>
+                {
+                    Assert.Equal(Key.A, item.Key);
+                    Assert.False(item.IsDown);
+                });
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task AltKeyboard_Hold_EmitsOnlyHoldPair()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateAltKeyboardProfile(holdThresholdMs: 10);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+            await Task.Delay(40);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.Collection(
+                sender.Transitions,
+                item =>
+                {
+                    Assert.Equal(Key.B, item.Key);
+                    Assert.True(item.IsDown);
+                },
+                item =>
+                {
+                    Assert.Equal(Key.B, item.Key);
+                    Assert.False(item.IsDown);
+                });
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task AltKeyboard_LiveRebind_CancelsGestureButConsumesRecordedUp()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateAltKeyboardProfile(holdThresholdMs: 100);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            profile.AltKeyboard.Bindings = new Dictionary<Key, AltKeyboardBinding>
+            {
+                [Key.Q] = new()
+                {
+                    TapKey = Key.C,
+                    HoldKey = Key.D
+                }
+            };
+            service.ReconcileProfileSettings(profile, ProfileChangeKind.AltKeyboard);
+
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+            await Task.Delay(150);
+            Assert.Empty(sender.Transitions);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task AltKeyboard_AutoRepeat_SuppressesOwnedRepeatsAndIgnoresForeignOnes()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateAltKeyboardProfile(holdThresholdMs: 100);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+
+            // Consumed press: every typematic repeat and the UP itself are owned (suppressed), and the
+            // repeats never start a second gesture — exactly ONE tap pair comes out.
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            await Task.Delay(125);
+
+            // Unbound press: DOWN, repeats, and UP all fall through untouched — nothing suppressed,
+            // nothing injected, and a repeat must not start a gesture even with Alt held.
+            Assert.False(service.HandleAltKeyboardForTesting(Key.R, isDown: true));
+            Assert.False(service.HandleAltKeyboardForTesting(Key.R, isDown: true));
+            Assert.False(service.HandleAltKeyboardForTesting(Key.R, isDown: false));
+
+            // A fresh press of the same trigger key after its UP starts a new gesture.
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+
+            await WaitForAsync(() => sender.Transitions.Count == 4);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(4, sender.Transitions.Count);
+            Assert.All(sender.Transitions, item => Assert.Equal(Key.A, item.Key));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
     public async Task CapsLock_NormalWithoutRemap_PassesPhysicalTransitions()
     {
         var sender = new RecordingInputSender();
@@ -1765,6 +1915,28 @@ public sealed class InputExecutorReliabilityTests
         }
 
         Assert.True(condition());
+    }
+
+    private static Profile CreateAltKeyboardProfile(int holdThresholdMs)
+    {
+        return new Profile
+        {
+            Name = "Game",
+            Executable = "game.exe",
+            AltKeyboard =
+            {
+                IsEnabled = true,
+                HoldThresholdMilliseconds = holdThresholdMs,
+                Bindings = new Dictionary<Key, AltKeyboardBinding>
+                {
+                    [Key.Q] = new()
+                    {
+                        TapKey = Key.A,
+                        HoldKey = Key.B
+                    }
+                }
+            }
+        };
     }
 
     private static Profile CreateAltMouseProfile(int holdThresholdMs)

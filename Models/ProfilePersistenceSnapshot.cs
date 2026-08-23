@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Windows.Input;
 
 namespace sWinShortcuts.Models;
 
@@ -20,6 +21,7 @@ internal static class ProfilePersistenceSnapshot
             Executable = source.Executable,
             IsEnabled = source.IsEnabled,
             AltMouse = CloneAltMouse(source.AltMouse),
+            AltKeyboard = CloneAltKeyboard(source.AltKeyboard),
             CombinedMappings = CloneCombinedMappings(source.CombinedMappings),
             RightClickHoldBreath = CloneHoldBreath(source.RightClickHoldBreath),
             AutoRun = CloneAutoRun(source.AutoRun),
@@ -51,6 +53,26 @@ internal static class ProfilePersistenceSnapshot
         }
 
         return new AltMouseSettings
+        {
+            IsEnabled = source.IsEnabled,
+            HoldThresholdMilliseconds = source.HoldThresholdMilliseconds,
+            Bindings = bindings
+        };
+    }
+
+    private static AltKeyboardSettings CloneAltKeyboard(AltKeyboardSettings source)
+    {
+        var bindings = new Dictionary<Key, AltKeyboardBinding>();
+        foreach (var (key, binding) in source.Bindings)
+        {
+            bindings[key] = new AltKeyboardBinding
+            {
+                TapKey = binding.TapKey,
+                HoldKey = binding.HoldKey
+            };
+        }
+
+        return new AltKeyboardSettings
         {
             IsEnabled = source.IsEnabled,
             HoldThresholdMilliseconds = source.HoldThresholdMilliseconds,

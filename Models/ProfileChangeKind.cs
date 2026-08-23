@@ -19,7 +19,8 @@ public enum ProfileChangeKind
     Removed = 1 << 10,
     RapidFire = 1 << 11,
     Crosshair = 1 << 12,
-    AllRuntime = Master | Identity | AltMouse | CombinedMappings | HoldBreath |
+    AltKeyboard = 1 << 13,
+    AllRuntime = Master | Identity | AltMouse | AltKeyboard | CombinedMappings | HoldBreath |
                  AutoRun | RapidFire | AntiAfk | CapsLock | WindowsLauncher | Color | Crosshair
 }
 

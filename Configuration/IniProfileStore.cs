@@ -364,6 +364,7 @@ public sealed class IniProfileStore : IProfileStore
         profile.IsEnabled = document.GetBoolean("Profile", "Enabled", true);
 
         DeserializeAltMouse(document, profile.AltMouse);
+        DeserializeAltKeyboard(document, profile.AltKeyboard);
         DeserializeCombinedMappings(document, profile.CombinedMappings);
         DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
         DeserializeAutoRun(document, profile.AutoRun);
@@ -466,6 +467,41 @@ public sealed class IniProfileStore : IProfileStore
                     HoldKey = button5Hold
                 };
             }
+        }
+    }
+
+    private static void DeserializeAltKeyboard(IniDocument document, AltKeyboardSettings settings)
+    {
+        settings.IsEnabled = document.GetBoolean("AltKeyboard", "Enabled", settings.IsEnabled);
+        settings.HoldThresholdMilliseconds = Math.Max(10, document.GetInt32("AltKeyboard", "HoldThreshold", settings.HoldThresholdMilliseconds));
+
+        settings.Bindings.Clear();
+
+        foreach (var pair in document.GetSection("AltKeyboardBindings"))
+        {
+            var triggerKey = KeySerializer.Deserialize(pair.Key);
+            // Alt keys are the modifier itself and None is not a trigger; skip them defensively so a
+            // hand-edited INI can never register a gesture that conflicts with the Alt tracking.
+            if (triggerKey is null || triggerKey.Value == Key.None ||
+                triggerKey.Value == Key.LeftAlt || triggerKey.Value == Key.RightAlt)
+            {
+                continue;
+            }
+
+            var parts = pair.Value.Split('|');
+            var binding = new AltKeyboardBinding();
+
+            if (parts.Length > 0)
+            {
+                binding.TapKey = KeySerializer.Deserialize(parts[0]);
+            }
+
+            if (parts.Length > 1)
+            {
+                binding.HoldKey = KeySerializer.Deserialize(parts[1]);
+            }
+
+            settings.Bindings[triggerKey.Value] = binding;
         }
     }
 
@@ -717,6 +753,19 @@ public sealed class IniProfileStore : IProfileStore
             var holdStr = binding.Value.HoldKey.HasValue ? KeySerializer.Serialize(binding.Value.HoldKey.Value) : "";
             var value = $"{tapStr}|{holdStr}";
             document.SetString("AltMouseBindings", binding.Key.ToString(), value);
+        }
+
+        var altKeyboard = profile.AltKeyboard;
+        document.SetBoolean("AltKeyboard", "Enabled", altKeyboard.IsEnabled);
+        document.SetInt32("AltKeyboard", "HoldThreshold", altKeyboard.HoldThresholdMilliseconds);
+
+        document.RemoveSection("AltKeyboardBindings");
+        foreach (var binding in altKeyboard.Bindings)
+        {
+            var tapStr = binding.Value.TapKey.HasValue ? KeySerializer.Serialize(binding.Value.TapKey.Value) : "";
+            var holdStr = binding.Value.HoldKey.HasValue ? KeySerializer.Serialize(binding.Value.HoldKey.Value) : "";
+            var value = $"{tapStr}|{holdStr}";
+            document.SetString("AltKeyboardBindings", binding.Key.ToString(), value);
         }
 
         var mappings = profile.CombinedMappings;

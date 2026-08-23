@@ -64,6 +64,7 @@ public sealed class ProfileRuntimeNotificationTests
     [InlineData(ProfileChangeKind.Master)]
     [InlineData(ProfileChangeKind.Identity)]
     [InlineData(ProfileChangeKind.AltMouse)]
+    [InlineData(ProfileChangeKind.AltKeyboard)]
     [InlineData(ProfileChangeKind.CombinedMappings)]
     [InlineData(ProfileChangeKind.HoldBreath)]
     [InlineData(ProfileChangeKind.AutoRun)]
@@ -118,6 +119,9 @@ public sealed class ProfileRuntimeNotificationTests
                 break;
             case ProfileChangeKind.AltMouse:
                 profile.AltMouse.IsEnabled = true;
+                break;
+            case ProfileChangeKind.AltKeyboard:
+                profile.AltKeyboard.IsEnabled = true;
                 break;
             case ProfileChangeKind.CombinedMappings:
                 profile.CombinedKeyMappingsEnabled = true;

@@ -165,6 +165,40 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndLoad_RoundTripsAltKeyboardSettings()
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "altkeyboard.exe");
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.HoldThresholdMilliseconds = 75;
+        profile.AltKeyboard.Bindings[Key.Q] = new AltKeyboardBinding
+        {
+            TapKey = Key.F,
+            HoldKey = Key.G
+        };
+        profile.AltKeyboard.Bindings[Key.E] = new AltKeyboardBinding
+        {
+            HoldKey = Key.H // unset TapKey round-trips through the empty-string slot
+        };
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
+
+        Assert.NotNull(loaded);
+        Assert.True(loaded.AltKeyboard.IsEnabled);
+        Assert.Equal(75, loaded.AltKeyboard.HoldThresholdMilliseconds);
+
+        Assert.True(loaded.AltKeyboard.Bindings.ContainsKey(Key.Q));
+        Assert.Equal(Key.F, loaded.AltKeyboard.Bindings[Key.Q].TapKey);
+        Assert.Equal(Key.G, loaded.AltKeyboard.Bindings[Key.Q].HoldKey);
+
+        Assert.True(loaded.AltKeyboard.Bindings.ContainsKey(Key.E));
+        Assert.Null(loaded.AltKeyboard.Bindings[Key.E].TapKey);
+        Assert.Equal(Key.H, loaded.AltKeyboard.Bindings[Key.E].HoldKey);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTripsColorVariants_WithoutLegacyToggleKey()
     {
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "color.exe");
