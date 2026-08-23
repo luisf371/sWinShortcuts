@@ -1238,6 +1238,29 @@ public sealed class InputHookService : IInputHookService
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     {
+        // Desktop is BACK: the away-side handler below hard-cleared every latch (the desktop was
+        // gone; the UPs were never seen). Re-baseline from the ACTUAL physical keys now that input
+        // flows again — a trigger key still held across the transition must classify its repeats as
+        // repeats (not fresh presses), and a still-held Alt must keep gating. The foreground
+        // watcher may NOT provide this via re-activation when the game stayed foreground across
+        // the lock/unlock, so the boundary itself must re-derive.
+        if (e.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.ConsoleConnect or
+                             SessionSwitchReason.RemoteConnect)
+        {
+            lock (_profileLock)
+            {
+                if (!_isRunning)
+                {
+                    return;
+                }
+
+                RederivePhysicalModifierState();
+                LogDebug($"Session switch ({e.Reason}): re-derived physical state");
+            }
+
+            return;
+        }
+
         // When the desktop switches away mid-press, the low-level hook never sees the button-up,
         // which would leave injected keys (hold-breath, combined overrides) stuck down.
         if (e.Reason is not (SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff or
