@@ -72,8 +72,9 @@ moment that program comes to the foreground.
 - **Rapid Fire** — an auto-clicker with a 25–250 ms interval and up to 20 ms of random
   jitter. Enabled per profile and armed/disarmed globally with a hotkey.
 - **Hold Breath** — automatically presses a key (default `Left Shift`) while the right
-  mouse button is held, with configurable delay, Hold/Toggle modes, and a panic trigger to
-  cancel instantly.
+  mouse button is held, with configurable delay, Hold/Toggle modes, and an optional Early
+  Cancel trigger to cancel instantly (only the successful cancel press is blocked; later
+  presses pass through).
 - **Anti-AFK** — presses a key at a set interval (1–15 min), but *only* after real keyboard
   inactivity: any keypress resets the timer, so it never fires while you're actually
   playing.

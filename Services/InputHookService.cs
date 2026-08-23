@@ -815,6 +815,35 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    internal bool HandleHoldBreathPanicKeyForTesting(Key key, bool isDown)
+    {
+        return HandleHoldBreathPanicKey(
+            KeyInteropUtilities.ToVirtualKey(key),
+            isKeyDown: isDown,
+            isKeyUp: !isDown);
+    }
+
+    internal bool HandleHoldBreathPanicMouseForTesting(Models.MouseButton button, bool isDown)
+    {
+        var (message, mouseData) = (button, isDown) switch
+        {
+            (Models.MouseButton.Left, true) => (NativeMethods.WM_LBUTTONDOWN, 0u),
+            (Models.MouseButton.Left, false) => (NativeMethods.WM_LBUTTONUP, 0u),
+            (Models.MouseButton.Right, true) => (NativeMethods.WM_RBUTTONDOWN, 0u),
+            (Models.MouseButton.Right, false) => (NativeMethods.WM_RBUTTONUP, 0u),
+            (Models.MouseButton.Middle, true) => (NativeMethods.WM_MBUTTONDOWN, 0u),
+            (Models.MouseButton.Middle, false) => (NativeMethods.WM_MBUTTONUP, 0u),
+            // X buttons ride the mouseData high word (see GetXButton).
+            (Models.MouseButton.XButton1, true) => (NativeMethods.WM_XBUTTONDOWN, 1u << 16),
+            (Models.MouseButton.XButton1, false) => (NativeMethods.WM_XBUTTONUP, 1u << 16),
+            (Models.MouseButton.XButton2, true) => (NativeMethods.WM_XBUTTONDOWN, 2u << 16),
+            (Models.MouseButton.XButton2, false) => (NativeMethods.WM_XBUTTONUP, 2u << 16),
+            _ => throw new ArgumentOutOfRangeException(nameof(button))
+        };
+
+        return HandleHoldBreathPanicMouse(message, mouseData);
+    }
+
     internal void FireHoldBreathTimerForTesting()
     {
         OnHoldBreathTimerFired();
@@ -2183,11 +2212,6 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        if (!settings.SuppressEarlyCancelInput)
-        {
-            return false;
-        }
-
         Volatile.Write(ref _holdBreathPanicConsumedKeyVk, vkCode);
         return true;
     }
@@ -2242,11 +2266,6 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        if (!settings.SuppressEarlyCancelInput)
-        {
-            return false;
-        }
-
         Volatile.Write(ref _holdBreathPanicConsumedMouseButton, (int)button);
         return true;
     }
@@ -2263,18 +2282,29 @@ public sealed class InputHookService : IInputHookService
                 foregroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
                 !ReferenceEquals(_activeProfile, expectedProfile) ||
                 !expectedProfile.IsEnabled ||
-                !expectedProfile.RightClickHoldBreath.IsEnabled)
+                !expectedProfile.RightClickHoldBreath.IsEnabled ||
+                !expectedProfile.RightClickHoldBreath.SuppressEarlyCancelInput)
             {
                 return false;
             }
 
-            if (!_holdBreathPanicSuppressed)
+            // Single authority for "did THIS press perform a cancellation" — the keyboard and mouse
+            // panic handlers both route here, so the Early Cancel checkbox is enforced once, atomically
+            // with the cancel decision:
+            //  - already cancelled in this aim cycle (the veto latch) -> nothing left to stop;
+            //  - nothing pending and no owned Hold-mode key (never armed, Toggle tap already
+            //    committed, ...) -> nothing to stop.
+            // In both cases the press passes through untouched: Early Cancel blocks exactly ONE
+            // press per aim cycle — the one that actually cancelled — never permanently while aiming.
+            if (_holdBreathPanicSuppressed ||
+                (!_holdBreathPending && _holdBreathInjectedKey is null))
             {
-                _holdBreathPanicSuppressed = true;
-                CancelHoldBreathStateLocked();
-                if (IsDebugEnabled) LogDebug("HoldBreath panic: canceled and suppressed until right-button-up");
+                return false;
             }
 
+            _holdBreathPanicSuppressed = true;
+            CancelHoldBreathStateLocked();
+            if (IsDebugEnabled) LogDebug("HoldBreath panic: cancelled; re-arm vetoed until right-button-up");
             return true;
         }
     }

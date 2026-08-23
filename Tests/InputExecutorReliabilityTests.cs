@@ -1268,6 +1268,214 @@ public sealed class InputExecutorReliabilityTests
         }
     }
 
+    [Fact]
+    public async Task EarlyCancel_MasterOff_PassesThroughWithoutCancelling()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: false);
+            service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+            service.HandleHoldBreathRightButtonForTesting(isDown: true);
+            Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+            Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+            // The disabled presses must not have secretly cancelled anything: enabling the master
+            // (model-only, no reconcile) lets the very next press cancel the still-pending action.
+            profile.RightClickHoldBreath.SuppressEarlyCancelInput = true;
+            Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+            Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+            service.FireHoldBreathTimerForTesting();
+            await Task.Delay(225);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Empty(sender.Transitions);
+        }
+        finally
+        {
+            service.HandleHoldBreathRightButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void EarlyCancel_SuccessfulPendingCancel_ConsumesPressPair()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+
+        // The cancelling press owns its typematic repeats and its UP.
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // The cancelled arm can no longer fire (stale timer elapse is a no-op).
+        service.FireHoldBreathTimerForTesting();
+    }
+
+    [Fact]
+    public void EarlyCancel_SecondPressSameAimCycle_PassesThrough()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // Nothing left to cancel in this aim cycle: later presses keep their native function.
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
+    [Fact]
+    public void EarlyCancel_NewAimCycle_CancelsAgain()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // Re-aim (RMB up clears the re-arm veto, RMB down arms again): the first press cancels again.
+        service.HandleHoldBreathRightButtonForTesting(isDown: false);
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
+    [Fact]
+    public async Task EarlyCancel_ImmediateHoldMode_CancelsOwnedKey()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateEarlyCancelProfile(delayMs: 0, suppressEarlyCancel: true);
+            profile.RightClickHoldBreath.Mode = HoldBreathMode.Hold;
+            service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+            service.HandleHoldBreathRightButtonForTesting(isDown: true);
+            await WaitForAsync(() => sender.Transitions.Count == 1); // hold-breath key DOWN sent
+
+            // The owned Hold-mode key is cancellable: exactly one paired release follows.
+            Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+            // Second press in the same aim cycle passes through.
+            Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+            Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(
+                new[] { (Key.LeftShift, true), (Key.LeftShift, false) },
+                sender.Transitions.Select(item => (item.Key, item.IsDown)).ToArray());
+        }
+        finally
+        {
+            service.HandleHoldBreathRightButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task EarlyCancel_ToggleModeAfterTap_PassesThrough()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateEarlyCancelProfile(delayMs: 0, suppressEarlyCancel: true);
+            profile.RightClickHoldBreath.Mode = HoldBreathMode.Toggle;
+            service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+            service.HandleHoldBreathRightButtonForTesting(isDown: true);
+            await WaitForAsync(() => sender.Transitions.Count == 2); // self-paired tap completed
+
+            // The committed Toggle tap owns nothing: a later press has nothing to cancel.
+            Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+            Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+        }
+        finally
+        {
+            service.HandleHoldBreathRightButtonForTesting(isDown: false);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void EarlyCancel_MouseTrigger_XButton_CancelsThenPassesThrough()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        profile.RightClickHoldBreath.PanicTrigger =
+            InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.XButton1);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.True(service.HandleHoldBreathPanicMouseForTesting(
+            sWinShortcuts.Models.MouseButton.XButton1, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicMouseForTesting(
+            sWinShortcuts.Models.MouseButton.XButton1, isDown: false));
+
+        Assert.False(service.HandleHoldBreathPanicMouseForTesting(
+            sWinShortcuts.Models.MouseButton.XButton1, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicMouseForTesting(
+            sWinShortcuts.Models.MouseButton.XButton1, isDown: false));
+    }
+
+    [Fact]
+    public void EarlyCancel_MidPressUncheck_OwnedPairStaysConsumed()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+
+        // The DOWN was consumed, so its repeats + UP stay consumed even if the master is switched
+        // off mid-press — passing an unmatched UP through would break input pairing.
+        profile.RightClickHoldBreath.SuppressEarlyCancelInput = false;
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // A FRESH press under the disabled master passes through.
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
+    private static Profile CreateEarlyCancelProfile(int delayMs, bool suppressEarlyCancel)
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.RightClickHoldBreath.IsEnabled = true;
+        profile.RightClickHoldBreath.DelayMilliseconds = delayMs;
+        profile.RightClickHoldBreath.HoldBreathKey = Key.LeftShift;
+        profile.RightClickHoldBreath.PanicTrigger = InputTrigger.FromKey(Key.Q);
+        profile.RightClickHoldBreath.SuppressEarlyCancelInput = suppressEarlyCancel;
+        return profile;
+    }
+
     [Theory]
     [InlineData(100, 0, 100)]
     [InlineData(100, 8.2, 92)]

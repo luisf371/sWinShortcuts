@@ -311,14 +311,10 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 Model.RightClickHoldBreath.PanicTrigger = value;
                 OnPropertyChanged();
-                OnPropertyChanged(nameof(RightClickHoldBreathEarlyCancelConfigured));
                 OnProfileChanged(ProfileChangeKind.HoldBreath);
             }
         }
     }
-
-    public bool RightClickHoldBreathEarlyCancelConfigured =>
-        Model.RightClickHoldBreath.PanicTrigger.Kind != InputTriggerKind.None;
 
     public bool RightClickHoldBreathSuppressEarlyCancelInput
     {
