@@ -6535,14 +6535,14 @@ public sealed class InputHookService : IInputHookService
             });
 
             // Shutdown ABORTS queued operations without invoking the delegate (and without
-            // throwing): observe the abort so the ticket still retires.
+            // throwing): observe the abort so the ticket still retires. Subscribe FIRST, then
+            // re-read Status — WPF raises Aborted only to handlers registered at abort time, so a
+            // check-then-subscribe order can miss an abort that lands in between. Retirement is an
+            // idempotent CAS, so both paths firing concurrently is safe.
+            operation.Aborted += (_, _) => RetirePanicDerivationTicket(ticket);
             if (operation.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted)
             {
                 RetirePanicDerivationTicket(ticket);
-            }
-            else
-            {
-                operation.Aborted += (_, _) => RetirePanicDerivationTicket(ticket);
             }
         }
         catch
