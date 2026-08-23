@@ -653,13 +653,52 @@ public sealed class InputExecutorReliabilityTests
             Assert.DoesNotContain(sender.Transitions, t => t.Key == Key.B);
 
             // A suppressing panic takes over the key BEFORE the queued action drains: the press is
-            // cancelled, so its DOWN must never send (the paired UP drains as a harmless no-op).
+            // cancelled, so NEITHER half of the mapped pair may ever send (an ownerless synthetic
+            // UP would be an unmatched release event).
             service.HandleAltKeyboardPanicOverrideForTesting(Key.Q, isDown: true);
             sender.ReleaseDummy.Set();
             Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(2)));
 
             await Task.Delay(50);
-            Assert.DoesNotContain(sender.Transitions, t => t.Key == Key.B && t.IsDown);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.DoesNotContain(sender.Transitions, t => t.Key == Key.B);
+        }
+        finally
+        {
+            sender.ReleaseDummy.Set();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task AltKeyboard_CancelAfterDownSent_StillSendsPairedUp()
+    {
+        var sender = new RecordingInputSender(blockDummy: true);
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var gate = service.EnqueueDummyForTesting();
+            Assert.True(sender.DummyEntered.Wait(TimeSpan.FromSeconds(2)));
+
+            var profile = CreateAltKeyboardProfile(holdThresholdMs: 10);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+
+            // Hold timer queues the mapped pair behind the blocked injector, then let it drain.
+            await Task.Delay(120);
+            sender.ReleaseDummy.Set();
+            Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(2)));
+
+            // Cancel strictly AFTER the DOWN reached SendInput: the already-sent DOWN must not
+            // strand its mapped key, so the paired UP still drains.
+            await WaitForAsync(() => sender.Transitions.Any(t => t.Key == Key.B && t.IsDown));
+            service.HandleAltKeyboardPanicOverrideForTesting(Key.Q, isDown: true);
+            await WaitForAsync(() => sender.Transitions.Any(t => t.Key == Key.B && !t.IsDown));
+
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(2, sender.Transitions.Count(t => t.Key == Key.B));
         }
         finally
         {

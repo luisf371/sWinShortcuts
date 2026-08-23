@@ -3916,7 +3916,8 @@ public sealed class InputHookService : IInputHookService
                 AltMouseGeneration: altMouseGeneration,
                 AltKeyboardGeneration: altKeyboardGeneration,
                 AltKeyboardOwnerPress: altKeyboardOwnerPress);
-            var up = new HoldBreathInjection(key, IsDown: false, PreSleepMs: durationMs);
+            var up = new HoldBreathInjection(key, IsDown: false, PreSleepMs: durationMs,
+                AltKeyboardOwnerPress: altKeyboardOwnerPress);
 
             if (!EnqueueInputLocked(down))
             {
@@ -4120,6 +4121,19 @@ public sealed class InputHookService : IInputHookService
                         continue;
                     }
 
+                    // Paired-UP skip: this tap's DOWN never reached SendInput (cancelled above, or
+                    // rejected by an earlier guard / the shutdown drain), so the UP would be an
+                    // unmatched synthetic release. When the DOWN DID send, IsDownSent is already set
+                    // (strict FIFO: the injector marked it while processing the DOWN) and the UP
+                    // drains normally even if the cancellation landed in between — a sent DOWN must
+                    // never strand its mapped key.
+                    if (!injection.IsDown && injection.AltKeyboardOwnerPress is { } upOwner &&
+                        !upOwner.IsDownSent)
+                    {
+                        if (IsDebugEnabled) LogDebug($"AltKeyboard UP skipped (paired DOWN never sent): {injection.Key}");
+                        continue;
+                    }
+
                     if (injection.IsDown && injection.CombinedGeneration != 0
                         && injection.CombinedGeneration != Volatile.Read(ref _combinedConfigurationGeneration))
                     {
@@ -4165,7 +4179,11 @@ public sealed class InputHookService : IInputHookService
                     }
 
                     var sendStart = Stopwatch.GetTimestamp();
-                    SendKey(injection.Key, injection.IsDown);
+                    var keyTransitionSent = SendKey(injection.Key, injection.IsDown);
+                    if (injection.IsDown && keyTransitionSent)
+                    {
+                        injection.AltKeyboardOwnerPress?.MarkDownSent();
+                    }
 
                     if (IsDebugEnabled)
                     {
@@ -5958,12 +5976,15 @@ public sealed class InputHookService : IInputHookService
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void SendKey(Key key, bool isKeyDown)
+    private bool SendKey(Key key, bool isKeyDown)
     {
-        if (!_inputSender.SendKey(key, isKeyDown))
+        var sent = _inputSender.SendKey(key, isKeyDown);
+        if (!sent)
         {
             LogDebug($"SendKey FAILED: {key} ({(isKeyDown ? "DOWN" : "UP")})");
         }
+
+        return sent;
     }
 
     private Task<bool> EnqueueDummyKeyEvent(long launcherGeneration = 0)
@@ -6449,6 +6470,18 @@ public sealed class InputHookService : IInputHookService
         public bool IsCancelled => Volatile.Read(ref _cancelled) != 0;
 
         public void Cancel() => Volatile.Write(ref _cancelled, 1);
+
+        // Pair-state cell for the tap's queued DOWN/UP pair: set by the injector right after its DOWN
+        // actually reached SendInput (past every guard). The paired UP checks it and skips itself
+        // when the DOWN never sent (cancelled or guard-rejected) — an ownerless synthetic UP is an
+        // unmatched release event. When cancellation lands AFTER the DOWN was sent, this stays set and
+        // the UP still drains, so a sent DOWN can never strand its mapped key. Single-writer (the
+        // one FIFO injector thread, strictly between the pair's DOWN and its UP) + volatile read.
+        private int _downSent;
+
+        public bool IsDownSent => Volatile.Read(ref _downSent) != 0;
+
+        public void MarkDownSent() => Volatile.Write(ref _downSent, 1);
     }
 
     private sealed class CombinedOverrideState
