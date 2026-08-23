@@ -1488,6 +1488,90 @@ public sealed class InputExecutorReliabilityTests
         Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
     }
 
+    [Fact]
+    public void EarlyCancel_EligibilityFlipsMidHold_RepeatStaysNative()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+
+        // Hold Breath disabled: the trigger's DOWN passes through natively (and must be latched as
+        // physically down even though the feature is ineligible).
+        profile.RightClickHoldBreath.IsEnabled = false;
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+
+        // Feature enabled mid-hold, then aim: the typematic repeat of that native press must stay
+        // native, and so must its UP — no panic from a repeat, no swallowed UP.
+        profile.RightClickHoldBreath.IsEnabled = true;
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // The pending action was not cancelled: a genuinely fresh press still cancels it.
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
+    [Fact]
+    public void EarlyCancel_RebindWhileNewTriggerHeld_RepeatStaysNative()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        profile.RightClickHoldBreath.PanicTrigger = InputTrigger.FromKey(Key.E);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        // Q is not the trigger: its DOWN passes through unlatched.
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+
+        // Live rebind E -> Q while Q is still held (the dispatcher re-derivation reads the live
+        // trigger against the physical key state).
+        profile.RightClickHoldBreath.PanicTrigger = InputTrigger.FromKey(Key.Q);
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.HoldBreath);
+        service.RederivePanicTriggerPhysicalStateForTesting(_ => true);
+
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
+    [Fact]
+    public void EarlyCancel_ConsumedOldTriggerUp_DoesNotClearNewTriggerLatch()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        // Aim cycle 1: Q cancels and stays held (consumed owner = Q, fresh-edge latch = Q).
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+
+        // Rebind to E mid-press; E goes down natively (veto blocks a second cancel) and owns the
+        // fresh-edge latch now.
+        profile.RightClickHoldBreath.PanicTrigger = InputTrigger.FromKey(Key.E);
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.HoldBreath);
+        service.RederivePanicTriggerPhysicalStateForTesting(
+            vk => sWinShortcuts.Utilities.KeyInteropUtilities.ToVirtualKey(Key.E) == vk);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.E, isDown: true));
+
+        // Releasing the OLD consumed Q must not clear E's latch.
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // New aim cycle: E's repeat (still the same physical press) stays native; a fresh E press
+        // cancels the re-armed action.
+        service.HandleHoldBreathRightButtonForTesting(isDown: false);
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.E, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.E, isDown: false));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.E, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.E, isDown: false));
+    }
+
     private static Profile CreateEarlyCancelProfile(int delayMs, bool suppressEarlyCancel)
     {
         var profile = new Profile { Name = "Game", Executable = "game.exe" };

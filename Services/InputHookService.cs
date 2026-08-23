@@ -668,6 +668,11 @@ public sealed class InputHookService : IInputHookService
         RederiveAltKeyboardPhysicalStateCore(isPhysicallyDown);
     }
 
+    internal void RederivePanicTriggerPhysicalStateForTesting(Func<int, bool> isPhysicallyDown)
+    {
+        RederivePanicTriggerPhysicalStateCore(isPhysicallyDown);
+    }
+
     internal bool HandleCapsLockForTesting(bool isDown)
     {
         return HandleCapsLock(
@@ -1754,9 +1759,13 @@ public sealed class InputHookService : IInputHookService
                 // the settled active profile, and the SetForegroundIdentity/this-method raises
                 // cover the status flips. No arm raise on THIS path (nothing about the arm changed).
                 ReleaseAllState(preserveRapidFireArm: true);
-                RederivePhysicalModifierState();
+                // Publish the incoming profile BEFORE the re-derivation: the panic-trigger
+                // fresh-edge re-derivation queued inside RederivePhysicalModifierState reads the
+                // live _activeProfile at dispatcher-execution time, and must see the INCOMING
+                // trigger — scheduling first would re-derive the outgoing profile's key.
                 _activeProfile = profile;
                 Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
+                RederivePhysicalModifierState();
                 changed = true;
 
                 LogDebug($"Profile activated: {profile.Name}");
@@ -1791,9 +1800,10 @@ public sealed class InputHookService : IInputHookService
             // Sticky arm: preserved (the owner is simply no longer active -> not ready). The
             // preceding SetForegroundIdentity raise already flipped the dot to gray.
             ReleaseAllState(preserveRapidFireArm: true);
-            RederivePhysicalModifierState();
+            // Publish before re-deriving (see ActivateProfile): no active profile => no trigger.
             _activeProfile = null;
             Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
+            RederivePhysicalModifierState();
 
             LogDebug("Profile deactivated");
         }
@@ -1829,9 +1839,11 @@ public sealed class InputHookService : IInputHookService
                     // generation/profile was already invalidated inside this lock, so no new
                     // Rapid Fire press can start during the handoff.
                     ReleaseAllState(preserveRapidFireArm: true);
-                    RederivePhysicalModifierState();
+                    // Publish the deactivation BEFORE re-deriving (see ActivateProfile): no active
+                    // profile means no trigger to re-derive.
                     _activeProfile = null;
                     Volatile.Write(ref _activeProfileGeneration, long.MinValue);
+                    RederivePhysicalModifierState();
                     notify = true;
                 }
             }
@@ -1875,6 +1887,10 @@ public sealed class InputHookService : IInputHookService
             if ((changeKind & ProfileChangeKind.HoldBreath) != 0)
             {
                 ReleaseHoldBreathState();
+                // The trigger may have been rebound while its (new or old) key is physically held:
+                // re-derive the fresh-edge latch for the live trigger so a held key is not
+                // misclassified as a fresh press for the new binding.
+                SchedulePanicTriggerPhysicalStateRederivation();
             }
             if ((changeKind & ProfileChangeKind.CapsLock) != 0)
             {
@@ -2192,7 +2208,12 @@ public sealed class InputHookService : IInputHookService
             if (isKeyUp)
             {
                 Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
-                Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+                // Guarded: a mid-press rebind can have moved the fresh-edge latch to the NEW
+                // trigger — this UP may only clear its OWN key's latch.
+                if (Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
+                {
+                    Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+                }
             }
 
             return true;
@@ -2208,24 +2229,26 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
+        // Resolve the live trigger FIRST and record the physical edge REGARDLESS of the eligibility
+        // gates below: a press that starts native (Advanced Mode off, profile or Hold Breath
+        // disabled, generations unsettled, RMB not yet held, ...) must stay native for its WHOLE
+        // duration. Otherwise a typematic repeat landing after the gates became true would start a
+        // panic and eat the UP while the app still saw the original native DOWN (stuck key).
         var profile = _activeProfile;
-        if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
-            profile is not { IsEnabled: true } || !profile.RightClickHoldBreath.IsEnabled)
+        if (profile is null)
         {
             return false;
         }
 
-        var settings = profile.RightClickHoldBreath;
-        var trigger = settings.PanicTrigger;
-        if (trigger.Kind != InputTriggerKind.KeyboardKey ||
+        var trigger = profile.RightClickHoldBreath.PanicTrigger;
+        if (trigger is not { Kind: InputTriggerKind.KeyboardKey } ||
             KeyInteropUtilities.ToVirtualKey(trigger.Key) != vkCode)
         {
             return false;
         }
 
-        // Fresh-edge gate: only the FIRST DOWN of a physical press may start a panic. The latch is
-        // set even when the remaining gates fail, so a press that started native (e.g. the key was
-        // held before RMB armed) stays native for its whole duration — repeats and UP together.
+        // Fresh-edge gate: only the FIRST DOWN of a physical press may attempt a panic; every
+        // typematic repeat of this press passes through and so does its UP.
         if (Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
         {
             return false;
@@ -2233,7 +2256,11 @@ public sealed class InputHookService : IInputHookService
 
         Volatile.Write(ref _panicKeyPhysicallyDownVk, vkCode);
 
-        if (!_rightButtonPressed)
+        // Panic ATTEMPT gates. Eligibility may flip mid-hold; the edge is already recorded above.
+        if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
+            !profile.IsEnabled ||
+            !profile.RightClickHoldBreath.IsEnabled ||
+            !_rightButtonPressed)
         {
             return false;
         }
@@ -6420,9 +6447,30 @@ public sealed class InputHookService : IInputHookService
 
     // Fresh-edge latch for the panic trigger (keyboard triggers only — mouse buttons don't
     // typematic-repeat): re-read the ACTUAL physical state of the live trigger so a key held across
-    // a stream boundary keeps classifying its repeats as repeats, and a released key's stale latch
-    // cannot swallow the next fresh press's panic attempt.
+    // a stream boundary or a live rebind keeps classifying its repeats as repeats, and a released
+    // key's stale latch cannot swallow the next fresh press's panic attempt.
     private void RederivePanicTriggerPhysicalState()
+    {
+        RederivePanicTriggerPhysicalStateCore(
+            vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+    }
+
+    // Dispatcher-marshaled variant for reconfigure paths (live trigger rebind): GetAsyncKeyState
+    // lags LL callbacks, so reading it off the hook thread could misclassify a DOWN the hook just
+    // recorded (same serialization rationale as RederiveAltKeyboardPhysicalState).
+    private void SchedulePanicTriggerPhysicalStateRederivation()
+    {
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is null)
+        {
+            RederivePanicTriggerPhysicalState();
+            return;
+        }
+
+        dispatcher.InvokeAsync(RederivePanicTriggerPhysicalState);
+    }
+
+    private void RederivePanicTriggerPhysicalStateCore(Func<int, bool> isPhysicallyDown)
     {
         var profile = _activeProfile;
         if (profile is null)
@@ -6441,7 +6489,7 @@ public sealed class InputHookService : IInputHookService
         var vk = KeyInteropUtilities.ToVirtualKey(trigger.Key);
         Volatile.Write(
             ref _panicKeyPhysicallyDownVk,
-            vk != 0 && (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0 ? vk : 0);
+            vk != 0 && isPhysicallyDown(vk) ? vk : 0);
     }
 
     private void RederiveAltKeyboardPhysicalStateCore(Func<int, bool> isPhysicallyDown)
