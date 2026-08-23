@@ -23,6 +23,9 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly ObservableCollection<ProfileViewModel> _profiles = [];
     private readonly IReadOnlyList<Key> _keyOptions = KeyCatalog.GetCommonKeys();
     private readonly IReadOnlyList<Key> _keyOptionsWithNone;
+    // Alt+Keyboard trigger keys: the common catalog minus the Alt keys (they are the modifier
+    // itself). No None — a trigger row always carries a concrete key.
+    private readonly IReadOnlyList<Key> _triggerKeyOptions;
     private readonly IReadOnlyList<InputTrigger> _holdBreathPanicTriggers;
     private readonly IReadOnlyList<CapsLockMode> _capsLockModes =
         [CapsLockMode.Normal, CapsLockMode.DoubleNormal, CapsLockMode.Disabled];
@@ -72,6 +75,7 @@ public sealed partial class MainViewModel : ViewModelBase
         _colorControlService = colorControlService ?? throw new ArgumentNullException(nameof(colorControlService));
         _profileRuntimeService = profileRuntimeService;
         _keyOptionsWithNone = KeyCatalog.SortKeys(new[] { Key.None }.Concat(_keyOptions)).ToArray();
+        _triggerKeyOptions = _keyOptions.Where(k => k != Key.LeftAlt && k != Key.RightAlt).ToArray();
         _holdBreathPanicTriggers = BuildHoldBreathPanicTriggers();
         Profiles = new ReadOnlyObservableCollection<ProfileViewModel>(_profiles);
 
@@ -84,6 +88,8 @@ public sealed partial class MainViewModel : ViewModelBase
     public IReadOnlyList<Key> KeyOptions => _keyOptions;
 
     public IReadOnlyList<Key> KeyOptionsWithNone => _keyOptionsWithNone;
+
+    public IReadOnlyList<Key> TriggerKeyOptions => _triggerKeyOptions;
     public IReadOnlyList<InputTrigger> HoldBreathPanicTriggers => _holdBreathPanicTriggers;
 
     public IReadOnlyList<CapsLockMode> CapsLockModes => _capsLockModes;
@@ -324,6 +330,40 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false };
 
+    [RelayCommand(CanExecute = nameof(CanEditAltKeyboard))]
+    private void AddAltKeyboardBinding()
+    {
+        SelectedProfile?.AddAltKeyboardBinding();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanEditAltKeyboard))]
+    private void RemoveAltKeyboardBinding(AltKeyboardBindingEntryViewModel? entry)
+    {
+        if (SelectedProfile is null)
+        {
+            return;
+        }
+
+        SelectedProfile.RemoveAltKeyboardBinding(entry);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanEditAltKeyboard))]
+    private void RemoveAllAltKeyboardBindings()
+    {
+        if (SelectedProfile is null)
+        {
+            return;
+        }
+
+        // Remove all entries by clearing the collection
+        while (SelectedProfile.AltKeyboardBindings.Count > 0)
+        {
+            SelectedProfile.RemoveAltKeyboardBinding(SelectedProfile.AltKeyboardBindings[0]);
+        }
+    }
+
+    private bool CanEditAltKeyboard() => SelectedProfile is { IsWindowsProfile: false };
+
     [RelayCommand(CanExecute = nameof(CanModifyProfile))]
     private async Task ModifyProfile()
     {
@@ -448,6 +488,9 @@ public sealed partial class MainViewModel : ViewModelBase
         AddAltMouseBindingCommand.NotifyCanExecuteChanged();
         RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
         RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
+        AddAltKeyboardBindingCommand.NotifyCanExecuteChanged();
+        RemoveAltKeyboardBindingCommand.NotifyCanExecuteChanged();
+        RemoveAllAltKeyboardBindingsCommand.NotifyCanExecuteChanged();
         ModifyProfileCommand.NotifyCanExecuteChanged();
         AddCombinedMappingCommand.NotifyCanExecuteChanged();
         RemoveCombinedMappingCommand.NotifyCanExecuteChanged();
@@ -585,6 +628,8 @@ public sealed partial class MainViewModel : ViewModelBase
         {
             RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
             RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
+            RemoveAltKeyboardBindingCommand.NotifyCanExecuteChanged();
+            RemoveAllAltKeyboardBindingsCommand.NotifyCanExecuteChanged();
             RemoveCombinedMappingCommand.NotifyCanExecuteChanged();
             RemoveAllCombinedMappingsCommand.NotifyCanExecuteChanged();
         }

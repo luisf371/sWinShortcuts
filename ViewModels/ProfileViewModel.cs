@@ -41,6 +41,14 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         };
         AltMouse.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableMouseButtons));
 
+        AltKeyboard = new AltKeyboardViewModel(Model.AltKeyboard);
+        AltKeyboard.Changed += (_, _) =>
+        {
+            OnPropertyChanged(nameof(AvailableTriggerKeys));
+            OnProfileChanged(ProfileChangeKind.AltKeyboard);
+        };
+        AltKeyboard.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableTriggerKeys));
+
         CombinedMappings = new ObservableCollection<CombinedMappingEntryViewModel>(
             Model.CombinedMappings.Mappings.Select(e => new CombinedMappingEntryViewModel
             {
@@ -183,6 +191,23 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     public AltMouseViewModel AltMouse { get; }
 
     public ObservableCollection<AltMouseBindingEntryViewModel> AltMouseBindings => AltMouse.Bindings;
+
+    public AltKeyboardViewModel AltKeyboard { get; }
+
+    public ObservableCollection<AltKeyboardBindingEntryViewModel> AltKeyboardBindings => AltKeyboard.Bindings;
+
+    // Trigger keys = common catalog minus the Alt keys (they ARE the modifier) minus keys already
+    // bound in another row. None never appears (a row always has a concrete trigger).
+    public IReadOnlyList<Key> AvailableTriggerKeys
+    {
+        get
+        {
+            var used = AltKeyboard.Bindings.Select(b => b.TriggerKey).ToHashSet();
+            return _keyOptions
+                .Where(k => k != Key.LeftAlt && k != Key.RightAlt && !used.Contains(k))
+                .ToList();
+        }
+    }
 
     public IReadOnlyList<Models.MouseButton> AvailableMouseButtons
     {
@@ -724,6 +749,41 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         if (AltMouse.Bindings.Remove(entry))
         {
             OnPropertyChanged(nameof(AvailableMouseButtons));
+        }
+    }
+
+    public void AddAltKeyboardBinding()
+    {
+        var availableKeys = AvailableTriggerKeys;
+        if (availableKeys.Count == 0)
+        {
+            return;
+        }
+
+        var entry = new AltKeyboardBindingEntryViewModel(availableKeys[0], null, null);
+
+        entry.PropertyChanged += (s, e) =>
+        {
+            if (e.PropertyName == nameof(AltKeyboardBindingEntryViewModel.TriggerKey))
+            {
+                OnPropertyChanged(nameof(AvailableTriggerKeys));
+            }
+        };
+
+        AltKeyboard.Bindings.Add(entry);
+        OnPropertyChanged(nameof(AvailableTriggerKeys));
+    }
+
+    public void RemoveAltKeyboardBinding(AltKeyboardBindingEntryViewModel? entry)
+    {
+        if (entry is null)
+        {
+            return;
+        }
+
+        if (AltKeyboard.Bindings.Remove(entry))
+        {
+            OnPropertyChanged(nameof(AvailableTriggerKeys));
         }
     }
 

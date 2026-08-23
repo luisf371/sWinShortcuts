@@ -6,7 +6,7 @@
 
 ## OVERVIEW
 
-Windows keyboard/mouse remapping app (.NET 10 WPF) using low-level hooks (`WH_KEYBOARD_LL`, `WH_MOUSE_LL`). Profiles activate per-executable for Alt+Mouse gestures, right-click chords, Caps Lock modes, Windows Launcher.
+Windows keyboard/mouse remapping app (.NET 10 WPF) using low-level hooks (`WH_KEYBOARD_LL`, `WH_MOUSE_LL`). Profiles activate per-executable for Alt+Mouse and Alt+Keyboard gestures, right-click chords, Caps Lock modes, Windows Launcher.
 
 ## STRUCTURE
 

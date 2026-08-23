@@ -19,6 +19,13 @@ public sealed class ProfilePersistenceSnapshotTests
             TapKey = Key.A,
             HoldKey = Key.B
         };
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.HoldThresholdMilliseconds = 90;
+        profile.AltKeyboard.Bindings[Key.Q] = new AltKeyboardBinding
+        {
+            TapKey = Key.Z,
+            HoldKey = Key.X
+        };
         profile.CombinedMappings.Mappings.Add(new CombinedMappingEntry
         {
             SourceKey = Key.C,
@@ -47,6 +54,13 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.Executable = "other.exe";
         profile.IsEnabled = false;
         profile.AltMouse.Bindings[AppMouseButton.Left].TapKey = Key.F;
+        profile.AltKeyboard.IsEnabled = false;
+        profile.AltKeyboard.HoldThresholdMilliseconds = 500;
+        profile.AltKeyboard.Bindings[Key.Q] = new AltKeyboardBinding
+        {
+            TapKey = Key.V,
+            HoldKey = null
+        };
         profile.CombinedMappings.Mappings[0].TargetKey = Key.G;
         profile.WindowsLauncher.Launchers[Key.E].Path = "new.exe";
         profile.RapidFire.IsEnabled = false;
@@ -63,6 +77,10 @@ public sealed class ProfilePersistenceSnapshotTests
         Assert.Equal("game.exe", snapshot.Executable);
         Assert.True(snapshot.IsEnabled);
         Assert.Equal(Key.A, snapshot.AltMouse.Bindings[AppMouseButton.Left].TapKey);
+        Assert.True(snapshot.AltKeyboard.IsEnabled);
+        Assert.Equal(90, snapshot.AltKeyboard.HoldThresholdMilliseconds);
+        Assert.Equal(Key.Z, snapshot.AltKeyboard.Bindings[Key.Q].TapKey);
+        Assert.Equal(Key.X, snapshot.AltKeyboard.Bindings[Key.Q].HoldKey);
         Assert.Equal(Key.D, snapshot.CombinedMappings.Mappings[0].TargetKey);
         Assert.Equal("old.exe", snapshot.WindowsLauncher.Launchers[Key.E].Path);
         Assert.True(snapshot.RapidFire.IsEnabled);

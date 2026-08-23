@@ -42,9 +42,14 @@ moment that program comes to the foreground.
 ### Remapping & Input
 
 - **Alt + Mouse shortcuts** — while Alt is held, every mouse button becomes two shortcuts:
-  *tapping* it and *holding* it, each mappable to any key (50 ms threshold by default
+  *tapping* it and *holding* it, each mappable to any key (150 ms threshold by default
   decides which one you meant).
   - *FPS example: Alt + tap Mouse4 → throw grenade · Alt + hold Mouse5 → hold melee.*
+- **Alt + Keyboard shortcuts** — the same tap/hold idea driven by keys instead of mouse
+  buttons: while Alt is held, *tapping* a bound key and *holding* it each fire their own
+  mapped key (same 150 ms threshold). Handy when a game reads mouse input in a way that
+  sidesteps Alt+Mouse suppression.
+  - *FPS example: Alt + tap `Q` → throw grenade · Alt + hold `E` → hold melee.*
 - **Key remaps** — map any key to any other key. The original key is suppressed by default,
   so the remap fully replaces it (you can let the original through if you want both
   behaviors). Remaps can also be scoped to **only while right mouse is held** — your normal
@@ -139,8 +144,8 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
 
 1. **Create a profile** — click *Add*, give it a name, and pick (or browse to) the target
    executable. Every setting below becomes a per-profile option.
-2. **Configure** — enable the features you want for that app: Alt+Mouse bindings, remaps,
-   auto-run, rapid fire, color presets, etc. Changes save automatically.
+2. **Configure** — enable the features you want for that app: Alt+Mouse / Alt+Keyboard
+   bindings, remaps, auto-run, rapid fire, color presets, etc. Changes save automatically.
 3. **Switch** — focus the target application and the profile activates on its own. The
    tray icon and title reflect what's active.
 

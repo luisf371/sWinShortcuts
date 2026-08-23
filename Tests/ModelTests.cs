@@ -100,6 +100,7 @@ public class ProfileTests
         var profile = new Profile { Name = "Test" };
 
         Assert.NotNull(profile.AltMouse);
+        Assert.NotNull(profile.AltKeyboard);
         Assert.NotNull(profile.CombinedMappings);
         Assert.NotNull(profile.RightClickHoldBreath);
         Assert.NotNull(profile.ColorSettings);
@@ -173,6 +174,68 @@ public class MouseButtonBindingTests
     public void SuppressOriginalWhileAltIsHeld_TrueWhenBothKeysSet()
     {
         var binding = new MouseButtonBinding { TapKey = Key.A, HoldKey = Key.B };
+
+        Assert.True(binding.SuppressOriginalWhileAltIsHeld);
+    }
+}
+
+public class AltKeyboardSettingsTests
+{
+    [Fact]
+    public void DefaultHoldThreshold_Is150Ms()
+    {
+        var settings = new AltKeyboardSettings();
+
+        Assert.Equal(150, settings.HoldThresholdMilliseconds);
+    }
+
+    [Fact]
+    public void Bindings_StartsEmpty()
+    {
+        var settings = new AltKeyboardSettings();
+
+        Assert.Empty(settings.Bindings);
+    }
+
+    [Fact]
+    public void IsEnabled_DefaultsFalse()
+    {
+        var settings = new AltKeyboardSettings();
+
+        Assert.False(settings.IsEnabled);
+    }
+}
+
+public class AltKeyboardBindingTests
+{
+    [Fact]
+    public void SuppressOriginalWhileAltIsHeld_TrueWhenTapKeySet()
+    {
+        var binding = new AltKeyboardBinding { TapKey = Key.A };
+
+        Assert.True(binding.SuppressOriginalWhileAltIsHeld);
+    }
+
+    [Fact]
+    public void SuppressOriginalWhileAltIsHeld_TrueWhenHoldKeySet()
+    {
+        var binding = new AltKeyboardBinding { HoldKey = Key.B };
+
+        Assert.True(binding.SuppressOriginalWhileAltIsHeld);
+    }
+
+    [Fact]
+    public void SuppressOriginalWhileAltIsHeld_FalseWhenNoKeysSet()
+    {
+        var binding = new AltKeyboardBinding();
+
+        Assert.False(binding.SuppressOriginalWhileAltIsHeld);
+    }
+
+    [Fact]
+    public void SuppressOriginalWhileAltIsHeld_TrueWhenBothKeysSet()
+    {
+        var binding = new AltKeyboardBinding { TapKey = Key.A, HoldKey = Key.B };
 
         Assert.True(binding.SuppressOriginalWhileAltIsHeld);
     }
