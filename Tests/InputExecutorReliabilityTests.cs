@@ -593,6 +593,68 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public async Task AltKeyboard_PanicOverride_CancelsGestureWithoutFiringAndClearsLatches()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateAltKeyboardProfile(holdThresholdMs: 20);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+
+            // Alt+Keyboard owns the press; then hold-breath panic starts consuming the same key's
+            // events before HandleAltKeyboard could see them.
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            service.HandleAltKeyboardPanicOverrideForTesting(Key.Q, isDown: true);
+
+            // The orphaned hold timer must NOT fire past the threshold.
+            await Task.Delay(80);
+            Assert.Empty(sender.Transitions);
+
+            // Panic owns the UP too; the latches clear so the next fresh press is not swallowed.
+            service.HandleAltKeyboardPanicOverrideForTesting(Key.Q, isDown: false);
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Collection(
+                sender.Transitions,
+                item => Assert.Equal(Key.A, item.Key),
+                item => Assert.Equal(Key.A, item.Key));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void AltKeyboard_PhysicalStateRederive_ReconcilesTypematicLatches()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        var profile = CreateAltKeyboardProfile(holdThresholdMs: 100);
+        service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+
+        // Key still physically held across the boundary (e.g. watchdog reinstall): the press stays
+        // owned — repeats and the UP keep being consumed.
+        Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+        service.RederiveAltKeyboardPhysicalStateForTesting(_ => true);
+        Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+
+        // Key released while unobserved (its UP was lost in the hook-swap window): re-derive must
+        // drop the ownership latch so the stray UP passes through and the next press is fresh.
+        Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+        service.RederiveAltKeyboardPhysicalStateForTesting(_ => false);
+        Assert.False(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+        Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+    }
+
+    [Fact]
     public async Task CapsLock_NormalWithoutRemap_PassesPhysicalTransitions()
     {
         var sender = new RecordingInputSender();

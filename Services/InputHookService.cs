@@ -235,7 +235,8 @@ public sealed class InputHookService : IInputHookService
         long LauncherGeneration = 0,
         long CapsGeneration = 0,
         Profile? ExpectedProfile = null,
-        long CapsPressToken = 0);
+        long CapsPressToken = 0,
+        long AltKeyboardGeneration = 0);
 
     // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
     private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
@@ -244,6 +245,31 @@ public sealed class InputHookService : IInputHookService
     private readonly object _inputInjectionEnqueueLock = new();
     private volatile bool _bypassAutoRunForegroundOwnershipForTesting;
     private long _altMouseGeneration = 1;
+
+    // Alt+Keyboard gesture state (keyboard analog of Alt+Mouse): one pre-allocated state per CANDIDATE
+    // trigger key — the common catalog minus the Alt keys (they ARE the modifier). Pre-allocation means
+    // the dictionary is NEVER mutated after construction, so the hook thread's lookups and the
+    // pool-thread reset paths (ReleaseAllState/ReconcileProfileSettings) race nothing, exactly like
+    // _mouseStates. _altKeyboardGeneration is the configuration epoch: bumped on every reset, carried by
+    // queued injections, and re-checked before send so a stale DOWN can never drain after a rebind.
+    private readonly Dictionary<Key, AltKeyboardKeyState> _altKeyboardStates = BuildAltKeyboardStates();
+    private long _altKeyboardGeneration = 1;
+
+    private static Dictionary<Key, AltKeyboardKeyState> BuildAltKeyboardStates()
+    {
+        var states = new Dictionary<Key, AltKeyboardKeyState>();
+        foreach (var key in KeyCatalog.GetCommonKeys())
+        {
+            if (key == Key.LeftAlt || key == Key.RightAlt)
+            {
+                continue;
+            }
+
+            states[key] = new AltKeyboardKeyState();
+        }
+
+        return states;
+    }
     
     // ==================== AUTO-RUN STATE ====================
     // Auto-Run holds W (and optionally sprint) via the shared injector, toggled by a modifier+key
@@ -612,6 +638,23 @@ public sealed class InputHookService : IInputHookService
         };
 
         return HandleAltMouse(message, 0);
+    }
+
+    internal bool HandleAltKeyboardForTesting(Key key, bool isDown)
+    {
+        var vkCode = KeyInteropUtilities.ToVirtualKey(key);
+        return HandleAltKeyboard(vkCode, isKeyDown: isDown, isKeyUp: !isDown);
+    }
+
+    internal void HandleAltKeyboardPanicOverrideForTesting(Key key, bool isDown)
+    {
+        var vkCode = KeyInteropUtilities.ToVirtualKey(key);
+        HandleAltKeyboardPanicOverride(vkCode, isKeyDown: isDown, isKeyUp: !isDown);
+    }
+
+    internal void RederiveAltKeyboardPhysicalStateForTesting(Func<int, bool> isPhysicallyDown)
+    {
+        RederiveAltKeyboardPhysicalStateCore(isPhysicallyDown);
     }
 
     internal bool HandleCapsLockForTesting(bool isDown)
@@ -1066,6 +1109,14 @@ public sealed class InputHookService : IInputHookService
             var colorToggleVk = _colorToggleVk;
             _colorToggleDownLatched = colorToggleVk != 0 && (NativeMethods.GetAsyncKeyState(colorToggleVk) & 0x8000) != 0;
             _hookSeenToggleVk = colorToggleVk;
+
+            // Seed the Alt+Keyboard typematic latches from the ACTUAL physical key state (same rationale
+            // as the Caps seed): a trigger key already held across Stop->Start had its DOWN delivered to
+            // Windows, so its carryover repeats + UP must PASS THROUGH and pair with that DOWN —
+            // PhysicallyDown=true (repeats are not fresh edges) and no suppression latch. Keys not held
+            // seed false, so the next press is a fresh gesture. Hooks are installed but _isRunning is
+            // still false, so no callback can overwrite this baseline yet.
+            RederiveAltKeyboardPhysicalState();
 
             // Rapid Fire is runtime-only and always starts disarmed (Start never raises the arm
             // event — it is Off by definition). Seed the physical latches so a key or left button
@@ -1746,6 +1797,10 @@ public sealed class InputHookService : IInputHookService
             {
                 ResetMouseStates();
             }
+            if ((changeKind & ProfileChangeKind.AltKeyboard) != 0)
+            {
+                ResetKeyboardStates();
+            }
             if ((changeKind & ProfileChangeKind.CombinedMappings) != 0)
             {
                 ReleaseAllOverrides();
@@ -1978,11 +2033,27 @@ public sealed class InputHookService : IInputHookService
                 if (!_altPressed)
                 {
                     CancelAltMouseGestures();
+                    CancelAltKeyboardGestures();
                 }
             }
         }
 
         if (suppressEarlyCancelKey)
+        {
+            // Hold-breath panic won this event before Alt+Keyboard could see it. The key may have an
+            // Alt+Keyboard press in flight (same key bound as both trigger and panic trigger): cancel
+            // the gesture and reconcile the latches so the orphaned timer can't still fire and the
+            // next fresh press isn't swallowed as an owned repeat.
+            HandleAltKeyboardPanicOverride(vkCode, isKeyDown, isKeyUp);
+            return (IntPtr)1;
+        }
+
+        // Alt+Keyboard gestures (keyboard analog of HandleAltMouse in the mouse hook): while Alt is
+        // held, keys arrive as WM_SYSKEYDOWN/WM_SYSKEYUP, both covered by isKeyDown/isKeyUp. A consumed
+        // Alt+trigger press wins over remap/auto-run — exactly like an Alt+Right binding there.
+        // Unbound keys and presses whose DOWN was not consumed fall through untouched; Alt itself is
+        // never a trigger (no state exists for it), so it always passes through.
+        if (HandleAltKeyboard(vkCode, isKeyDown, isKeyUp))
         {
             return (IntPtr)1;
         }
@@ -2701,6 +2772,276 @@ public sealed class InputHookService : IInputHookService
 
         // Disable timer (non-blocking)
         state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    // ==================== ALT+KEYBOARD HANDLING (LOCK-FREE) ====================
+
+    // Keyboard analog of HandleAltMouse: hold Alt + press a trigger key -> tap under threshold fires
+    // TapKey, holding past threshold fires HoldKey. One gesture per physical press; typematic repeats
+    // never start a second gesture. Suppression contract mirrors the mouse side: consume (return true)
+    // only when a binding exists and the mode/profile/Alt/generation gates pass; a consumed DOWN owns
+    // its repeats and its UP (SuppressNextUp latch, preserved across ordinary resets); a DOWN that was
+    // not consumed owns nothing — its repeats and UP fall through untouched so the focused app's view
+    // of the physical key stream stays paired.
+    private bool HandleAltKeyboard(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        if (!isKeyDown && !isKeyUp)
+        {
+            return false;
+        }
+
+        var key = KeyInteropUtilities.FromVirtualKey(vkCode);
+        if (key is null || !_altKeyboardStates.TryGetValue(key.Value, out var state))
+        {
+            return false;
+        }
+
+        // A consumed DOWN owns its matching UP even if Alt/profile/settings changed in between.
+        if (isKeyUp)
+        {
+            return HandleAltKeyboardUp(key.Value, state);
+        }
+
+        // Typematic auto-repeat streams repeated DOWNs while the key is held. A repeat of a CONSUMED
+        // press is owned: suppress it with the UP it shares an owner with (the game-visible stream was
+        // already cut at the first DOWN, so leaking repeats here would desync the app's key state).
+        if (Volatile.Read(ref state.SuppressNextUp) != 0)
+        {
+            return true;
+        }
+
+        // A repeat of a press whose first DOWN was NOT consumed (key went down before Alt, or had no
+        // binding at the time) is likewise not ours to suppress — but it must not START a gesture
+        // either: only a fresh down-edge while Alt is held forms one, mirroring one-DOWN-one-gesture
+        // on the mouse side.
+        if (state.PhysicallyDown)
+        {
+            return false;
+        }
+
+        state.PhysicallyDown = true;
+
+        if (!_altPressed || !ProfileInputGenerationIsCurrent())
+        {
+            return false;
+        }
+
+        var configurationGeneration = Volatile.Read(ref _altKeyboardGeneration);
+        var profile = _activeProfile;
+        if (profile is not { IsEnabled: true } ||
+            !profile.AltKeyboard.IsEnabled ||
+            !profile.AltKeyboard.Bindings.TryGetValue(key.Value, out var binding) ||
+            binding is null ||
+            (!binding.TapKey.HasValue && !binding.HoldKey.HasValue))
+        {
+            return false;
+        }
+
+        return HandleAltKeyboardDown(
+            key.Value,
+            state,
+            binding,
+            profile,
+            configurationGeneration);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HandleAltKeyboardDown(Key key, AltKeyboardKeyState state,
+        AltKeyboardBinding binding, Profile profile, long configurationGeneration)
+    {
+        if (configurationGeneration != Volatile.Read(ref _altKeyboardGeneration))
+        {
+            return false;
+        }
+
+        // Cancel any pending timer
+        CancelAltKeyboardHoldTimer(state);
+
+        var downTick = Stopwatch.GetTimestamp();
+        var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
+        var holdThreshold = Math.Max(10, profile.AltKeyboard.HoldThresholdMilliseconds);
+        var press = new AltKeyboardPress(
+            profile,
+            foregroundGeneration,
+            configurationGeneration,
+            downTick,
+            binding.TapKey,
+            binding.HoldKey,
+            holdThreshold);
+
+        Volatile.Write(ref state.ActivePress, press);
+        Interlocked.Exchange(ref state.SuppressNextUp, 1);
+
+        // Atomically arm the state machine
+        Interlocked.Exchange(ref state.TimerState, TIMER_ARMED);
+
+        if (IsDebugEnabled)
+        {
+            LogDebug($"[Alt+{key}] DOWN - Tap={binding.TapKey}, Hold={binding.HoldKey}, " +
+                     $"Threshold={holdThreshold}ms");
+        }
+
+        // Schedule hold timer if configured
+        if (press.HoldKey.HasValue)
+        {
+            var holdKey = press.HoldKey.Value;
+            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer: {holdThreshold}ms");
+
+            var stateRef = state;
+
+            // Assign the callback BEFORE arming the timer: the shared timer root re-reads the HoldCallback
+            // FIELD at fire time, so a stale elapse from a previous press would otherwise run the newest
+            // closure. The elapsed-time guard below is what actually rejects that stale firing.
+            state.HoldCallback = _ =>
+            {
+                if (!_isRunning ||
+                    !_altPressed ||
+                    !ReferenceEquals(Volatile.Read(ref stateRef.ActivePress), press) ||
+                    !ReferenceEquals(_activeProfile, press.Profile) ||
+                    !press.Profile.IsEnabled ||
+                    !press.Profile.AltKeyboard.IsEnabled ||
+                    press.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
+                    press.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
+                    press.ConfigurationGeneration != Volatile.Read(ref _altKeyboardGeneration))
+                {
+                    if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer blocked - runtime state changed");
+                    return;
+                }
+
+                // ✅ H3: reject a stale/premature firing. An elapse queued by a PREVIOUS press carries an
+                // earlier down-tick; if the real elapsed time is below threshold this is not a genuine hold,
+                // so no-op WITHOUT flipping to FIRED (otherwise the current quick tap would be suppressed).
+                var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
+                if (elapsedMs < holdThreshold - HOLD_FIRE_TOLERANCE_MS)
+                {
+                    if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer rejected - stale/premature ({elapsedMs:0}ms < {holdThreshold}ms)");
+                    return;
+                }
+
+                // ✅ Atomic state check: only fire if still ARMED
+                if (Interlocked.CompareExchange(ref stateRef.TimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
+                {
+                    if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer blocked - state changed (cancelled or already fired)");
+                    return;
+                }
+
+                if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer FIRED - sending {holdKey}");
+                FireTapKey(
+                    holdKey,
+                    KEY_PRESS_DURATION_MIN_MS,
+                    KEY_PRESS_DURATION_MAX_MS,
+                    press.ForegroundGeneration,
+                    altMouseGeneration: 0,
+                    altKeyboardGeneration: press.ConfigurationGeneration);
+            };
+
+            state.HoldTimer.Change(holdThreshold, Timeout.Infinite); // arm AFTER assigning the callback
+        }
+
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool HandleAltKeyboardUp(Key key, AltKeyboardKeyState state)
+    {
+        state.PhysicallyDown = false;
+
+        var suppressUp = Interlocked.Exchange(ref state.SuppressNextUp, 0) != 0;
+        var press = Interlocked.Exchange(ref state.ActivePress, null);
+        var finalState = Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
+        state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
+
+        if (press is null)
+        {
+            return suppressUp;
+        }
+
+        var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
+        if (IsDebugEnabled) LogDebug($"[Alt+{key}] UP - Elapsed={elapsedMs:F1}ms, Threshold={press.HoldThresholdMs}ms, State={finalState}");
+
+        // A live disable/rebind, Alt release, profile switch, or foreground-generation change cancels
+        // execution but never changes the paired suppression decision recorded at DOWN.
+        if (!_isRunning ||
+            !_altPressed ||
+            !ReferenceEquals(_activeProfile, press.Profile) ||
+            !press.Profile.IsEnabled ||
+            !press.Profile.AltKeyboard.IsEnabled ||
+            press.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
+            press.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
+            press.ConfigurationGeneration != Volatile.Read(ref _altKeyboardGeneration))
+        {
+            return suppressUp;
+        }
+
+        if (finalState == TIMER_FIRED)
+        {
+            // Timer already sent the hold key - don't send again
+            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold was triggered by timer (not re-triggering)");
+        }
+        else if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
+        {
+            // We beat the timer, but threshold was met - send hold key
+            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold threshold met manually");
+            FireTapKey(
+                press.HoldKey.Value,
+                KEY_PRESS_DURATION_MIN_MS,
+                KEY_PRESS_DURATION_MAX_MS,
+                press.ForegroundGeneration,
+                altMouseGeneration: 0,
+                altKeyboardGeneration: press.ConfigurationGeneration);
+        }
+        else if (press.TapKey.HasValue)
+        {
+            // Quick tap - send tap key
+            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Quick tap");
+            FireTapKey(
+                press.TapKey.Value,
+                KEY_PRESS_DURATION_MIN_MS,
+                KEY_PRESS_DURATION_MAX_MS,
+                press.ForegroundGeneration,
+                altMouseGeneration: 0,
+                altKeyboardGeneration: press.ConfigurationGeneration);
+        }
+
+        return suppressUp;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CancelAltKeyboardHoldTimer(AltKeyboardKeyState state)
+    {
+        // Atomically mark as cancelled
+        Interlocked.Exchange(ref state.TimerState, TIMER_CANCELLED);
+
+        // Disable timer (non-blocking)
+        state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    // Cleanup-only view of a key event that hold-breath panic consumed BEFORE HandleAltKeyboard could
+    // see it (same physical key bound as both an Alt+Keyboard trigger and the panic trigger). Panic
+    // owns the app-visible stream for this press, so: cancel any armed gesture WITHOUT firing its
+    // tap/hold, and clear the ownership latches — keeping them would make the next fresh press look
+    // like an owned auto-repeat (swallowed DOWN and UP, one dead press). PhysicallyDown still tracks
+    // the real key so post-panic repeats keep being classified correctly until the UP.
+    private void HandleAltKeyboardPanicOverride(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        var key = KeyInteropUtilities.FromVirtualKey(vkCode);
+        if (key is null || !_altKeyboardStates.TryGetValue(key.Value, out var state))
+        {
+            return;
+        }
+
+        if (isKeyDown)
+        {
+            CancelAltKeyboardHoldTimer(state);
+            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
+            Interlocked.Exchange(ref state.ActivePress, null);
+            Interlocked.Exchange(ref state.SuppressNextUp, 0);
+        }
+        else if (isKeyUp)
+        {
+            state.PhysicallyDown = false;
+            Interlocked.Exchange(ref state.SuppressNextUp, 0);
+        }
     }
 
     // ==================== COMBINED KEY MAPPINGS ====================
@@ -3552,7 +3893,8 @@ public sealed class InputHookService : IInputHookService
         string? expectedForegroundExe = null,
         long holdBreathGeneration = 0,
         long foregroundGeneration = 0,
-        long altMouseGeneration = 0)
+        long altMouseGeneration = 0,
+        long altKeyboardGeneration = 0)
     {
         lock (_inputInjectionEnqueueLock)
         {
@@ -3564,7 +3906,8 @@ public sealed class InputHookService : IInputHookService
                 ExpectedForegroundExe: expectedForegroundExe,
                 HoldBreathGeneration: holdBreathGeneration,
                 ForegroundGeneration: foregroundGeneration,
-                AltMouseGeneration: altMouseGeneration);
+                AltMouseGeneration: altMouseGeneration,
+                AltKeyboardGeneration: altKeyboardGeneration);
             var up = new HoldBreathInjection(key, IsDown: false, PreSleepMs: durationMs);
 
             if (!EnqueueInputLocked(down))
@@ -3750,6 +4093,13 @@ public sealed class InputHookService : IInputHookService
                         && injection.AltMouseGeneration != Volatile.Read(ref _altMouseGeneration))
                     {
                         if (IsDebugEnabled) LogDebug($"AltMouse DOWN skipped (stale configuration): {injection.Key}");
+                        continue;
+                    }
+
+                    if (injection.IsDown && injection.AltKeyboardGeneration != 0
+                        && injection.AltKeyboardGeneration != Volatile.Read(ref _altKeyboardGeneration))
+                    {
+                        if (IsDebugEnabled) LogDebug($"AltKeyboard DOWN skipped (stale configuration): {injection.Key}");
                         continue;
                     }
 
@@ -5563,7 +5913,8 @@ public sealed class InputHookService : IInputHookService
         int minDurationMs,
         int maxDurationMs,
         long foregroundGeneration,
-        long altMouseGeneration)
+        long altMouseGeneration,
+        long altKeyboardGeneration = 0)
     {
         if (_disposed || !_isRunning)
         {
@@ -5582,7 +5933,8 @@ public sealed class InputHookService : IInputHookService
             key,
             duration,
             foregroundGeneration: foregroundGeneration,
-            altMouseGeneration: altMouseGeneration);
+            altMouseGeneration: altMouseGeneration,
+            altKeyboardGeneration: altKeyboardGeneration);
         if (IsDebugEnabled) LogDebug($"FireTapKey queued: {key}, duration={duration}ms, warmup={warmupCalls}");
     }
 
@@ -5818,6 +6170,7 @@ public sealed class InputHookService : IInputHookService
 
         ReleaseAllOverrides(preserveSuppression: preservePhysicalPairing);
         ResetMouseStates(preserveSuppressedUps: preservePhysicalPairing);
+        ResetKeyboardStates(preserveSuppressedUps: preservePhysicalPairing);
         ReleaseCapsState(preservePhysicalPairing);
         ReleaseHoldBreathState();
         lock (_holdBreathLock)
@@ -5885,6 +6238,8 @@ public sealed class InputHookService : IInputHookService
             : NativeMethods.VK_RBUTTON;
         _rightButtonPressed = (NativeMethods.GetAsyncKeyState(physicalRightVk) & 0x8000) != 0;
 
+        RederiveAltKeyboardPhysicalState();
+
         // Re-publish the derived right-button state to the crosshair gate: a WM_RBUTTONUP swallowed by
         // a hook reinstall cannot leave the overlay hidden forever. Visibility is idempotent, so an
         // unchanged re-raise is free.
@@ -5894,9 +6249,51 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
+    // Per-key re-derivation for Alt+Keyboard (P9 analog): after a hook-stream boundary (watchdog
+    // reinstall, profile switch) the typematic latches may no longer match physical reality — a hook
+    // that died mid-press missed UPs, and events that passed unprocessed during the fail-open swap
+    // window were never classified. GetAsyncKeyState gives the ACTUAL physical state per trigger key:
+    //  - physically UP   -> clear PhysicallyDown AND SuppressNextUp. A consumed DOWN's app-visible
+    //    stream was already cut, so nothing strands by clearing; KEEPING the latch would instead eat
+    //    the NEXT fresh press's UP (one dead press after every swallowed release).
+    //  - physically DOWN -> set PhysicallyDown (the repeats that follow are auto-repeats, not fresh
+    //    edges) and PRESERVE SuppressNextUp: an owned in-flight press still owes its UP.
+    private void RederiveAltKeyboardPhysicalState()
+    {
+        RederiveAltKeyboardPhysicalStateCore(
+            vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+    }
+
+    private void RederiveAltKeyboardPhysicalStateCore(Func<int, bool> isPhysicallyDown)
+    {
+        foreach (var (key, state) in _altKeyboardStates)
+        {
+            var vk = KeyInteropUtilities.ToVirtualKey(key);
+            if (vk == 0)
+            {
+                continue; // unmapped under the current layout: leave the latch untouched
+            }
+
+            if (isPhysicallyDown(vk))
+            {
+                state.PhysicallyDown = true;
+            }
+            else
+            {
+                state.PhysicallyDown = false;
+                Interlocked.Exchange(ref state.SuppressNextUp, 0);
+            }
+        }
+    }
+
     private void CancelAltMouseGestures()
     {
         ResetMouseStates(preserveSuppressedUps: true);
+    }
+
+    private void CancelAltKeyboardGestures()
+    {
+        ResetKeyboardStates(preserveSuppressedUps: true);
     }
 
     private void ResetMouseStates(bool preserveSuppressedUps = true)
@@ -5911,8 +6308,34 @@ public sealed class InputHookService : IInputHookService
             {
                 Interlocked.Exchange(ref state.SuppressNextUp, 0);
             }
-            
+
             LogDebug($"Reset mouse state: {button}");
+        }
+    }
+
+    private void ResetKeyboardStates(bool preserveSuppressedUps = true)
+    {
+        Interlocked.Increment(ref _altKeyboardGeneration);
+        foreach (var (key, state) in _altKeyboardStates)
+        {
+            CancelAltKeyboardHoldTimer(state);
+            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
+            Interlocked.Exchange(ref state.ActivePress, null);
+            if (!preserveSuppressedUps)
+            {
+                Interlocked.Exchange(ref state.SuppressNextUp, 0);
+                state.PhysicallyDown = false;
+            }
+        }
+
+        // Debug-gated (unlike the 5-line mouse reset): the catalog-sized state map would otherwise
+        // flood the log on every profile switch / watchdog reinstall.
+        if (IsDebugEnabled)
+        {
+            foreach (var key in _altKeyboardStates.Keys)
+            {
+                LogDebug($"Reset Alt+Keyboard state: {key}");
+            }
         }
     }
 
@@ -5938,6 +6361,39 @@ public sealed class InputHookService : IInputHookService
     }
 
     private sealed record AltMousePress(
+        Profile Profile,
+        long ForegroundGeneration,
+        long ConfigurationGeneration,
+        long DownTick,
+        Key? TapKey,
+        Key? HoldKey,
+        int HoldThresholdMs);
+
+    private sealed class AltKeyboardKeyState
+    {
+        // Atomic state machine
+        public int TimerState = TIMER_IDLE;
+
+        public AltKeyboardPress? ActivePress;
+        public int SuppressNextUp;
+
+        // Typematic edge tracking (hook-thread writes on DOWN/UP; hard teardown clears it on a pool
+        // thread, hence volatile): true from a trigger key's physical DOWN until its UP. A DOWN while
+        // this is set is an auto-repeat — it may never START a gesture (see HandleAltKeyboard).
+        public volatile bool PhysicallyDown;
+
+        // Pre-allocated timer (reused for every press)
+        public readonly System.Threading.Timer HoldTimer;
+        public volatile TimerCallback? HoldCallback;
+
+        public AltKeyboardKeyState()
+        {
+            // Pre-allocate timer - will be reused throughout lifetime
+            HoldTimer = new System.Threading.Timer(_ => HoldCallback?.Invoke(null), null, Timeout.Infinite, Timeout.Infinite);
+        }
+    }
+
+    private sealed record AltKeyboardPress(
         Profile Profile,
         long ForegroundGeneration,
         long ConfigurationGeneration,
