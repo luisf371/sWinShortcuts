@@ -1465,6 +1465,29 @@ public sealed class InputExecutorReliabilityTests
         Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
     }
 
+    [Fact]
+    public void EarlyCancel_RepeatOfPreAimPress_NeverStartsAPanic()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        // The trigger key goes down BEFORE aiming: its DOWN passes through natively (no RMB yet).
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+
+        // Aim (pending hold-breath). The typematic REPEAT of that already-native press must not
+        // start a panic — cancelling from a repeat would eat the UP while the app still saw the
+        // original native DOWN — and its UP must pass through too.
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // Nothing was cancelled: a genuinely fresh press still cancels the pending action.
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
     private static Profile CreateEarlyCancelProfile(int delayMs, bool suppressEarlyCancel)
     {
         var profile = new Profile { Name = "Game", Executable = "game.exe" };
