@@ -632,6 +632,43 @@ public sealed class InputExecutorReliabilityTests
     }
 
     [Fact]
+    public async Task AltKeyboard_PanicOverride_InvalidatesHoldActionAlreadyQueued()
+    {
+        var sender = new RecordingInputSender(blockDummy: true);
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            // Block the shared injector so a fired hold action sits QUEUED instead of sent.
+            var gate = service.EnqueueDummyForTesting();
+            Assert.True(sender.DummyEntered.Wait(TimeSpan.FromSeconds(2)));
+
+            var profile = CreateAltKeyboardProfile(holdThresholdMs: 10);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
+            Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
+
+            // Hold timer fires while the injector is still blocked: the mapped pair queues behind it.
+            await Task.Delay(120);
+            Assert.DoesNotContain(sender.Transitions, t => t.Key == Key.B);
+
+            // A suppressing panic takes over the key BEFORE the queued action drains: the press is
+            // cancelled, so its DOWN must never send (the paired UP drains as a harmless no-op).
+            service.HandleAltKeyboardPanicOverrideForTesting(Key.Q, isDown: true);
+            sender.ReleaseDummy.Set();
+            Assert.True(await gate.WaitAsync(TimeSpan.FromSeconds(2)));
+
+            await Task.Delay(50);
+            Assert.DoesNotContain(sender.Transitions, t => t.Key == Key.B && t.IsDown);
+        }
+        finally
+        {
+            sender.ReleaseDummy.Set();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
     public void AltKeyboard_PhysicalStateRederive_ReconcilesTypematicLatches()
     {
         using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());

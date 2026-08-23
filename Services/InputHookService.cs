@@ -236,7 +236,8 @@ public sealed class InputHookService : IInputHookService
         long CapsGeneration = 0,
         Profile? ExpectedProfile = null,
         long CapsPressToken = 0,
-        long AltKeyboardGeneration = 0);
+        long AltKeyboardGeneration = 0,
+        AltKeyboardPress? AltKeyboardOwnerPress = null);
 
     // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
     private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
@@ -1115,8 +1116,10 @@ public sealed class InputHookService : IInputHookService
             // Windows, so its carryover repeats + UP must PASS THROUGH and pair with that DOWN —
             // PhysicallyDown=true (repeats are not fresh edges) and no suppression latch. Keys not held
             // seed false, so the next press is a fresh gesture. Hooks are installed but _isRunning is
-            // still false, so no callback can overwrite this baseline yet.
-            RederiveAltKeyboardPhysicalState();
+            // still false, so no callback can overwrite this baseline yet; the CORE runs inline (not
+            // via the dispatcher marshaling) so the seed lands before _isRunning flips.
+            RederiveAltKeyboardPhysicalStateCore(
+                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
 
             // Rapid Fire is runtime-only and always starts disarmed (Start never raises the arm
             // event — it is Off by definition). Seed the physical latches so a key or left button
@@ -2932,7 +2935,8 @@ public sealed class InputHookService : IInputHookService
                     KEY_PRESS_DURATION_MAX_MS,
                     press.ForegroundGeneration,
                     altMouseGeneration: 0,
-                    altKeyboardGeneration: press.ConfigurationGeneration);
+                    altKeyboardGeneration: press.ConfigurationGeneration,
+                    altKeyboardOwnerPress: press);
             };
 
             state.HoldTimer.Change(holdThreshold, Timeout.Infinite); // arm AFTER assigning the callback
@@ -2988,7 +2992,8 @@ public sealed class InputHookService : IInputHookService
                 KEY_PRESS_DURATION_MAX_MS,
                 press.ForegroundGeneration,
                 altMouseGeneration: 0,
-                altKeyboardGeneration: press.ConfigurationGeneration);
+                altKeyboardGeneration: press.ConfigurationGeneration,
+                altKeyboardOwnerPress: press);
         }
         else if (press.TapKey.HasValue)
         {
@@ -3000,7 +3005,8 @@ public sealed class InputHookService : IInputHookService
                 KEY_PRESS_DURATION_MAX_MS,
                 press.ForegroundGeneration,
                 altMouseGeneration: 0,
-                altKeyboardGeneration: press.ConfigurationGeneration);
+                altKeyboardGeneration: press.ConfigurationGeneration,
+                altKeyboardOwnerPress: press);
         }
 
         return suppressUp;
@@ -3034,7 +3040,7 @@ public sealed class InputHookService : IInputHookService
         {
             CancelAltKeyboardHoldTimer(state);
             Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
-            Interlocked.Exchange(ref state.ActivePress, null);
+            Interlocked.Exchange(ref state.ActivePress, null)?.Cancel();
             Interlocked.Exchange(ref state.SuppressNextUp, 0);
         }
         else if (isKeyUp)
@@ -3894,7 +3900,8 @@ public sealed class InputHookService : IInputHookService
         long holdBreathGeneration = 0,
         long foregroundGeneration = 0,
         long altMouseGeneration = 0,
-        long altKeyboardGeneration = 0)
+        long altKeyboardGeneration = 0,
+        AltKeyboardPress? altKeyboardOwnerPress = null)
     {
         lock (_inputInjectionEnqueueLock)
         {
@@ -3907,7 +3914,8 @@ public sealed class InputHookService : IInputHookService
                 HoldBreathGeneration: holdBreathGeneration,
                 ForegroundGeneration: foregroundGeneration,
                 AltMouseGeneration: altMouseGeneration,
-                AltKeyboardGeneration: altKeyboardGeneration);
+                AltKeyboardGeneration: altKeyboardGeneration,
+                AltKeyboardOwnerPress: altKeyboardOwnerPress);
             var up = new HoldBreathInjection(key, IsDown: false, PreSleepMs: durationMs);
 
             if (!EnqueueInputLocked(down))
@@ -4100,6 +4108,15 @@ public sealed class InputHookService : IInputHookService
                         && injection.AltKeyboardGeneration != Volatile.Read(ref _altKeyboardGeneration))
                     {
                         if (IsDebugEnabled) LogDebug($"AltKeyboard DOWN skipped (stale configuration): {injection.Key}");
+                        continue;
+                    }
+
+                    // Per-press cancellation (panic handoff): the configuration generation is still
+                    // current — this press simply lost priority after its action was already queued.
+                    if (injection.IsDown && injection.AltKeyboardOwnerPress is { } ownerPress &&
+                        ownerPress.IsCancelled)
+                    {
+                        if (IsDebugEnabled) LogDebug($"AltKeyboard DOWN skipped (press cancelled by panic override): {injection.Key}");
                         continue;
                     }
 
@@ -5914,7 +5931,8 @@ public sealed class InputHookService : IInputHookService
         int maxDurationMs,
         long foregroundGeneration,
         long altMouseGeneration,
-        long altKeyboardGeneration = 0)
+        long altKeyboardGeneration = 0,
+        AltKeyboardPress? altKeyboardOwnerPress = null)
     {
         if (_disposed || !_isRunning)
         {
@@ -5934,7 +5952,8 @@ public sealed class InputHookService : IInputHookService
             duration,
             foregroundGeneration: foregroundGeneration,
             altMouseGeneration: altMouseGeneration,
-            altKeyboardGeneration: altKeyboardGeneration);
+            altKeyboardGeneration: altKeyboardGeneration,
+            altKeyboardOwnerPress: altKeyboardOwnerPress);
         if (IsDebugEnabled) LogDebug($"FireTapKey queued: {key}, duration={duration}ms, warmup={warmupCalls}");
     }
 
@@ -6260,8 +6279,25 @@ public sealed class InputHookService : IInputHookService
     //    edges) and PRESERVE SuppressNextUp: an owned in-flight press still owes its UP.
     private void RederiveAltKeyboardPhysicalState()
     {
-        RederiveAltKeyboardPhysicalStateCore(
-            vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is null)
+        {
+            // Hooks not installed on a dispatcher-pumped thread: same un-serialized fallback the
+            // pre-existing Alt/right-button derivation above has always had.
+            RederiveAltKeyboardPhysicalStateCore(
+                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+            return;
+        }
+
+        // Serialize with keyboard hook callbacks (same marshaling the watchdog reinstall uses): LL
+        // callbacks run BEFORE Windows updates the async key state, so a worker-thread
+        // GetAsyncKeyState can lag a DOWN the hook just classified and wrongly clear PhysicallyDown —
+        // the following repeats would then be misread as fresh presses and the swallowed UP could
+        // stick the key in the focused app. The hook's dispatcher delivers callbacks between queued
+        // operations, so this body never interleaves with one.
+        dispatcher.InvokeAsync(() =>
+            RederiveAltKeyboardPhysicalStateCore(
+                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0));
     }
 
     private void RederiveAltKeyboardPhysicalStateCore(Func<int, bool> isPhysicallyDown)
@@ -6400,7 +6436,20 @@ public sealed class InputHookService : IInputHookService
         long DownTick,
         Key? TapKey,
         Key? HoldKey,
-        int HoldThresholdMs);
+        int HoldThresholdMs)
+    {
+        // Per-PRESS cancellation cell (the generation epoch is per-configuration and shared by every
+        // trigger key): set when a suppressing hold-breath panic takes over this key's event stream.
+        // A mapped DOWN already sitting in the shared injector queue re-checks this at send time, so
+        // an action queued by a gesture that later lost priority cannot fire after the panic won.
+        // Volatile: set from the hook thread, read by the injector thread. The paired UP still drains
+        // (a skipped DOWN's UP is a harmless no-op), preserving FIFO pairing.
+        private int _cancelled;
+
+        public bool IsCancelled => Volatile.Read(ref _cancelled) != 0;
+
+        public void Cancel() => Volatile.Write(ref _cancelled, 1);
+    }
 
     private sealed class CombinedOverrideState
     {
