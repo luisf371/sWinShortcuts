@@ -208,13 +208,21 @@ public sealed class InputHookService : IInputHookService
     // boundaries (Start / watchdog / activation / session return).
     private int _panicKeyPhysicallyDownVk;
 
-    // Fence for the ASYNC panic-latch re-derivations (dispatcher InvokeAsync): between scheduling
-    // and executing the closure the latch is not trustworthy for the CURRENT trigger (it may hold 0
-    // or the previous binding), so a repeat landing in that window could be misread as a fresh
-    // press. While pending, a trigger DOWN is still edge-latched but stays native; the closure
-    // re-reads the live trigger and then clears the fence. Synchronous derivations (Start seed,
-    // null-dispatcher fallback) never set it.
-    private int _panicTriggerDerivationPending;
+    // Fence for the ASYNC panic-latch re-derivations (dispatcher InvokeAsync), TICKET-OWNED so
+    // overlapping requests cannot interfere: a request allocates a monotonic ticket and publishes
+    // it as the current epoch; between scheduling and executing the closure the latch is not
+    // trustworthy for the CURRENT trigger (it may hold 0 or the previous binding), so a repeat
+    // landing in that window could be misread as a fresh press. While any request is outstanding,
+    // a trigger DOWN is still edge-latched but stays native. A closure retires ONLY its own ticket
+    // (Interlocked CAS), so a superseded older closure can neither clear a newer request's fence
+    // nor... the latch baseline itself is written in dispatcher FIFO order (oldest first), so the
+    // newest closure always lands last. An aborted dispatcher post (shutdown aborts queued
+    // operations WITHOUT invoking them and WITHOUT throwing) retires its ticket via the operation
+    // callback; hard teardown and the Start seed reset the epoch to 0, invalidating every
+    // outstanding ticket. Synchronous derivations (Start seed, null-dispatcher fallback) never
+    // fence.
+    private long _panicDerivationEpoch;          // outstanding request ticket (0 = none)
+    private long _panicDerivationTicketSequence; // monotonic ticket allocator
 
     // Hold-breath injector: a dedicated thread draining a FIFO queue so no hook callback and no
     // lock-holding path ever waits on SendInput's foreign-hook dispatch. One consumer = strict FIFO
@@ -681,10 +689,19 @@ public sealed class InputHookService : IInputHookService
         RederivePanicTriggerPhysicalStateCore(isPhysicallyDown);
     }
 
-    internal bool PanicTriggerDerivationPendingForTesting
+    internal bool PanicTriggerDerivationPendingForTesting => Volatile.Read(ref _panicDerivationEpoch) != 0;
+
+    // Simulates a scheduled derivation request (allocates a ticket and fences) without a dispatcher.
+    internal long PanicDerivationBeginForTesting()
     {
-        get => Volatile.Read(ref _panicTriggerDerivationPending) != 0;
-        set => Volatile.Write(ref _panicTriggerDerivationPending, value ? 1 : 0);
+        var ticket = Interlocked.Increment(ref _panicDerivationTicketSequence);
+        Volatile.Write(ref _panicDerivationEpoch, ticket);
+        return ticket;
+    }
+
+    internal void PanicDerivationRetireForTesting(long ticket)
+    {
+        RetirePanicDerivationTicket(ticket);
     }
 
     internal bool HandleCapsLockForTesting(bool isDown)
@@ -1176,7 +1193,10 @@ public sealed class InputHookService : IInputHookService
             // seed false, so the next press is a fresh gesture. Hooks are installed but _isRunning is
             // still false, so no callback can overwrite this baseline yet; the CORE runs inline (not
             // via the dispatcher marshaling) so the seed lands before _isRunning flips. The panic
-            // trigger's fresh-edge latch seeds the same way (keyboard triggers only).
+            // trigger's fresh-edge latch seeds the same way (keyboard triggers only), after resetting
+            // the derivation epoch — a ticket left outstanding by the previous session must not keep
+            // Early Cancel fenced on the new one.
+            Volatile.Write(ref _panicDerivationEpoch, 0);
             RederiveAltKeyboardPhysicalStateCore(
                 vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
             RederivePanicTriggerPhysicalState();
@@ -2275,7 +2295,7 @@ public sealed class InputHookService : IInputHookService
 
         // Async re-derivation in flight: the latch may not yet reflect the CURRENT trigger's
         // physical baseline. Record the edge (above) but stay native until the fence clears.
-        if (Volatile.Read(ref _panicTriggerDerivationPending) != 0)
+        if (Volatile.Read(ref _panicDerivationEpoch) != 0)
         {
             return false;
         }
@@ -6365,6 +6385,9 @@ public sealed class InputHookService : IInputHookService
             Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
             Volatile.Write(ref _holdBreathPanicConsumedMouseButton, 0);
             Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+            // Invalidate any outstanding derivation ticket: a closure still queued on the dying
+            // dispatcher must not unfence a post-boundary session.
+            Volatile.Write(ref _panicDerivationEpoch, 0);
             _autoRunConsumedTriggerVk = 0;
             _triggerKeyDownVk = 0;
         }
@@ -6460,30 +6483,14 @@ public sealed class InputHookService : IInputHookService
         // GetAsyncKeyState can lag a DOWN the hook just classified and wrongly clear PhysicallyDown —
         // the following repeats would then be misread as fresh presses and the swallowed UP could
         // stick the key in the focused app. The hook's dispatcher delivers callbacks between queued
-        // operations, so this body never interleaves with one. The pending fence (set BEFORE the
-        // InvokeAsync) keeps panic attempts native until the latch baseline lands.
-        Volatile.Write(ref _panicTriggerDerivationPending, 1);
-        try
+        // operations, so this body never interleaves with one. The ticket fence (see
+        // _panicDerivationEpoch) keeps panic attempts native until the latch baseline lands.
+        SchedulePanicDerivationCore(() =>
         {
-            dispatcher.InvokeAsync(() =>
-            {
-                try
-                {
-                    RederiveAltKeyboardPhysicalStateCore(
-                        vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
-                    RederivePanicTriggerPhysicalState();
-                }
-                finally
-                {
-                    Volatile.Write(ref _panicTriggerDerivationPending, 0);
-                }
-            });
-        }
-        catch
-        {
-            // Dispatcher refused the post (shutdown): no closure will ever clear the fence.
-            Volatile.Write(ref _panicTriggerDerivationPending, 0);
-        }
+            RederiveAltKeyboardPhysicalStateCore(
+                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+            RederivePanicTriggerPhysicalState();
+        });
     }
 
     // Fresh-edge latch for the panic trigger (keyboard triggers only — mouse buttons don't
@@ -6496,39 +6503,67 @@ public sealed class InputHookService : IInputHookService
             vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
     }
 
-    // Dispatcher-marshaled variant for reconfigure paths (live trigger rebind): GetAsyncKeyState
-    // lags LL callbacks, so reading it off the hook thread could misclassify a DOWN the hook just
-    // recorded (same serialization rationale as RederiveAltKeyboardPhysicalState). Fenced the same
-    // way: panic attempts stay native until the re-derivation lands.
-    private void SchedulePanicTriggerPhysicalStateRederivation()
+    // Dispatcher-marshaled, ticket-fenced derivation scheduler shared by the reconfigure path
+    // (live trigger rebind) and the boundary re-derivations: GetAsyncKeyState lags LL callbacks,
+    // so reading it off the hook thread could misclassify a DOWN the hook just recorded (same
+    // serialization rationale as RederiveAltKeyboardPhysicalState). See _panicDerivationEpoch for
+    // the fence semantics; retirement is ticket-owned so overlapping requests and aborted posts
+    // can never strand or prematurely clear it.
+    private void SchedulePanicDerivationCore(Action derive)
     {
         var dispatcher = _hookDispatcher;
         if (dispatcher is null)
         {
-            RederivePanicTriggerPhysicalState();
+            derive(); // synchronous: no fence needed
             return;
         }
 
-        Volatile.Write(ref _panicTriggerDerivationPending, 1);
+        var ticket = Interlocked.Increment(ref _panicDerivationTicketSequence);
+        Volatile.Write(ref _panicDerivationEpoch, ticket);
         try
         {
-            dispatcher.InvokeAsync(() =>
+            var operation = dispatcher.InvokeAsync(() =>
             {
                 try
                 {
-                    RederivePanicTriggerPhysicalState();
+                    derive();
                 }
                 finally
                 {
-                    Volatile.Write(ref _panicTriggerDerivationPending, 0);
+                    RetirePanicDerivationTicket(ticket);
                 }
             });
+
+            // Shutdown ABORTS queued operations without invoking the delegate (and without
+            // throwing): observe the abort so the ticket still retires.
+            if (operation.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted)
+            {
+                RetirePanicDerivationTicket(ticket);
+            }
+            else
+            {
+                operation.Aborted += (_, _) => RetirePanicDerivationTicket(ticket);
+            }
         }
         catch
         {
-            // Dispatcher refused the post (shutdown): no closure will ever clear the fence.
-            Volatile.Write(ref _panicTriggerDerivationPending, 0);
+            // Dispatcher refused the post outright: no closure will ever retire the ticket.
+            RetirePanicDerivationTicket(ticket);
         }
+    }
+
+    // Only the CURRENT request may unfence: a superseded request (a newer ticket was published) or
+    // an invalidated one (hard teardown / the Start seed wrote 0) leaves the fence to its owner.
+    // Retiring an already-retired ticket is a harmless no-op (the epoch no longer matches).
+    private void RetirePanicDerivationTicket(long ticket)
+    {
+        Interlocked.CompareExchange(ref _panicDerivationEpoch, 0, ticket);
+    }
+
+    // Dispatcher-marshaled variant for reconfigure paths (live trigger rebind).
+    private void SchedulePanicTriggerPhysicalStateRederivation()
+    {
+        SchedulePanicDerivationCore(RederivePanicTriggerPhysicalState);
     }
 
     private void RederivePanicTriggerPhysicalStateCore(Func<int, bool> isPhysicallyDown)

@@ -1582,14 +1582,42 @@ public sealed class InputExecutorReliabilityTests
 
         // Simulate the async re-derivation fence: a fresh trigger press during the window is
         // edge-latched but stays native — the latch baseline is not yet trustworthy.
-        service.PanicTriggerDerivationPendingForTesting = true;
+        var ticket = service.PanicDerivationBeginForTesting();
+        Assert.True(service.PanicTriggerDerivationPendingForTesting);
         service.HandleHoldBreathRightButtonForTesting(isDown: true);
         Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
         Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
         Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
 
-        // The pending action was never cancelled; once the fence clears, a fresh press cancels it.
-        service.PanicTriggerDerivationPendingForTesting = false;
+        // The pending action was never cancelled; once the fence retires, a fresh press cancels it.
+        service.PanicDerivationRetireForTesting(ticket);
+        Assert.False(service.PanicTriggerDerivationPendingForTesting);
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
+    [Fact]
+    public void EarlyCancel_OverlappingDerivations_StaleTicketCannotClearNewerFence()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        // Two overlapping derivation requests: retiring the OLDER ticket must leave the newer
+        // request's fence standing (an older dispatcher closure must not unfence a newer request).
+        var older = service.PanicDerivationBeginForTesting();
+        var newer = service.PanicDerivationBeginForTesting();
+        service.PanicDerivationRetireForTesting(older);
+        Assert.True(service.PanicTriggerDerivationPendingForTesting);
+
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // Retiring the current ticket unfences; a fresh press cancels.
+        service.PanicDerivationRetireForTesting(newer);
+        Assert.False(service.PanicTriggerDerivationPendingForTesting);
         Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
         Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
     }
