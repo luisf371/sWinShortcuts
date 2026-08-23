@@ -208,6 +208,14 @@ public sealed class InputHookService : IInputHookService
     // boundaries (Start / watchdog / activation / session return).
     private int _panicKeyPhysicallyDownVk;
 
+    // Fence for the ASYNC panic-latch re-derivations (dispatcher InvokeAsync): between scheduling
+    // and executing the closure the latch is not trustworthy for the CURRENT trigger (it may hold 0
+    // or the previous binding), so a repeat landing in that window could be misread as a fresh
+    // press. While pending, a trigger DOWN is still edge-latched but stays native; the closure
+    // re-reads the live trigger and then clears the fence. Synchronous derivations (Start seed,
+    // null-dispatcher fallback) never set it.
+    private int _panicTriggerDerivationPending;
+
     // Hold-breath injector: a dedicated thread draining a FIFO queue so no hook callback and no
     // lock-holding path ever waits on SendInput's foreign-hook dispatch. One consumer = strict FIFO
     // = every enqueued DOWN is released by the UP enqueued behind it (release paths are
@@ -671,6 +679,12 @@ public sealed class InputHookService : IInputHookService
     internal void RederivePanicTriggerPhysicalStateForTesting(Func<int, bool> isPhysicallyDown)
     {
         RederivePanicTriggerPhysicalStateCore(isPhysicallyDown);
+    }
+
+    internal bool PanicTriggerDerivationPendingForTesting
+    {
+        get => Volatile.Read(ref _panicTriggerDerivationPending) != 0;
+        set => Volatile.Write(ref _panicTriggerDerivationPending, value ? 1 : 0);
     }
 
     internal bool HandleCapsLockForTesting(bool isDown)
@@ -1759,13 +1773,15 @@ public sealed class InputHookService : IInputHookService
                 // the settled active profile, and the SetForegroundIdentity/this-method raises
                 // cover the status flips. No arm raise on THIS path (nothing about the arm changed).
                 ReleaseAllState(preserveRapidFireArm: true);
-                // Publish the incoming profile BEFORE the re-derivation: the panic-trigger
-                // fresh-edge re-derivation queued inside RederivePhysicalModifierState reads the
-                // live _activeProfile at dispatcher-execution time, and must see the INCOMING
-                // trigger — scheduling first would re-derive the outgoing profile's key.
+                // Publish the incoming profile BEFORE scheduling the re-derivation (the panic-latch
+                // closure reads the live _activeProfile at dispatcher-execution time and must see
+                // the INCOMING trigger), but keep the GENERATION unsettled until AFTER the physical
+                // modifier baseline is restored: the mismatch fences hook handlers
+                // (ProfileInputGenerationIsCurrent) so no new-profile action can observe eligible
+                // state with stale Alt/right-button modifiers (H6).
                 _activeProfile = profile;
-                Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
                 RederivePhysicalModifierState();
+                Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
                 changed = true;
 
                 LogDebug($"Profile activated: {profile.Name}");
@@ -1800,10 +1816,11 @@ public sealed class InputHookService : IInputHookService
             // Sticky arm: preserved (the owner is simply no longer active -> not ready). The
             // preceding SetForegroundIdentity raise already flipped the dot to gray.
             ReleaseAllState(preserveRapidFireArm: true);
-            // Publish before re-deriving (see ActivateProfile): no active profile => no trigger.
+            // Publish the profile first (see ActivateProfile); the generation settles only after
+            // the physical baseline is restored. No active profile => no trigger to re-derive.
             _activeProfile = null;
-            Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
             RederivePhysicalModifierState();
+            Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
 
             LogDebug("Profile deactivated");
         }
@@ -1839,11 +1856,11 @@ public sealed class InputHookService : IInputHookService
                     // generation/profile was already invalidated inside this lock, so no new
                     // Rapid Fire press can start during the handoff.
                     ReleaseAllState(preserveRapidFireArm: true);
-                    // Publish the deactivation BEFORE re-deriving (see ActivateProfile): no active
-                    // profile means no trigger to re-derive.
+                    // Publish the profile first; the generation settles only after the physical
+                    // baseline is restored (see ActivateProfile). No active profile => no trigger.
                     _activeProfile = null;
-                    Volatile.Write(ref _activeProfileGeneration, long.MinValue);
                     RederivePhysicalModifierState();
+                    Volatile.Write(ref _activeProfileGeneration, long.MinValue);
                     notify = true;
                 }
             }
@@ -2255,6 +2272,13 @@ public sealed class InputHookService : IInputHookService
         }
 
         Volatile.Write(ref _panicKeyPhysicallyDownVk, vkCode);
+
+        // Async re-derivation in flight: the latch may not yet reflect the CURRENT trigger's
+        // physical baseline. Record the edge (above) but stay native until the fence clears.
+        if (Volatile.Read(ref _panicTriggerDerivationPending) != 0)
+        {
+            return false;
+        }
 
         // Panic ATTEMPT gates. Eligibility may flip mid-hold; the edge is already recorded above.
         if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
@@ -6436,13 +6460,30 @@ public sealed class InputHookService : IInputHookService
         // GetAsyncKeyState can lag a DOWN the hook just classified and wrongly clear PhysicallyDown —
         // the following repeats would then be misread as fresh presses and the swallowed UP could
         // stick the key in the focused app. The hook's dispatcher delivers callbacks between queued
-        // operations, so this body never interleaves with one.
-        dispatcher.InvokeAsync(() =>
+        // operations, so this body never interleaves with one. The pending fence (set BEFORE the
+        // InvokeAsync) keeps panic attempts native until the latch baseline lands.
+        Volatile.Write(ref _panicTriggerDerivationPending, 1);
+        try
         {
-            RederiveAltKeyboardPhysicalStateCore(
-                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
-            RederivePanicTriggerPhysicalState();
-        });
+            dispatcher.InvokeAsync(() =>
+            {
+                try
+                {
+                    RederiveAltKeyboardPhysicalStateCore(
+                        vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+                    RederivePanicTriggerPhysicalState();
+                }
+                finally
+                {
+                    Volatile.Write(ref _panicTriggerDerivationPending, 0);
+                }
+            });
+        }
+        catch
+        {
+            // Dispatcher refused the post (shutdown): no closure will ever clear the fence.
+            Volatile.Write(ref _panicTriggerDerivationPending, 0);
+        }
     }
 
     // Fresh-edge latch for the panic trigger (keyboard triggers only — mouse buttons don't
@@ -6457,7 +6498,8 @@ public sealed class InputHookService : IInputHookService
 
     // Dispatcher-marshaled variant for reconfigure paths (live trigger rebind): GetAsyncKeyState
     // lags LL callbacks, so reading it off the hook thread could misclassify a DOWN the hook just
-    // recorded (same serialization rationale as RederiveAltKeyboardPhysicalState).
+    // recorded (same serialization rationale as RederiveAltKeyboardPhysicalState). Fenced the same
+    // way: panic attempts stay native until the re-derivation lands.
     private void SchedulePanicTriggerPhysicalStateRederivation()
     {
         var dispatcher = _hookDispatcher;
@@ -6467,7 +6509,26 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
-        dispatcher.InvokeAsync(RederivePanicTriggerPhysicalState);
+        Volatile.Write(ref _panicTriggerDerivationPending, 1);
+        try
+        {
+            dispatcher.InvokeAsync(() =>
+            {
+                try
+                {
+                    RederivePanicTriggerPhysicalState();
+                }
+                finally
+                {
+                    Volatile.Write(ref _panicTriggerDerivationPending, 0);
+                }
+            });
+        }
+        catch
+        {
+            // Dispatcher refused the post (shutdown): no closure will ever clear the fence.
+            Volatile.Write(ref _panicTriggerDerivationPending, 0);
+        }
     }
 
     private void RederivePanicTriggerPhysicalStateCore(Func<int, bool> isPhysicallyDown)

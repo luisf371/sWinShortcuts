@@ -1123,7 +1123,7 @@
                                                               IsChecked="{Binding RightClickHoldBreathSuppressEarlyCancelInput, Mode=TwoWay}"
                                                               VerticalAlignment="Center" />
                                                     <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                               ToolTip="When enabled, press the selected trigger while right mouse is held to cancel hold-breath while it is waiting or holding a key. Only the successful cancel press is blocked; later presses pass through."
+                                                               ToolTip="When enabled, press the selected trigger while right mouse is held to cancel hold-breath while it is waiting or holding a key. Only the successful cancel press is blocked; later presses pass through until the next aim (releasing and pressing right mouse again re-arms Early Cancel)."
                                                                ToolTipService.InitialShowDelay="0"
                                                                ToolTipService.Placement="Right" />
                                                 </StackPanel>

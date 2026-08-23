@@ -74,7 +74,7 @@ moment that program comes to the foreground.
 - **Hold Breath** — automatically presses a key (default `Left Shift`) while the right
   mouse button is held, with configurable delay, Hold/Toggle modes, and an optional Early
   Cancel trigger to cancel instantly (only the successful cancel press is blocked; later
-  presses pass through).
+  presses pass through until the next aim — releasing and pressing right mouse re-arms it).
 - **Anti-AFK** — presses a key at a set interval (1–15 min), but *only* after real keyboard
   inactivity: any keypress resets the timer, so it never fires while you're actually
   playing.

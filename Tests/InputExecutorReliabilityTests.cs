@@ -1572,6 +1572,28 @@ public sealed class InputExecutorReliabilityTests
         Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.E, isDown: false));
     }
 
+    [Fact]
+    public void EarlyCancel_DerivationPendingWindow_TriggerPressStaysNative()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
+        service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
+
+        // Simulate the async re-derivation fence: a fresh trigger press during the window is
+        // edge-latched but stays native — the latch baseline is not yet trustworthy.
+        service.PanicTriggerDerivationPendingForTesting = true;
+        service.HandleHoldBreathRightButtonForTesting(isDown: true);
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.False(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+
+        // The pending action was never cancelled; once the fence clears, a fresh press cancels it.
+        service.PanicTriggerDerivationPendingForTesting = false;
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: true));
+        Assert.True(service.HandleHoldBreathPanicKeyForTesting(Key.Q, isDown: false));
+    }
+
     private static Profile CreateEarlyCancelProfile(int delayMs, bool suppressEarlyCancel)
     {
         var profile = new Profile { Name = "Game", Executable = "game.exe" };
