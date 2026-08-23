@@ -785,6 +785,7 @@
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <ComboBox SelectedItem="{Binding TriggerKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Delay=100}"
+                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                                                           IsSynchronizedWithCurrentItem="False">
                                                                     <ComboBox.ItemsSource>
                                                                         <MultiBinding Converter="{StaticResource AvailableTriggerKeysConverter}" UpdateSourceTrigger="PropertyChanged">
