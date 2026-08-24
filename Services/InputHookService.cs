@@ -198,6 +198,32 @@ public sealed class InputHookService : IInputHookService
     private int _holdBreathPanicConsumedKeyVk;
     private int _holdBreathPanicConsumedMouseButton;
 
+    // Fresh-edge latch for the panic trigger (keyboard only — mouse buttons don't typematic-repeat):
+    // the vk of a trigger key that is physically down. Only the FIRST DOWN of a physical press may
+    // START a panic; a typematic repeat of a press whose initial DOWN passed through natively (the
+    // key was already held when RMB armed, or before the panic gates became true) must pass through
+    // with its UP — cancelling from a repeat would eat the UP while the app still saw the original
+    // native DOWN (stuck key). All accesses via Volatile.Read/Write (like the consumed fields
+    // above): cleared cross-thread at hard teardown, re-derived on the hook dispatcher at stream
+    // boundaries (Start / watchdog / activation / session return).
+    private int _panicKeyPhysicallyDownVk;
+
+    // Fence for the ASYNC panic-latch re-derivations (dispatcher InvokeAsync), TICKET-OWNED so
+    // overlapping requests cannot interfere: a request allocates a monotonic ticket and publishes
+    // it as the current epoch; between scheduling and executing the closure the latch is not
+    // trustworthy for the CURRENT trigger (it may hold 0 or the previous binding), so a repeat
+    // landing in that window could be misread as a fresh press. While any request is outstanding,
+    // a trigger DOWN is still edge-latched but stays native. A closure retires ONLY its own ticket
+    // (Interlocked CAS), so a superseded older closure can neither clear a newer request's fence
+    // nor... the latch baseline itself is written in dispatcher FIFO order (oldest first), so the
+    // newest closure always lands last. An aborted dispatcher post (shutdown aborts queued
+    // operations WITHOUT invoking them and WITHOUT throwing) retires its ticket via the operation
+    // callback; hard teardown and the Start seed reset the epoch to 0, invalidating every
+    // outstanding ticket. Synchronous derivations (Start seed, null-dispatcher fallback) never
+    // fence.
+    private long _panicDerivationEpoch;          // outstanding request ticket (0 = none)
+    private long _panicDerivationTicketSequence; // monotonic ticket allocator
+
     // Hold-breath injector: a dedicated thread draining a FIFO queue so no hook callback and no
     // lock-holding path ever waits on SendInput's foreign-hook dispatch. One consumer = strict FIFO
     // = every enqueued DOWN is released by the UP enqueued behind it (release paths are
@@ -658,6 +684,26 @@ public sealed class InputHookService : IInputHookService
         RederiveAltKeyboardPhysicalStateCore(isPhysicallyDown);
     }
 
+    internal void RederivePanicTriggerPhysicalStateForTesting(Func<int, bool> isPhysicallyDown)
+    {
+        RederivePanicTriggerPhysicalStateCore(isPhysicallyDown);
+    }
+
+    internal bool PanicTriggerDerivationPendingForTesting => Volatile.Read(ref _panicDerivationEpoch) != 0;
+
+    // Simulates a scheduled derivation request (allocates a ticket and fences) without a dispatcher.
+    internal long PanicDerivationBeginForTesting()
+    {
+        var ticket = Interlocked.Increment(ref _panicDerivationTicketSequence);
+        Volatile.Write(ref _panicDerivationEpoch, ticket);
+        return ticket;
+    }
+
+    internal void PanicDerivationRetireForTesting(long ticket)
+    {
+        RetirePanicDerivationTicket(ticket);
+    }
+
     internal bool HandleCapsLockForTesting(bool isDown)
     {
         return HandleCapsLock(
@@ -813,6 +859,35 @@ public sealed class InputHookService : IInputHookService
         {
             HandleRightClickHoldBreathUp();
         }
+    }
+
+    internal bool HandleHoldBreathPanicKeyForTesting(Key key, bool isDown)
+    {
+        return HandleHoldBreathPanicKey(
+            KeyInteropUtilities.ToVirtualKey(key),
+            isKeyDown: isDown,
+            isKeyUp: !isDown);
+    }
+
+    internal bool HandleHoldBreathPanicMouseForTesting(Models.MouseButton button, bool isDown)
+    {
+        var (message, mouseData) = (button, isDown) switch
+        {
+            (Models.MouseButton.Left, true) => (NativeMethods.WM_LBUTTONDOWN, 0u),
+            (Models.MouseButton.Left, false) => (NativeMethods.WM_LBUTTONUP, 0u),
+            (Models.MouseButton.Right, true) => (NativeMethods.WM_RBUTTONDOWN, 0u),
+            (Models.MouseButton.Right, false) => (NativeMethods.WM_RBUTTONUP, 0u),
+            (Models.MouseButton.Middle, true) => (NativeMethods.WM_MBUTTONDOWN, 0u),
+            (Models.MouseButton.Middle, false) => (NativeMethods.WM_MBUTTONUP, 0u),
+            // X buttons ride the mouseData high word (see GetXButton).
+            (Models.MouseButton.XButton1, true) => (NativeMethods.WM_XBUTTONDOWN, 1u << 16),
+            (Models.MouseButton.XButton1, false) => (NativeMethods.WM_XBUTTONUP, 1u << 16),
+            (Models.MouseButton.XButton2, true) => (NativeMethods.WM_XBUTTONDOWN, 2u << 16),
+            (Models.MouseButton.XButton2, false) => (NativeMethods.WM_XBUTTONUP, 2u << 16),
+            _ => throw new ArgumentOutOfRangeException(nameof(button))
+        };
+
+        return HandleHoldBreathPanicMouse(message, mouseData);
     }
 
     internal void FireHoldBreathTimerForTesting()
@@ -1117,9 +1192,14 @@ public sealed class InputHookService : IInputHookService
             // PhysicallyDown=true (repeats are not fresh edges) and no suppression latch. Keys not held
             // seed false, so the next press is a fresh gesture. Hooks are installed but _isRunning is
             // still false, so no callback can overwrite this baseline yet; the CORE runs inline (not
-            // via the dispatcher marshaling) so the seed lands before _isRunning flips.
+            // via the dispatcher marshaling) so the seed lands before _isRunning flips. The panic
+            // trigger's fresh-edge latch seeds the same way (keyboard triggers only), after resetting
+            // the derivation epoch — a ticket left outstanding by the previous session must not keep
+            // Early Cancel fenced on the new one.
+            Volatile.Write(ref _panicDerivationEpoch, 0);
             RederiveAltKeyboardPhysicalStateCore(
                 vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+            RederivePanicTriggerPhysicalState();
 
             // Rapid Fire is runtime-only and always starts disarmed (Start never raises the arm
             // event — it is Off by definition). Seed the physical latches so a key or left button
@@ -1713,8 +1793,14 @@ public sealed class InputHookService : IInputHookService
                 // the settled active profile, and the SetForegroundIdentity/this-method raises
                 // cover the status flips. No arm raise on THIS path (nothing about the arm changed).
                 ReleaseAllState(preserveRapidFireArm: true);
-                RederivePhysicalModifierState();
+                // Publish the incoming profile BEFORE scheduling the re-derivation (the panic-latch
+                // closure reads the live _activeProfile at dispatcher-execution time and must see
+                // the INCOMING trigger), but keep the GENERATION unsettled until AFTER the physical
+                // modifier baseline is restored: the mismatch fences hook handlers
+                // (ProfileInputGenerationIsCurrent) so no new-profile action can observe eligible
+                // state with stale Alt/right-button modifiers (H6).
                 _activeProfile = profile;
+                RederivePhysicalModifierState();
                 Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
                 changed = true;
 
@@ -1750,8 +1836,10 @@ public sealed class InputHookService : IInputHookService
             // Sticky arm: preserved (the owner is simply no longer active -> not ready). The
             // preceding SetForegroundIdentity raise already flipped the dot to gray.
             ReleaseAllState(preserveRapidFireArm: true);
-            RederivePhysicalModifierState();
+            // Publish the profile first (see ActivateProfile); the generation settles only after
+            // the physical baseline is restored. No active profile => no trigger to re-derive.
             _activeProfile = null;
+            RederivePhysicalModifierState();
             Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
 
             LogDebug("Profile deactivated");
@@ -1788,8 +1876,10 @@ public sealed class InputHookService : IInputHookService
                     // generation/profile was already invalidated inside this lock, so no new
                     // Rapid Fire press can start during the handoff.
                     ReleaseAllState(preserveRapidFireArm: true);
-                    RederivePhysicalModifierState();
+                    // Publish the profile first; the generation settles only after the physical
+                    // baseline is restored (see ActivateProfile). No active profile => no trigger.
                     _activeProfile = null;
+                    RederivePhysicalModifierState();
                     Volatile.Write(ref _activeProfileGeneration, long.MinValue);
                     notify = true;
                 }
@@ -1834,6 +1924,10 @@ public sealed class InputHookService : IInputHookService
             if ((changeKind & ProfileChangeKind.HoldBreath) != 0)
             {
                 ReleaseHoldBreathState();
+                // The trigger may have been rebound while its (new or old) key is physically held:
+                // re-derive the fresh-edge latch for the live trigger so a held key is not
+                // misclassified as a fresh press for the new binding.
+                SchedulePanicTriggerPhysicalStateRederivation();
             }
             if ((changeKind & ProfileChangeKind.CapsLock) != 0)
             {
@@ -2151,6 +2245,12 @@ public sealed class InputHookService : IInputHookService
             if (isKeyUp)
             {
                 Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
+                // Guarded: a mid-press rebind can have moved the fresh-edge latch to the NEW
+                // trigger — this UP may only clear its OWN key's latch.
+                if (Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
+                {
+                    Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+                }
             }
 
             return true;
@@ -2158,38 +2258,59 @@ public sealed class InputHookService : IInputHookService
 
         if (!isKeyDown)
         {
+            if (isKeyUp && Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
+            {
+                Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+            }
+
             return false;
         }
 
+        // Resolve the live trigger FIRST and record the physical edge REGARDLESS of the eligibility
+        // gates below: a press that starts native (Advanced Mode off, profile or Hold Breath
+        // disabled, generations unsettled, RMB not yet held, ...) must stay native for its WHOLE
+        // duration. Otherwise a typematic repeat landing after the gates became true would start a
+        // panic and eat the UP while the app still saw the original native DOWN (stuck key).
         var profile = _activeProfile;
-        if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
-            profile is not { IsEnabled: true } || !profile.RightClickHoldBreath.IsEnabled)
+        if (profile is null)
         {
             return false;
         }
 
-        var settings = profile.RightClickHoldBreath;
-        var trigger = settings.PanicTrigger;
-        if (trigger.Kind != InputTriggerKind.KeyboardKey ||
-            KeyInteropUtilities.ToVirtualKey(trigger.Key) != vkCode ||
+        var trigger = profile.RightClickHoldBreath.PanicTrigger;
+        if (trigger is not { Kind: InputTriggerKind.KeyboardKey } ||
+            KeyInteropUtilities.ToVirtualKey(trigger.Key) != vkCode)
+        {
+            return false;
+        }
+
+        // Fresh-edge gate: only the FIRST DOWN of a physical press may attempt a panic; every
+        // typematic repeat of this press passes through and so does its UP.
+        if (Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
+        {
+            return false;
+        }
+
+        Volatile.Write(ref _panicKeyPhysicallyDownVk, vkCode);
+
+        // Async re-derivation in flight: the latch may not yet reflect the CURRENT trigger's
+        // physical baseline. Record the edge (above) but stay native until the fence clears.
+        if (Volatile.Read(ref _panicDerivationEpoch) != 0)
+        {
+            return false;
+        }
+
+        // Panic ATTEMPT gates. Eligibility may flip mid-hold; the edge is already recorded above.
+        if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
+            !profile.IsEnabled ||
+            !profile.RightClickHoldBreath.IsEnabled ||
             !_rightButtonPressed)
         {
             return false;
         }
 
         var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-        if (!PanicHoldBreath(profile, foregroundGeneration))
-        {
-            return false;
-        }
-
-        if (!settings.SuppressEarlyCancelInput)
-        {
-            return false;
-        }
-
-        Volatile.Write(ref _holdBreathPanicConsumedKeyVk, vkCode);
-        return true;
+        return PanicHoldBreath(profile, foregroundGeneration, panicKeyVk: vkCode, panicMouseButton: 0);
     }
 
     private bool HandleHoldBreathPanicMouse(int message, uint mouseData)
@@ -2237,21 +2358,14 @@ public sealed class InputHookService : IInputHookService
         }
 
         var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-        if (!PanicHoldBreath(profile, foregroundGeneration))
-        {
-            return false;
-        }
-
-        if (!settings.SuppressEarlyCancelInput)
-        {
-            return false;
-        }
-
-        Volatile.Write(ref _holdBreathPanicConsumedMouseButton, (int)button);
-        return true;
+        return PanicHoldBreath(profile, foregroundGeneration, panicKeyVk: 0, panicMouseButton: (int)button);
     }
 
-    private bool PanicHoldBreath(Profile expectedProfile, long foregroundGeneration)
+    private bool PanicHoldBreath(
+        Profile expectedProfile,
+        long foregroundGeneration,
+        int panicKeyVk,
+        int panicMouseButton)
     {
         var lockWaitStart = Stopwatch.GetTimestamp();
         lock (_holdBreathLock)
@@ -2263,18 +2377,44 @@ public sealed class InputHookService : IInputHookService
                 foregroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
                 !ReferenceEquals(_activeProfile, expectedProfile) ||
                 !expectedProfile.IsEnabled ||
-                !expectedProfile.RightClickHoldBreath.IsEnabled)
+                !expectedProfile.RightClickHoldBreath.IsEnabled ||
+                !expectedProfile.RightClickHoldBreath.SuppressEarlyCancelInput)
             {
                 return false;
             }
 
-            if (!_holdBreathPanicSuppressed)
+            // Single authority for "did THIS press perform a cancellation" — the keyboard and mouse
+            // panic handlers both route here, so the Early Cancel checkbox is enforced once, atomically
+            // with the cancel decision:
+            //  - already cancelled in this aim cycle (the veto latch) -> nothing left to stop;
+            //  - nothing pending and no owned Hold-mode key (never armed, Toggle tap already
+            //    committed, ...) -> nothing to stop.
+            // In both cases the press passes through untouched: Early Cancel blocks exactly ONE
+            // press per aim cycle — the one that actually cancelled — never permanently while aiming.
+            if (_holdBreathPanicSuppressed ||
+                (!_holdBreathPending && _holdBreathInjectedKey is null))
             {
-                _holdBreathPanicSuppressed = true;
-                CancelHoldBreathStateLocked();
-                if (IsDebugEnabled) LogDebug("HoldBreath panic: canceled and suppressed until right-button-up");
+                return false;
             }
 
+            _holdBreathPanicSuppressed = true;
+            CancelHoldBreathStateLocked();
+
+            // Publish the consumed owner INSIDE the same lock as the cancel decision. A hard
+            // teardown (Stop / session switch) zeroes these fields only after its own
+            // _holdBreathLock pass (ReleaseHoldBreathState inside ReleaseAllState), so an in-flight
+            // panic can never write a consumed latch that outlives the boundary — the pre-fix race
+            // let a callback resumed after teardown resurrect a swallow-latch into the next session.
+            if (panicKeyVk != 0)
+            {
+                Volatile.Write(ref _holdBreathPanicConsumedKeyVk, panicKeyVk);
+            }
+            else
+            {
+                Volatile.Write(ref _holdBreathPanicConsumedMouseButton, panicMouseButton);
+            }
+
+            if (IsDebugEnabled) LogDebug("HoldBreath panic: cancelled; re-arm vetoed until right-button-up");
             return true;
         }
     }
@@ -6244,6 +6384,10 @@ public sealed class InputHookService : IInputHookService
         {
             Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
             Volatile.Write(ref _holdBreathPanicConsumedMouseButton, 0);
+            Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+            // Invalidate any outstanding derivation ticket: a closure still queued on the dying
+            // dispatcher must not unfence a post-boundary session.
+            Volatile.Write(ref _panicDerivationEpoch, 0);
             _autoRunConsumedTriggerVk = 0;
             _triggerKeyDownVk = 0;
         }
@@ -6330,6 +6474,7 @@ public sealed class InputHookService : IInputHookService
             // pre-existing Alt/right-button derivation above has always had.
             RederiveAltKeyboardPhysicalStateCore(
                 vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+            RederivePanicTriggerPhysicalState();
             return;
         }
 
@@ -6338,10 +6483,109 @@ public sealed class InputHookService : IInputHookService
         // GetAsyncKeyState can lag a DOWN the hook just classified and wrongly clear PhysicallyDown —
         // the following repeats would then be misread as fresh presses and the swallowed UP could
         // stick the key in the focused app. The hook's dispatcher delivers callbacks between queued
-        // operations, so this body never interleaves with one.
-        dispatcher.InvokeAsync(() =>
+        // operations, so this body never interleaves with one. The ticket fence (see
+        // _panicDerivationEpoch) keeps panic attempts native until the latch baseline lands.
+        SchedulePanicDerivationCore(() =>
+        {
             RederiveAltKeyboardPhysicalStateCore(
-                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0));
+                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+            RederivePanicTriggerPhysicalState();
+        });
+    }
+
+    // Fresh-edge latch for the panic trigger (keyboard triggers only — mouse buttons don't
+    // typematic-repeat): re-read the ACTUAL physical state of the live trigger so a key held across
+    // a stream boundary or a live rebind keeps classifying its repeats as repeats, and a released
+    // key's stale latch cannot swallow the next fresh press's panic attempt.
+    private void RederivePanicTriggerPhysicalState()
+    {
+        RederivePanicTriggerPhysicalStateCore(
+            vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
+    }
+
+    // Dispatcher-marshaled, ticket-fenced derivation scheduler shared by the reconfigure path
+    // (live trigger rebind) and the boundary re-derivations: GetAsyncKeyState lags LL callbacks,
+    // so reading it off the hook thread could misclassify a DOWN the hook just recorded (same
+    // serialization rationale as RederiveAltKeyboardPhysicalState). See _panicDerivationEpoch for
+    // the fence semantics; retirement is ticket-owned so overlapping requests and aborted posts
+    // can never strand or prematurely clear it.
+    private void SchedulePanicDerivationCore(Action derive)
+    {
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is null)
+        {
+            derive(); // synchronous: no fence needed
+            return;
+        }
+
+        var ticket = Interlocked.Increment(ref _panicDerivationTicketSequence);
+        Volatile.Write(ref _panicDerivationEpoch, ticket);
+        try
+        {
+            var operation = dispatcher.InvokeAsync(() =>
+            {
+                try
+                {
+                    derive();
+                }
+                finally
+                {
+                    RetirePanicDerivationTicket(ticket);
+                }
+            });
+
+            // Shutdown ABORTS queued operations without invoking the delegate (and without
+            // throwing): observe the abort so the ticket still retires. Subscribe FIRST, then
+            // re-read Status — WPF raises Aborted only to handlers registered at abort time, so a
+            // check-then-subscribe order can miss an abort that lands in between. Retirement is an
+            // idempotent CAS, so both paths firing concurrently is safe.
+            operation.Aborted += (_, _) => RetirePanicDerivationTicket(ticket);
+            if (operation.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted)
+            {
+                RetirePanicDerivationTicket(ticket);
+            }
+        }
+        catch
+        {
+            // Dispatcher refused the post outright: no closure will ever retire the ticket.
+            RetirePanicDerivationTicket(ticket);
+        }
+    }
+
+    // Only the CURRENT request may unfence: a superseded request (a newer ticket was published) or
+    // an invalidated one (hard teardown / the Start seed wrote 0) leaves the fence to its owner.
+    // Retiring an already-retired ticket is a harmless no-op (the epoch no longer matches).
+    private void RetirePanicDerivationTicket(long ticket)
+    {
+        Interlocked.CompareExchange(ref _panicDerivationEpoch, 0, ticket);
+    }
+
+    // Dispatcher-marshaled variant for reconfigure paths (live trigger rebind).
+    private void SchedulePanicTriggerPhysicalStateRederivation()
+    {
+        SchedulePanicDerivationCore(RederivePanicTriggerPhysicalState);
+    }
+
+    private void RederivePanicTriggerPhysicalStateCore(Func<int, bool> isPhysicallyDown)
+    {
+        var profile = _activeProfile;
+        if (profile is null)
+        {
+            Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+            return;
+        }
+
+        var trigger = profile.RightClickHoldBreath.PanicTrigger;
+        if (trigger is not { Kind: InputTriggerKind.KeyboardKey })
+        {
+            Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
+            return;
+        }
+
+        var vk = KeyInteropUtilities.ToVirtualKey(trigger.Key);
+        Volatile.Write(
+            ref _panicKeyPhysicallyDownVk,
+            vk != 0 && isPhysicallyDown(vk) ? vk : 0);
     }
 
     private void RederiveAltKeyboardPhysicalStateCore(Func<int, bool> isPhysicallyDown)

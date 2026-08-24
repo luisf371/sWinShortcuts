@@ -9,7 +9,7 @@ namespace Tests;
 public sealed class InputTriggerTests
 {
     [Fact]
-    public void RightClickHoldBreath_DefaultsToSuppressingEarlyCancelInput()
+    public void RightClickHoldBreath_EarlyCancelDefaultsEnabled()
     {
         Assert.True(new RightClickHoldBreathSettings().SuppressEarlyCancelInput);
     }
