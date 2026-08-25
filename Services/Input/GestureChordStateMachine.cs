@@ -8,6 +8,7 @@ using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
 using MouseButton = sWinShortcuts.Models.MouseButton;
+using Timer = System.Threading.Timer;
 
 namespace sWinShortcuts.Services.Input;
 
@@ -620,7 +621,6 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         if (_runtime.IsDisposed ||
             Volatile.Read(ref _disposed) != 0 ||
             !_runtime.IsRunning ||
-            !_runtime.AdvancedModeEnabled ||
             command.ExpectedProfile is not { IsEnabled: true } profile ||
             !_runtime.ProfileInputGenerationIsCurrent(profile, command.ForegroundGeneration))
         {
@@ -634,7 +634,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             TOKEN_ALT_KEYBOARD => profile.AltKeyboard.IsEnabled &&
                 command.Generation == Volatile.Read(ref _altKeyboardGeneration) &&
                 !_cancelledKeyboardPresses.TryRemove(command.Token, out _),
-            TOKEN_HOLD_BREATH => profile.RightClickHoldBreath.IsEnabled &&
+            TOKEN_HOLD_BREATH => _runtime.AdvancedModeEnabled &&
+                profile.RightClickHoldBreath.IsEnabled &&
                 command.Generation == Volatile.Read(ref _holdBreathGeneration),
             _ => false
         };

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Windows.Input;
 using sWinShortcuts.Models;
+using Timer = System.Threading.Timer;
 
 namespace sWinShortcuts.Services.Input;
 

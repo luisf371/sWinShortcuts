@@ -4,6 +4,7 @@ using System.Threading;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
+using Timer = System.Threading.Timer;
 
 namespace sWinShortcuts.Services.Input;
 

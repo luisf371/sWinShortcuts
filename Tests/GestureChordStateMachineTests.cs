@@ -10,6 +10,43 @@ namespace Tests;
 public sealed class GestureChordStateMachineTests
 {
     [Fact]
+    public void AltGestures_AdvancedModeDisabled_GuardedCommandsRemainExecutable()
+    {
+        var profile = CreateProfile();
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.Bindings = new Dictionary<sWinShortcuts.Models.MouseButton, MouseButtonBinding>
+        {
+            [sWinShortcuts.Models.MouseButton.Middle] = new() { TapKey = Key.A }
+        };
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.Bindings = new Dictionary<Key, AltKeyboardBinding>
+        {
+            [Key.Q] = new() { TapKey = Key.B }
+        };
+        var runtime = ConfigureRuntime(profile);
+        runtime.SetAdvancedMode(false);
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var machine = new GestureChordStateMachine(
+            runtime,
+            queue,
+            random,
+            new NullLoggerService(),
+            () => false);
+        machine.SeedAltPressed(true);
+
+        Assert.True(machine.HandleAltMouse(NativeMethods.WM_MBUTTONDOWN, 0));
+        Assert.True(machine.HandleAltMouse(NativeMethods.WM_MBUTTONUP, 0));
+        var q = KeyInterop.VirtualKeyFromKey(Key.Q);
+        Assert.True(machine.HandleAltKeyboard(q, isKeyDown: true, isKeyUp: false));
+        Assert.True(machine.HandleAltKeyboard(q, isKeyDown: false, isKeyUp: true));
+
+        var guardedDowns = queue.Commands.Where(command => command.IsDown).ToArray();
+        Assert.Equal(2, guardedDowns.Length);
+        Assert.All(guardedDowns, command => Assert.True(machine.CanExecute(command)));
+    }
+
+    [Fact]
     public void AltMouse_TapAndHold_OwnTheirPairs()
     {
         var profile = CreateProfile();

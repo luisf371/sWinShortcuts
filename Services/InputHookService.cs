@@ -1152,7 +1152,8 @@ public sealed class InputHookService : IInputHookService
                 // The trigger may have been rebound while its (new or old) key is physically held:
                 // re-derive the fresh-edge latch for the live trigger so a held key is not
                 // misclassified as a fresh press for the new binding.
-                _gestures.RederivePanicTriggerPhysicalState(IsPhysicalKeyDown);
+                SchedulePanicDerivation(
+                    () => _gestures.RederivePanicTriggerPhysicalState(IsPhysicalKeyDown));
             }
         }
 
@@ -1605,7 +1606,12 @@ public sealed class InputHookService : IInputHookService
 
     private void RederivePhysicalModifierState()
     {
-        _gestures.RederivePhysicalState(IsPhysicalKeyDown);
+        _gestures.SeedAltPressed(IsPhysicalKeyDown(0xA4) || IsPhysicalKeyDown(0xA5));
+        SchedulePanicDerivation(() =>
+        {
+            _gestures.RederiveAltKeyboardPhysicalState(IsPhysicalKeyDown);
+            _gestures.RederivePanicTriggerPhysicalState(IsPhysicalKeyDown);
+        });
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
@@ -1613,6 +1619,45 @@ public sealed class InputHookService : IInputHookService
         if (_crosshairRightButtonWatch)
         {
             RightButtonStateChanged?.Invoke(this, _rightButtonPressed);
+        }
+    }
+
+    private void SchedulePanicDerivation(Action derive)
+    {
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is null)
+        {
+            derive();
+            return;
+        }
+
+        // GetAsyncKeyState can lag a DOWN just observed by the low-level hook. Queue the read on
+        // the hook dispatcher and fence panic handling until that serialized baseline lands.
+        var ticket = _gestures.BeginPanicDerivation();
+        try
+        {
+            var operation = dispatcher.InvokeAsync(() =>
+            {
+                try
+                {
+                    derive();
+                }
+                finally
+                {
+                    _gestures.RetirePanicDerivation(ticket);
+                }
+            });
+
+            // A shutdown-aborted operation never invokes its delegate, so it must retire here.
+            operation.Aborted += (_, _) => _gestures.RetirePanicDerivation(ticket);
+            if (operation.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted)
+            {
+                _gestures.RetirePanicDerivation(ticket);
+            }
+        }
+        catch
+        {
+            _gestures.RetirePanicDerivation(ticket);
         }
     }
 
