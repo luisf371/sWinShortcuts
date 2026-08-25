@@ -272,7 +272,10 @@ internal sealed class RemapStateMachine : IInputCommandGuard
 
             if (held is not null)
             {
-                Log($"Combined mapping released: {sourceKey.Value}");
+                if (_logger.IsEnabled)
+                {
+                    _logger.Log($"Combined mapping released: {sourceKey.Value}");
+                }
                 return held.SuppressOriginal;
             }
             if (hasForcedReleaseDecision)
@@ -368,7 +371,10 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             }
         }
 
-        Log($"Combined mapping: {sourceKey.Value} → {target} (suppress={suppression})");
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Combined mapping: {sourceKey.Value} → {target} (suppress={suppression})");
+        }
         return suppression;
     }
 

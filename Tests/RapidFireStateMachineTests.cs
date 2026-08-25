@@ -31,6 +31,29 @@ public sealed class RapidFireStateMachineTests
     }
 
     [Fact]
+    public void Toggle_HeldAcrossRestartRequiresFreshDown()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.SetToggleKey(Key.F8);
+
+        runtime.SetRunning(false);
+        rapidFire.Release(preservePhysicalPairing: false);
+        rapidFire.SeedTogglePhysicalState(vk => vk == Vk(Key.F8));
+        runtime.SetRunning(true);
+
+        Assert.False(rapidFire.HandleToggleKey(Vk(Key.F8), isKeyDown: true, isKeyUp: false));
+        Assert.Equal(RapidFireArmStatus.Off, rapidFire.GetStatus());
+
+        Assert.False(rapidFire.HandleToggleKey(Vk(Key.F8), isKeyDown: false, isKeyUp: true));
+        Assert.True(rapidFire.HandleToggleKey(Vk(Key.F8), isKeyDown: true, isKeyUp: false));
+        Assert.Equal(RapidFireArmStatus.Ready, rapidFire.GetStatus());
+    }
+
+    [Fact]
     public void Toggle_RetargetsEligibleOwnerAndDisarmsStrandedArm()
     {
         var first = RapidFireProfile("First");

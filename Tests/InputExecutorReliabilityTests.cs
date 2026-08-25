@@ -716,6 +716,7 @@ public sealed class InputExecutorReliabilityTests
     public void AltKeyboard_PhysicalStateRederive_ReconcilesTypematicLatches()
     {
         using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
         var profile = CreateAltKeyboardProfile(holdThresholdMs: 100);
         service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
 
@@ -733,6 +734,7 @@ public sealed class InputExecutorReliabilityTests
         Assert.False(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
         Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: true));
         Assert.True(service.HandleAltKeyboardForTesting(Key.Q, isDown: false));
+        service.StopInputExecutorForTesting();
     }
 
     [Fact]

@@ -202,6 +202,13 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     internal void SeedPhysicalLeftButton(bool isDown) => _physicalLeftDown = isDown;
 
+    internal void SeedTogglePhysicalState(Func<int, bool> isPhysicalKeyDown)
+    {
+        var toggleVk = Volatile.Read(ref _toggleVk);
+        _hookSeenToggleVk = toggleVk;
+        _toggleDownLatched = toggleVk != 0 && isPhysicalKeyDown(toggleVk);
+    }
+
     internal void CancelPress()
     {
         Interlocked.Increment(ref _generation);

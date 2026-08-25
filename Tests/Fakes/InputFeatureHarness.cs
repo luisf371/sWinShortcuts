@@ -7,7 +7,7 @@ using sWinShortcuts.Utilities;
 
 namespace Tests.Fakes;
 
-internal sealed class InputFeatureHarness : IDisposable
+internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
 {
     private readonly object _profileLock = new();
     private readonly ThreadLocal<Random> _random = new(() => new Random(1));
@@ -74,7 +74,7 @@ internal sealed class InputFeatureHarness : IDisposable
 
     internal bool PanicTriggerDerivationPendingForTesting => _gestures.PanicDerivationPending;
 
-    internal bool RapidFireArmedForTesting => _rapidFire.GetStatus() != RapidFireArmStatus.Off;
+    internal bool RapidFireArmedForTesting => _rapidFire.GetStatus() == RapidFireArmStatus.Ready;
 
     internal void StartInputExecutorForTesting()
     {
@@ -109,7 +109,13 @@ internal sealed class InputFeatureHarness : IDisposable
         _executor.Enqueue(new InputCommand(
             key,
             isDown,
+            Guard: foregroundGeneration == 0 ? null : this,
             ForegroundGeneration: foregroundGeneration));
+
+    bool IInputCommandGuard.CanExecute(in InputCommand command) =>
+        _runtime.IsRunning &&
+        command.ForegroundGeneration == _runtime.ActiveProfileGeneration &&
+        command.ForegroundGeneration == _runtime.PublishedForegroundGeneration;
 
     internal bool EnqueueTapForTesting(Key key, int durationMs) =>
         _executor.Enqueue(new InputCommand(

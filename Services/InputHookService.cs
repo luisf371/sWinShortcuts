@@ -431,6 +431,7 @@ public sealed class InputHookService : IInputHookService
             // event — it is Off by definition). Seed the physical latches so a key or left button
             // held across restart cannot be mistaken for a fresh press.
             _rapidFire.Release(preservePhysicalPairing: false);
+            _rapidFire.SeedTogglePhysicalState(IsPhysicalKeyDown);
             var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
                 ? NativeMethods.VK_RBUTTON
                 : NativeMethods.VK_LBUTTON;
