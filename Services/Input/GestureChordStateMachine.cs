@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -45,7 +44,6 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private readonly Func<bool> _isRightButtonPressed;
     private readonly Dictionary<MouseButton, MouseState> _mouseStates;
     private readonly Dictionary<Key, KeyboardState> _keyboardStates;
-    private readonly ConcurrentDictionary<long, byte> _cancelledKeyboardPresses = new();
     private readonly object _holdBreathLock = new();
     private readonly Timer _holdBreathTimer;
 
@@ -311,7 +309,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             var press = Interlocked.Exchange(ref state.ActivePress, null);
             if (press is not null)
             {
-                _cancelledKeyboardPresses.TryAdd(press.Token, 0);
+                press.Cancel();
             }
             Interlocked.Exchange(ref state.SuppressNextUp, 0);
         }
@@ -633,7 +631,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
                 command.Generation == Volatile.Read(ref _altMouseGeneration),
             TOKEN_ALT_KEYBOARD => profile.AltKeyboard.IsEnabled &&
                 command.Generation == Volatile.Read(ref _altKeyboardGeneration) &&
-                !_cancelledKeyboardPresses.TryRemove(command.Token, out _),
+                command.Acknowledgement?.IsCancelled != true,
             TOKEN_HOLD_BREATH => _runtime.AdvancedModeEnabled &&
                 profile.RightClickHoldBreath.IsEnabled &&
                 command.Generation == Volatile.Read(ref _holdBreathGeneration),
@@ -696,11 +694,13 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         {
             if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
             {
-                EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token);
+                EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
+                    acknowledgement: press);
             }
             else if (press.TapKey.HasValue)
             {
-                EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token);
+                EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
+                    acknowledgement: press);
             }
         }
 
@@ -737,7 +737,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             return;
         }
 
-        EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token);
+        EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
+            acknowledgement: press);
     }
 
     private bool GestureIsCurrent(Profile profile, long foregroundGeneration, long generation, bool altKeyboard) =>
@@ -873,7 +874,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         long foregroundGeneration,
         long generation,
         long token,
-        int duration = 0)
+        int duration = 0,
+        InputCommandAcknowledgement? acknowledgement = null)
     {
         if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0)
         {
@@ -888,8 +890,14 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             Generation: generation,
             ForegroundGeneration: foregroundGeneration,
             ExpectedProfile: profile,
+            Acknowledgement: acknowledgement,
             Token: token);
-        var up = new InputCommand(key, false, DelayBeforeMs: duration);
+        var up = new InputCommand(
+            key,
+            false,
+            DelayBeforeMs: duration,
+            Acknowledgement: acknowledgement,
+            RequireAcknowledgement: acknowledgement is not null);
         _inputQueue.EnqueuePair(down, up);
     }
 
@@ -933,7 +941,6 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
                 state.PhysicallyDown = false;
             }
         }
-        _cancelledKeyboardPresses.Clear();
     }
 
     private void CancelTimer(FeatureTimerState state)
@@ -1058,13 +1065,23 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         Key? HoldKey,
         int HoldThresholdMs);
 
-    private sealed record KeyboardPress(
-        Profile Profile,
-        long ForegroundGeneration,
-        long Generation,
-        long DownTick,
-        Key? TapKey,
-        Key? HoldKey,
-        int HoldThresholdMs,
-        long Token);
+    private sealed class KeyboardPress(
+        Profile profile,
+        long foregroundGeneration,
+        long generation,
+        long downTick,
+        Key? tapKey,
+        Key? holdKey,
+        int holdThresholdMs,
+        long token) : InputCommandAcknowledgement
+    {
+        internal Profile Profile { get; } = profile;
+        internal long ForegroundGeneration { get; } = foregroundGeneration;
+        internal long Generation { get; } = generation;
+        internal long DownTick { get; } = downTick;
+        internal Key? TapKey { get; } = tapKey;
+        internal Key? HoldKey { get; } = holdKey;
+        internal int HoldThresholdMs { get; } = holdThresholdMs;
+        internal long Token { get; } = token;
+    }
 }

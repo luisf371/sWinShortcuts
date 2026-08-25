@@ -28,13 +28,18 @@ internal enum InputCommandKind
 
 internal readonly record struct TapStep(Key Key, int DownMs, int GapMs);
 
-internal sealed class InputCommandAcknowledgement
+internal class InputCommandAcknowledgement
 {
     private int _downSent;
+    private int _cancelled;
 
     internal bool DownSent => Volatile.Read(ref _downSent) != 0;
 
+    internal bool IsCancelled => Volatile.Read(ref _cancelled) != 0;
+
     internal void MarkDownSent() => Volatile.Write(ref _downSent, 1);
+
+    internal void Cancel() => Volatile.Write(ref _cancelled, 1);
 }
 
 internal readonly record struct InputCommand(

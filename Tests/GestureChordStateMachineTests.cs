@@ -109,6 +109,37 @@ public sealed class GestureChordStateMachineTests
     }
 
     [Fact]
+    public void AltKeyboard_CancelAfterDownAccepted_KeepsCancellationScopedToPress()
+    {
+        var profile = CreateProfile();
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.HoldThresholdMilliseconds = 10;
+        profile.AltKeyboard.Bindings = new Dictionary<Key, AltKeyboardBinding>
+        {
+            [Key.Q] = new() { HoldKey = Key.B }
+        };
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var machine = CreateMachine(profile, queue, random);
+        var q = KeyInterop.VirtualKeyFromKey(Key.Q);
+
+        Assert.True(machine.HandleAltKeyboard(q, isKeyDown: true, isKeyUp: false));
+        Assert.True(SpinWait.SpinUntil(() => queue.Commands.Count == 2, TimeSpan.FromSeconds(2)));
+        var commands = queue.Commands.ToArray();
+        var acknowledgement = Assert.IsAssignableFrom<InputCommandAcknowledgement>(commands[0].Acknowledgement);
+        Assert.True(machine.CanExecute(commands[0]));
+        acknowledgement.MarkDownSent();
+
+        machine.HandleAltKeyboardPanicOverride(q, isKeyDown: true, isKeyUp: false);
+
+        Assert.False(machine.CanExecute(commands[0]));
+        Assert.False(machine.CanExecute(commands[0]));
+        Assert.Same(acknowledgement, commands[1].Acknowledgement);
+        Assert.True(commands[1].RequireAcknowledgement);
+        Assert.True(acknowledgement.DownSent);
+    }
+
+    [Fact]
     public void HoldBreath_RightButtonUpQueuesReleaseAfterDown()
     {
         var profile = CreateProfile();
