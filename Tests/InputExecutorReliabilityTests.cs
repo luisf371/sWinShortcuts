@@ -1,7 +1,7 @@
-using System.Collections.Concurrent;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
+using sWinShortcuts.Services.Input;
 using Tests.Fakes;
 using Xunit;
 
@@ -13,7 +13,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task Executor_TapAndTransitions_EmitFifoOnOneWorker()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -51,26 +51,26 @@ public sealed class InputExecutorReliabilityTests
         var physicallyDown = false;
 
         // Initial physical W down arrives before the Auto-Run trigger chord.
-        Assert.True(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+        Assert.True(AutoRunStateMachine.ApplyPhysicalKeyEvent(
             ref physicallyDown,
             isKeyDown: true,
             isKeyUp: false));
 
         // Activation preserves the hook-owned state. A typematic repeat from the held press is not fresh.
-        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+        Assert.False(AutoRunStateMachine.ApplyPhysicalKeyEvent(
             ref physicallyDown,
             isKeyDown: true,
             isKeyUp: false));
 
         // Release clears the physical edge latch. The active handoff handler separately decides whether
         // the target-visible UP is suppressed; this pure helper only owns physical-state bookkeeping.
-        Assert.False(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+        Assert.False(AutoRunStateMachine.ApplyPhysicalKeyEvent(
             ref physicallyDown,
             isKeyDown: false,
             isKeyUp: true));
 
         // A genuinely new physical press after that release is fresh and therefore cancels Auto-Run.
-        Assert.True(InputHookService.ApplyAutoRunPhysicalKeyEvent(
+        Assert.True(AutoRunStateMachine.ApplyPhysicalKeyEvent(
             ref physicallyDown,
             isKeyDown: true,
             isKeyUp: false));
@@ -79,14 +79,19 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void AutoRunTriggerModifier_NoneAllowsSingleKeyTrigger()
     {
-        Assert.True(InputHookService.IsTriggerModifierDown(ModifierKeys.None));
+        var runtime = new InputRuntimeState();
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var autoRun = new AutoRunStateMachine(runtime, queue, random, new NullLoggerService());
+
+        Assert.True(autoRun.IsTriggerModifierDown(ModifierKeys.None));
     }
 
     [Fact]
     public async Task AutoRunForeground_PhysicalWHeldAtActivation_SuppressesReleaseThenStartsScriptedHold()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -126,7 +131,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AutoRunForeground_QueuedPhysicalWHandoffReleasedBeforeExecutorDrain_DoesNotInjectDown()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -162,7 +167,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AutoRunForeground_SuppressedWHandoffUp_ReleasesPairedConsumers()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -197,7 +202,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AutoRunForeground_FreshWPress_StopsOnlyOnMatchingPhysicalUp()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -228,14 +233,14 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void AutoRunBackground_AttachPolicy_UsesOneForcedReassertOrUnfocusedTarget()
     {
-        Assert.False(InputHookService.ShouldAttachBackgroundInput(
+        Assert.False(AutoRunStateMachine.ShouldAttachBackgroundInput(
             onBackgroundThread: true,
             targetIsForegroundProcess: true,
             targetThread: 22,
             currentThread: 11,
             targetIsHung: false));
 
-        Assert.True(InputHookService.ShouldAttachBackgroundInput(
+        Assert.True(AutoRunStateMachine.ShouldAttachBackgroundInput(
             onBackgroundThread: true,
             targetIsForegroundProcess: true,
             targetThread: 22,
@@ -243,14 +248,14 @@ public sealed class InputExecutorReliabilityTests
             targetIsHung: false,
             forceAttach: true));
 
-        Assert.True(InputHookService.ShouldAttachBackgroundInput(
+        Assert.True(AutoRunStateMachine.ShouldAttachBackgroundInput(
             onBackgroundThread: true,
             targetIsForegroundProcess: false,
             targetThread: 22,
             currentThread: 11,
             targetIsHung: false));
 
-        Assert.False(InputHookService.ShouldAttachBackgroundInput(
+        Assert.False(AutoRunStateMachine.ShouldAttachBackgroundInput(
             onBackgroundThread: true,
             targetIsForegroundProcess: false,
             targetThread: 22,
@@ -262,7 +267,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task Executor_StaleDownSkipped_UpRemainsUnconditional()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -286,7 +291,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task Executor_FailedDown_StillAttemptsUpAndContinuesDraining()
     {
         var sender = new RecordingInputSender(failFirstDown: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -316,7 +321,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task Executor_DummyAcknowledgement_CompletesAfterExecution()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -339,7 +344,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltMouse_QuickTap_EmitsOnlyTapPair()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -376,7 +381,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltMouse_Hold_EmitsOnlyHoldPair()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -413,7 +418,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltMouse_LiveRebind_CancelsGestureButConsumesRecordedUp()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -446,7 +451,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltKeyboard_QuickTap_EmitsOnlyTapPair()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -483,7 +488,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltKeyboard_Hold_EmitsOnlyHoldPair()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -520,7 +525,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltKeyboard_LiveRebind_CancelsGestureButConsumesRecordedUp()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -553,7 +558,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltKeyboard_AutoRepeat_SuppressesOwnedRepeatsAndIgnoresForeignOnes()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -596,7 +601,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltKeyboard_PanicOverride_CancelsGestureWithoutFiringAndClearsLatches()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -635,7 +640,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltKeyboard_PanicOverride_InvalidatesHoldActionAlreadyQueued()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -674,7 +679,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AltKeyboard_CancelAfterDownSent_StillSendsPairedUp()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -710,7 +715,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void AltKeyboard_PhysicalStateRederive_ReconcilesTypematicLatches()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         var profile = CreateAltKeyboardProfile(holdThresholdMs: 100);
         service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: true);
 
@@ -734,7 +739,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_NormalWithoutRemap_PassesPhysicalTransitions()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -760,7 +765,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_NormalRemap_MirrorsDownRepeatsAndUp()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -794,7 +799,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_NormalRemapForceRelease_ReleasesHeldOutputOnce()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -828,7 +833,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_HardBoundaryWithoutPhysicalUp_AllowsNextFreshPress()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -869,7 +874,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_DoubleNormal_TapsOnPhysicalDownAndUp(bool remapEnabled)
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -905,7 +910,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_Disabled_SuppressesWithoutOutput()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -931,7 +936,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_DoubleNormalForceRelease_CompletesSecondTapOnce()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -967,7 +972,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_DoubleNormalInvalidatedBeforeInitialTap_SkipsBothTaps()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -999,7 +1004,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_DoubleNormalFailedInitialDown_SkipsReleaseTap()
     {
         var sender = new RecordingInputSender(failFirstDown: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1027,7 +1032,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task CapsLock_DoubleNormalConsecutivePresses_EmitTwoTapsEach()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1060,7 +1065,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task AutoRun_LiveDisable_ReleasesRecordedMoveAndSprint()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1098,7 +1103,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task Combined_ForcedRelease_PreservesSuppressionUntilPhysicalUp()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1135,7 +1140,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task Combined_AdvancedOff_PreservesPassThroughDecisionUntilPhysicalUp()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1169,7 +1174,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task Combined_TwoSourcesShareTarget_ReleasesOnlyOnFinalSourceUp()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1205,7 +1210,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task HoldBreath_DisabledWhileTimerPending_StaleCallbackCannotPress()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1237,7 +1242,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task HoldBreath_DisabledAfterDown_ReleasesRecordedKeyExactlyOnce()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1272,7 +1277,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task EarlyCancel_MasterOff_PassesThroughWithoutCancelling()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1305,7 +1310,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_SuccessfulPendingCancel_ConsumesPressPair()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1324,7 +1329,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_SecondPressSameAimCycle_PassesThrough()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1341,7 +1346,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_NewAimCycle_CancelsAgain()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1361,7 +1366,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task EarlyCancel_ImmediateHoldMode_CancelsOwnedKey()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1398,7 +1403,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task EarlyCancel_ToggleModeAfterTap_PassesThrough()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1424,7 +1429,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_MouseTrigger_XButton_CancelsThenPassesThrough()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         profile.RightClickHoldBreath.PanicTrigger =
@@ -1446,7 +1451,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_MidPressUncheck_OwnedPairStaysConsumed()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1468,7 +1473,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_RepeatOfPreAimPress_NeverStartsAPanic()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1491,7 +1496,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_EligibilityFlipsMidHold_RepeatStaysNative()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
 
@@ -1516,7 +1521,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_RebindWhileNewTriggerHeld_RepeatStaysNative()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         profile.RightClickHoldBreath.PanicTrigger = InputTrigger.FromKey(Key.E);
@@ -1542,7 +1547,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_ConsumedOldTriggerUp_DoesNotClearNewTriggerLatch()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1575,7 +1580,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_DerivationPendingWindow_TriggerPressStaysNative()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1599,7 +1604,7 @@ public sealed class InputExecutorReliabilityTests
     [Fact]
     public void EarlyCancel_OverlappingDerivations_StaleTicketCannotClearNewerFence()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = new InputFeatureHarness(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = CreateEarlyCancelProfile(delayMs: 200, suppressEarlyCancel: true);
         service.ConfigureHoldBreathForTesting(profile, foregroundGeneration: 1);
@@ -1646,14 +1651,14 @@ public sealed class InputExecutorReliabilityTests
     {
         Assert.Equal(
             expectedDelayMs,
-            InputHookService.CalculateRapidFireSuccessorDelay(targetDelayMs, sendElapsedMs));
+            RapidFireStateMachine.CalculateSuccessorDelay(targetDelayMs, sendElapsedMs));
     }
 
     [Fact]
     public async Task RapidFire_DefaultOffAndAdvancedOff_DoNotClick()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1685,7 +1690,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFireToggle_TypematicRepeatTogglesOnceAndReassignmentDisarms()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1721,7 +1726,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_AltLeftWinsAndMatchingUpAllowsNextFreshPress()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1750,7 +1755,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task RapidFire_ClickDoesNotWaitForSharedExecutor()
     {
         var sender = new RecordingInputSender(blockDummy: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1779,7 +1784,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task RapidFire_HotkeyReassignmentDuringClickPreventsSuccessor()
     {
         var sender = new RecordingInputSender(blockMouse: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1809,7 +1814,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task RapidFire_ProfileSwitchDuringClickPreventsSuccessor()
     {
         var sender = new RecordingInputSender(blockMouse: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1838,7 +1843,7 @@ public sealed class InputExecutorReliabilityTests
     public async Task RapidFire_BlockedClickStaysSingleFlightAndReleasePreventsSuccessor()
     {
         var sender = new RecordingInputSender(blockMouse: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1869,7 +1874,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ClickCompletionRearmsOneSuccessor()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1897,7 +1902,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ClickSenderExceptionIsContainedAndStopsPress()
     {
         var sender = new RecordingInputSender(throwMouse: true);
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1922,7 +1927,7 @@ public sealed class InputExecutorReliabilityTests
     {
         var sender = new RecordingInputSender();
         var logger = new NullLoggerService { IsEnabled = true };
-        using var service = new InputHookService(logger, sender);
+        using var service = new InputFeatureHarness(logger, sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -1961,7 +1966,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ProfileSwitch_PreservesArmForOwnerAndCancelsBurst()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2001,7 +2006,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_SameProfileRepublish_GrayThenReadyEventsFire()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2038,7 +2043,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ToggleInOtherCapableApp_RetargetsArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2072,7 +2077,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ToggleOnDesktop_DisarmsStrandedArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2106,7 +2111,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ToggleInRfIneligibleProfile_DisarmsStrandedArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2132,7 +2137,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ToggleDuringGenerationMismatch_FailsClosed()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2166,7 +2171,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_RemovedOwnerProfile_DisarmsStickyArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2189,7 +2194,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_MasterDisabledOwner_DisarmsStickyArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2213,7 +2218,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_IdentityEditOfOwner_DisarmsStickyArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2236,7 +2241,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ActiveOwnerHardDeactivation_DisarmsAndRaises()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2264,7 +2269,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ForeignOwnerSurvivesActiveHardDeactivation()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2288,7 +2293,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_RapidFireEditOfNonOwnerProfile_KeepsArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2312,7 +2317,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_AdvancedModeOff_DisarmsStickyArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2333,7 +2338,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_ReleaseForegroundState_PreservesArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2362,7 +2367,7 @@ public sealed class InputExecutorReliabilityTests
     public void RapidFire_Stop_DisarmsStickyArm()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -2389,7 +2394,7 @@ public sealed class InputExecutorReliabilityTests
     public void Launcher_DisabledWhileHeld_StillConsumesAndClearsKeyUp()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
         var windowsProfile = new Profile
         {
             Name = ProfileConstants.WindowsProfileName,
@@ -2502,7 +2507,7 @@ public sealed class InputExecutorReliabilityTests
 
     // The Rapid Fire toggle latches on key-down and only re-arms after the key-up — a full
     // physical press is always down THEN up.
-    private static void PressRapidFireToggle(InputHookService service, Key key)
+    private static void PressRapidFireToggle(InputFeatureHarness service, Key key)
     {
         service.HandleRapidFireToggleForTesting(key, isDown: true);
         service.HandleRapidFireToggleForTesting(key, isDown: false);
@@ -2510,7 +2515,7 @@ public sealed class InputExecutorReliabilityTests
 
     // Arms via the REAL toggle path (not ConfigureRapidFireForTesting): settled active profile,
     // Advanced Mode on, key assigned, one physical toggle press.
-    private static void ArmRapidFireViaToggle(InputHookService service, Profile profile, long foregroundGeneration)
+    private static void ArmRapidFireViaToggle(InputFeatureHarness service, Profile profile, long foregroundGeneration)
     {
         service.ConfigureActiveProfileForTesting(profile, foregroundGeneration, altPressed: false);
         service.AdvancedModeEnabled = true;
@@ -2522,7 +2527,7 @@ public sealed class InputExecutorReliabilityTests
     // BEFORE the worker activates/deactivates — the status dot depends on that publication raising
     // ahead of activation.
     private static void SwitchRapidFireForeground(
-        InputHookService service,
+        InputFeatureHarness service,
         Profile? profile,
         long foregroundGeneration,
         string executable)
@@ -2542,65 +2547,4 @@ public sealed class InputExecutorReliabilityTests
         }
     }
 
-    private sealed class RecordingInputSender(
-        bool blockDummy = false,
-        bool failFirstDown = false,
-        bool blockMouse = false,
-        bool throwMouse = false) : IInputSender
-    {
-        private readonly bool _blockDummy = blockDummy;
-        private int _failNextDown = failFirstDown ? 1 : 0;
-
-        public ConcurrentQueue<(Key Key, bool IsDown, int ThreadId)> Transitions { get; } = new();
-
-        public ManualResetEventSlim DummyEntered { get; } = new(false);
-
-        public ManualResetEventSlim ReleaseDummy { get; } = new(false);
-
-        public ConcurrentQueue<int> DummyThreadIds { get; } = new();
-
-        public ConcurrentQueue<int> MouseClickThreadIds { get; } = new();
-
-        public ConcurrentQueue<int> MouseHoldMilliseconds { get; } = new();
-
-        public ManualResetEventSlim MouseEntered { get; } = new(false);
-
-        public ManualResetEventSlim ReleaseMouse { get; } = new(false);
-
-        public bool SendKey(Key key, bool isKeyDown)
-        {
-            Transitions.Enqueue((key, isKeyDown, Environment.CurrentManagedThreadId));
-            if (isKeyDown && Interlocked.Exchange(ref _failNextDown, 0) == 1)
-            {
-                return false;
-            }
-
-            return true;
-        }
-
-        public bool SendVirtualKeyTap(int virtualKey)
-        {
-            return true;
-        }
-
-        public bool SendLeftClick(int holdMilliseconds)
-        {
-            if (throwMouse)
-            {
-                throw new InvalidOperationException("Synthetic click failure");
-            }
-
-            MouseHoldMilliseconds.Enqueue(holdMilliseconds);
-            MouseClickThreadIds.Enqueue(Environment.CurrentManagedThreadId);
-            MouseEntered.Set();
-            return !blockMouse || ReleaseMouse.Wait(TimeSpan.FromSeconds(2));
-        }
-
-        public bool SendDummyKey()
-        {
-            DummyThreadIds.Enqueue(Environment.CurrentManagedThreadId);
-            DummyEntered.Set();
-            return !_blockDummy || ReleaseDummy.Wait(TimeSpan.FromSeconds(2));
-        }
-    }
 }
