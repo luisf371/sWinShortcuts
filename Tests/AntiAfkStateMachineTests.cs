@@ -46,7 +46,7 @@ public sealed class AntiAfkStateMachineTests
     }
 
     [Fact]
-    public void Tick_WhileTickInFlight_DoesNotReenter()
+    public async Task Tick_WhileTickInFlight_DoesNotReenter()
     {
         long timestamp = 0;
         uint tick = 0;
@@ -68,7 +68,7 @@ public sealed class AntiAfkStateMachineTests
             finally
             {
                 transport.ReleaseForeground.Set();
-                first.GetAwaiter().GetResult();
+                await first.WaitAsync(TimeSpan.FromSeconds(2));
             }
 
             Assert.Single(queue.Commands);
@@ -76,7 +76,7 @@ public sealed class AntiAfkStateMachineTests
     }
 
     [Fact]
-    public void Tick_AutoRunActivatesBeforeFinalArbitration_DoesNotEnqueueSequence()
+    public async Task Tick_AutoRunActivatesBeforeFinalArbitration_DoesNotEnqueueSequence()
     {
         long timestamp = 0;
         uint tick = 0;
@@ -98,7 +98,7 @@ public sealed class AntiAfkStateMachineTests
             finally
             {
                 transport.ReleaseForeground.Set();
-                antiAfkTick.GetAwaiter().GetResult();
+                await antiAfkTick.WaitAsync(TimeSpan.FromSeconds(2));
             }
 
             Assert.DoesNotContain(queue.Commands, command => command.Kind == InputCommandKind.Sequence);

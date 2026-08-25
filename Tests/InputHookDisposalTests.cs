@@ -113,7 +113,7 @@ public sealed class InputHookDisposalTests
     }
 
     [Fact]
-    public void RapidFire_DisposedWhileClickBlocked_DoesNotScheduleSuccessor()
+    public async Task RapidFire_DisposedWhileClickBlocked_DoesNotScheduleSuccessor()
     {
         var runtime = new InputRuntimeState();
         runtime.SetRunning(true);
@@ -147,7 +147,7 @@ public sealed class InputHookDisposalTests
             machine.Dispose();
         }
 
-        Assert.True(fire.Wait(TimeSpan.FromSeconds(2)));
+        await fire.WaitAsync(TimeSpan.FromSeconds(2));
         machine.FireTimerForTesting();
         Assert.Single(sender.MouseClickThreadIds);
     }

@@ -131,7 +131,7 @@ public sealed class GestureChordStateMachineTests
     }
 
     [Fact]
-    public void DisposeComponentWhileTimerArmIsInFlight_DoesNotThrowOrEnqueue()
+    public async Task DisposeComponentWhileTimerArmIsInFlight_DoesNotThrowOrEnqueue()
     {
         var randomEntered = new ManualResetEventSlim();
         var releaseRandom = new ManualResetEventSlim();
@@ -164,8 +164,7 @@ public sealed class GestureChordStateMachineTests
             releaseRandom.Set();
         }
 
-        Assert.True(arm.Wait(TimeSpan.FromSeconds(2)));
-        Assert.Null(arm.Result);
+        Assert.Null(await arm.WaitAsync(TimeSpan.FromSeconds(2)));
         Assert.Null(Record.Exception(machine.HandleRightButtonUp));
         Assert.Empty(queue.Commands);
     }

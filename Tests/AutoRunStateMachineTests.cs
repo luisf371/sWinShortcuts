@@ -40,7 +40,7 @@ public sealed class AutoRunStateMachineTests
         machine.JoinBackgroundInputThread();
 
         var post = Assert.Single(transport.Posts);
-        Assert.Equal(NativeMethods.WM_KEYDOWN, post.Message);
+        Assert.Equal((uint)NativeMethods.WM_KEYDOWN, post.Message);
         Assert.Equal(0x57, post.VirtualKey);
     }
 

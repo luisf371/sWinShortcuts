@@ -36,7 +36,7 @@ public sealed class RemapStateMachineTests
     [Fact]
     public void Combined_ForcedRelease_PreservesSuppressionThroughMatchingUp()
     {
-        var profile = CombinedProfile(new() { SourceKey = Key.E, TargetKey = Key.F });
+        var profile = CombinedProfile(new CombinedMappingEntry { SourceKey = Key.E, TargetKey = Key.F });
         var runtime = RunningRuntime(profile);
         var queue = new RecordingInputQueue();
         using var random = new ThreadLocal<Random>(() => new Random(1));

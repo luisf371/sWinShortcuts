@@ -37,7 +37,7 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
     public uint GetWindowThreadProcessId(IntPtr window, out uint processId)
     {
         ProcessIds.TryGetValue(window, out processId);
-        return processId == 0 ? 0 : 1;
+        return processId == 0 ? 0u : 1u;
     }
 
     public uint GetCurrentThreadId() => unchecked((uint)Environment.CurrentManagedThreadId);
