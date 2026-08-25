@@ -285,9 +285,9 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         {
             lock (_combinedLock)
             {
-                if (_combinedSuppressionUntilUp.TryGetValue(sourceKey.Value, out var suppression))
+                if (_combinedSuppressionUntilUp.TryGetValue(sourceKey.Value, out var heldSuppression))
                 {
-                    return suppression;
+                    return heldSuppression;
                 }
             }
         }

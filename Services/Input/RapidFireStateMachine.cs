@@ -31,7 +31,7 @@ internal sealed class RapidFireStateMachine : IDisposable
     private readonly object _profileLock;
     private readonly Timer _timer;
 
-    private volatile int _toggleVk;
+    private int _toggleVk;
     private bool _toggleDownLatched;
     private int _hookSeenToggleVk;
     private volatile bool _armed;
