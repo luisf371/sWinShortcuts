@@ -549,7 +549,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             }
             if (_capsSecondTapKey is { } secondTap)
             {
-                if (!_runtime.IsDisposed)
+                if (!_runtime.IsDisposed || _capsTapAcknowledgement?.DownSent == true)
                 {
                     EnqueueCapsTap(secondTap, isInitialTap: false);
                 }

@@ -352,7 +352,11 @@ internal sealed class RapidFireStateMachine : IDisposable
             return;
         }
 
-        Log($"Rapid Fire timer fired: elapsed={elapsedMs:F1} ms, armed delay={delay} ms");
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Rapid Fire timer fired: elapsed={elapsedMs:F1} ms, armed delay={delay} ms");
+        }
+
         var clickStart = Stopwatch.GetTimestamp();
         try
         {

@@ -970,6 +970,37 @@ public sealed class InputExecutorReliabilityTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapsLock_DoubleNormalTeardown_CompletesAcknowledgedSecondTapOnce(bool dispose)
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+        service.ConfigureActiveProfileForTesting(
+            CreateCapsLockProfile(CapsLockMode.DoubleNormal),
+            foregroundGeneration: 1,
+            altPressed: false);
+
+        Assert.True(service.HandleCapsLockForTesting(isDown: true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+        if (dispose)
+        {
+            service.Dispose();
+        }
+        else
+        {
+            service.Stop();
+        }
+
+        Assert.False(service.HandleCapsLockForTesting(isDown: false));
+        Assert.Equal(
+            new[] { true, false, true, false },
+            sender.Transitions.Select(item => item.IsDown));
+    }
+
     [Fact]
     public async Task CapsLock_DoubleNormalInvalidatedBeforeInitialTap_SkipsBothTaps()
     {

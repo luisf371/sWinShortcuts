@@ -218,7 +218,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         var startsInput = command.IsDown || command.Kind is
             InputCommandKind.KeyTap or InputCommandKind.DummyKey or InputCommandKind.Sequence;
         if (_disposed || queue is null || queue.IsAddingCompleted ||
-            (_runtime.IsDisposed && startsInput))
+            (_runtime.IsDisposed && startsInput && !IsAcknowledgedCompensatingTap(in command)))
         {
             command.Completion?.TrySetResult(false);
             return false;
@@ -329,7 +329,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
 
     private void ExecuteTap(BlockingCollection<InputCommand> queue, in InputCommand command)
     {
-        if (queue.IsAddingCompleted || _runtime.IsDisposed || !GuardAllows(in command) ||
+        if (((queue.IsAddingCompleted || _runtime.IsDisposed) &&
+             !IsAcknowledgedCompensatingTap(in command)) || !GuardAllows(in command) ||
             (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true))
         {
             command.Completion?.TrySetResult(false);
@@ -384,6 +385,11 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
 
     private static bool GuardAllows(in InputCommand command) =>
         command.Guard?.CanExecute(in command) != false;
+
+    private static bool IsAcknowledgedCompensatingTap(in InputCommand command) =>
+        command.Kind == InputCommandKind.KeyTap &&
+        command.RequireAcknowledgement &&
+        command.Acknowledgement?.DownSent == true;
 
     private bool SendKey(Key key, bool isKeyDown)
     {
