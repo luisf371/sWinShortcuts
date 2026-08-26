@@ -56,7 +56,10 @@ internal readonly record struct InputCommand(
     long ForegroundGeneration = 0,
     Profile? ExpectedProfile = null,
     string? ExpectedExecutable = null,
-    long Token = 0);
+    long Token = 0,
+    bool RequirePreviousCommandSuccess = false,
+    long TapPairToken = 0,
+    bool RequireTapPairToken = false);
 
 /// <summary>
 /// Single-consumer FIFO for synthetic key input. Producers may hold a feature lock while enqueueing;
@@ -122,21 +125,36 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     {
         lock (_enqueueLock)
         {
-            var pairedDown = down;
-            var pairedUp = up;
-            if (down.Guard is not null)
-            {
-                var acknowledgement = down.Acknowledgement ?? new InputCommandAcknowledgement();
-                pairedDown = down with { Acknowledgement = acknowledgement };
-                pairedUp = up with
-                {
-                    Acknowledgement = acknowledgement,
-                    RequireAcknowledgement = true
-                };
-            }
-
-            return EnqueueLocked(pairedDown) && EnqueueLocked(pairedUp);
+            var pairedUp = PreparePairedUp(in down, in up);
+            return EnqueueLocked(down) && EnqueueLocked(pairedUp);
         }
+    }
+
+    internal static InputCommand PreparePairedUp(
+        in InputCommand down,
+        in InputCommand up)
+    {
+        if (down.Guard is null)
+        {
+            return up;
+        }
+
+        if (down.Acknowledgement is { } acknowledgement)
+        {
+            return up with
+            {
+                Acknowledgement = acknowledgement,
+                RequireAcknowledgement = true,
+                RequirePreviousCommandSuccess = false
+            };
+        }
+
+        return up with
+        {
+            Acknowledgement = null,
+            RequireAcknowledgement = false,
+            RequirePreviousCommandSuccess = true
+        };
     }
 
     internal bool StopAndDrain(int timeoutMilliseconds = DEFAULT_DRAIN_TIMEOUT_MS)
@@ -218,7 +236,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         var startsInput = command.IsDown || command.Kind is
             InputCommandKind.KeyTap or InputCommandKind.DummyKey or InputCommandKind.Sequence;
         if (_disposed || queue is null || queue.IsAddingCompleted ||
-            (_runtime.IsDisposed && startsInput && !IsAcknowledgedCompensatingTap(in command)))
+            (_runtime.IsDisposed && startsInput && !IsCompensatingTapCandidate(in command)))
         {
             command.Completion?.TrySetResult(false);
             return false;
@@ -244,16 +262,24 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             return;
         }
 
+        var previousCommandSucceeded = false;
+        long acknowledgedTapPairToken = 0;
+
         try
         {
             foreach (var command in queue.GetConsumingEnumerable())
             {
                 try
                 {
-                    Execute(queue, in command);
+                    previousCommandSucceeded = Execute(
+                        queue,
+                        in command,
+                        previousCommandSucceeded,
+                        ref acknowledgedTapPairToken);
                 }
                 catch (Exception ex)
                 {
+                    previousCommandSucceeded = false;
                     command.Completion?.TrySetResult(false);
                     _logger.Log($"Input executor error: {ex.Message}");
                 }
@@ -265,30 +291,39 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         }
     }
 
-    private void Execute(BlockingCollection<InputCommand> queue, in InputCommand command)
+    private bool Execute(
+        BlockingCollection<InputCommand> queue,
+        in InputCommand command,
+        bool previousCommandSucceeded,
+        ref long acknowledgedTapPairToken)
     {
+        if (command.RequirePreviousCommandSuccess && !previousCommandSucceeded)
+        {
+            command.Completion?.TrySetResult(false);
+            return false;
+        }
+
         switch (command.Kind)
         {
             case InputCommandKind.Sequence:
-                ExecuteSequence(queue, in command);
-                return;
+                return ExecuteSequence(queue, in command);
             case InputCommandKind.DummyKey:
-                ExecuteDummy(queue, in command);
-                return;
+                return ExecuteDummy(queue, in command);
             case InputCommandKind.KeyTap:
-                ExecuteTap(queue, in command);
-                return;
+                return ExecuteTap(queue, in command, ref acknowledgedTapPairToken);
         }
 
-        ExecuteTransition(queue, in command);
+        return ExecuteTransition(queue, in command);
     }
 
-    private void ExecuteSequence(BlockingCollection<InputCommand> queue, in InputCommand command)
+    private bool ExecuteSequence(BlockingCollection<InputCommand> queue, in InputCommand command)
     {
         if (command.Sequence is not { } steps)
         {
-            return;
+            return false;
         }
+
+        var sentAny = false;
 
         foreach (var step in steps)
         {
@@ -299,7 +334,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
 
             try
             {
-                SendKey(step.Key, true);
+                sentAny |= SendKey(step.Key, true);
                 Thread.Sleep(step.DownMs);
             }
             finally
@@ -309,14 +344,16 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
 
             Thread.Sleep(step.GapMs);
         }
+
+        return sentAny;
     }
 
-    private void ExecuteDummy(BlockingCollection<InputCommand> queue, in InputCommand command)
+    private bool ExecuteDummy(BlockingCollection<InputCommand> queue, in InputCommand command)
     {
         if (queue.IsAddingCompleted || _runtime.IsDisposed || !GuardAllows(in command))
         {
             command.Completion?.TrySetResult(false);
-            return;
+            return false;
         }
 
         var sent = _inputSender.SendDummyKey();
@@ -325,16 +362,25 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             _logger.Log("WindowsLauncher dummy key injection failed");
         }
         command.Completion?.TrySetResult(true);
+        return sent;
     }
 
-    private void ExecuteTap(BlockingCollection<InputCommand> queue, in InputCommand command)
+    private bool ExecuteTap(
+        BlockingCollection<InputCommand> queue,
+        in InputCommand command,
+        ref long acknowledgedTapPairToken)
     {
+        var tapPairAcknowledged = !command.RequireTapPairToken ||
+            (command.TapPairToken != 0 &&
+             command.TapPairToken == acknowledgedTapPairToken);
+        var acknowledgedCompensation = command.RequireTapPairToken && tapPairAcknowledged;
         if (((queue.IsAddingCompleted || _runtime.IsDisposed) &&
-             !IsAcknowledgedCompensatingTap(in command)) || !GuardAllows(in command) ||
-            (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true))
+             !acknowledgedCompensation) || !GuardAllows(in command) ||
+            (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true) ||
+            !tapPairAcknowledged)
         {
             command.Completion?.TrySetResult(false);
-            return;
+            return false;
         }
 
         var downSent = SendKey(command.Key, true);
@@ -351,23 +397,30 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         {
             command.Acknowledgement?.MarkDownSent();
         }
+        if (command.TapPairToken != 0)
+        {
+            acknowledgedTapPairToken = command.RequireTapPairToken
+                ? 0
+                : downSent ? command.TapPairToken : 0;
+        }
         command.Completion?.TrySetResult(downSent);
+        return downSent;
     }
 
-    private void ExecuteTransition(BlockingCollection<InputCommand> queue, in InputCommand command)
+    private bool ExecuteTransition(BlockingCollection<InputCommand> queue, in InputCommand command)
     {
         if (command.IsDown)
         {
             if (queue.IsAddingCompleted || _runtime.IsDisposed || !GuardAllows(in command))
             {
                 command.Completion?.TrySetResult(false);
-                return;
+                return false;
             }
         }
         else if (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true)
         {
             command.Completion?.TrySetResult(false);
-            return;
+            return false;
         }
 
         if (command.DelayBeforeMs > 0)
@@ -381,15 +434,16 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             command.Acknowledgement?.MarkDownSent();
         }
         command.Completion?.TrySetResult(sent);
+        return sent;
     }
 
     private static bool GuardAllows(in InputCommand command) =>
         command.Guard?.CanExecute(in command) != false;
 
-    private static bool IsAcknowledgedCompensatingTap(in InputCommand command) =>
+    private static bool IsCompensatingTapCandidate(in InputCommand command) =>
         command.Kind == InputCommandKind.KeyTap &&
-        command.RequireAcknowledgement &&
-        command.Acknowledgement?.DownSent == true;
+        command.RequireTapPairToken &&
+        command.TapPairToken != 0;
 
     private bool SendKey(Key key, bool isKeyDown)
     {

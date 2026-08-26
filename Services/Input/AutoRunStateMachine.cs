@@ -178,7 +178,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         if (active && isKeyDown && (physicalEvent.FreshW || physicalEvent.FreshS)
             && !(vkCode == _snapshotTriggerVk && IsTriggerModifierDown(_snapshotModifier)))
         {
-            if (!_isBackground || _backgroundTargetFocused)
+            if (!_isBackground || ForegroundIsTargetProcess())
             {
                 if (physicalEvent.FreshW)
                 {
@@ -198,7 +198,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         if (active && _sprintToggleable && sprintVk != 0 && vkCode == sprintVk
             && vkCode != VK_W && vkCode != VK_S && vkCode != _snapshotTriggerVk)
         {
-            if (!_isBackground || _backgroundTargetFocused)
+            if (!_isBackground || ForegroundIsTargetProcess())
             {
                 if (isKeyDown && freshSprint) ToggleSprintHold();
                 return true;
@@ -370,6 +370,14 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         if (thread is not null && thread != Thread.CurrentThread && thread.IsAlive) thread.Join(300);
     }
 
+    internal void SetBackgroundThreadForTesting(Thread? thread)
+    {
+        lock (_autoRunLock)
+        {
+            _backgroundThread = thread;
+        }
+    }
+
     public bool CanExecute(in InputCommand command)
     {
         if (!command.IsDown || command.Generation == 0) return true;
@@ -444,11 +452,19 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 return false;
             }
 
+            if (_backgroundThread?.IsAlive == true)
+            {
+                return false;
+            }
+
             var snapshot = _runtime.ForegroundIdentity;
             var executable = profile.NormalizedExecutable;
+            var foreground = _transport.GetForegroundWindow();
+            _transport.GetWindowThreadProcessId(foreground, out var foregroundPid);
             if (snapshot is null || snapshot.Generation != _runtime.ActiveProfileGeneration
                 || snapshot.Generation != _runtime.PublishedForegroundGeneration
-                || snapshot.WindowHandle == IntPtr.Zero || snapshot.ProcessId == 0
+                || foreground == IntPtr.Zero || foreground != snapshot.WindowHandle
+                || foregroundPid == 0 || foregroundPid != snapshot.ProcessId
                 || string.IsNullOrEmpty(executable)
                 || !string.Equals(snapshot.Executable, executable, StringComparison.OrdinalIgnoreCase))
             {
@@ -459,10 +475,6 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             var background = settings.SendMode == AutoRunSendMode.Background;
             if (background)
             {
-                if (_backgroundThread?.IsAlive == true)
-                {
-                    return false;
-                }
                 _targetHwnd = snapshot.WindowHandle;
                 _targetPid = snapshot.ProcessId;
                 _backgroundTargetResolved = false;

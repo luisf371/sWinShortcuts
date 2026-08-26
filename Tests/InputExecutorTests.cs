@@ -1,5 +1,7 @@
 using System.Windows.Input;
+using sWinShortcuts.Models;
 using sWinShortcuts.Services.Input;
+using sWinShortcuts.Utilities;
 using Tests.Fakes;
 using Xunit;
 
@@ -134,6 +136,95 @@ public sealed class InputExecutorTests
     }
 
     [Fact]
+    public void PreparePairedUp_GuardedDownWithoutAcknowledgement_UsesFifoValueState()
+    {
+        var guard = new MutableGuard(true);
+        var down = new InputCommand(Key.A, IsDown: true, Guard: guard);
+        var up = new InputCommand(Key.A, IsDown: false);
+
+        var pairedUp = InputExecutor.PreparePairedUp(in down, in up);
+
+        Assert.Null(down.Acknowledgement);
+        Assert.Null(pairedUp.Acknowledgement);
+        Assert.False(pairedUp.RequireAcknowledgement);
+        Assert.True(pairedUp.RequirePreviousCommandSuccess);
+    }
+
+    [Fact]
+    public void PreparePairedUp_GuardedDownWithAcknowledgement_PreservesExistingObject()
+    {
+        var guard = new MutableGuard(true);
+        var acknowledgement = new InputCommandAcknowledgement();
+        var down = new InputCommand(
+            Key.A,
+            IsDown: true,
+            Guard: guard,
+            Acknowledgement: acknowledgement);
+        var up = new InputCommand(Key.A, IsDown: false);
+
+        var pairedUp = InputExecutor.PreparePairedUp(in down, in up);
+
+        Assert.Same(acknowledgement, pairedUp.Acknowledgement);
+        Assert.True(pairedUp.RequireAcknowledgement);
+        Assert.False(pairedUp.RequirePreviousCommandSuccess);
+    }
+
+    [Fact]
+    public void CapsDoubleNormal_CommandsUseSharedValueTokenWithoutAcknowledgementObjects()
+    {
+        var profile = DoubleNormalProfile();
+        var runtime = RunningRuntime(profile);
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new RemapStateMachine(runtime, queue, random, new NullLoggerService());
+
+        Assert.True(HandleCaps(remaps, isDown: true));
+        Assert.True(HandleCaps(remaps, isDown: false));
+
+        var commands = queue.Commands.ToArray();
+        Assert.Equal(2, commands.Length);
+        Assert.Null(commands[0].Acknowledgement);
+        Assert.Null(commands[1].Acknowledgement);
+        Assert.NotEqual(0, commands[0].TapPairToken);
+        Assert.Equal(commands[0].TapPairToken, commands[1].TapPairToken);
+        Assert.False(commands[0].RequireTapPairToken);
+        Assert.True(commands[1].RequireTapPairToken);
+    }
+
+    [Fact]
+    public void CapsDoubleNormal_DisposePublishedWhileInitialDownBlocked_CompletesSecondTap()
+    {
+        var profile = DoubleNormalProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender(blockFirstDown: true);
+        using var executor = new InputExecutor(runtime, sender, new NullLoggerService());
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new RemapStateMachine(runtime, executor, random, new NullLoggerService());
+        executor.Start();
+
+        try
+        {
+            Assert.True(HandleCaps(remaps, isDown: true));
+            Assert.True(sender.DownEntered.Wait(TimeSpan.FromSeconds(2)));
+
+            Assert.True(runtime.TryBeginDispose());
+            runtime.SetRunning(false);
+            remaps.ReleaseCapsStateOnly(preservePhysicalPairing: false);
+            sender.ReleaseDown.Set();
+
+            Assert.True(executor.StopAndDrain());
+            Assert.Equal(
+                new[] { true, false, true, false },
+                sender.Transitions.Select(item => item.IsDown));
+        }
+        finally
+        {
+            sender.ReleaseDown.Set();
+            executor.StopAndDrain();
+        }
+    }
+
+    [Fact]
     public async Task KeyTap_CompletesAtomicallyBeforeFollowingTransition()
     {
         var runtime = RunningRuntime();
@@ -246,6 +337,32 @@ public sealed class InputExecutorTests
         runtime.SetRunning(true);
         return runtime;
     }
+
+    private static InputRuntimeState RunningRuntime(Profile profile)
+    {
+        var runtime = RunningRuntime();
+        runtime.SetActiveProfile(profile, 1);
+        runtime.SetForegroundIdentity(IntPtr.Zero, 0, profile.NormalizedExecutable, 1);
+        return runtime;
+    }
+
+    private static Profile DoubleNormalProfile() => new()
+    {
+        Name = "Game",
+        Executable = "game.exe",
+        CapsLock =
+        {
+            IsEnabled = true,
+            Mode = CapsLockMode.DoubleNormal
+        }
+    };
+
+    private static bool HandleCaps(RemapStateMachine remaps, bool isDown) =>
+        remaps.HandleKeyboardEvent(
+            KeyInteropUtilities.ToVirtualKey(Key.CapsLock),
+            isKeyDown: isDown,
+            isKeyUp: !isDown,
+            rightButtonPressed: false);
 
     private static TaskCompletionSource<bool> Completion() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);

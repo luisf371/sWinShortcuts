@@ -7,6 +7,7 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
 {
     private int _failPosts;
     private int _foregroundCallCount;
+    private int _blockNextForegroundRead;
 
     internal IntPtr ForegroundWindow { get; set; } = (IntPtr)100;
     internal IntPtr ChildWindow { get; set; }
@@ -16,20 +17,25 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
     internal ManualResetEventSlim PostEntered { get; } = new(false);
     internal ManualResetEventSlim ForegroundEntered { get; } = new(false);
     internal ManualResetEventSlim ReleaseForeground { get; } = new(false);
-    internal bool BlockForegroundReads { get; set; }
+    internal bool BlockForegroundReads
+    {
+        get => Volatile.Read(ref _blockNextForegroundRead) != 0;
+        set => Volatile.Write(ref _blockNextForegroundRead, value ? 1 : 0);
+    }
     internal int ForegroundCallCount => Volatile.Read(ref _foregroundCallCount);
 
     internal void FailNextPost() => Interlocked.Increment(ref _failPosts);
 
     public IntPtr GetForegroundWindow()
     {
+        var foregroundWindow = ForegroundWindow;
         Interlocked.Increment(ref _foregroundCallCount);
-        if (BlockForegroundReads)
+        if (Interlocked.Exchange(ref _blockNextForegroundRead, 0) != 0)
         {
             ForegroundEntered.Set();
             ReleaseForeground.Wait(TimeSpan.FromSeconds(2));
         }
-        return ForegroundWindow;
+        return foregroundWindow;
     }
 
     public IntPtr GetChildWindow(IntPtr window) => ChildWindow;

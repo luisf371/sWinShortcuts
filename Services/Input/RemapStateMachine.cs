@@ -41,7 +41,8 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     private long _capsHeldForegroundGeneration;
     private Profile? _capsHeldProfile;
     private Key? _capsSecondTapKey;
-    private InputCommandAcknowledgement? _capsTapAcknowledgement;
+    private long _capsSecondTapToken;
+    private long _capsTapTokenSequence;
     private bool _capsDownSuppressed;
     private bool _capsPhysicallyDown;
     private long _capsConfigurationGeneration = 1;
@@ -399,9 +400,9 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 }
                 if (_capsSecondTapKey is { } secondTap)
                 {
-                    EnqueueCapsTap(secondTap, isInitialTap: false);
+                    EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false);
                     _capsSecondTapKey = null;
-                    _capsTapAcknowledgement = null;
+                    _capsSecondTapToken = 0;
                 }
 
                 var suppressUp = _capsDownSuppressed;
@@ -497,10 +498,12 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                         Token: GUARD_CAPS));
                     break;
                 case CapsLockMode.DoubleNormal:
+                    var tapPairToken = Interlocked.Increment(ref _capsTapTokenSequence);
                     _capsSecondTapKey = outputKey.Value;
-                    _capsTapAcknowledgement = new InputCommandAcknowledgement();
+                    _capsSecondTapToken = tapPairToken;
                     EnqueueCapsTap(
                         outputKey.Value,
+                        tapPairToken,
                         isInitialTap: true,
                         foregroundGeneration,
                         generation);
@@ -549,12 +552,9 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             }
             if (_capsSecondTapKey is { } secondTap)
             {
-                if (!_runtime.IsDisposed || _capsTapAcknowledgement?.DownSent == true)
-                {
-                    EnqueueCapsTap(secondTap, isInitialTap: false);
-                }
+                EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false);
                 _capsSecondTapKey = null;
-                _capsTapAcknowledgement = null;
+                _capsSecondTapToken = 0;
             }
             if (!preservePhysicalPairing)
             {
@@ -566,11 +566,11 @@ internal sealed class RemapStateMachine : IInputCommandGuard
 
     private void EnqueueCapsTap(
         Key key,
+        long tapPairToken,
         bool isInitialTap,
         long foregroundGeneration = 0,
         long generation = 0)
     {
-        var acknowledgement = _capsTapAcknowledgement;
         _queue.Enqueue(new InputCommand(
             key,
             IsDown: isInitialTap,
@@ -579,12 +579,12 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 KEY_PRESS_DURATION_MAX_MS + 1),
             Kind: InputCommandKind.KeyTap,
             Guard: isInitialTap ? this : null,
-            Acknowledgement: acknowledgement,
-            RequireAcknowledgement: !isInitialTap,
             Generation: generation,
             ForegroundGeneration: foregroundGeneration,
             ExpectedProfile: foregroundGeneration == 0 ? null : _runtime.ActiveProfile,
-            Token: isInitialTap ? GUARD_CAPS : 0));
+            Token: isInitialTap ? GUARD_CAPS : 0,
+            TapPairToken: tapPairToken,
+            RequireTapPairToken: !isInitialTap));
     }
 
     private bool HandleWindowsLauncher(int virtualKey, bool isKeyDown, bool isKeyUp)

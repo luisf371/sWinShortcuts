@@ -9,6 +9,95 @@ namespace Tests;
 
 public sealed class AutoRunStateMachineTests
 {
+    [Theory]
+    [InlineData(AutoRunSendMode.Foreground, 200, 7)]
+    [InlineData(AutoRunSendMode.Foreground, 100, 9)]
+    [InlineData(AutoRunSendMode.Background, 200, 7)]
+    [InlineData(AutoRunSendMode.Background, 100, 9)]
+    public void Activation_LiveForegroundDoesNotMatchSnapshot_FailsClosed(
+        AutoRunSendMode sendMode,
+        int liveWindow,
+        int liveProcessId)
+    {
+        var (machine, queue, transport, profile) = CreateMachine(sendMode);
+        transport.ForegroundWindow = (IntPtr)liveWindow;
+        transport.ProcessIds[transport.ForegroundWindow] = (uint)liveProcessId;
+
+        try
+        {
+            Assert.False(Activate(machine, profile));
+            Assert.False(machine.IsActive);
+            Assert.Empty(queue.Commands);
+            Assert.Empty(transport.Posts);
+        }
+        finally
+        {
+            machine.Release(includeBackground: true);
+            machine.JoinBackgroundInputThread();
+        }
+    }
+
+    [Fact]
+    public void BackgroundPhysicalWHandoff_FocusMovesAway_CancelAndSprintPassThrough()
+    {
+        var (machine, _, transport, profile) = CreateMachine(AutoRunSendMode.Background);
+        profile.AutoRun.SprintEnabled = true;
+        profile.AutoRun.SprintMode = SprintActivation.Hold;
+        profile.AutoRun.SprintKey = Key.LeftShift;
+
+        var w = KeyInterop.VirtualKeyFromKey(Key.W);
+        machine.ObservePhysicalEvent(w, isKeyDown: true, isKeyUp: false);
+
+        try
+        {
+            Assert.True(Activate(machine, profile));
+            Assert.True(SpinWait.SpinUntil(
+                () => transport.ForegroundCallCount >= 2,
+                TimeSpan.FromSeconds(2)));
+
+            transport.ForegroundWindow = (IntPtr)200;
+            transport.ProcessIds[transport.ForegroundWindow] = 9;
+
+            var sprint = KeyInterop.VirtualKeyFromKey(Key.LeftShift);
+            var sprintPhysical = machine.ObservePhysicalEvent(sprint, isKeyDown: true, isKeyUp: false);
+            Assert.False(machine.Handle(sprint, isKeyDown: true, isKeyUp: false, sprintPhysical));
+
+            var s = KeyInterop.VirtualKeyFromKey(Key.S);
+            var cancelPhysical = machine.ObservePhysicalEvent(s, isKeyDown: true, isKeyUp: false);
+            Assert.False(machine.Handle(s, isKeyDown: true, isKeyUp: false, cancelPhysical));
+            Assert.True(machine.IsActive);
+        }
+        finally
+        {
+            machine.Release(includeBackground: true);
+            machine.JoinBackgroundInputThread();
+        }
+    }
+
+    [Fact]
+    public void ForegroundActivation_PriorBackgroundWorkerStillAlive_FailsClosed()
+    {
+        var (machine, queue, _, profile) = CreateMachine(AutoRunSendMode.Foreground);
+        using var releaseWorker = new ManualResetEventSlim(false);
+        var priorWorker = new Thread(releaseWorker.Wait) { IsBackground = true };
+        priorWorker.Start();
+        machine.SetBackgroundThreadForTesting(priorWorker);
+
+        try
+        {
+            Assert.False(Activate(machine, profile));
+            Assert.False(machine.IsActive);
+            Assert.Empty(queue.Commands);
+        }
+        finally
+        {
+            releaseWorker.Set();
+            Assert.True(priorWorker.Join(TimeSpan.FromSeconds(2)));
+            machine.SetBackgroundThreadForTesting(null);
+            machine.Release(includeBackground: true);
+        }
+    }
+
     [Fact]
     public void BackgroundActivation_PostsOnlyFromOwnedWorker()
     {

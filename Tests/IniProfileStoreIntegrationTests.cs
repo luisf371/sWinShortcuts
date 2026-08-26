@@ -4,6 +4,7 @@ using System.Windows.Input;
 using sWinShortcuts.Configuration;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
+using sWinShortcuts.Utilities;
 using MouseButton = sWinShortcuts.Models.MouseButton;
 
 namespace Tests;
@@ -34,6 +35,24 @@ public class IniProfileStoreIntegrationTests : IDisposable
         {
             Directory.Delete(_root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void IniDocument_Save_ExistingFile_ReplacesContentAndCleansSiblingTemp()
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "Atomic.ini");
+        File.WriteAllText(path, "[Profile]\nName=Old\n");
+
+        var document = new IniDocument();
+        document.SetValue("Profile", "Name", "New");
+
+        document.Save(path);
+
+        Assert.Equal(
+            $"[Profile]{Environment.NewLine}Name=New{Environment.NewLine}",
+            File.ReadAllText(path));
+        Assert.Empty(Directory.EnumerateFiles(_root, "Atomic.ini.*.tmp"));
     }
 
     [Fact]
