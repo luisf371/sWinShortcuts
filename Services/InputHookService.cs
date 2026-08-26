@@ -1,17 +1,14 @@
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Input;
 using Microsoft.Win32;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
+using sWinShortcuts.Services.Input;
 using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.Services;
@@ -23,398 +20,30 @@ namespace sWinShortcuts.Services;
 public sealed class InputHookService : IInputHookService
 {
     private readonly ILoggerService _logger;
-    private readonly IInputSender _inputSender;
-    private bool IsDebugEnabled => _logger.IsEnabled;
+    private readonly InputRuntimeState _runtime;
+    private readonly InputExecutor _inputExecutor;
+    private readonly GestureChordStateMachine _gestures;
+    private readonly RapidFireStateMachine _rapidFire;
+    private readonly AutoRunStateMachine _autoRun;
+    private readonly AntiAfkStateMachine _antiAfk;
+    private readonly RemapStateMachine _remaps;
+    private static readonly Func<int, bool> IsPhysicalKeyDown =
+        key => (NativeMethods.GetAsyncKeyState(key) & 0x8000) != 0;
 
-    // ==================== TIMING CONFIGURATION ====================
-
-    // Key Press Duration (human-like variance)
-    private const int KEY_PRESS_DURATION_MIN_MS = 31;
-    private const int KEY_PRESS_DURATION_MAX_MS = 53;
-    
-    // Hold Breath Activation Jitter
-    private const int HOLD_BREATH_JITTER_MIN_MS = 15;
-    private const int HOLD_BREATH_JITTER_MAX_MS = 36;
-
-    // Hold Breath Toggle-mode tap duration (P6: hoisted out of the old inline worker)
-    private const int HOLD_BREATH_TAP_DURATION_MIN_MS = 20;
-    private const int HOLD_BREATH_TAP_DURATION_MAX_MS = 30;
-
-    private const int RAPID_FIRE_HOLD_MIN_MS = 10;
-    private const int RAPID_FIRE_HOLD_MAX_MS = 20;
-
-    // RNG Warmup (breaks thread-reuse patterns for anti-cheat)
-    private const int RNG_WARMUP_MIN_CALLS = 1;
-    private const int RNG_WARMUP_MAX_CALLS = 5;
-    
-    // Lock-free state constants
-    private const int TIMER_IDLE = 0;
-    private const int TIMER_ARMED = 1;
-    private const int TIMER_FIRED = 2;
-    private const int TIMER_CANCELLED = 3;
-
-    // ==================== FIELDS ====================
-    
-    // Primary synchronization (only for profile changes, not hot path)
     private readonly object _profileLock = new();
-    
-    // Thread-safe random number generator (collision-resistant seeding)
     private readonly ThreadLocal<Random> _random = new(() =>
     {
-        // Hybrid seed: nanosecond timestamp XOR thread ID
-        // Prevents collisions even with thousands of simultaneous thread spawns
         var timestamp = Stopwatch.GetTimestamp();
         var threadId = Environment.CurrentManagedThreadId;
-        var seed = unchecked((int)(timestamp ^ (threadId << 16)));
-        return new Random(seed);
+        return new Random(unchecked((int)(timestamp ^ (threadId << 16))));
     });
-    
-    // Mouse button state tracking (pre-allocated, zero-allocation hot path)
-    private readonly Dictionary<Models.MouseButton, MouseButtonState> _mouseStates = new()
-    {
-        { Models.MouseButton.Left, new MouseButtonState() },
-        { Models.MouseButton.Right, new MouseButtonState() },
-        { Models.MouseButton.Middle, new MouseButtonState() },
-        { Models.MouseButton.XButton1, new MouseButtonState() },
-        { Models.MouseButton.XButton2, new MouseButtonState() }
-    };
-    
-    private readonly object _combinedOverridesLock = new();
-    private readonly Dictionary<Key, CombinedOverrideState> _activeCombinedOverrides = new();
-    // F-011: how many active source keys currently drive each TARGET key (guarded by _combinedOverridesLock).
-    // Target DOWN is sent only on 0→1 and target UP only on 1→0, so two sources mapped to one target don't
-    // release it prematurely when the first source is released.
-    private readonly Dictionary<Key, int> _combinedTargetCounts = new();
-    private readonly Dictionary<Key, bool> _combinedSuppressionUntilUp = [];
-    // Maintained under _combinedOverridesLock on every add/remove; lets the H2 key-up release skip the
-    // lock entirely when no overrides are active (the common case on every key-up).
-    private volatile int _activeCombinedOverrideCount;
-    private volatile int _combinedSuppressionUntilUpCount;
-    private long _combinedConfigurationGeneration = 1;
-    
-    // Profile state
-    private volatile Profile? _activeProfile;
-    private volatile Profile? _windowsProfile;
-
-    // A1: foreground identity published off-hook by the foreground watcher. A volatile reference gives an
-    // atomic whole-snapshot publish/read (no torn {hwnd,pid,exe}); Auto-Run activation confirms the live
-    // foreground against it with cheap non-blocking calls, keeping Process.GetProcessById off the hook thread.
-    private sealed record ForegroundIdentitySnapshot(IntPtr Hwnd, uint Pid, string? Exe, long Generation);
-    private volatile ForegroundIdentitySnapshot? _foregroundIdentity;
-    private long _publishedForegroundGeneration;
-    private long _activeProfileGeneration;
-    
-    // Runtime flags (volatile for lock-free reads)
-    private volatile bool _isRunning;
-    private volatile bool _disposed;
-    private volatile bool _altPressed;
-    private volatile bool _rightButtonPressed;
-    
-    // CapsLock state. Guarded by _capsLockStateLock: the hook thread engages/remaps while
-    // ReleaseCapsState runs on the activation worker or SystemEvents thread, and the injected DOWN
-    // must never be reorderable with its recorded release (same proven pattern as _holdBreathLock;
-    // caps events occur at human frequency, so the lock costs nothing on the hot path).
-    private readonly object _capsLockStateLock = new();
-    private Key? _capsHeldOutputKey;
-    private Key? _capsSecondTapKey;
-    private long _capsSecondTapToken;
-    private long _capsTapTokenSequence;
-    // F-012 (codex #4): the suppression decision recorded at the Caps key-DOWN, replayed on the matching
-    // key-UP so the UP is suppressed iff the DOWN was — even if the mode/enable changed while Caps was held.
-    private bool _capsDownSuppressed;
-    // codex-final #2: true from the INITIAL physical Caps DOWN until its UP. Typematic auto-repeat re-fires
-    // WM_KEYDOWN while the key is held; without this latch each repeat re-decided suppression and overwrote
-    // _capsDownSuppressed, so a mode/enable change mid-hold desynced the UP from its DOWN — leaking a
-    // physical Caps to Windows (stuck CapsLock) or stranding the injected remap. Latched ONCE per press.
-    private bool _capsPhysicallyDown;
-    private long _capsConfigurationGeneration = 1;
-
-    // Global color-variant toggle (Primary<->Secondary). _colorToggleVk is the assigned key's virtual-key
-    // code (0 = unassigned), published (volatile) from any thread via SetColorToggleKey and read on the hook
-    // thread. The key is NOT suppressed — it passes through to apps like any key — so there is no down/up
-    // pairing to get wrong across a re-assign / hook restart / watchdog reinstall: the worst case is one
-    // missed or extra color flip, never a stuck key or a wrong binding. _colorToggleDownLatched
-    // (hook-thread-only) simply makes the toggle fire ONCE per physical press, not on every typematic repeat.
     private volatile int _colorToggleVk;
     private bool _colorToggleDownLatched;
-    private int _hookSeenToggleVk; // hook-thread-only; used only to clear the fire-once latch on a re-assign
-
-    // Crosshair overlay RMB observation gate. Volatile: published from the activation worker
-    // (SetRightButtonObservation) and read on the hook thread. While false the hook does literally
-    // nothing extra for right-button events beyond its existing bookkeeping.
+    private int _hookSeenToggleVk;
+    private volatile bool _rightButtonPressed;
     private volatile bool _crosshairRightButtonWatch;
+    private volatile Profile? _windowsProfile;
 
-    // Global Rapid Fire toggle. The key passes through and fires once per physical press, matching the
-    // color-toggle contract above. Runtime armed state is session/profile-owned and never persisted.
-    private volatile int _rapidFireToggleVk;
-    private bool _rapidFireToggleDownLatched;
-    private int _hookSeenRapidFireToggleVk;
-    private volatile bool _rapidFireArmed;
-    private long _rapidFireArmEpoch;
-    private long _rapidFireArmedEpoch;
-    private volatile bool _rapidFirePhysicalLeftDown;
-    private volatile Profile? _rapidFireOwnerProfile;
-    private long _rapidFireGeneration;
-    private long _rapidFireForegroundGeneration;
-    private int _rapidFireIntervalMs;
-    private int _rapidFireJitterMs;
-    private readonly System.Threading.Timer _rapidFireTimer;
-    private int _rapidFireTimerState = TIMER_IDLE;
-    private long _rapidFireTimerGeneration;
-    private long _rapidFireArmedTick;
-    private int _rapidFireArmedDelayMs;
-
-    // Per-key "already launched while held" latch. Prevents typematic auto-repeat from spawning a
-    // launcher process on every repeated WM_KEYDOWN. Guarded by its own lock because ReleaseAllState()
-    // (Clear) runs on the activation-worker POOL thread while the keyboard hook thread does Add/Remove.
-    private readonly HashSet<Key> _heldLauncherKeys = new();
-    private readonly object _heldLauncherKeysLock = new();
-    private long _windowsLauncherConfigurationGeneration = 1;
-
-    // Hold-breath state. All fields below are guarded by _holdBreathLock. Every hold-breath event
-    // (arm, fire, cancel, release) already paid this lock for Timer.Change, and events occur at
-    // human click frequency — so guarding the whole state machine costs nothing extra.
-    //
-    // SendInput is deliberately NOT under this lock (measured: an injected event's synchronous trip
-    // through a stalled foreign LL hook can take ~300ms = LowLevelHooksTimeout; holding the lock
-    // across it blocked the WM_RBUTTONUP handler INSIDE the mouse hook and froze all pointer input
-    // for the duration — the "right-click stutter"). Injection is decided under the lock but
-    // executed by the single FIFO injector thread below, whose ordering guarantees the UP can never
-    // overtake its DOWN — the property the lock used to provide.
-    private readonly object _holdBreathLock = new();
-    private readonly System.Threading.Timer _holdBreathTimer;
-    private bool _holdBreathPending;
-    private Key? _holdBreathInjectedKey;    // key whose DOWN is enqueued/sent in Hold mode and not yet released
-    private Key _holdBreathArmedKey;        // settings snapshot at arm time (UI mutates settings in place)
-    private HoldBreathMode _holdBreathArmedMode;
-    private long _holdBreathArmedTick;      // arm timestamp for the stale-fire guard
-    private int _holdBreathArmedDelayMs;
-    private long _holdBreathArmedForegroundGeneration;
-    private long _holdBreathGeneration;
-    private long _holdBreathConfigurationGeneration = 1;
-    private bool _holdBreathPanicSuppressed;
-    // Hook-thread-owned paired suppression state. Lifecycle boundaries clear these atomically so a
-    // rebind/profile switch cannot swallow a future unrelated key or button press.
-    private int _holdBreathPanicConsumedKeyVk;
-    private int _holdBreathPanicConsumedMouseButton;
-
-    // Fresh-edge latch for the panic trigger (keyboard only — mouse buttons don't typematic-repeat):
-    // the vk of a trigger key that is physically down. Only the FIRST DOWN of a physical press may
-    // START a panic; a typematic repeat of a press whose initial DOWN passed through natively (the
-    // key was already held when RMB armed, or before the panic gates became true) must pass through
-    // with its UP — cancelling from a repeat would eat the UP while the app still saw the original
-    // native DOWN (stuck key). All accesses via Volatile.Read/Write (like the consumed fields
-    // above): cleared cross-thread at hard teardown, re-derived on the hook dispatcher at stream
-    // boundaries (Start / watchdog / activation / session return).
-    private int _panicKeyPhysicallyDownVk;
-
-    // Fence for the ASYNC panic-latch re-derivations (dispatcher InvokeAsync), TICKET-OWNED so
-    // overlapping requests cannot interfere: a request allocates a monotonic ticket and publishes
-    // it as the current epoch; between scheduling and executing the closure the latch is not
-    // trustworthy for the CURRENT trigger (it may hold 0 or the previous binding), so a repeat
-    // landing in that window could be misread as a fresh press. While any request is outstanding,
-    // a trigger DOWN is still edge-latched but stays native. A closure retires ONLY its own ticket
-    // (Interlocked CAS), so a superseded older closure can neither clear a newer request's fence
-    // nor... the latch baseline itself is written in dispatcher FIFO order (oldest first), so the
-    // newest closure always lands last. An aborted dispatcher post (shutdown aborts queued
-    // operations WITHOUT invoking them and WITHOUT throwing) retires its ticket via the operation
-    // callback; hard teardown and the Start seed reset the epoch to 0, invalidating every
-    // outstanding ticket. Synchronous derivations (Start seed, null-dispatcher fallback) never
-    // fence.
-    private long _panicDerivationEpoch;          // outstanding request ticket (0 = none)
-    private long _panicDerivationTicketSequence; // monotonic ticket allocator
-
-    // Hold-breath injector: a dedicated thread draining a FIFO queue so no hook callback and no
-    // lock-holding path ever waits on SendInput's foreign-hook dispatch. One consumer = strict FIFO
-    // = every enqueued DOWN is released by the UP enqueued behind it (release paths are
-    // unconditional, so pairing survives profile switches, disable, and Stop's final drain).
-    // PreSleepMs implements the Toggle-mode tap duration between a DOWN and its own UP.
-    // Shared key-injector item (hold-breath + auto-run Foreground + anti-afk). Sequence, when non-null,
-    // carries a self-contained atomic tap sequence (anti-afk WASD) executed as ONE queue item so a
-    // paired DOWN/UP can never be split across a shutdown drain (see HoldBreathInjectionLoop). Record
-    // name retained for stability; the §10 rename to KeyInjection is a separate optional step.
-    // AutoRunGeneration/ExpectedForegroundExe (A2): a NON-zero AutoRunGeneration marks a foreground-guarded
-    // Auto-Run DOWN — the injector fires it only if the generation is still current AND the foreground
-    // window still belongs to ExpectedForegroundExe, so a queued W-down can't drain into a window you
-    // alt-tabbed to. Zero (the default for hold-breath / UPs / anti-afk) means "unguarded", i.e. today's
-    // behavior. Appended after the existing optional fields so positional callers remain unchanged.
-    private enum InputInjectionKind
-    {
-        KeyTransition,
-        CapsLockTap,
-        DummyKey
-    }
-
-    private readonly record struct HoldBreathInjection(
-        Key Key,
-        bool IsDown,
-        int PreSleepMs,
-        TapStep[]? Sequence = null,
-        long AutoRunGeneration = 0,
-        string? ExpectedForegroundExe = null,
-        long HoldBreathGeneration = 0,
-        InputInjectionKind Kind = InputInjectionKind.KeyTransition,
-        TaskCompletionSource<bool>? Completion = null,
-        long ForegroundGeneration = 0,
-        long AltMouseGeneration = 0,
-        long CombinedGeneration = 0,
-        long LauncherGeneration = 0,
-        long CapsGeneration = 0,
-        Profile? ExpectedProfile = null,
-        long CapsPressToken = 0,
-        long AltKeyboardGeneration = 0,
-        AltKeyboardPress? AltKeyboardOwnerPress = null);
-
-    // One paired tap in an atomic Anti-AFK sequence: DownMs held, then GapMs before the next tap.
-    private readonly record struct TapStep(Key Key, int DownMs, int GapMs);
-    private BlockingCollection<HoldBreathInjection>? _holdBreathInjectionQueue;
-    private Thread? _holdBreathInjectionThread;
-    private readonly object _inputInjectionEnqueueLock = new();
-    private volatile bool _bypassAutoRunForegroundOwnershipForTesting;
-    private long _altMouseGeneration = 1;
-
-    // Alt+Keyboard gesture state (keyboard analog of Alt+Mouse): one pre-allocated state per CANDIDATE
-    // trigger key — the common catalog minus the Alt keys (they ARE the modifier). Pre-allocation means
-    // the dictionary is NEVER mutated after construction, so the hook thread's lookups and the
-    // pool-thread reset paths (ReleaseAllState/ReconcileProfileSettings) race nothing, exactly like
-    // _mouseStates. _altKeyboardGeneration is the configuration epoch: bumped on every reset, carried by
-    // queued injections, and re-checked before send so a stale DOWN can never drain after a rebind.
-    private readonly Dictionary<Key, AltKeyboardKeyState> _altKeyboardStates = BuildAltKeyboardStates();
-    private long _altKeyboardGeneration = 1;
-
-    private static Dictionary<Key, AltKeyboardKeyState> BuildAltKeyboardStates()
-    {
-        var states = new Dictionary<Key, AltKeyboardKeyState>();
-        foreach (var key in KeyCatalog.GetCommonKeys())
-        {
-            if (key == Key.LeftAlt || key == Key.RightAlt)
-            {
-                continue;
-            }
-
-            states[key] = new AltKeyboardKeyState();
-        }
-
-        return states;
-    }
-    
-    // ==================== AUTO-RUN STATE ====================
-    // Auto-Run holds W (and optionally sprint) via the shared injector, toggled by a modifier+key
-    // chord, and cancelled by a FRESH physical down-edge of W/S. Active-state records are guarded by
-    // _autoRunLock; _autoRunActive is volatile so the keyboard hot path reads it lock-free (its write
-    // is release-ordered AFTER the record + sprint-snapshot writes, so a reader seeing true also sees
-    // them). Physical down-state is keyboard-hook-thread-only and lock-free (like _altPressed).
-    // W/S are seeded only at hook-stream boundaries, then owned by ordered hook events; activation must
-    // not overwrite them with asynchronous state from inside LowLevelKeyboardProc.
-    private const int VK_W = 0x57;
-    private const int VK_S = 0x53;
-    private const int AUTO_RUN_REPEAT_MS = 35; // Background re-post cadence (see BackgroundInputLoop)
-    // Background sprint activation timing (user spec): after W-down, wait this before pressing the sprint
-    // key — posting it back-to-back with W is read "too soon" by GZW and skipped. Press/toggle then holds
-    // the tap this long before releasing so the game registers a clean press.
-    private const int BG_SPRINT_PREDELAY_MIN_MS = 40;
-    private const int BG_SPRINT_PREDELAY_MAX_MS = 60;
-    private const int BG_SPRINT_TAP_MIN_MS = 40;
-    private const int BG_SPRINT_TAP_MAX_MS = 60;
-    // On focus-REGAIN, re-post W then wait this quiet window before re-engaging a Background Hold sprint
-    // (mirrors the activation "W → 40-60ms → sprint" ordering so the game doesn't read sprint as "too soon
-    // after W"). W re-posts are suppressed during the window. See BackgroundInputLoop.
-    private const int BG_SPRINT_REENGAGE_QUIET_MS = 50;
-
-    private readonly object _autoRunLock = new();
-    private volatile bool _autoRunActive;
-    private Profile? _autoRunOwnerProfile;
-    // A2 foreground-guard epoch. Incremented (Interlocked) on each successful FOREGROUND activation and on
-    // EVERY terminal release of an active run; a queued guarded Auto-Run DOWN carries the generation it was
-    // stamped with, and the injector fires it only while that generation is still current (see
-    // HoldBreathInjectionLoop). _activeAutoRunInjectionGeneration is the current Foreground run's stamp,
-    // reused when a mid-run sprint re-engage enqueues a fresh DOWN.
-    private long _autoRunInjectionGeneration;
-    private long _autoRunConfigurationGeneration = 1;
-    private long _activeAutoRunInjectionGeneration;
-    private string? _autoRunForegroundGuardExe; // A2 expected-exe for a Foreground run's guarded DOWNs (incl. sprint re-engage); null for Background
-    private bool _autoRunMoveInjected;          // injected W recorded (I2); guarded by _autoRunLock
-    private bool _autoRunSprintInjected;        // guarded by _autoRunLock
-    private Key _autoRunSprintInjectedKey;      // guarded by _autoRunLock
-    private Key _autoRunSprintKey;              // sprint-key snapshot for the run; written under _autoRunLock, read lock-free after the volatile _autoRunActive publish
-    private bool _autoRunSprintToggleable;      // snapshot: SprintEnabled && Hold mode — the sprint key acts as the sustained-sprint stamina toggle (never cancels)
-    private bool _autoRunSprintEnabled;         // Pending scripted sprint; consumed after W starts (Foreground handoff or Background delayed activation); guarded by _autoRunLock
-    // Sprint state is SPLIT (codex sol/xhigh): _autoRunSprintIntendedHeld = the user WANTS sprint held for
-    // this run; _autoRunSprintInjected = best-effort belief the target CURRENTLY treats sprint as down in
-    // the current focus epoch. They diverge after alt-tab (the game clears sprint on focus-loss → current
-    // goes false, intent stays true), which is what lets the first physical press re-engage instead of
-    // being eaten, and lets the Background loop re-engage once on focus-regain. Both guarded by _autoRunLock.
-    private bool _autoRunSprintIntendedHeld;
-
-    // Background-transport run state (guarded by _autoRunLock). A Background run posts to the game's
-    // HWND (survives alt-tab) and is DECOUPLED from _activeProfile (§11.6): ReleaseAllState skips it;
-    // only the hard-teardown sites (Stop / OnSessionSwitch / Advanced-off), an explicit chord toggle-off,
-    // a focused physical cancel, or a per-post validation failure release it.
-    private bool _autoRunIsBackground;
-    private IntPtr _autoRunTargetHwnd;
-    private string? _autoRunTargetExe;          // normalized exe snapshot for per-post validation + focus check
-    // Background-transport re-post / modifier-state-hold runs on a DEDICATED thread (not a threadpool
-    // timer): the sprint-modifier state-hold needs a STABLE thread to keep an AttachThreadInput alive
-    // across ticks (threadpool callbacks hop threads, and the attach is per-thread). See BackgroundInputLoop.
-    // Lifecycle fields are read/written under _autoRunLock; the thread is NEVER joined on the hook thread
-    // (chord toggle-off releases there — I5) — release only signals _backgroundInputRun=false; Stop/Dispose
-    // join off-hook via JoinBackgroundInputThread. A run-identity check (_backgroundInputThread == self)
-    // lets a stale thread exit if a new run starts before it winds down.
-    private Thread? _backgroundInputThread;
-    private bool _backgroundInputRun;
-    private uint _autoRunTargetPid;             // Background target process id (for the debug heartbeat's foreground check)
-    private int _autoRunRepostTicks;            // Background: re-post tick counter for the throttled debug heartbeat
-    private volatile bool _autoRunBackgroundTargetFocused;
-
-    // Trigger-chord latches — keyboard-hook-thread ONLY, lock-free, keyed by VK (0 = none) so a profile
-    // switch to a DIFFERENT trigger key mid-press can't confuse them. _autoRunConsumedTriggerVk
-    // suppresses the repeats + matching keyup of a chord press that already fired, handled UNGATED so
-    // turning Advanced Mode off or switching profiles mid-press can't leak a stray trigger key or
-    // strand the latch (codex P3a #1). _triggerKeyDownVk rejects auto-repeat so only a FRESH trigger
-    // down forms a chord.
-    private int _autoRunConsumedTriggerVk;
-    private int _triggerKeyDownVk;
-
-    // Trigger snapshot for TOGGLE-OFF (hook-thread-only). A decoupled background run outlives its
-    // profile, so toggle-off must match the trigger that STARTED the run, not the live _activeProfile
-    // (which may be null/different after alt-tab). Set at activation, read on toggle-off.
-    private int _autoRunSnapshotTriggerVk;
-    private System.Windows.Input.ModifierKeys _autoRunSnapshotModifier;
-
-    // Physical key down-state — keyboard-hook-thread ONLY, lock-free. NOT cleared on cancel/release
-    // (tracks physical reality across Auto-Run activation and ordinary profile switches). W/S are seeded
-    // from GetAsyncKeyState only while hook callbacks are gated at Start/watchdog replacement boundaries.
-    private bool _wPhysicallyDown;
-    private bool _sPhysicallyDown;
-    private bool _sprintPhysicallyDown;
-    private readonly record struct AutoRunPhysicalEvent(
-        bool FreshW,
-        bool FreshS,
-        bool SuppressPhysicalWHandoffUp);
-    // When Auto-Run starts while physical W is already held, the physical key is the handoff source. While
-    // this latch is set, physical repeats remain physical and no scripted sequence starts. The matching UP
-    // is suppressed, then an off-hook worker starts the synthetic W hold. A later fresh W DOWN arms a
-    // graceful manual takeover: Auto-Run stays active until that physical press emits its matching UP.
-    // Written by the keyboard hook and read by the Background thread, so keep the handoff publication
-    // explicit even though the other Auto-Run records are lock-guarded.
-    private volatile bool _autoRunPhysicalWHandoff;
-    // Set after the handoff's physical W-UP is suppressed and cleared once a scripted W-DOWN is recorded.
-    // If teardown wins that gap, it still owes the target a W-UP even though no synthetic DOWN landed yet.
-    private bool _autoRunSuppressedPhysicalWUp;
-    private bool _autoRunStopOnPhysicalWUp;
-
-    // ==================== ANTI-AFK STATE ====================
-    // One always-ticking timer (fixed coarse period). No arm/disarm — each tick reads live conditions,
-    // so a UI toggle on the ALREADY-active profile takes effect within one period, and there is no
-    // ActivateProfile ordering hazard. Fires ONE atomic WASD tap-sequence on the shared injector when
-    // idle + focused on the active game profile.
-    private System.Threading.Timer? _antiAfkTimer;
-    private int _antiAfkTickRunning;        // single-flight (Interlocked), like _watchdogTickRunning
-    private uint _antiAfkLastFireTick;      // (uint)Environment.TickCount of the last fire, for cadence
-    private int _antiAfkDiagTicks;          // throttle counter for the idle-check diagnostic log
-    private const int ANTI_AFK_PERIOD_MS = 5_000;
-    private const int ANTI_AFK_GAP_MIN_MS = 90;   // inter-tap gap jitter
-    private const int ANTI_AFK_GAP_MAX_MS = 160;
 
     // Hook handles
     private NativeMethods.LowLevelKeyboardProc? _keyboardProc;
@@ -432,14 +61,6 @@ public sealed class InputHookService : IInputHookService
     // from a different thread, hence Volatile rather than plain fields.
     private long _lastKeyboardEventTick;
     private long _lastMouseEventTick;
-
-    // Anti-AFK idle basis: last PHYSICAL (non-injected) keyboard event, stamped AFTER the
-    // LLKHF_INJECTED / INPUT_IGNORE filter (unlike _lastKeyboardEventTick, which counts injected
-    // events too so it stays valid as hook-liveness proof). Keyboard-ONLY on purpose: GetLastInputInfo
-    // is global (all devices), so mouse/peripheral noise kept the system "fresh" and Anti-AFK's idle
-    // guard never tripped (debug.log: 69 "system input is fresh" / 0 idle). Volatile: written on the
-    // hook thread, read on the Anti-AFK timer thread.
-    private long _lastPhysicalKeyboardTick;
 
     // P8 fail-open swap-window flags: while a hook re-install is in flight, its callback passes
     // every event straight to CallNextHookEx with ZERO side effects instead of relying on overlap
@@ -508,19 +129,17 @@ public sealed class InputHookService : IInputHookService
     // Advanced Mode: global [App] gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and
     // un-suppressed key mappings). Mirrors HookWatchdogEnabled end-to-end; live-togglable from Settings.
     // volatile for the lock-free gating reads on the hook thread (and the injector thread).
-    private volatile bool _advancedModeEnabled;
-
     public bool AdvancedModeEnabled
     {
-        get => _advancedModeEnabled;
+        get => _runtime.AdvancedModeEnabled;
         set
         {
-            if (_advancedModeEnabled == value)
+            if (_runtime.AdvancedModeEnabled == value)
             {
                 return;
             }
 
-            _advancedModeEnabled = value;
+            _runtime.SetAdvancedMode(value);
             LogDebug($"Advanced Mode {(value ? "enabled" : "disabled")} via settings");
 
             // true→false: release every gated held state so nothing keeps injecting under a now-off
@@ -528,18 +147,18 @@ public sealed class InputHookService : IInputHookService
             // MUST be enqueue-only / non-blocking (a synchronous SendInput here could stall the
             // dispatcher on a foreign LL hook, the very freeze the injector exists to prevent). Each
             // release takes only its own leaf lock; they are never nested (I5). Anti-AFK needs no
-            // action — its tick self-gates on _advancedModeEnabled. (Auto-Run release is wired in P3a.)
+            // action — its tick self-gates on _runtime.AdvancedModeEnabled. (Auto-Run release is wired in P3a.)
             if (!value)
             {
-                if (ReleaseRapidFireState(preservePhysicalPairing: true))
+                if (_rapidFire.Release(preservePhysicalPairing: true))
                 {
                     // Gate closed: the arm is gone. Raised only when an arm was actually live;
                     // handlers are enqueue-only so this stays safe on the dispatcher thread.
                     RaiseRapidFireArmChanged();
                 }
-                ReleaseAutoRunState(includeBackground: true); // gate closed — release Background too
-                ReleaseHoldBreathState();
-                ReleaseUnsuppressedCombinedOverrides();
+                _autoRun.Release(includeBackground: true); // gate closed — release Background too
+                _gestures.ReleaseHoldBreath();
+                _remaps.ReleaseUnsuppressed();
             }
         }
     }
@@ -558,380 +177,22 @@ public sealed class InputHookService : IInputHookService
     // Performance metrics
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
 
-    // Tolerance for the hold-timer elapsed-time guard. Windows timers fire on-time or late, never
-    // meaningfully early, so a callback firing more than this many ms early is a stale queued elapse.
-    private const double HOLD_FIRE_TOLERANCE_MS = 2.0;
-
     public InputHookService(ILoggerService logger, IInputSender inputSender)
     {
         _logger = logger;
-        _inputSender = inputSender;
-
-        // Initialize hold breath timer (pre-allocated, reused throughout lifetime)
-        _holdBreathTimer = new System.Threading.Timer(_ => OnHoldBreathTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
-        _rapidFireTimer = new System.Threading.Timer(_ => OnRapidFireTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
-    }
-
-    internal void StartInputExecutorForTesting()
-    {
-        lock (_profileLock)
-        {
-            if (_holdBreathInjectionQueue is not null)
-            {
-                throw new InvalidOperationException("Input executor is already running.");
-            }
-
-            _holdBreathInjectionQueue = new BlockingCollection<HoldBreathInjection>();
-            _holdBreathInjectionThread = new Thread(HoldBreathInjectionLoop)
-            {
-                IsBackground = true,
-                Name = "InputExecutorTest"
-            };
-            ReleaseRapidFireState(preservePhysicalPairing: false);
-            _isRunning = true;
-            _holdBreathInjectionThread.Start();
-        }
-    }
-
-    internal void StopInputExecutorForTesting()
-    {
-        lock (_profileLock)
-        {
-            _isRunning = false;
-            ReleaseRapidFireState(preservePhysicalPairing: false);
-            lock (_inputInjectionEnqueueLock)
-            {
-                _holdBreathInjectionQueue?.CompleteAdding();
-            }
-
-            _holdBreathInjectionThread?.Join(2000);
-            _holdBreathInjectionQueue?.Dispose();
-            _holdBreathInjectionQueue = null;
-            _holdBreathInjectionThread = null;
-        }
-    }
-
-    internal bool EnqueueTransitionForTesting(
-        Key key,
-        bool isDown,
-        long foregroundGeneration = 0)
-    {
-        return EnqueueHoldBreathInjection(
-            new HoldBreathInjection(
-                key,
-                isDown,
-                PreSleepMs: 0,
-                ForegroundGeneration: foregroundGeneration));
-    }
-
-    internal bool EnqueueTapForTesting(Key key, int durationMs)
-    {
-        return EnqueueKeyTap(key, durationMs);
-    }
-
-    internal Task<bool> EnqueueDummyForTesting()
-    {
-        return EnqueueDummyKeyEvent();
-    }
-
-    internal void SetForegroundGenerationsForTesting(long active, long published)
-    {
-        Volatile.Write(ref _activeProfileGeneration, active);
-        Volatile.Write(ref _publishedForegroundGeneration, published);
-    }
-
-    internal void ConfigureActiveProfileForTesting(
-        Profile profile,
-        long foregroundGeneration,
-        bool altPressed)
-    {
-        _activeProfile = profile;
-        Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
-        Volatile.Write(ref _publishedForegroundGeneration, foregroundGeneration);
-        _altPressed = altPressed;
-    }
-
-    internal bool HandleAltMouseForTesting(Models.MouseButton button, bool isDown)
-    {
-        var message = (button, isDown) switch
-        {
-            (Models.MouseButton.Left, true) => NativeMethods.WM_LBUTTONDOWN,
-            (Models.MouseButton.Left, false) => NativeMethods.WM_LBUTTONUP,
-            (Models.MouseButton.Right, true) => NativeMethods.WM_RBUTTONDOWN,
-            (Models.MouseButton.Right, false) => NativeMethods.WM_RBUTTONUP,
-            (Models.MouseButton.Middle, true) => NativeMethods.WM_MBUTTONDOWN,
-            (Models.MouseButton.Middle, false) => NativeMethods.WM_MBUTTONUP,
-            _ => throw new ArgumentOutOfRangeException(nameof(button))
-        };
-
-        return HandleAltMouse(message, 0);
-    }
-
-    internal bool HandleAltKeyboardForTesting(Key key, bool isDown)
-    {
-        var vkCode = KeyInteropUtilities.ToVirtualKey(key);
-        return HandleAltKeyboard(vkCode, isKeyDown: isDown, isKeyUp: !isDown);
-    }
-
-    internal void HandleAltKeyboardPanicOverrideForTesting(Key key, bool isDown)
-    {
-        var vkCode = KeyInteropUtilities.ToVirtualKey(key);
-        HandleAltKeyboardPanicOverride(vkCode, isKeyDown: isDown, isKeyUp: !isDown);
-    }
-
-    internal void RederiveAltKeyboardPhysicalStateForTesting(Func<int, bool> isPhysicallyDown)
-    {
-        RederiveAltKeyboardPhysicalStateCore(isPhysicallyDown);
-    }
-
-    internal void RederivePanicTriggerPhysicalStateForTesting(Func<int, bool> isPhysicallyDown)
-    {
-        RederivePanicTriggerPhysicalStateCore(isPhysicallyDown);
-    }
-
-    internal bool PanicTriggerDerivationPendingForTesting => Volatile.Read(ref _panicDerivationEpoch) != 0;
-
-    // Simulates a scheduled derivation request (allocates a ticket and fences) without a dispatcher.
-    internal long PanicDerivationBeginForTesting()
-    {
-        var ticket = Interlocked.Increment(ref _panicDerivationTicketSequence);
-        Volatile.Write(ref _panicDerivationEpoch, ticket);
-        return ticket;
-    }
-
-    internal void PanicDerivationRetireForTesting(long ticket)
-    {
-        RetirePanicDerivationTicket(ticket);
-    }
-
-    internal bool HandleCapsLockForTesting(bool isDown)
-    {
-        return HandleCapsLock(
-            NativeMethods.VK_CAPITAL,
-            isKeyDown: isDown,
-            isKeyUp: !isDown);
-    }
-
-    internal void ForceReleaseCapsLockForTesting(bool preservePhysicalPairing = true)
-    {
-        ReleaseCapsState(preservePhysicalPairing);
-    }
-
-    internal void ConfigureForegroundAutoRunForTesting(
-        Profile owner,
-        bool sprintInjected,
-        Key sprintKey)
-    {
-        lock (_autoRunLock)
-        {
-            _autoRunOwnerProfile = owner;
-            _autoRunMoveInjected = true;
-            _autoRunSprintInjected = sprintInjected;
-            _autoRunSprintIntendedHeld = sprintInjected;
-            _autoRunSprintInjectedKey = sprintKey;
-            _autoRunSprintKey = sprintKey;
-            _autoRunIsBackground = false;
-            _autoRunActive = true;
-        }
-    }
-
-    internal void ConfigureForegroundAutoRunHandoffForTesting(
-        Profile owner,
-        bool sprintEnabled = false,
-        SprintActivation sprintMode = SprintActivation.Hold,
-        Key sprintKey = Key.LeftShift)
-    {
-        lock (_autoRunLock)
-        {
-            _wPhysicallyDown = true;
-            _autoRunPhysicalWHandoff = true;
-            _autoRunMoveInjected = false;
-            _autoRunSprintEnabled = sprintEnabled;
-            _autoRunSprintToggleable = sprintEnabled && sprintMode == SprintActivation.Hold;
-            _autoRunSprintIntendedHeld = _autoRunSprintToggleable;
-            _autoRunSprintInjected = false;
-            _autoRunSprintKey = sprintKey;
-            _autoRunSprintInjectedKey = Key.None;
-            _autoRunIsBackground = false;
-            _autoRunForegroundGuardExe = null;
-            _bypassAutoRunForegroundOwnershipForTesting = true;
-            _activeAutoRunInjectionGeneration = Interlocked.Increment(ref _autoRunInjectionGeneration);
-            _autoRunOwnerProfile = owner;
-            _autoRunStopOnPhysicalWUp = false;
-            _autoRunActive = true;
-        }
-    }
-
-    internal bool HandleAutoRunForTesting(Key key, bool isKeyDown, bool isKeyUp)
-    {
-        var vkCode = KeyInteropUtilities.ToVirtualKey(key);
-        var physicalEvent = ObserveAutoRunPhysicalEvent(vkCode, isKeyDown, isKeyUp);
-        if (physicalEvent.SuppressPhysicalWHandoffUp)
-        {
-            HandleCombinedMappings(vkCode, isKeyDown, isKeyUp);
-            HandleWindowsLauncher(vkCode, isKeyDown, isKeyUp);
-        }
-        return HandleAutoRun(vkCode, isKeyDown, isKeyUp, physicalEvent);
-    }
-
-    internal void ConfigureCombinedOverrideForTesting(
-        Key source,
-        Key target,
-        bool suppressOriginal)
-    {
-        lock (_combinedOverridesLock)
-        {
-            var targetCount = _combinedTargetCounts.GetValueOrDefault(target);
-            _activeCombinedOverrides[source] = new CombinedOverrideState
-            {
-                TargetKey = target,
-                SuppressOriginal = suppressOriginal,
-                RightClickOnly = false
-            };
-            _combinedTargetCounts[target] = targetCount + 1;
-            _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
-            if (targetCount == 0)
-            {
-                EnqueueHoldBreathInjection(
-                    new HoldBreathInjection(
-                        target,
-                        IsDown: true,
-                        PreSleepMs: 0,
-                        CombinedGeneration: Volatile.Read(ref _combinedConfigurationGeneration)));
-            }
-        }
-    }
-
-    internal void ForceReleaseCombinedForTesting()
-    {
-        ReleaseAllOverrides();
-    }
-
-    internal void ForceReleaseUnsuppressedCombinedForTesting()
-    {
-        ReleaseUnsuppressedCombinedOverrides();
-    }
-
-    internal bool HandleCombinedForTesting(Key source, bool isDown)
-    {
-        return HandleCombinedMappings(
-            KeyInteropUtilities.ToVirtualKey(source),
-            isKeyDown: isDown,
-            isKeyUp: !isDown);
-    }
-
-    internal void ConfigureLauncherLatchForTesting(Profile windowsProfile, Key key)
-    {
-        _windowsProfile = windowsProfile;
-        lock (_heldLauncherKeysLock)
-        {
-            _heldLauncherKeys.Add(key);
-        }
-    }
-
-    internal bool HandleLauncherForTesting(Key key, bool isDown)
-    {
-        return HandleWindowsLauncher(
-            KeyInteropUtilities.ToVirtualKey(key),
-            isKeyDown: isDown,
-            isKeyUp: !isDown);
-    }
-
-    internal void ConfigureHoldBreathForTesting(
-        Profile profile,
-        long foregroundGeneration)
-    {
-        ConfigureActiveProfileForTesting(
-            profile,
-            foregroundGeneration,
-            altPressed: false);
-        _advancedModeEnabled = true;
-    }
-
-    internal void HandleHoldBreathRightButtonForTesting(bool isDown)
-    {
-        _rightButtonPressed = isDown;
-        if (isDown)
-        {
-            HandleRightClickHoldBreathDown();
-        }
-        else
-        {
-            HandleRightClickHoldBreathUp();
-        }
-    }
-
-    internal bool HandleHoldBreathPanicKeyForTesting(Key key, bool isDown)
-    {
-        return HandleHoldBreathPanicKey(
-            KeyInteropUtilities.ToVirtualKey(key),
-            isKeyDown: isDown,
-            isKeyUp: !isDown);
-    }
-
-    internal bool HandleHoldBreathPanicMouseForTesting(Models.MouseButton button, bool isDown)
-    {
-        var (message, mouseData) = (button, isDown) switch
-        {
-            (Models.MouseButton.Left, true) => (NativeMethods.WM_LBUTTONDOWN, 0u),
-            (Models.MouseButton.Left, false) => (NativeMethods.WM_LBUTTONUP, 0u),
-            (Models.MouseButton.Right, true) => (NativeMethods.WM_RBUTTONDOWN, 0u),
-            (Models.MouseButton.Right, false) => (NativeMethods.WM_RBUTTONUP, 0u),
-            (Models.MouseButton.Middle, true) => (NativeMethods.WM_MBUTTONDOWN, 0u),
-            (Models.MouseButton.Middle, false) => (NativeMethods.WM_MBUTTONUP, 0u),
-            // X buttons ride the mouseData high word (see GetXButton).
-            (Models.MouseButton.XButton1, true) => (NativeMethods.WM_XBUTTONDOWN, 1u << 16),
-            (Models.MouseButton.XButton1, false) => (NativeMethods.WM_XBUTTONUP, 1u << 16),
-            (Models.MouseButton.XButton2, true) => (NativeMethods.WM_XBUTTONDOWN, 2u << 16),
-            (Models.MouseButton.XButton2, false) => (NativeMethods.WM_XBUTTONUP, 2u << 16),
-            _ => throw new ArgumentOutOfRangeException(nameof(button))
-        };
-
-        return HandleHoldBreathPanicMouse(message, mouseData);
-    }
-
-    internal void FireHoldBreathTimerForTesting()
-    {
-        OnHoldBreathTimerFired();
-    }
-
-    internal void ConfigureRapidFireForTesting(
-        Profile profile,
-        long foregroundGeneration,
-        bool armed = true)
-    {
-        ConfigureActiveProfileForTesting(profile, foregroundGeneration, altPressed: false);
-        _advancedModeEnabled = true;
-        ReleaseRapidFireState(preservePhysicalPairing: false);
-        _rapidFireOwnerProfile = armed ? profile : null;
-        Volatile.Write(ref _rapidFireArmedEpoch, Volatile.Read(ref _rapidFireArmEpoch));
-        _rapidFireArmed = armed;
-    }
-
-    internal void HandleRapidFireLeftButtonForTesting(bool isDown, bool consumed = false)
-    {
-        HandleRapidFire(
-            isDown ? NativeMethods.WM_LBUTTONDOWN : NativeMethods.WM_LBUTTONUP,
-            allowStart: !consumed);
-    }
-
-    internal void FireRapidFireTimerForTesting()
-    {
-        Volatile.Write(
-            ref _rapidFireArmedTick,
-            Stopwatch.GetTimestamp() -
-            (long)Math.Ceiling((_rapidFireArmedDelayMs + HOLD_FIRE_TOLERANCE_MS) * Stopwatch.Frequency / 1000.0));
-        OnRapidFireTimerFired();
-    }
-
-    internal bool RapidFireArmedForTesting => RapidFireIsArmed();
-
-    internal void HandleRapidFireToggleForTesting(Key key, bool isDown)
-    {
-        HandleRapidFireToggle(
-            KeyInteropUtilities.ToVirtualKey(key),
-            isKeyDown: isDown,
-            isKeyUp: !isDown);
+        _runtime = new InputRuntimeState();
+        _inputExecutor = new InputExecutor(_runtime, inputSender, logger);
+        var transport = new NativeAutoRunTransport();
+        _autoRun = new AutoRunStateMachine(_runtime, _inputExecutor, _random, logger, transport);
+        _antiAfk = new AntiAfkStateMachine(_runtime, _autoRun, _random, logger, transport);
+        _gestures = new GestureChordStateMachine(
+            _runtime,
+            _inputExecutor,
+            _random,
+            logger,
+            () => _rightButtonPressed);
+        _rapidFire = new RapidFireStateMachine(_runtime, inputSender, _random, logger, _profileLock);
+        _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, IsPhysicalKeyDown);
     }
 
     public event EventHandler<Profile?>? ActiveProfileChanged;
@@ -951,27 +212,23 @@ public sealed class InputHookService : IInputHookService
     
     public void Start()
     {
+        ObjectDisposedException.ThrowIf(_runtime.IsDisposed, this);
+
         lock (_profileLock)
         {
-            if (_isRunning)
+            ObjectDisposedException.ThrowIf(_runtime.IsDisposed, this);
+
+            if (_runtime.IsRunning)
             {
                 return;
             }
 
-            // A prior Stop may have timed out while the completed executor was draining unconditional
-            // releases through a stalled foreign hook. Never start a second executor beside it: a stale
-            // UP from the old session could otherwise cancel a new session's DOWN for the same key.
-            if (_holdBreathInjectionThread is { IsAlive: true })
+            if (_inputExecutor.IsWorkerAlive)
             {
                 throw new InvalidOperationException(
                     "The previous input executor is still draining releases; retry Start after it exits.");
             }
-            if (_holdBreathInjectionQueue is not null)
-            {
-                _holdBreathInjectionQueue.Dispose();
-                _holdBreathInjectionQueue = null;
-                _holdBreathInjectionThread = null;
-            }
+            _inputExecutor.DisposeCompletedQueue();
 
             // P8: hooks are (re-)installed only from a message-pumping thread — SetWindowsHookEx
             // delivers WH_*_LL callbacks via the installing thread's message loop, never a pool
@@ -1036,10 +293,6 @@ public sealed class InputHookService : IInputHookService
             Volatile.Write(ref _lastMouseEventTick, startTick);
             // Seed Anti-AFK's keyboard-idle basis too, so a freshly-started app accumulates idle from
             // 0 (not "infinitely idle" → an immediate spurious fire).
-            Volatile.Write(ref _lastPhysicalKeyboardTick, startTick);
-            // Seed the cadence baseline explicitly (not the default 0) so first-fire cadence is correct even
-            // across the rare 49.7-day Environment.TickCount rollover where 0 is a real recent value.
-            _antiAfkLastFireTick = unchecked((uint)Environment.TickCount);
 
             // P7: request 1ms timer resolution while hooks are live. Win11 silently ignores
             // resolution requests from hidden/minimized-window processes (this app's tray state
@@ -1091,47 +344,24 @@ public sealed class InputHookService : IInputHookService
                 // report throttle, not a key-pairing latch, so a blind clear is safe here).
                 _watchdogHookLossReportedAtTick = 0;
 
-                // Hold-breath injector thread: drains the FIFO injection queue so SendInput's
-                // foreign-hook dispatch (measured up to ~LowLevelHooksTimeout) never runs on a hook
-                // callback or under _holdBreathLock. Background so process exit can never hang on it.
-                _holdBreathInjectionQueue = new BlockingCollection<HoldBreathInjection>();
-                _holdBreathInjectionThread = new Thread(HoldBreathInjectionLoop)
-                {
-                    IsBackground = true,
-                    Name = "HoldBreathInjector"
-                };
-                _holdBreathInjectionThread.Start();
+                _inputExecutor.Start();
 
                 // P8: hook-loss watchdog. 10s period is coarse on purpose — this only needs to catch
                 // the rare silent hook removal (UI stall > LowLevelHooksTimeout), not run hot.
                 _hookWatchdogTimer = new System.Threading.Timer(_ => WatchdogTick(), null, WATCHDOG_PERIOD_MS, WATCHDOG_PERIOD_MS);
 
-                // Anti-AFK: one always-ticking timer at a fixed coarse period; the tick reads live
-                // conditions each time (no arm/disarm). Rolled back below on a failed Start.
-                _antiAfkTimer = new System.Threading.Timer(_ => AntiAfkTick(), null, ANTI_AFK_PERIOD_MS, ANTI_AFK_PERIOD_MS);
+                _antiAfk.Start();
             }
             catch
             {
-                // Full rollback before rethrow: _isRunning is still false here, so Stop() will never
+                // Full rollback before rethrow: _runtime.IsRunning is still false here, so Stop() will never
                 // run to unhook — and a retried Start() would otherwise stack a second pair of LL
                 // hooks on top of these. Mirrors the hook-install-failure branch above.
                 _hookWatchdogTimer?.Dispose();
                 _hookWatchdogTimer = null;
 
-                _antiAfkTimer?.Dispose();
-                _antiAfkTimer = null;
-
-                // Ends the injector loop; nothing was enqueued yet (hooks never went live).
-                lock (_inputInjectionEnqueueLock)
-                {
-                    _holdBreathInjectionQueue?.CompleteAdding();
-                }
-                if (_holdBreathInjectionThread is null || _holdBreathInjectionThread.Join(2000))
-                {
-                    _holdBreathInjectionQueue?.Dispose();
-                    _holdBreathInjectionQueue = null;
-                    _holdBreathInjectionThread = null;
-                }
+                _antiAfk.Stop();
+                _inputExecutor.StopAndDrain();
 
                 _rawInputSink?.Dispose();
                 _rawInputSink = null;
@@ -1163,6 +393,8 @@ public sealed class InputHookService : IInputHookService
                 throw;
             }
 
+            try
+            {
             // codex-final #2: a genuine (re)start is the only place to (re)seed the physical-Caps latch — a
             // mid-hold profile switch / watchdog reinstall keep the hook running and never call Start(), so
             // they PRESERVE the latch (a held Caps's UP still pairs with its original DOWN). SEED from the
@@ -1170,12 +402,9 @@ public sealed class InputHookService : IInputHookService
             // at initial launch) Windows already received that DOWN, so mark the press in-progress and NOT
             // suppressed — the carryover repeats + UP then PASS THROUGH and pair with Windows' DOWN instead
             // of a suppressed orphan UP (= stuck CapsLock). A not-held start seeds false -> next press is
-            // fresh. Hooks are installed above but _isRunning is still false, so no callback is honored yet.
-            lock (_capsLockStateLock)
-            {
-                _capsPhysicallyDown = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CAPITAL) & 0x8000) != 0;
-                _capsDownSuppressed = false;
-            }
+            // fresh. Hooks are installed above but _runtime.IsRunning is still false, so no callback is honored yet.
+            _remaps.SeedCapsPhysicalState(
+                (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CAPITAL) & 0x8000) != 0);
 
             // Fresh session: SEED the color-toggle fire-once latch from the ACTUAL physical key state (mirrors
             // the Caps seed above). If the toggle key is still held across Stop->Start its press already fired,
@@ -1190,34 +419,41 @@ public sealed class InputHookService : IInputHookService
             // as the Caps seed): a trigger key already held across Stop->Start had its DOWN delivered to
             // Windows, so its carryover repeats + UP must PASS THROUGH and pair with that DOWN —
             // PhysicallyDown=true (repeats are not fresh edges) and no suppression latch. Keys not held
-            // seed false, so the next press is a fresh gesture. Hooks are installed but _isRunning is
+            // seed false, so the next press is a fresh gesture. Hooks are installed but _runtime.IsRunning is
             // still false, so no callback can overwrite this baseline yet; the CORE runs inline (not
-            // via the dispatcher marshaling) so the seed lands before _isRunning flips. The panic
+            // via the dispatcher marshaling) so the seed lands before _runtime.IsRunning flips. The panic
             // trigger's fresh-edge latch seeds the same way (keyboard triggers only), after resetting
             // the derivation epoch — a ticket left outstanding by the previous session must not keep
             // Early Cancel fenced on the new one.
-            Volatile.Write(ref _panicDerivationEpoch, 0);
-            RederiveAltKeyboardPhysicalStateCore(
-                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
-            RederivePanicTriggerPhysicalState();
+            _gestures.RederivePhysicalState(IsPhysicalKeyDown);
 
             // Rapid Fire is runtime-only and always starts disarmed (Start never raises the arm
             // event — it is Off by definition). Seed the physical latches so a key or left button
             // held across restart cannot be mistaken for a fresh press.
-            ReleaseRapidFireState(preservePhysicalPairing: false);
-            var rapidFireToggleVk = _rapidFireToggleVk;
-            _rapidFireToggleDownLatched = rapidFireToggleVk != 0 &&
-                (NativeMethods.GetAsyncKeyState(rapidFireToggleVk) & 0x8000) != 0;
-            _hookSeenRapidFireToggleVk = rapidFireToggleVk;
-            DeriveRapidFirePhysicalLeftDown();
+            _rapidFire.Release(preservePhysicalPairing: false);
+            _rapidFire.SeedTogglePhysicalState(IsPhysicalKeyDown);
+            var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
+                ? NativeMethods.VK_RBUTTON
+                : NativeMethods.VK_LBUTTON;
+            _rapidFire.SeedPhysicalLeftButton(
+                (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0);
 
             // Seed Auto-Run's movement-edge tracker at the hook-stream boundary. Callbacks are installed
-            // but still gated by _isRunning=false, so this baseline cannot overwrite a newer hook event.
+            // but still gated by _runtime.IsRunning=false, so this baseline cannot overwrite a newer hook event.
             // Once live, ordered W/S hook events own the state until the next genuine hook boundary.
-            SeedAutoRunMovementPhysicalState();
+            _autoRun.SeedMovementPhysicalState();
 
-            _isRunning = true;
+            _runtime.SetRunning(true);
             LogDebug("InputHookService started");
+            }
+            catch
+            {
+                // Late physical-state seeding is still part of Start. Reuse the normal teardown so
+                // a failed seed cannot leave hooks, timers, or the executor live for a retry.
+                _runtime.SetRunning(true);
+                Stop();
+                throw;
+            }
         }
     }
 
@@ -1226,7 +462,7 @@ public sealed class InputHookService : IInputHookService
         var rapidFireArmCleared = false;
         lock (_profileLock)
         {
-            if (!_isRunning)
+            if (!_runtime.IsRunning)
             {
                 return;
             }
@@ -1234,10 +470,9 @@ public sealed class InputHookService : IInputHookService
             _hookWatchdogTimer?.Dispose();
             _hookWatchdogTimer = null;
 
-            // Stop new Anti-AFK ticks. An in-flight tick re-checks _isRunning (flipped false below) and
+            // Stop new Anti-AFK ticks. An in-flight tick re-checks _runtime.IsRunning (flipped false below) and
             // the injector drain skips any sequence item it enqueued.
-            _antiAfkTimer?.Dispose();
-            _antiAfkTimer = null;
+            _antiAfk.Stop();
 
             // Unregisters any open device sinks from whatever thread Stop() runs on; the message-only
             // window itself is only destroyed when this is the owning (dispatcher) thread — the
@@ -1263,43 +498,25 @@ public sealed class InputHookService : IInputHookService
             }
 
             // Flip the running flag BEFORE releasing state: an in-flight hook callback that already
-            // passed its entry check re-validates _isRunning under the subsystem locks, so it can no
+            // passed its entry check re-validates _runtime.IsRunning under the subsystem locks, so it can no
             // longer inject AFTER ReleaseAllState ran — with the hooks gone, nothing would ever
             // release such a key and it would stay stuck system-wide beyond process exit.
-            _isRunning = false;
+            _runtime.SetRunning(false);
 
             rapidFireArmCleared = ReleaseAllState(preservePhysicalPairing: false);
             // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; Stop() (app exit) must still
             // release it — post the final UP before the injector drains below.
-            ReleaseAutoRunState(includeBackground: true);
+            _autoRun.Release(includeBackground: true);
             // Off-hook (app lifecycle): join the Background thread so its AttachThreadInput is undone
             // before we tear down further. ReleaseAutoRunState above only SIGNALS stop (hook-safe).
-            JoinBackgroundInputThread();
+            _autoRun.JoinBackgroundInputThread();
 
-            // Drain the hold-breath injector AFTER ReleaseAllState so the release it enqueued still
-            // executes; bounded join because a drain item can be mid-flight through a stalled foreign
-            // hook (~300ms class). Dispose the queue only on a clean join — a still-draining worker
-            // must not have it yanked out from under GetConsumingEnumerable (it exits on its own at
-            // CompleteAdding; the thread is background, so process exit never hangs on it).
-            lock (_inputInjectionEnqueueLock)
-            {
-                _holdBreathInjectionQueue?.CompleteAdding();
-            }
-            if (_holdBreathInjectionThread is null || _holdBreathInjectionThread.Join(2000))
-            {
-                _holdBreathInjectionQueue?.Dispose();
-                _holdBreathInjectionQueue = null;
-                _holdBreathInjectionThread = null;
-            }
-            else
-            {
-                // Keep both references. Start() refuses to create a second executor while this completed
-                // worker is alive, then disposes the retired queue once the worker has exited.
-                LogDebug("WARNING: input executor still draining after 2s; restart is deferred");
-            }
+            _inputExecutor.StopAndDrain(
+                () => { },
+                TimeSpan.FromSeconds(2));
 
             // P7 pairing: winmm requires matched Begin/End calls. Stop() is already idempotent via
-            // the _isRunning guard above, so this fires exactly once per successful Start().
+            // the _runtime.IsRunning guard above, so this fires exactly once per successful Start().
             if (_timerResolutionRaised)
             {
                 NativeMethods.timeEndPeriod(1);
@@ -1329,12 +546,13 @@ public sealed class InputHookService : IInputHookService
         {
             lock (_profileLock)
             {
-                if (!_isRunning)
+                if (!_runtime.IsRunning)
                 {
                     return;
                 }
 
                 RederivePhysicalModifierState();
+                _autoRun.SeedMovementPhysicalState();
                 LogDebug($"Session switch ({e.Reason}): re-derived physical state");
             }
 
@@ -1352,7 +570,7 @@ public sealed class InputHookService : IInputHookService
         var rapidFireArmCleared = false;
         lock (_profileLock)
         {
-            if (!_isRunning)
+            if (!_runtime.IsRunning)
             {
                 return;
             }
@@ -1360,7 +578,7 @@ public sealed class InputHookService : IInputHookService
             rapidFireArmCleared = ReleaseAllState(preservePhysicalPairing: false);
             // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; the desktop is going away
             // (lock/logoff), so release it here too.
-            ReleaseAutoRunState(includeBackground: true);
+            _autoRun.Release(includeBackground: true);
             LogDebug($"Session switch ({e.Reason}): released all injected state");
         }
 
@@ -1387,7 +605,7 @@ public sealed class InputHookService : IInputHookService
     // so a healthy system carries zero raw-input traffic.
     private void WatchdogTick()
     {
-        if (!_isRunning)
+        if (!_runtime.IsRunning)
         {
             return;
         }
@@ -1491,7 +709,7 @@ public sealed class InputHookService : IInputHookService
                 {
                     lock (_profileLock)
                     {
-                        if (!_isRunning || !_hookWatchdogEnabled)
+                        if (!_runtime.IsRunning || !_hookWatchdogEnabled)
                         {
                             return;
                         }
@@ -1668,7 +886,7 @@ public sealed class InputHookService : IInputHookService
     internal static bool ShouldReportHookLoss(int lastReportedAtTick, int nowTick, int rereportIntervalMs)
         => lastReportedAtTick == 0 || unchecked(nowTick - lastReportedAtTick) >= rereportIntervalMs;
 
-    // Must run on _hookDispatcher, under _profileLock, with _isRunning already re-checked by the
+    // Must run on _hookDispatcher, under _profileLock, with _runtime.IsRunning already re-checked by the
     // caller. Install-new-before-unhook-old with a fail-open swap window (see
     // _keyboardReplacementInProgress declaration): both registrations would invoke the SAME kept-alive
     // delegate and LL callbacks receive no registration identity, so overlap idempotency alone is not
@@ -1685,8 +903,8 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
-        // _isRunning re-checked by the caller guarantees _keyboardProc was assigned in Start() and
-        // never reset (only the Start()-failure path nulls it, which never sets _isRunning true).
+        // _runtime.IsRunning re-checked by the caller guarantees _keyboardProc was assigned in Start() and
+        // never reset (only the Start()-failure path nulls it, which never sets _runtime.IsRunning true).
         var newHandle = NativeMethods.SetWindowsHookEx(NativeMethods.WH_KEYBOARD_LL, _keyboardProc!, user32Handle, 0);
         if (newHandle == IntPtr.Zero)
         {
@@ -1713,12 +931,12 @@ public sealed class InputHookService : IInputHookService
         // is intentionally invisible (no RapidFireArmChanged raise).
         ReleaseAllState(preserveRapidFireArm: true);
         RederivePhysicalModifierState();
-        DeriveRapidFirePhysicalLeftDown();
+        SeedRapidFirePhysicalLeftDown();
 
         // The fail-open replacement window may have missed W/S transitions. Callbacks remain gated by
         // _keyboardReplacementInProgress until this method returns, so native state is safe as the new
         // event-stream baseline here (unlike from inside HandleAutoRun/ActivateAutoRun).
-        SeedAutoRunMovementPhysicalState();
+        _autoRun.SeedMovementPhysicalState();
 
         Volatile.Write(ref _lastKeyboardEventTick, Stopwatch.GetTimestamp());
         _keyboardReplacementInProgress = false;
@@ -1757,7 +975,7 @@ public sealed class InputHookService : IInputHookService
         // Sticky arm preserved (see ReinstallKeyboardHookLocked); recovery stays invisible.
         ReleaseAllState(preserveRapidFireArm: true);
         RederivePhysicalModifierState();
-        DeriveRapidFirePhysicalLeftDown();
+        SeedRapidFirePhysicalLeftDown();
 
         Volatile.Write(ref _lastMouseEventTick, Stopwatch.GetTimestamp());
         _mouseReplacementInProgress = false;
@@ -1771,12 +989,12 @@ public sealed class InputHookService : IInputHookService
         var generationChanged = false;
         lock (_profileLock)
         {
-            if (!_isRunning)
+            if (!_runtime.IsRunning)
             {
                 return;
             }
 
-            if (ReferenceEquals(_activeProfile, profile))
+            if (ReferenceEquals(_runtime.ActiveProfile, profile))
             {
                 // Same-instance republish (same-exe window switch, RepublishLatestForeground,
                 // delayed-callback revalidation): the generation bump can settle the sticky arm
@@ -1784,8 +1002,8 @@ public sealed class InputHookService : IInputHookService
                 // focus returned, because the earlier SetForegroundIdentity raised gray against a
                 // generation this profile had not caught up to yet. No early return here — the
                 // raise lives AFTER the lock.
-                generationChanged = Volatile.Read(ref _activeProfileGeneration) != foregroundGeneration;
-                Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
+                generationChanged = _runtime.ActiveProfileGeneration != foregroundGeneration;
+                _runtime.SetActiveProfile(profile, foregroundGeneration);
             }
             else
             {
@@ -1794,14 +1012,14 @@ public sealed class InputHookService : IInputHookService
                 // cover the status flips. No arm raise on THIS path (nothing about the arm changed).
                 ReleaseAllState(preserveRapidFireArm: true);
                 // Publish the incoming profile BEFORE scheduling the re-derivation (the panic-latch
-                // closure reads the live _activeProfile at dispatcher-execution time and must see
+                // closure reads the live _runtime.ActiveProfile at dispatcher-execution time and must see
                 // the INCOMING trigger), but keep the GENERATION unsettled until AFTER the physical
                 // modifier baseline is restored: the mismatch fences hook handlers
                 // (ProfileInputGenerationIsCurrent) so no new-profile action can observe eligible
                 // state with stale Alt/right-button modifiers (H6).
-                _activeProfile = profile;
+                _runtime.SetActiveProfileReference(profile);
                 RederivePhysicalModifierState();
-                Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
+                _runtime.SetActiveProfileGeneration(foregroundGeneration);
                 changed = true;
 
                 LogDebug($"Profile activated: {profile.Name}");
@@ -1826,10 +1044,10 @@ public sealed class InputHookService : IInputHookService
 
         lock (_profileLock)
         {
-            previous = _activeProfile;
+            previous = _runtime.ActiveProfile;
             if (previous is null)
             {
-                Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
+                _runtime.SetActiveProfile(null, foregroundGeneration);
                 return;
             }
 
@@ -1838,9 +1056,9 @@ public sealed class InputHookService : IInputHookService
             ReleaseAllState(preserveRapidFireArm: true);
             // Publish the profile first (see ActivateProfile); the generation settles only after
             // the physical baseline is restored. No active profile => no trigger to re-derive.
-            _activeProfile = null;
+            _runtime.SetActiveProfileReference(null);
             RederivePhysicalModifierState();
-            Volatile.Write(ref _activeProfileGeneration, foregroundGeneration);
+            _runtime.SetActiveProfileGeneration(foregroundGeneration);
 
             LogDebug("Profile deactivated");
         }
@@ -1857,7 +1075,7 @@ public sealed class InputHookService : IInputHookService
             return;
         }
 
-        var active = ReferenceEquals(_activeProfile, profile);
+        var active = ReferenceEquals(_runtime.ActiveProfile, profile);
         var windows = ReferenceEquals(_windowsProfile, profile);
         var hardDeactivate = active &&
             ((changeKind & ProfileChangeKind.Removed) != 0 ||
@@ -1868,8 +1086,15 @@ public sealed class InputHookService : IInputHookService
             var notify = false;
             lock (_profileLock)
             {
-                if (ReferenceEquals(_activeProfile, profile))
+                if (ReferenceEquals(_runtime.ActiveProfile, profile))
                 {
+                    if (windows)
+                    {
+                        // Invalidate queued launcher work before the active Windows profile is
+                        // unpublished; ReleaseAllState preserves launcher pairing on this path.
+                        _remaps.ReconcileProfileSettings(profile, changeKind);
+                    }
+
                     // Sticky arm: preserved through the in-lock teardown (only the press is
                     // cancelled); the owner release happens post-lock via the single
                     // ReleaseRapidFireOwnedBy authority below. Safe window: the active
@@ -1878,15 +1103,15 @@ public sealed class InputHookService : IInputHookService
                     ReleaseAllState(preserveRapidFireArm: true);
                     // Publish the profile first; the generation settles only after the physical
                     // baseline is restored (see ActivateProfile). No active profile => no trigger.
-                    _activeProfile = null;
+                    _runtime.SetActiveProfileReference(null);
                     RederivePhysicalModifierState();
-                    Volatile.Write(ref _activeProfileGeneration, long.MinValue);
+                    _runtime.SetActiveProfileGeneration(long.MinValue);
                     notify = true;
                 }
             }
 
-            ReleaseAutoRunOwnedBy(profile);
-            if (ReleaseRapidFireOwnedBy(profile))
+            _autoRun.ReleaseOwnedBy(profile);
+            if (_rapidFire.ReleaseOwnedBy(profile))
             {
                 RaiseRapidFireArmChanged();
             }
@@ -1899,39 +1124,37 @@ public sealed class InputHookService : IInputHookService
 
         if ((changeKind & ProfileChangeKind.AutoRun) != 0)
         {
-            Interlocked.Increment(ref _autoRunConfigurationGeneration);
+            _autoRun.ConfigurationChanged(profile);
         }
 
         if ((changeKind & (ProfileChangeKind.AutoRun | ProfileChangeKind.Removed)) != 0)
         {
-            ReleaseAutoRunOwnedBy(profile);
+            _autoRun.ReleaseOwnedBy(profile);
+        }
+
+        if (active || windows)
+        {
+            _remaps.ReconcileProfileSettings(profile, changeKind);
         }
 
         if (active)
         {
             if ((changeKind & ProfileChangeKind.AltMouse) != 0)
             {
-                ResetMouseStates();
+                _gestures.ReleaseAltMouse(preserveSuppressedUps: true);
             }
             if ((changeKind & ProfileChangeKind.AltKeyboard) != 0)
             {
-                ResetKeyboardStates();
-            }
-            if ((changeKind & ProfileChangeKind.CombinedMappings) != 0)
-            {
-                ReleaseAllOverrides();
+                _gestures.ReleaseAltKeyboard(preserveSuppressedUps: true);
             }
             if ((changeKind & ProfileChangeKind.HoldBreath) != 0)
             {
-                ReleaseHoldBreathState();
+                _gestures.ReleaseHoldBreath();
                 // The trigger may have been rebound while its (new or old) key is physically held:
                 // re-derive the fresh-edge latch for the live trigger so a held key is not
                 // misclassified as a fresh press for the new binding.
-                SchedulePanicTriggerPhysicalStateRederivation();
-            }
-            if ((changeKind & ProfileChangeKind.CapsLock) != 0)
-            {
-                ReleaseCapsState();
+                SchedulePanicDerivation(
+                    () => _gestures.RederivePanicTriggerPhysicalState(IsPhysicalKeyDown));
             }
         }
 
@@ -1941,41 +1164,12 @@ public sealed class InputHookService : IInputHookService
         if ((changeKind & (ProfileChangeKind.RapidFire | ProfileChangeKind.Removed | ProfileChangeKind.Identity)) != 0 ||
             ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
         {
-            if (ReleaseRapidFireOwnedBy(profile))
+            if (_rapidFire.ReleaseOwnedBy(profile))
             {
                 RaiseRapidFireArmChanged();
             }
         }
 
-        if (windows &&
-            (changeKind & (ProfileChangeKind.WindowsLauncher |
-                           ProfileChangeKind.Master |
-                           ProfileChangeKind.Removed)) != 0)
-        {
-            lock (_heldLauncherKeysLock)
-            {
-                Interlocked.Increment(ref _windowsLauncherConfigurationGeneration);
-            }
-        }
-
-        if (windows &&
-            (changeKind & (ProfileChangeKind.CapsLock |
-                           ProfileChangeKind.Master |
-                           ProfileChangeKind.Removed)) != 0)
-        {
-            ReleaseCapsState();
-        }
-    }
-
-    private void ReleaseAutoRunOwnedBy(Profile profile)
-    {
-        lock (_autoRunLock)
-        {
-            if (ReferenceEquals(_autoRunOwnerProfile, profile))
-            {
-                ReleaseAutoRunState(includeBackground: true);
-            }
-        }
     }
 
     public void SetWindowsProfile(Profile profile)
@@ -1985,6 +1179,7 @@ public sealed class InputHookService : IInputHookService
         lock (_profileLock)
         {
             _windowsProfile = profile;
+            _remaps.SetWindowsProfile(profile);
             LogDebug($"Windows profile set: {profile.Name}");
         }
     }
@@ -2029,21 +1224,11 @@ public sealed class InputHookService : IInputHookService
 
     public void SetRapidFireToggleKey(Key? key)
     {
-        var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
-        if (IsModifierVirtualKey(vk))
+        if (_rapidFire.SetToggleKey(key))
         {
-            vk = 0;
+            RaiseRapidFireArmChanged();
         }
 
-        if (_rapidFireToggleVk != vk)
-        {
-            _rapidFireToggleVk = vk;
-            if (ReleaseRapidFireState(preservePhysicalPairing: true))
-            {
-                // Key reassignment disarms; raised only when an arm was actually live.
-                RaiseRapidFireArmChanged();
-            }
-        }
     }
 
     private static bool IsModifierVirtualKey(int vk) =>
@@ -2055,14 +1240,20 @@ public sealed class InputHookService : IInputHookService
 
     public void Dispose()
     {
+        if (!_runtime.TryBeginDispose())
+        {
+            return;
+        }
+
         // Set first so any pool work item racing shutdown becomes a no-op instead of touching
         // torn-down state. ReleaseAllState() (via Stop) releases held keys before we get here.
-        _disposed = true;
         Stop();
         // Deliberately do NOT dispose _random: queued FireTapKey/hold-breath work items may still
         // deref _random.Value on a pool thread; ThreadLocal<Random> holds no unmanaged resources.
-        _holdBreathTimer.Dispose();
-        _rapidFireTimer.Dispose();
+        _antiAfk.Dispose();
+        _gestures.Dispose();
+        _rapidFire.Dispose();
+        _inputExecutor.Dispose();
     }
 
     // ==================== KEYBOARD HOOK ====================
@@ -2079,12 +1270,18 @@ public sealed class InputHookService : IInputHookService
             return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
 
-        if (nCode < 0 || !_isRunning)
+        if (nCode < 0 || _runtime.IsDisposed || !_runtime.IsRunning)
         {
             return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
 
         var message = (int)wParam;
+
+        if (message is not (NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN or
+                            NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP))
+        {
+            return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
+        }
 
         // P5: unsafe by-value read instead of Marshal.PtrToStructure<T> (which boxes on .NET 8).
         // KBDLLHOOKSTRUCT is blittable (uint/enum-uint/IntPtr); the copy is taken before
@@ -2102,61 +1299,57 @@ public sealed class InputHookService : IInputHookService
             return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
 
-        // Anti-AFK keyboard-idle basis: a genuine PHYSICAL key event (injected events returned above).
-        Volatile.Write(ref _lastPhysicalKeyboardTick, Stopwatch.GetTimestamp());
-
         bool isKeyDown = message is NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN;
         bool isKeyUp = message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP;
         int vkCode = (int)data.vkCode;
+
+        return DispatchDecodedKeyboardEvent(vkCode, isKeyDown, isKeyUp)
+            ? (IntPtr)1
+            : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
+    }
+
+    // Hook-thread-only dispatcher. Native callbacks do liveness, replacement, running, message and
+    // injected-event filtering before entering this allocation-free feature priority chain.
+    internal bool DispatchDecodedKeyboardEvent(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        // Anti-AFK keyboard-idle basis: a genuine PHYSICAL key event (injected events returned above).
+        var physicalTimestamp = Stopwatch.GetTimestamp();
+        _antiAfk.NotePhysicalKeyboardActivity(physicalTimestamp);
 
         // Global color-variant toggle: fire on the assigned key (once per physical press). The key is NOT
         // suppressed — it passes through to apps and the feature chain below — so it can never strand a key or
         // create a wrong binding. Modifiers are rejected as toggle keys (SetColorToggleKey), so this never
         // shadows the Alt-tracking that follows.
         HandleColorToggle(vkCode, isKeyDown, isKeyUp);
-        HandleRapidFireToggle(vkCode, isKeyDown, isKeyUp);
+        if (_rapidFire.HandleToggleKey(vkCode, isKeyDown, isKeyUp))
+        {
+            RaiseRapidFireArmChanged();
+        }
 
         // Physical W/S observation must precede every feature that may consume/early-return this event.
         // In particular, Hold-Breath Early Cancel can own W-UP; Auto-Run still needs to complete its
         // physical handoff even when that feature ultimately suppresses the same target-visible event.
-        var autoRunPhysicalEvent = ObserveAutoRunPhysicalEvent(vkCode, isKeyDown, isKeyUp);
+        var autoRunPhysicalEvent = _autoRun.ObservePhysicalEvent(vkCode, isKeyDown, isKeyUp);
 
-        var suppressEarlyCancelKey = HandleHoldBreathPanicKey(vkCode, isKeyDown, isKeyUp);
+        var suppressEarlyCancelKey = _gestures.HandlePanicKey(
+            vkCode,
+            isKeyDown,
+            isKeyUp,
+            _rightButtonPressed);
 
         // The original W-UP stays suppressed, but downstream paired consumers still need cleanup: a
         // combined mapping sourced from W may own a mapped target DOWN, and Win+W launcher may own its
         // held-key latch. Auto-Run suppression prevents the normal handled-chain from reaching either.
         if (autoRunPhysicalEvent.SuppressPhysicalWHandoffUp)
         {
-            HandleCombinedMappings(vkCode, isKeyDown, isKeyUp);
-            HandleWindowsLauncher(vkCode, isKeyDown, isKeyUp);
+            _remaps.ReleaseOwnedKeyUp(vkCode);
         }
 
-        // Track Alt key state (lock-free)
-        if (vkCode is 0xA4 or 0xA5 or 0x12)  // VK_LMENU, VK_RMENU, VK_MENU
-        {
-            if (isKeyDown)
-            {
-                _altPressed = true;
-            }
-            else if (isKeyUp)
-            {
-                // Releasing one Alt must not clear the flag while the OTHER Alt is still held.
-                // Query only the sibling key: from inside an LL hook the released key itself may
-                // not yet be reflected in the async key state.
-                _altPressed = vkCode switch
-                {
-                    0xA4 => (NativeMethods.GetAsyncKeyState(0xA5) & 0x8000) != 0,
-                    0xA5 => (NativeMethods.GetAsyncKeyState(0xA4) & 0x8000) != 0,
-                    _ => false // generic VK_MENU up: LL hooks deliver L/R codes, treat as full release
-                };
-                if (!_altPressed)
-                {
-                    CancelAltMouseGestures();
-                    CancelAltKeyboardGestures();
-                }
-            }
-        }
+        _gestures.ObserveAlt(
+            vkCode,
+            isKeyDown,
+            isKeyUp,
+            IsPhysicalKeyDown);
 
         if (suppressEarlyCancelKey)
         {
@@ -2164,8 +1357,8 @@ public sealed class InputHookService : IInputHookService
             // Alt+Keyboard press in flight (same key bound as both trigger and panic trigger): cancel
             // the gesture and reconcile the latches so the orphaned timer can't still fire and the
             // next fresh press isn't swallowed as an owned repeat.
-            HandleAltKeyboardPanicOverride(vkCode, isKeyDown, isKeyUp);
-            return (IntPtr)1;
+            _gestures.HandleAltKeyboardPanicOverride(vkCode, isKeyDown, isKeyUp);
+            return true;
         }
 
         // Alt+Keyboard gestures (keyboard analog of HandleAltMouse in the mouse hook): while Alt is
@@ -2173,32 +1366,22 @@ public sealed class InputHookService : IInputHookService
         // Alt+trigger press wins over remap/auto-run — exactly like an Alt+Right binding there.
         // Unbound keys and presses whose DOWN was not consumed fall through untouched; Alt itself is
         // never a trigger (no state exists for it), so it always passes through.
-        if (HandleAltKeyboard(vkCode, isKeyDown, isKeyUp))
+        if (_gestures.HandleAltKeyboard(vkCode, isKeyDown, isKeyUp))
         {
-            return (IntPtr)1;
+            return true;
         }
 
         // Auto-Run runs BEFORE the handled-chain: a cancel key (W/S) may ALSO be a combined-mapping
         // source, so it must be seen for cancel detection even when another feature would consume it.
         // Returns true for the trigger chord and for the one physical W-UP transferred into an active
         // Auto-Run handoff; ordinary W/S/sprint input passes through.
-        if (HandleAutoRun(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent))
+        if (_autoRun.Handle(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent))
         {
-            return (IntPtr)1;
+            return true;
         }
 
         // Handle features in priority order
-        var handled = HandleCapsLock(vkCode, isKeyDown, isKeyUp) ||
-                      HandleCombinedMappings(vkCode, isKeyDown, isKeyUp);
-
-        if (!handled)
-        {
-            handled = HandleWindowsLauncher(vkCode, isKeyDown, isKeyUp);
-        }
-
-        return handled
-            ? (IntPtr)1
-            : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
+        return _remaps.HandleKeyboardEvent(vkCode, isKeyDown, isKeyUp, _rightButtonPressed);
     }
 
     // Global color-variant toggle. Fires ColorVariantToggleRequested ONCE per physical press (typematic
@@ -2237,187 +1420,6 @@ public sealed class InputHookService : IInputHookService
     }
 
     // ==================== HOLD BREATH PANIC ====================
-    private bool HandleHoldBreathPanicKey(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        var consumedKeyVk = Volatile.Read(ref _holdBreathPanicConsumedKeyVk);
-        if (consumedKeyVk != 0 && consumedKeyVk == vkCode)
-        {
-            if (isKeyUp)
-            {
-                Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
-                // Guarded: a mid-press rebind can have moved the fresh-edge latch to the NEW
-                // trigger — this UP may only clear its OWN key's latch.
-                if (Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
-                {
-                    Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
-                }
-            }
-
-            return true;
-        }
-
-        if (!isKeyDown)
-        {
-            if (isKeyUp && Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
-            {
-                Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
-            }
-
-            return false;
-        }
-
-        // Resolve the live trigger FIRST and record the physical edge REGARDLESS of the eligibility
-        // gates below: a press that starts native (Advanced Mode off, profile or Hold Breath
-        // disabled, generations unsettled, RMB not yet held, ...) must stay native for its WHOLE
-        // duration. Otherwise a typematic repeat landing after the gates became true would start a
-        // panic and eat the UP while the app still saw the original native DOWN (stuck key).
-        var profile = _activeProfile;
-        if (profile is null)
-        {
-            return false;
-        }
-
-        var trigger = profile.RightClickHoldBreath.PanicTrigger;
-        if (trigger is not { Kind: InputTriggerKind.KeyboardKey } ||
-            KeyInteropUtilities.ToVirtualKey(trigger.Key) != vkCode)
-        {
-            return false;
-        }
-
-        // Fresh-edge gate: only the FIRST DOWN of a physical press may attempt a panic; every
-        // typematic repeat of this press passes through and so does its UP.
-        if (Volatile.Read(ref _panicKeyPhysicallyDownVk) == vkCode)
-        {
-            return false;
-        }
-
-        Volatile.Write(ref _panicKeyPhysicallyDownVk, vkCode);
-
-        // Async re-derivation in flight: the latch may not yet reflect the CURRENT trigger's
-        // physical baseline. Record the edge (above) but stay native until the fence clears.
-        if (Volatile.Read(ref _panicDerivationEpoch) != 0)
-        {
-            return false;
-        }
-
-        // Panic ATTEMPT gates. Eligibility may flip mid-hold; the edge is already recorded above.
-        if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
-            !profile.IsEnabled ||
-            !profile.RightClickHoldBreath.IsEnabled ||
-            !_rightButtonPressed)
-        {
-            return false;
-        }
-
-        var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-        return PanicHoldBreath(profile, foregroundGeneration, panicKeyVk: vkCode, panicMouseButton: 0);
-    }
-
-    private bool HandleHoldBreathPanicMouse(int message, uint mouseData)
-    {
-        var button = message switch
-        {
-            NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP => Models.MouseButton.Left,
-            NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP => Models.MouseButton.Right,
-            NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP => Models.MouseButton.Middle,
-            _ => GetXButton(mouseData)
-        };
-
-        var consumedButton = Volatile.Read(ref _holdBreathPanicConsumedMouseButton);
-        if (consumedButton != 0 && consumedButton == (int)button)
-        {
-            if (message is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or
-                NativeMethods.WM_MBUTTONUP or NativeMethods.WM_XBUTTONUP)
-            {
-                Volatile.Write(ref _holdBreathPanicConsumedMouseButton, 0);
-            }
-
-            return true;
-        }
-
-        if (message is not (NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or
-                            NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_XBUTTONDOWN))
-        {
-            return false;
-        }
-
-        var profile = _activeProfile;
-        if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
-            profile is not { IsEnabled: true } || !profile.RightClickHoldBreath.IsEnabled)
-        {
-            return false;
-        }
-
-        var settings = profile.RightClickHoldBreath;
-        var trigger = settings.PanicTrigger;
-        if (trigger.Kind != InputTriggerKind.MouseButton ||
-            trigger.MouseButton != button ||
-            !_rightButtonPressed)
-        {
-            return false;
-        }
-
-        var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-        return PanicHoldBreath(profile, foregroundGeneration, panicKeyVk: 0, panicMouseButton: (int)button);
-    }
-
-    private bool PanicHoldBreath(
-        Profile expectedProfile,
-        long foregroundGeneration,
-        int panicKeyVk,
-        int panicMouseButton)
-    {
-        var lockWaitStart = Stopwatch.GetTimestamp();
-        lock (_holdBreathLock)
-        {
-            LogHoldBreathLockWait("PANIC", lockWaitStart);
-
-            if (_disposed || !_isRunning || !_rightButtonPressed || !_advancedModeEnabled ||
-                foregroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-                foregroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
-                !ReferenceEquals(_activeProfile, expectedProfile) ||
-                !expectedProfile.IsEnabled ||
-                !expectedProfile.RightClickHoldBreath.IsEnabled ||
-                !expectedProfile.RightClickHoldBreath.SuppressEarlyCancelInput)
-            {
-                return false;
-            }
-
-            // Single authority for "did THIS press perform a cancellation" — the keyboard and mouse
-            // panic handlers both route here, so the Early Cancel checkbox is enforced once, atomically
-            // with the cancel decision:
-            //  - already cancelled in this aim cycle (the veto latch) -> nothing left to stop;
-            //  - nothing pending and no owned Hold-mode key (never armed, Toggle tap already
-            //    committed, ...) -> nothing to stop.
-            // In both cases the press passes through untouched: Early Cancel blocks exactly ONE
-            // press per aim cycle — the one that actually cancelled — never permanently while aiming.
-            if (_holdBreathPanicSuppressed ||
-                (!_holdBreathPending && _holdBreathInjectedKey is null))
-            {
-                return false;
-            }
-
-            _holdBreathPanicSuppressed = true;
-            CancelHoldBreathStateLocked();
-
-            // Publish the consumed owner INSIDE the same lock as the cancel decision. A hard
-            // teardown (Stop / session switch) zeroes these fields only after its own
-            // _holdBreathLock pass (ReleaseHoldBreathState inside ReleaseAllState), so an in-flight
-            // panic can never write a consumed latch that outlives the boundary — the pre-fix race
-            // let a callback resumed after teardown resurrect a swallow-latch into the next session.
-            if (panicKeyVk != 0)
-            {
-                Volatile.Write(ref _holdBreathPanicConsumedKeyVk, panicKeyVk);
-            }
-            else
-            {
-                Volatile.Write(ref _holdBreathPanicConsumedMouseButton, panicMouseButton);
-            }
-
-            if (IsDebugEnabled) LogDebug("HoldBreath panic: cancelled; re-arm vetoed until right-button-up");
-            return true;
-        }
-    }
 
     // ==================== MOUSE HOOK ====================
 
@@ -2435,7 +1437,7 @@ public sealed class InputHookService : IInputHookService
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
 
-        if (nCode < 0 || !_isRunning)
+        if (nCode < 0 || _runtime.IsDisposed || !_runtime.IsRunning)
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
@@ -2466,6 +1468,14 @@ public sealed class InputHookService : IInputHookService
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
 
+        return DispatchDecodedMouseEvent(message, data.mouseData)
+            ? (IntPtr)1
+            : NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
+    }
+
+    // Hook-thread-only dispatcher; see DispatchDecodedKeyboardEvent for callback ownership rules.
+    internal bool DispatchDecodedMouseEvent(int message, uint mouseData)
+    {
         // Track right button state (lock-free). Keep _rightButtonPressed = true HERE — CombinedMappings'
         // RightClickOnly gate reads it — but decide hold-breath AFTER HandleAltMouse (H6).
         if (message == NativeMethods.WM_RBUTTONDOWN)
@@ -2486,4040 +1496,145 @@ public sealed class InputHookService : IInputHookService
             {
                 RightButtonStateChanged?.Invoke(this, false);
             }
-            ReleaseRightClickOverrides();
+            _remaps.OnRightButtonReleased();
         }
 
-        var handled = HandleHoldBreathPanicMouse(message, data.mouseData) ||
-                      HandleAltMouse(message, data.mouseData);
+        var handled = _gestures.HandlePanicMouse(message, mouseData, _rightButtonPressed) ||
+                      _gestures.HandleAltMouse(message, mouseData);
 
         // Rapid Fire never consumes the physical click. Existing mouse actions win priority: an Alt+Left
         // binding or panic action may consume DOWN, in which case Rapid Fire only records the held state.
-        HandleRapidFire(message, allowStart: !handled);
+        if (message == NativeMethods.WM_LBUTTONDOWN)
+        {
+            _rapidFire.HandleLeftButton(isDown: true, allowStart: !handled);
+        }
+        else if (message == NativeMethods.WM_LBUTTONUP)
+        {
+            _rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
 
         // H6: only arm hold-breath for a genuine right-click, not one suppressed as an Alt+Right binding.
         if (message == NativeMethods.WM_RBUTTONDOWN)
         {
             if (!handled)
             {
-                HandleRightClickHoldBreathDown();
+                _gestures.HandleRightButtonDown(_rightButtonPressed);
             }
         }
         else if (message == NativeMethods.WM_RBUTTONUP)
         {
-            HandleRightClickHoldBreathUp();
+            _gestures.HandleRightButtonUp();
         }
 
-        return handled
-            ? (IntPtr)1
-            : NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
+        return handled;
     }
 
-    private void HandleRapidFire(int message, bool allowStart)
-    {
-        if (message == NativeMethods.WM_LBUTTONUP)
-        {
-            _rapidFirePhysicalLeftDown = false;
-            CancelRapidFirePress();
-            return;
-        }
+    public RapidFireArmStatus GetRapidFireArmStatus() => _rapidFire.GetStatus();
 
-        if (message != NativeMethods.WM_LBUTTONDOWN)
-        {
-            return;
-        }
-
-        var freshPress = !_rapidFirePhysicalLeftDown;
-        _rapidFirePhysicalLeftDown = true;
-        if (!freshPress || !allowStart || !RapidFireIsArmed() || !_advancedModeEnabled ||
-            !ProfileInputGenerationIsCurrent())
-        {
-            return;
-        }
-
-        var profile = _activeProfile;
-        if (profile is not { IsEnabled: true } ||
-            !ReferenceEquals(profile, _rapidFireOwnerProfile) ||
-            !profile.RapidFire.IsEnabled)
-        {
-            return;
-        }
-
-        _rapidFireTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        Interlocked.Exchange(ref _rapidFireTimerState, TIMER_CANCELLED);
-        var generation = Interlocked.Increment(ref _rapidFireGeneration);
-        Volatile.Write(ref _rapidFireForegroundGeneration, Volatile.Read(ref _activeProfileGeneration));
-        _rapidFireIntervalMs = Math.Clamp(
-            profile.RapidFire.IntervalMilliseconds,
-            RapidFireSettings.MinIntervalMilliseconds,
-            RapidFireSettings.MaxIntervalMilliseconds);
-        _rapidFireJitterMs = Math.Clamp(
-            profile.RapidFire.JitterMilliseconds,
-            0,
-            RapidFireSettings.MaxJitterMilliseconds);
-        ScheduleRapidFire(generation);
-
-        // Diagnostic pair (1 of 2; the FIRE line is in OnRapidFireTimerFired). The physical click passes
-        // through and the first SYNTHETIC click is one full interval+jitter away by design (the
-        // no-immediate-click rule) — this line makes the armed delay visible when a burst "feels slow".
-        if (IsDebugEnabled)
-        {
-            LogDebug($"Rapid Fire armed: first synthetic click due in {_rapidFireArmedDelayMs} ms (interval={_rapidFireIntervalMs}, jitter={_rapidFireJitterMs})");
-        }
-    }
-
-    private void ScheduleRapidFire(long generation, double sendElapsedMs = 0)
-    {
-        var profile = _rapidFireOwnerProfile;
-        var foregroundGeneration = Volatile.Read(ref _rapidFireForegroundGeneration);
-        if (profile is null || !RapidFireIsCurrent(generation, profile, foregroundGeneration))
-        {
-            return;
-        }
-
-        var jitter = _rapidFireJitterMs;
-        var targetDelay = _rapidFireIntervalMs + (jitter == 0 ? 0 : _random.Value!.Next(jitter + 1));
-        var delay = CalculateRapidFireSuccessorDelay(targetDelay, sendElapsedMs);
-        Volatile.Write(ref _rapidFireTimerGeneration, generation);
-        Volatile.Write(ref _rapidFireArmedTick, Stopwatch.GetTimestamp());
-        Volatile.Write(ref _rapidFireArmedDelayMs, delay);
-        Interlocked.Exchange(ref _rapidFireTimerState, TIMER_ARMED);
-        try
-        {
-            _rapidFireTimer.Change(delay, Timeout.Infinite);
-        }
-        catch (ObjectDisposedException) when (_disposed)
-        {
-            // A direct timer callback can finish SendInput while Dispose tears down the timer.
-        }
-    }
-
-    internal static int CalculateRapidFireSuccessorDelay(int targetDelayMs, double sendElapsedMs) =>
-        sendElapsedMs < targetDelayMs
-            ? Math.Max(1, (int)Math.Ceiling(targetDelayMs - sendElapsedMs))
-            : targetDelayMs;
-
-    private void OnRapidFireTimerFired()
-    {
-        var delay = Volatile.Read(ref _rapidFireArmedDelayMs);
-        var elapsedMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _rapidFireArmedTick)) *
-            TickToMilliseconds;
-        if (elapsedMs < delay - HOLD_FIRE_TOLERANCE_MS ||
-            Interlocked.CompareExchange(ref _rapidFireTimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
-        {
-            return;
-        }
-
-        // Use the generation that armed this due-time. A previously queued Timer callback must never
-        // adopt a newer press merely because the current generation changed before it ran.
-        var generation = Volatile.Read(ref _rapidFireTimerGeneration);
-        var foregroundGeneration = Volatile.Read(ref _rapidFireForegroundGeneration);
-        var profile = _rapidFireOwnerProfile;
-        if (profile is null || !RapidFireIsCurrent(generation, profile, foregroundGeneration))
-        {
-            return;
-        }
-
-        // Diagnostic pair (2 of 2; pairs with the ARMED line in HandleRapidFire). elapsed-vs-delay exposes
-        // timer lateness; with log timestamps, consecutive FIRE lines give the real start-to-start cadence.
-        if (IsDebugEnabled)
-        {
-            LogDebug($"Rapid Fire timer fired: elapsed={elapsedMs:F1} ms, armed delay={delay} ms");
-        }
-
-        var clickStart = Stopwatch.GetTimestamp();
-        try
-        {
-            var holdMilliseconds = _random.Value!.Next(
-                RAPID_FIRE_HOLD_MIN_MS,
-                RAPID_FIRE_HOLD_MAX_MS + 1);
-            if (!_inputSender.SendLeftClick(holdMilliseconds) && IsDebugEnabled)
-            {
-                LogDebug("Rapid Fire click injection failed");
-            }
-        }
-        catch (Exception ex)
-        {
-            LogDebug($"Rapid Fire click injection error: {ex.Message}");
-            return;
-        }
-
-        var sendElapsedMs = (Stopwatch.GetTimestamp() - clickStart) * TickToMilliseconds;
-        ScheduleRapidFire(generation, sendElapsedMs);
-    }
-
-    private bool RapidFireIsCurrent(long generation, Profile profile, long foregroundGeneration)
-    {
-        return _isRunning &&
-               _advancedModeEnabled &&
-               RapidFireIsArmed() &&
-               _rapidFirePhysicalLeftDown &&
-               generation == Volatile.Read(ref _rapidFireGeneration) &&
-               foregroundGeneration == Volatile.Read(ref _publishedForegroundGeneration) &&
-               foregroundGeneration == Volatile.Read(ref _activeProfileGeneration) &&
-               ReferenceEquals(_rapidFireOwnerProfile, profile) &&
-               ReferenceEquals(_activeProfile, profile) &&
-               profile.IsEnabled &&
-               profile.RapidFire.IsEnabled;
-    }
-
-    private void CancelRapidFirePress()
-    {
-        Interlocked.Increment(ref _rapidFireGeneration);
-        Interlocked.Exchange(ref _rapidFireTimerState, TIMER_CANCELLED);
-        _rapidFireTimer.Change(Timeout.Infinite, Timeout.Infinite);
-    }
-
-    // Full disarm. Returns whether an arm/owner was actually live before this call cleared it —
-    // callers use that to raise RapidFireArmChanged AFTER releasing any held lock. NEVER raises
-    // itself: the public raise contract lives in the callers. Internal test seams
-    // (StartInputExecutorForTesting / StopInputExecutorForTesting / ConfigureRapidFireForTesting)
-    // deliberately ignore the return — they are non-notifying setup/teardown.
-    private bool ReleaseRapidFireState(bool preservePhysicalPairing)
-    {
-        var wasArmed = _rapidFireArmed || _rapidFireOwnerProfile is not null;
-        Interlocked.Increment(ref _rapidFireArmEpoch);
-        CancelRapidFirePress();
-        _rapidFireArmed = false;
-        _rapidFireOwnerProfile = null;
-        if (!preservePhysicalPairing)
-        {
-            _rapidFirePhysicalLeftDown = false;
-        }
-
-        return wasArmed;
-    }
-
-    // Single owner-release authority for reconcile edits. Atomic with hook-thread re-targeting
-    // (HandleRapidFireToggle writes the owner under _profileLock): a UI edit of P1 that
-    // checked-then-released without the lock could kill a fresh P2 arm in the gap. Returns true
-    // iff THIS call cleared the owner. NEVER raises — callers raise outside.
-    private bool ReleaseRapidFireOwnedBy(Profile profile)
-    {
-        lock (_profileLock)
-        {
-            if (!ReferenceEquals(_rapidFireOwnerProfile, profile))
-            {
-                return false;
-            }
-
-            return ReleaseRapidFireState(preservePhysicalPairing: true);
-        }
-    }
-
-    private void RaiseRapidFireArmChanged() => RapidFireArmChanged?.Invoke(this, EventArgs.Empty);
-
-    // ==================== ALT+MOUSE HANDLING (LOCK-FREE) ====================
-    
-    private bool HandleAltMouse(int message, uint mouseData)
-    {
-        var button = message switch
-        {
-            NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP => Models.MouseButton.Left,
-            NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP => Models.MouseButton.Right,
-            NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP => Models.MouseButton.Middle,
-            NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP => GetXButton(mouseData),
-            _ => (Models.MouseButton?)null
-        };
-
-        if (!button.HasValue)
-        {
-            return false;
-        }
-
-        var state = _mouseStates[button.Value];
-        var isDown = message is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN or
-                                NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_XBUTTONDOWN;
-        var isUp = message is NativeMethods.WM_LBUTTONUP or NativeMethods.WM_RBUTTONUP or 
-                              NativeMethods.WM_MBUTTONUP or NativeMethods.WM_XBUTTONUP;
-
-        // A consumed DOWN owns its matching UP even if Alt/profile/settings changed in between.
-        if (isUp)
-        {
-            return HandleMouseUp(button.Value, state);
-        }
-
-        if (!isDown || !_altPressed || !ProfileInputGenerationIsCurrent())
-        {
-            return false;
-        }
-
-        var configurationGeneration = Volatile.Read(ref _altMouseGeneration);
-        var profile = _activeProfile;
-        if (profile is not { IsEnabled: true } ||
-            !profile.AltMouse.IsEnabled ||
-            !profile.AltMouse.Bindings.TryGetValue(button.Value, out var binding) ||
-            binding is null ||
-            (!binding.TapKey.HasValue && !binding.HoldKey.HasValue))
-        {
-            return false;
-        }
-
-        return HandleMouseDown(
-            button.Value,
-            state,
-            binding,
-            profile,
-            configurationGeneration);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool HandleMouseDown(Models.MouseButton button, MouseButtonState state,
-        MouseButtonBinding binding, Profile profile, long configurationGeneration)
-    {
-        if (configurationGeneration != Volatile.Read(ref _altMouseGeneration))
-        {
-            return false;
-        }
-
-        // Cancel any pending timer
-        CancelHoldTimer(state);
-
-        var downTick = Stopwatch.GetTimestamp();
-        var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-        var holdThreshold = Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds);
-        var press = new AltMousePress(
-            profile,
-            foregroundGeneration,
-            configurationGeneration,
-            downTick,
-            binding.TapKey,
-            binding.HoldKey,
-            holdThreshold);
-
-        Volatile.Write(ref state.ActivePress, press);
-        Interlocked.Exchange(ref state.SuppressNextUp, 1);
-
-        // Atomically arm the state machine
-        Interlocked.Exchange(ref state.TimerState, TIMER_ARMED);
-
-        if (IsDebugEnabled)
-        {
-            LogDebug($"[{button}] DOWN - Tap={binding.TapKey}, Hold={binding.HoldKey}, " +
-                     $"Threshold={holdThreshold}ms");
-        }
-
-        // Schedule hold timer if configured
-        if (press.HoldKey.HasValue)
-        {
-            var holdKey = press.HoldKey.Value;
-            if (IsDebugEnabled) LogDebug($"[{button}] Hold timer: {holdThreshold}ms");
-
-            var stateRef = state;
-
-            // Assign the callback BEFORE arming the timer: the shared timer root re-reads the HoldCallback
-            // FIELD at fire time, so a stale elapse from a previous press would otherwise run the newest
-            // closure. The elapsed-time guard below is what actually rejects that stale firing.
-            state.HoldCallback = _ =>
-            {
-                if (!_isRunning ||
-                    !_altPressed ||
-                    !ReferenceEquals(Volatile.Read(ref stateRef.ActivePress), press) ||
-                    !ReferenceEquals(_activeProfile, press.Profile) ||
-                    !press.Profile.IsEnabled ||
-                    !press.Profile.AltMouse.IsEnabled ||
-                    press.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-                    press.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
-                    press.ConfigurationGeneration != Volatile.Read(ref _altMouseGeneration))
-                {
-                    if (IsDebugEnabled) LogDebug($"[{button}] Hold timer blocked - runtime state changed");
-                    return;
-                }
-
-                // ✅ H3: reject a stale/premature firing. An elapse queued by a PREVIOUS press carries an
-                // earlier down-tick; if the real elapsed time is below threshold this is not a genuine hold,
-                // so no-op WITHOUT flipping to FIRED (otherwise the current quick tap would be suppressed).
-                var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
-                if (elapsedMs < holdThreshold - HOLD_FIRE_TOLERANCE_MS)
-                {
-                    if (IsDebugEnabled) LogDebug($"[{button}] Hold timer rejected - stale/premature ({elapsedMs:0}ms < {holdThreshold}ms)");
-                    return;
-                }
-
-                // ✅ Atomic state check: only fire if still ARMED
-                if (Interlocked.CompareExchange(ref stateRef.TimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
-                {
-                    if (IsDebugEnabled) LogDebug($"[{button}] Hold timer blocked - state changed (cancelled or already fired)");
-                    return;
-                }
-
-                if (IsDebugEnabled) LogDebug($"[{button}] Hold timer FIRED - sending {holdKey}");
-                FireTapKey(
-                    holdKey,
-                    KEY_PRESS_DURATION_MIN_MS,
-                    KEY_PRESS_DURATION_MAX_MS,
-                    press.ForegroundGeneration,
-                    press.ConfigurationGeneration);
-            };
-
-            state.HoldTimer.Change(holdThreshold, Timeout.Infinite); // arm AFTER assigning the callback
-        }
-
-        return true;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool HandleMouseUp(Models.MouseButton button, MouseButtonState state)
-    {
-        var suppressUp = Interlocked.Exchange(ref state.SuppressNextUp, 0) != 0;
-        var press = Interlocked.Exchange(ref state.ActivePress, null);
-        var finalState = Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
-        state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
-
-        if (press is null)
-        {
-            return suppressUp;
-        }
-
-        var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
-        if (IsDebugEnabled) LogDebug($"[{button}] UP - Elapsed={elapsedMs:F1}ms, Threshold={press.HoldThresholdMs}ms, State={finalState}");
-
-        // A live disable/rebind, Alt release, profile switch, or foreground-generation change cancels
-        // execution but never changes the paired suppression decision recorded at DOWN.
-        if (!_isRunning ||
-            !_altPressed ||
-            !ReferenceEquals(_activeProfile, press.Profile) ||
-            !press.Profile.IsEnabled ||
-            !press.Profile.AltMouse.IsEnabled ||
-            press.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-            press.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
-            press.ConfigurationGeneration != Volatile.Read(ref _altMouseGeneration))
-        {
-            return suppressUp;
-        }
-
-        if (finalState == TIMER_FIRED)
-        {
-            // Timer already sent the hold key - don't send again
-            if (IsDebugEnabled) LogDebug($"[{button}] Hold was triggered by timer (not re-triggering)");
-        }
-        else if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
-        {
-            // We beat the timer, but threshold was met - send hold key
-            if (IsDebugEnabled) LogDebug($"[{button}] Hold threshold met manually");
-            FireTapKey(
-                press.HoldKey.Value,
-                KEY_PRESS_DURATION_MIN_MS,
-                KEY_PRESS_DURATION_MAX_MS,
-                press.ForegroundGeneration,
-                press.ConfigurationGeneration);
-        }
-        else if (press.TapKey.HasValue)
-        {
-            // Quick tap - send tap key
-            if (IsDebugEnabled) LogDebug($"[{button}] Quick tap");
-            FireTapKey(
-                press.TapKey.Value,
-                KEY_PRESS_DURATION_MIN_MS,
-                KEY_PRESS_DURATION_MAX_MS,
-                press.ForegroundGeneration,
-                press.ConfigurationGeneration);
-        }
-
-        return suppressUp;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Models.MouseButton GetXButton(uint mouseData)
-    {
-        var xButton = (mouseData >> 16) & 0xFFFF;
-        return xButton switch
-        {
-            1 => Models.MouseButton.XButton1,
-            2 => Models.MouseButton.XButton2,
-            _ => Models.MouseButton.XButton1
-        };
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void CancelHoldTimer(MouseButtonState state)
-    {
-        // Atomically mark as cancelled
-        Interlocked.Exchange(ref state.TimerState, TIMER_CANCELLED);
-
-        // Disable timer (non-blocking)
-        state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
-    }
-
-    // ==================== ALT+KEYBOARD HANDLING (LOCK-FREE) ====================
-
-    // Keyboard analog of HandleAltMouse: hold Alt + press a trigger key -> tap under threshold fires
-    // TapKey, holding past threshold fires HoldKey. One gesture per physical press; typematic repeats
-    // never start a second gesture. Suppression contract mirrors the mouse side: consume (return true)
-    // only when a binding exists and the mode/profile/Alt/generation gates pass; a consumed DOWN owns
-    // its repeats and its UP (SuppressNextUp latch, preserved across ordinary resets); a DOWN that was
-    // not consumed owns nothing — its repeats and UP fall through untouched so the focused app's view
-    // of the physical key stream stays paired.
-    private bool HandleAltKeyboard(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        if (!isKeyDown && !isKeyUp)
-        {
-            return false;
-        }
-
-        var key = KeyInteropUtilities.FromVirtualKey(vkCode);
-        if (key is null || !_altKeyboardStates.TryGetValue(key.Value, out var state))
-        {
-            return false;
-        }
-
-        // A consumed DOWN owns its matching UP even if Alt/profile/settings changed in between.
-        if (isKeyUp)
-        {
-            return HandleAltKeyboardUp(key.Value, state);
-        }
-
-        // Typematic auto-repeat streams repeated DOWNs while the key is held. A repeat of a CONSUMED
-        // press is owned: suppress it with the UP it shares an owner with (the game-visible stream was
-        // already cut at the first DOWN, so leaking repeats here would desync the app's key state).
-        if (Volatile.Read(ref state.SuppressNextUp) != 0)
-        {
-            return true;
-        }
-
-        // A repeat of a press whose first DOWN was NOT consumed (key went down before Alt, or had no
-        // binding at the time) is likewise not ours to suppress — but it must not START a gesture
-        // either: only a fresh down-edge while Alt is held forms one, mirroring one-DOWN-one-gesture
-        // on the mouse side.
-        if (state.PhysicallyDown)
-        {
-            return false;
-        }
-
-        state.PhysicallyDown = true;
-
-        if (!_altPressed || !ProfileInputGenerationIsCurrent())
-        {
-            return false;
-        }
-
-        var configurationGeneration = Volatile.Read(ref _altKeyboardGeneration);
-        var profile = _activeProfile;
-        if (profile is not { IsEnabled: true } ||
-            !profile.AltKeyboard.IsEnabled ||
-            !profile.AltKeyboard.Bindings.TryGetValue(key.Value, out var binding) ||
-            binding is null ||
-            (!binding.TapKey.HasValue && !binding.HoldKey.HasValue))
-        {
-            return false;
-        }
-
-        return HandleAltKeyboardDown(
-            key.Value,
-            state,
-            binding,
-            profile,
-            configurationGeneration);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool HandleAltKeyboardDown(Key key, AltKeyboardKeyState state,
-        AltKeyboardBinding binding, Profile profile, long configurationGeneration)
-    {
-        if (configurationGeneration != Volatile.Read(ref _altKeyboardGeneration))
-        {
-            return false;
-        }
-
-        // Cancel any pending timer
-        CancelAltKeyboardHoldTimer(state);
-
-        var downTick = Stopwatch.GetTimestamp();
-        var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-        var holdThreshold = Math.Max(10, profile.AltKeyboard.HoldThresholdMilliseconds);
-        var press = new AltKeyboardPress(
-            profile,
-            foregroundGeneration,
-            configurationGeneration,
-            downTick,
-            binding.TapKey,
-            binding.HoldKey,
-            holdThreshold);
-
-        Volatile.Write(ref state.ActivePress, press);
-        Interlocked.Exchange(ref state.SuppressNextUp, 1);
-
-        // Atomically arm the state machine
-        Interlocked.Exchange(ref state.TimerState, TIMER_ARMED);
-
-        if (IsDebugEnabled)
-        {
-            LogDebug($"[Alt+{key}] DOWN - Tap={binding.TapKey}, Hold={binding.HoldKey}, " +
-                     $"Threshold={holdThreshold}ms");
-        }
-
-        // Schedule hold timer if configured
-        if (press.HoldKey.HasValue)
-        {
-            var holdKey = press.HoldKey.Value;
-            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer: {holdThreshold}ms");
-
-            var stateRef = state;
-
-            // Assign the callback BEFORE arming the timer: the shared timer root re-reads the HoldCallback
-            // FIELD at fire time, so a stale elapse from a previous press would otherwise run the newest
-            // closure. The elapsed-time guard below is what actually rejects that stale firing.
-            state.HoldCallback = _ =>
-            {
-                if (!_isRunning ||
-                    !_altPressed ||
-                    !ReferenceEquals(Volatile.Read(ref stateRef.ActivePress), press) ||
-                    !ReferenceEquals(_activeProfile, press.Profile) ||
-                    !press.Profile.IsEnabled ||
-                    !press.Profile.AltKeyboard.IsEnabled ||
-                    press.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-                    press.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
-                    press.ConfigurationGeneration != Volatile.Read(ref _altKeyboardGeneration))
-                {
-                    if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer blocked - runtime state changed");
-                    return;
-                }
-
-                // ✅ H3: reject a stale/premature firing. An elapse queued by a PREVIOUS press carries an
-                // earlier down-tick; if the real elapsed time is below threshold this is not a genuine hold,
-                // so no-op WITHOUT flipping to FIRED (otherwise the current quick tap would be suppressed).
-                var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
-                if (elapsedMs < holdThreshold - HOLD_FIRE_TOLERANCE_MS)
-                {
-                    if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer rejected - stale/premature ({elapsedMs:0}ms < {holdThreshold}ms)");
-                    return;
-                }
-
-                // ✅ Atomic state check: only fire if still ARMED
-                if (Interlocked.CompareExchange(ref stateRef.TimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
-                {
-                    if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer blocked - state changed (cancelled or already fired)");
-                    return;
-                }
-
-                if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold timer FIRED - sending {holdKey}");
-                FireTapKey(
-                    holdKey,
-                    KEY_PRESS_DURATION_MIN_MS,
-                    KEY_PRESS_DURATION_MAX_MS,
-                    press.ForegroundGeneration,
-                    altMouseGeneration: 0,
-                    altKeyboardGeneration: press.ConfigurationGeneration,
-                    altKeyboardOwnerPress: press);
-            };
-
-            state.HoldTimer.Change(holdThreshold, Timeout.Infinite); // arm AFTER assigning the callback
-        }
-
-        return true;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool HandleAltKeyboardUp(Key key, AltKeyboardKeyState state)
-    {
-        state.PhysicallyDown = false;
-
-        var suppressUp = Interlocked.Exchange(ref state.SuppressNextUp, 0) != 0;
-        var press = Interlocked.Exchange(ref state.ActivePress, null);
-        var finalState = Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
-        state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
-
-        if (press is null)
-        {
-            return suppressUp;
-        }
-
-        var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
-        if (IsDebugEnabled) LogDebug($"[Alt+{key}] UP - Elapsed={elapsedMs:F1}ms, Threshold={press.HoldThresholdMs}ms, State={finalState}");
-
-        // A live disable/rebind, Alt release, profile switch, or foreground-generation change cancels
-        // execution but never changes the paired suppression decision recorded at DOWN.
-        if (!_isRunning ||
-            !_altPressed ||
-            !ReferenceEquals(_activeProfile, press.Profile) ||
-            !press.Profile.IsEnabled ||
-            !press.Profile.AltKeyboard.IsEnabled ||
-            press.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-            press.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
-            press.ConfigurationGeneration != Volatile.Read(ref _altKeyboardGeneration))
-        {
-            return suppressUp;
-        }
-
-        if (finalState == TIMER_FIRED)
-        {
-            // Timer already sent the hold key - don't send again
-            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold was triggered by timer (not re-triggering)");
-        }
-        else if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
-        {
-            // We beat the timer, but threshold was met - send hold key
-            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Hold threshold met manually");
-            FireTapKey(
-                press.HoldKey.Value,
-                KEY_PRESS_DURATION_MIN_MS,
-                KEY_PRESS_DURATION_MAX_MS,
-                press.ForegroundGeneration,
-                altMouseGeneration: 0,
-                altKeyboardGeneration: press.ConfigurationGeneration,
-                altKeyboardOwnerPress: press);
-        }
-        else if (press.TapKey.HasValue)
-        {
-            // Quick tap - send tap key
-            if (IsDebugEnabled) LogDebug($"[Alt+{key}] Quick tap");
-            FireTapKey(
-                press.TapKey.Value,
-                KEY_PRESS_DURATION_MIN_MS,
-                KEY_PRESS_DURATION_MAX_MS,
-                press.ForegroundGeneration,
-                altMouseGeneration: 0,
-                altKeyboardGeneration: press.ConfigurationGeneration,
-                altKeyboardOwnerPress: press);
-        }
-
-        return suppressUp;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void CancelAltKeyboardHoldTimer(AltKeyboardKeyState state)
-    {
-        // Atomically mark as cancelled
-        Interlocked.Exchange(ref state.TimerState, TIMER_CANCELLED);
-
-        // Disable timer (non-blocking)
-        state.HoldTimer.Change(Timeout.Infinite, Timeout.Infinite);
-    }
-
-    // Cleanup-only view of a key event that hold-breath panic consumed BEFORE HandleAltKeyboard could
-    // see it (same physical key bound as both an Alt+Keyboard trigger and the panic trigger). Panic
-    // owns the app-visible stream for this press, so: cancel any armed gesture WITHOUT firing its
-    // tap/hold, and clear the ownership latches — keeping them would make the next fresh press look
-    // like an owned auto-repeat (swallowed DOWN and UP, one dead press). PhysicallyDown still tracks
-    // the real key so post-panic repeats keep being classified correctly until the UP.
-    private void HandleAltKeyboardPanicOverride(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        var key = KeyInteropUtilities.FromVirtualKey(vkCode);
-        if (key is null || !_altKeyboardStates.TryGetValue(key.Value, out var state))
-        {
-            return;
-        }
-
-        if (isKeyDown)
-        {
-            CancelAltKeyboardHoldTimer(state);
-            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
-            Interlocked.Exchange(ref state.ActivePress, null)?.Cancel();
-            Interlocked.Exchange(ref state.SuppressNextUp, 0);
-        }
-        else if (isKeyUp)
-        {
-            state.PhysicallyDown = false;
-            Interlocked.Exchange(ref state.SuppressNextUp, 0);
-        }
-    }
-
-    // ==================== COMBINED KEY MAPPINGS ====================
-    
-    private bool HandleCombinedMappings(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        var sourceKey = KeyInteropUtilities.FromVirtualKey(vkCode);
-
-        // H2: release by held source key at the TOP, before any enable/entry guard. If the mapping was
-        // disabled or the row deleted while its source key was held, this still removes the override and
-        // releases the injected target key so it can't stick system-wide. The count fast-path skips the
-        // lock entirely when no overrides are active (relies on the single-threaded keyboard hook, §2).
-        if (isKeyUp && sourceKey is not null &&
-            (_activeCombinedOverrideCount > 0 || _combinedSuppressionUntilUpCount > 0))
-        {
-            CombinedOverrideState? held;
-            var sendUp = false;
-            var hasForcedReleaseDecision = false;
-            var suppressFromForcedRelease = false;
-            lock (_combinedOverridesLock)
-            {
-                if (_combinedSuppressionUntilUp.TryGetValue(
-                        sourceKey.Value,
-                        out suppressFromForcedRelease))
-                {
-                    hasForcedReleaseDecision = true;
-                    _combinedSuppressionUntilUp.Remove(sourceKey.Value);
-                }
-                if (_activeCombinedOverrides.Remove(sourceKey.Value, out held) && held is not null)
-                {
-                    // F-011: only the LAST source driving this target sends its UP.
-                    sendUp = DecrementCombinedTarget(held.TargetKey);
-                    if (sendUp)
-                    {
-                        EnqueueHoldBreathInjection(
-                            new HoldBreathInjection(held.TargetKey, IsDown: false, PreSleepMs: 0));
-                    }
-                }
-                _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
-                _combinedSuppressionUntilUpCount = _combinedSuppressionUntilUp.Count;
-            }
-
-            if (held is not null)
-            {
-                if (IsDebugEnabled) LogDebug($"Combined mapping released: {sourceKey.Value} (targetUp={sendUp})");
-                return held.SuppressOriginal;
-            }
-
-            if (hasForcedReleaseDecision)
-            {
-                return suppressFromForcedRelease;
-            }
-        }
-
-        if (isKeyDown && sourceKey is not null && _combinedSuppressionUntilUpCount > 0)
-        {
-            lock (_combinedOverridesLock)
-            {
-                if (_combinedSuppressionUntilUp.TryGetValue(
-                        sourceKey.Value,
-                        out var recordedSuppression))
-                {
-                    return recordedSuppression;
-                }
-            }
-        }
-
-        // Typematic repeats inherit the exact decision recorded on the initial physical DOWN. Live
-        // setting changes must not change suppression or create a second target ownership record.
-        if (isKeyDown && sourceKey is not null && _activeCombinedOverrideCount > 0)
-        {
-            lock (_combinedOverridesLock)
-            {
-                if (_activeCombinedOverrides.TryGetValue(sourceKey.Value, out var held))
-                {
-                    return held.SuppressOriginal;
-                }
-            }
-        }
-
-        if (isKeyDown && !ProfileInputGenerationIsCurrent())
-        {
-            return false;
-        }
-
-        var combinedGeneration = Volatile.Read(ref _combinedConfigurationGeneration);
-        var profile = _activeProfile;
-        if (profile is not { IsEnabled: true } || !profile.CombinedMappings.IsEnabled)
-        {
-            return false;
-        }
-
-        if (sourceKey is null)
-        {
-            return false;
-        }
-
-        // Optimization: Use manual loop instead of LINQ to avoid allocation on every key press
-        CombinedMappingEntry? entry = null;
-        foreach (var m in profile.CombinedMappings.Mappings)
-        {
-            if (m.SourceKey == sourceKey.Value)
-            {
-                entry = m;
-                break;
-            }
-        }
-
-        if (entry is null)
-        {
-            return false;
-        }
-
-        // Advanced Mode off forces suppression on every mapping (1:1, source consumed) regardless of
-        // the saved per-entry value — disabling Suppress is the gated non-1:1 capability. This is the
-        // runtime belt; the XAML IsEnabled binding on the Suppress checkbox is the UI suspenders.
-        var suppressOriginal = entry.SuppressOriginalKey || !_advancedModeEnabled;
-        var targetKey = entry.TargetKey;
-        var requiresRightClick = entry.RightClickOnly;
-
-        if (isKeyDown)
-        {
-            if (requiresRightClick && !_rightButtonPressed)
-            {
-                return false;
-            }
-
-            // Safety: do nothing if mapping is a no-op (source == target)
-            if (targetKey == sourceKey.Value)
-            {
-                return false;
-            }
-
-            var newState = new CombinedOverrideState
-            {
-                TargetKey = targetKey,
-                SuppressOriginal = suppressOriginal,
-                RightClickOnly = requiresRightClick
-            };
-
-            var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-            lock (_combinedOverridesLock)
-            {
-                // Re-check under the lock: Stop() flips _isRunning before ReleaseAllOverrides, so an
-                // in-flight callback can't add + inject a key that nothing would ever release.
-                if (!_isRunning)
-                {
-                    return false;
-                }
-
-                if (combinedGeneration != Volatile.Read(ref _combinedConfigurationGeneration))
-                {
-                    return false;
-                }
-
-                if (_activeCombinedOverrides.ContainsKey(sourceKey.Value))
-                {
-                    return suppressOriginal;
-                }
-
-                _activeCombinedOverrides[sourceKey.Value] = newState;
-                _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
-
-                // F-011: refcount the target — only the FIRST source to drive it sends its DOWN.
-                var count = _combinedTargetCounts.GetValueOrDefault(targetKey);
-                _combinedTargetCounts[targetKey] = count + 1;
-                if (count == 0 &&
-                    !EnqueueHoldBreathInjection(
-                        new HoldBreathInjection(
-                            targetKey,
-                            IsDown: true,
-                            PreSleepMs: 0,
-                            ForegroundGeneration: foregroundGeneration,
-                            CombinedGeneration: combinedGeneration)))
-                {
-                    _activeCombinedOverrides.Remove(sourceKey.Value);
-                    DecrementCombinedTarget(targetKey);
-                    _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
-                    return false;
-                }
-            }
-
-            if (IsDebugEnabled) LogDebug($"Combined mapping: {sourceKey.Value} → {targetKey} (suppress={suppressOriginal})");
-
-            return suppressOriginal;
-        }
-
-        // Key-up release is handled at the top of this method (H2), before the enable/entry guards.
-        return false;
-    }
-
-    
-
-    private bool HandleCapsLock(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        // Only handle CapsLock key events (VK_CAPITAL = 0x14).
-        if (vkCode != 0x14)
-        {
-            return false;
-        }
-
-        // Release RECORDED output before consulting current settings. A live mode/target/profile change
-        // can therefore never strand a mirrored key or lose the second half of a committed 2x press.
-        if (isKeyUp)
-        {
-            lock (_capsLockStateLock)
-            {
-                if (_capsHeldOutputKey is { } heldOutput)
-                {
-                    EnqueueHoldBreathInjection(
-                        new HoldBreathInjection(heldOutput, IsDown: false, PreSleepMs: 0));
-                    _capsHeldOutputKey = null;
-                    LogDebug($"CapsLock → {heldOutput} UP (recorded Normal release)");
-                }
-
-                if (_capsSecondTapKey is { } secondTap)
-                {
-                    EnqueueCapsLockTap(secondTap, _capsSecondTapToken, isInitialTap: false);
-                    _capsSecondTapKey = null;
-                    _capsSecondTapToken = 0;
-                    LogDebug($"CapsLock → {secondTap} TAP (2x Normal physical UP)");
-                }
-
-                // Return the suppression decision latched at the matching physical DOWN, even if the
-                // configuration changed while CapsLock was held.
-                var suppressUp = _capsDownSuppressed;
-                _capsDownSuppressed = false;
-                _capsPhysicallyDown = false;
-                return suppressUp;
-            }
-        }
-
-        // Decide once per physical press. Typematic DOWNs reuse that decision; Normal+Remap mirrors those
-        // repeats to the recorded output key, while 2x Normal deliberately fires only on the physical edges.
-        var capsConfigurationGeneration = Volatile.Read(ref _capsConfigurationGeneration);
-        var settings = GetEffectiveCapsLockSettings();
-        var capsForegroundGeneration =
-            ReferenceEquals(settings, _activeProfile?.CapsLock)
-                ? Volatile.Read(ref _activeProfileGeneration)
-                : 0;
-
-        bool suppressDown;
-        bool isInitialPress;
-        lock (_capsLockStateLock)
-        {
-            isInitialPress = !_capsPhysicallyDown;
-            if (isInitialPress)
-            {
-                if (capsConfigurationGeneration !=
-                    Volatile.Read(ref _capsConfigurationGeneration))
-                {
-                    return false;
-                }
-
-                _capsPhysicallyDown = true;
-                _capsDownSuppressed = settings is { IsEnabled: true } &&
-                    (settings.Mode != CapsLockMode.Normal || settings.IsRemapEnabled);
-            }
-
-            suppressDown = _capsDownSuppressed;
-        }
-
-        // Typematic repeat: only Normal+Remap mirrors repeated DOWN events. Never re-read settings here;
-        // the exact output key was recorded on the initial physical DOWN.
-        if (!isInitialPress)
-        {
-            if (suppressDown && isKeyDown)
-            {
-                lock (_capsLockStateLock)
-                {
-                    if (_capsHeldOutputKey is { } repeatedOutput)
-                    {
-                        EnqueueHoldBreathInjection(
-                            new HoldBreathInjection(repeatedOutput, IsDown: true, PreSleepMs: 0));
-                        LogDebug($"CapsLock → {repeatedOutput} DOWN (Normal repeat)");
-                    }
-                }
-            }
-
-            return suppressDown;
-        }
-
-        if (!suppressDown)
-        {
-            return false;
-        }
-
-        if (settings!.Mode == CapsLockMode.Disabled)
-        {
-            LogDebug("CapsLock suppressed (Disabled mode)");
-            return true;
-        }
-
-        var outputKey = settings.IsRemapEnabled
-            ? settings.RemapTarget
-            : Key.CapsLock;
-        if (outputKey is null)
-        {
-            LogDebug("CapsLock suppressed (Remap Key enabled without a target)");
-            return true;
-        }
-
-        lock (_capsLockStateLock)
-        {
-            // Stop/configuration may have raced the callback after its initial snapshot. Do not create new
-            // synthetic state once that boundary has completed; the physical UP still uses the latched
-            // suppression decision.
-            if (!isKeyDown || !_isRunning ||
-                capsConfigurationGeneration != Volatile.Read(ref _capsConfigurationGeneration))
-            {
-                return true;
-            }
-
-            switch (settings.Mode)
-            {
-                case CapsLockMode.Normal:
-                    _capsHeldOutputKey = outputKey.Value;
-                    EnqueueHoldBreathInjection(
-                        new HoldBreathInjection(
-                            outputKey.Value,
-                            IsDown: true,
-                            PreSleepMs: 0,
-                            ForegroundGeneration: capsForegroundGeneration,
-                            CapsGeneration: capsConfigurationGeneration));
-                    LogDebug($"CapsLock → {outputKey.Value} DOWN (Normal remap)");
-                    break;
-
-                case CapsLockMode.DoubleNormal:
-                    var token = Interlocked.Increment(ref _capsTapTokenSequence);
-                    _capsSecondTapKey = outputKey.Value;
-                    _capsSecondTapToken = token;
-                    EnqueueCapsLockTap(
-                        outputKey.Value,
-                        token,
-                        isInitialTap: true,
-                        capsForegroundGeneration,
-                        capsConfigurationGeneration);
-                    LogDebug($"CapsLock → {outputKey.Value} TAP (2x Normal physical DOWN)");
-                    break;
-
-                default:
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    private CapsLockSettings? GetEffectiveCapsLockSettings()
-    {
-        var activeProfile = ProfileInputGenerationIsCurrent() ? _activeProfile : null;
-        var active = activeProfile is { IsEnabled: true } ? activeProfile.CapsLock : null;
-        if (active is { IsEnabled: true } enabledActive &&
-            (enabledActive.Mode != CapsLockMode.Normal || enabledActive.IsRemapEnabled))
-        {
-            return enabledActive;
-        }
-
-        var windowsProfile = _windowsProfile;
-        var global = windowsProfile is { IsEnabled: true } ? windowsProfile.CapsLock : null;
-        if (global is { IsEnabled: true } enabledGlobal &&
-            (enabledGlobal.Mode != CapsLockMode.Normal || enabledGlobal.IsRemapEnabled))
-        {
-            return enabledGlobal;
-        }
-
-        if (active?.IsEnabled == true)
-        {
-            return active;
-        }
-
-        if (global?.IsEnabled == true)
-        {
-            return global;
-        }
-
-        return null;
-    }
-
-    private void ReleaseCapsState(bool preservePhysicalPairing = true)
-    {
-        lock (_capsLockStateLock)
-        {
-            Interlocked.Increment(ref _capsConfigurationGeneration);
-
-            if (_capsHeldOutputKey is { } heldOutput)
-            {
-                EnqueueHoldBreathInjection(
-                    new HoldBreathInjection(heldOutput, IsDown: false, PreSleepMs: 0));
-                _capsHeldOutputKey = null;
-                LogDebug($"Force-release CapsLock Normal output: {heldOutput}");
-            }
-
-            if (_capsSecondTapKey is { } secondTap)
-            {
-                EnqueueCapsLockTap(secondTap, _capsSecondTapToken, isInitialTap: false);
-                _capsSecondTapKey = null;
-                _capsSecondTapToken = 0;
-                LogDebug($"Force-complete CapsLock 2x Normal output: {secondTap}");
-            }
-
-            // Profile/config/watchdog changes preserve a physical press so its eventual UP keeps the original
-            // suppression decision. Stop and hard session-away boundaries reset it because secure-desktop
-            // transitions can swallow the physical UP entirely.
-            if (!preservePhysicalPairing)
-            {
-                _capsPhysicallyDown = false;
-                _capsDownSuppressed = false;
-            }
-        }
-    }
-
-    private void HandleRapidFireToggle(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        var toggleVk = _rapidFireToggleVk;
-        if (toggleVk != _hookSeenRapidFireToggleVk)
-        {
-            _hookSeenRapidFireToggleVk = toggleVk;
-            _rapidFireToggleDownLatched = false;
-        }
-
-        if (toggleVk == 0 || vkCode != toggleVk)
-        {
-            return;
-        }
-
-        if (isKeyUp)
-        {
-            _rapidFireToggleDownLatched = false;
-            return;
-        }
-
-        if (!isKeyDown || _rapidFireToggleDownLatched)
-        {
-            return;
-        }
-
-        _rapidFireToggleDownLatched = true;
-        if (RapidFireIsArmed())
-        {
-            // Toggle-off in the owner's own app (armed AND ready).
-            ReleaseRapidFireState(preservePhysicalPairing: true);
-            RaiseRapidFireArmChanged();
-            return;
-        }
-
-        var armEpoch = Volatile.Read(ref _rapidFireArmEpoch);
-        var expectedProfile = _activeProfile;
-        var expectedActiveGeneration = Volatile.Read(ref _activeProfileGeneration);
-        var expectedPublishedGeneration = Volatile.Read(ref _publishedForegroundGeneration);
-
-        // Serialize only this rare toggle edge with profile publication. ActivateProfile releases old
-        // state before swapping _activeProfile; without this boundary a concurrent toggle could re-arm
-        // the outgoing profile in that narrow gap. No SendInput or subsystem lock is taken inside.
-        var armed = false;
-        var disarmed = false;
-        lock (_profileLock)
-        {
-            var profile = _activeProfile;
-            if (_rapidFireToggleVk == toggleVk &&
-                armEpoch == Volatile.Read(ref _rapidFireArmEpoch) &&
-                _advancedModeEnabled &&
-                ReferenceEquals(profile, expectedProfile) &&
-                expectedActiveGeneration == expectedPublishedGeneration &&
-                expectedActiveGeneration == Volatile.Read(ref _activeProfileGeneration) &&
-                expectedPublishedGeneration == Volatile.Read(ref _publishedForegroundGeneration) &&
-                profile is { IsEnabled: true } &&
-                profile.RapidFire.IsEnabled)
-            {
-                // Arm or RE-TARGET (toggle in another RF-capable app moves the single owner).
-                _rapidFireOwnerProfile = profile;
-                Volatile.Write(ref _rapidFireArmedEpoch, armEpoch);
-                _rapidFireArmed = true;
-                armed = true;
-                if (IsDebugEnabled) LogDebug($"Rapid Fire armed for profile: {profile.Name}");
-            }
-            else if (_rapidFireToggleVk == toggleVk &&
-                     expectedActiveGeneration == expectedPublishedGeneration &&
-                     expectedActiveGeneration == Volatile.Read(ref _activeProfileGeneration) &&
-                     expectedPublishedGeneration == Volatile.Read(ref _publishedForegroundGeneration) &&
-                     TryGetLiveRapidFireOwner(out _))
-            {
-                // Stranded-arm escape hatch: pressing the toggle in a SETTLED but non-eligible
-                // context (desktop after the owner's game was quit, or a focused profile without
-                // Rapid Fire) disarms the live arm. Without this, quitting the game while armed
-                // leaves a permanent gray dot with no primary-key off-switch — retargeting needs
-                // another RF-capable app and every other path is an indirect settings/profile
-                // edit. The key is global and passes through, so an incidental press in an app
-                // that binds the same key also disarms: accepted trade (instantly visible via the
-                // dot hiding, one keypress to undo, avoidable by picking a non-conflicting key).
-                // The generation checks above keep a mid-publication / hard-deactivate press on
-                // the fail-closed path — NEITHER arm nor disarm during transient mismatches.
-                disarmed = ReleaseRapidFireState(preservePhysicalPairing: true);
-            }
-        }
-
-        if (armed || disarmed)
-        {
-            // Hook-dispatcher thread, outside _profileLock. Always a real transition: the arm
-            // branch only fires with no ready arm (null->profile or foreign->profile), the
-            // disarm branch only when a live arm actually cleared (the bool return guards a
-            // concurrent release winning the race inside the lock).
-            RaiseRapidFireArmChanged();
-        }
-    }
-
-    // Live-owner predicate: ONE owner snapshot per call, gates on the runtime being up. Does NOT
-    // care whether the owner is the active profile — that distinction belongs to the callers.
-    private bool TryGetLiveRapidFireOwner(out Profile? owner)
-    {
-        owner = _rapidFireOwnerProfile;
-        return _isRunning &&
-               _rapidFireArmed &&
-               Volatile.Read(ref _rapidFireArmedEpoch) == Volatile.Read(ref _rapidFireArmEpoch) &&
-               _advancedModeEnabled &&
-               owner is { IsEnabled: true } && owner.RapidFire.IsEnabled;
-    }
-
-    private bool RapidFireIsArmed()
-    {
-        return TryGetLiveRapidFireOwner(out var owner) &&
-               ProfileInputGenerationIsCurrent() &&
-               ReferenceEquals(_activeProfile, owner);
-    }
-
-    public RapidFireArmStatus GetRapidFireArmStatus()
-    {
-        if (!TryGetLiveRapidFireOwner(out var owner))
-        {
-            return RapidFireArmStatus.Off;
-        }
-
-        return ProfileInputGenerationIsCurrent() && ReferenceEquals(_activeProfile, owner)
-            ? RapidFireArmStatus.Ready
-            : RapidFireArmStatus.ArmedNotReady;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void EnqueueCapsLockTap(
-        Key key,
-        long pressToken,
-        bool isInitialTap,
-        long foregroundGeneration = 0,
-        long capsGeneration = 0)
-    {
-        var rng = _random.Value!;
-        var duration = rng.Next(KEY_PRESS_DURATION_MIN_MS, KEY_PRESS_DURATION_MAX_MS + 1);
-        EnqueueHoldBreathInjection(
-            new HoldBreathInjection(
-                key,
-                IsDown: isInitialTap,
-                PreSleepMs: duration,
-                Kind: InputInjectionKind.CapsLockTap,
-                ForegroundGeneration: foregroundGeneration,
-                CapsGeneration: capsGeneration,
-                CapsPressToken: pressToken));
-    }
-
-    // ==================== HOLD BREATH HANDLING ====================
-
-    private void CancelHoldBreathStateLocked()
-    {
-        _holdBreathPending = false;
-        _holdBreathArmedForegroundGeneration = 0;
-        if (!_disposed)
-        {
-            _holdBreathTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        }
-
-        Interlocked.Increment(ref _holdBreathGeneration);
-        ReleaseInjectedHoldBreathKeyLocked();
-    }
-
-    private void HandleRightClickHoldBreathDown()
-    {
-        var profile = _activeProfile;
-        // Advanced-Mode-gated feature: an off gate blocks NEW activations only. The UP/release path
-        // (HandleRightClickHoldBreathUp / ReleaseHoldBreathState) stays ungated (I3) so a hold in
-        // flight when the flag flips still releases.
-        if (profile is not { IsEnabled: true } ||
-            !profile.RightClickHoldBreath.IsEnabled ||
-            !_advancedModeEnabled ||
-            !ProfileInputGenerationIsCurrent())
-        {
-            return;
-        }
-
-        var configurationGeneration = Volatile.Read(ref _holdBreathConfigurationGeneration);
-        var settings = profile.RightClickHoldBreath;
-        var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-        var baseDelay = Math.Max(0, settings.DelayMilliseconds);
-
-        // Add human-like jitter using thread-local RNG with warmup
-        var rng = _random.Value!;
-
-        // Warmup RNG to break thread-reuse patterns (anti-cheat protection)
-        var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
-        for (int i = 0; i < warmupCalls; i++)
-        {
-            rng.Next();
-        }
-
-        var jitter = baseDelay > 0
-            ? rng.Next(HOLD_BREATH_JITTER_MIN_MS, HOLD_BREATH_JITTER_MAX_MS + 1)
-            : 0;
-        var totalDelay = baseDelay + jitter;
-
-        if (IsDebugEnabled) LogDebug($"HoldBreath DOWN: base={baseDelay}ms, jitter=+{jitter}ms, total={totalDelay}ms, warmup={warmupCalls}");
-
-        // M3 instrumentation: this runs INSIDE the mouse hook callback — any wait for _holdBreathLock
-        // (held by the timer thread across its SendInput) stalls system-wide input delivery.
-        var lockWaitStart = Stopwatch.GetTimestamp();
-        lock (_holdBreathLock)
-        {
-            LogHoldBreathLockWait("DOWN", lockWaitStart);
-
-            if (configurationGeneration != Volatile.Read(ref _holdBreathConfigurationGeneration))
-            {
-                return;
-            }
-
-            // A missed WM_RBUTTONUP (hook timeout, UAC secure desktop, Win+L) can leave the previous
-            // press's key down; release it before starting a new cycle so it can never stay stuck.
-            CancelHoldBreathStateLocked();
-
-            // After cancellation, a disposed service or panic-vetoed press cannot arm.
-            if (_disposed || !_isRunning || !_rightButtonPressed || _holdBreathPanicSuppressed ||
-                !_advancedModeEnabled ||
-                foregroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-                foregroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
-                !ReferenceEquals(_activeProfile, profile) ||
-                !profile.IsEnabled ||
-                !settings.IsEnabled)
-            {
-                return;
-            }
-
-            _holdBreathPending = true;
-            // Snapshot settings: the UI mutates the live settings object in place, and the release
-            // must pair with exactly the key that was pressed.
-            _holdBreathArmedKey = settings.HoldBreathKey;
-            _holdBreathArmedMode = settings.Mode;
-            _holdBreathArmedForegroundGeneration = foregroundGeneration;
-
-            if (totalDelay > 0)
-            {
-                _holdBreathArmedTick = Stopwatch.GetTimestamp();
-                _holdBreathArmedDelayMs = totalDelay;
-                _holdBreathTimer.Change(totalDelay, Timeout.Infinite);
-            }
-            else if (_isRunning && _rightButtonPressed)
-            {
-                // Immediate activation: the DECISION is synchronous on the hook thread; the
-                // injection itself rides the injector queue, so this cannot stall the hook.
-                ActivateHoldBreathLocked();
-            }
-        }
-    }
-
-    private void HandleRightClickHoldBreathUp()
-    {
-        // No profile/IsEnabled gate here: the release must pair with whatever was actually
-        // injected, even if settings changed or the profile switched mid-hold.
-        // M3 instrumentation: this runs INSIDE the mouse hook callback — any wait for _holdBreathLock
-        // (held by the timer thread across its SendInput) stalls system-wide input delivery.
-        var lockWaitStart = Stopwatch.GetTimestamp();
-        lock (_holdBreathLock)
-        {
-            LogHoldBreathLockWait("UP", lockWaitStart);
-
-            CancelHoldBreathStateLocked();
-            _holdBreathPanicSuppressed = false;
-        }
-    }
-
-    // M3 instrumentation: the mouse-hook thread waiting >=1ms on _holdBreathLock is direct evidence
-    // of the timer-thread-SendInput contention window; below that it's noise not worth a log line.
-    private void LogHoldBreathLockWait(string site, long lockWaitStart)
-    {
-        if (!IsDebugEnabled)
-        {
-            return;
-        }
-
-        var waitedMs = (Stopwatch.GetTimestamp() - lockWaitStart) * TickToMilliseconds;
-        if (waitedMs >= 1.0)
-        {
-            LogDebug($"HoldBreath {site}: hook thread waited {waitedMs:F1}ms for _holdBreathLock (M3 contention)");
-        }
-    }
-
-    private void OnHoldBreathTimerFired()
-    {
-        lock (_holdBreathLock)
-        {
-            if (!_holdBreathPending || !_isRunning)
-            {
-                return;
-            }
-
-            // Timer.Change cannot recall an already-dispatched callback, so a cancel followed by an
-            // immediate re-arm can be followed by the PREVIOUS press's elapse. Timers fire on-time
-            // or late, never meaningfully early — an early fire is that stale elapse.
-            var elapsedMs = (Stopwatch.GetTimestamp() - _holdBreathArmedTick) * TickToMilliseconds;
-            if (elapsedMs < _holdBreathArmedDelayMs - HOLD_FIRE_TOLERANCE_MS)
-            {
-                if (IsDebugEnabled) LogDebug($"HoldBreath stale timer fire ignored: elapsed={elapsedMs:F1}ms of {_holdBreathArmedDelayMs}ms");
-                return;
-            }
-
-            // Button already up (its WM_RBUTTONUP is in flight but hasn't reached our lock yet):
-            // activating now would inject a pointless phantom tap.
-            if (!_rightButtonPressed)
-            {
-                _holdBreathPending = false;
-                return;
-            }
-
-            var profile = _activeProfile;
-            if (!_advancedModeEnabled ||
-                profile is not { IsEnabled: true } ||
-                !profile.RightClickHoldBreath.IsEnabled ||
-                _holdBreathArmedForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-                _holdBreathArmedForegroundGeneration != Volatile.Read(ref _activeProfileGeneration))
-            {
-                _holdBreathPending = false;
-                return;
-            }
-
-            ActivateHoldBreathLocked();
-        }
-    }
-
-    // Must be called while holding _holdBreathLock. The DOWN is only ENQUEUED here — the injector's
-    // FIFO ordering is what guarantees the UP handler's release (always enqueued behind it) can
-    // never be reordered before the press lands. Nothing slow ever runs under the lock: the
-    // measured ~300ms foreign-hook SendInput stall used to happen right here and froze the pointer
-    // whenever a WM_RBUTTONUP blocked on this lock inside the mouse hook.
-    private void ActivateHoldBreathLocked()
-    {
-        _holdBreathPending = false;
-        var holdBreathGeneration = Interlocked.Increment(ref _holdBreathGeneration);
-
-        if (_holdBreathArmedMode == HoldBreathMode.Hold)
-        {
-            _holdBreathInjectedKey = _holdBreathArmedKey;
-            EnqueueHoldBreathInjection(
-                new HoldBreathInjection(
-                    _holdBreathArmedKey,
-                    IsDown: true,
-                    PreSleepMs: 0,
-                    HoldBreathGeneration: holdBreathGeneration,
-                    ForegroundGeneration: _holdBreathArmedForegroundGeneration));
-
-            if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey} (queued)");
-        }
-        else if (_holdBreathArmedMode == HoldBreathMode.Toggle)
-        {
-            // Toggle = a self-releasing tap: DOWN now, UP enqueued behind it with a human-like
-            // duration as its pre-sleep. Both ride the injector (FireTapKey previously injected the
-            // DOWN synchronously right here, paying the foreign-hook dispatch under this lock). The
-            // queued UP is unconditional, so no _transientTapKeys tracking is needed on this path —
-            // Stop()'s drain executes it even mid-shutdown.
-            var rng = _random.Value!;
-
-            // Warmup RNG to break thread-reuse patterns (anti-cheat)
-            var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
-            for (int i = 0; i < warmupCalls; i++)
-            {
-                rng.Next();
-            }
-
-            var duration = rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1);
-            EnqueueKeyTap(
-                _holdBreathArmedKey,
-                duration,
-                holdBreathGeneration: holdBreathGeneration,
-                foregroundGeneration: _holdBreathArmedForegroundGeneration);
-
-            if (IsDebugEnabled) LogDebug($"HoldBreath ACTIVATED: mode={_holdBreathArmedMode}, key={_holdBreathArmedKey} (queued tap, duration={duration}ms)");
-        }
-    }
-
-    // Must be called while holding _holdBreathLock. Enqueue-only: the injector's FIFO places this
-    // UP behind its matching DOWN even when that DOWN is still queued or mid-SendInput — and the
-    // mouse hook callback (WM_RBUTTONUP path) returns in microseconds instead of paying the
-    // foreign-hook dispatch (measured 2-15ms typical, ~300ms when a foreign hook stalls).
-    private void ReleaseInjectedHoldBreathKeyLocked()
-    {
-        if (_holdBreathInjectedKey is { } key)
-        {
-            _holdBreathInjectedKey = null;
-            EnqueueHoldBreathInjection(new HoldBreathInjection(key, IsDown: false, PreSleepMs: 0));
-
-            if (IsDebugEnabled) LogDebug($"HoldBreath released: {key} (queued)");
-        }
-    }
-
-    private void ReleaseHoldBreathState()
-    {
-        // Unconditional: releases the recorded injected key, so it works even if the feature was
-        // disabled, the key was rebound, or the profile changed while the key was held.
-        lock (_holdBreathLock)
-        {
-            Interlocked.Increment(ref _holdBreathConfigurationGeneration);
-            CancelHoldBreathStateLocked();
-        }
-    }
-
-    // Enqueue-only; callers may hold _holdBreathLock (Add on an unbounded BlockingCollection never
-    // blocks). The two shutdown races — CompleteAdding or Dispose landing between the null-check and
-    // Add — are swallowed: in both cases Stop() already ran ReleaseAllState-then-drain, so any
-    // recorded key still gets released before the queue closed.
-    private bool EnqueueHoldBreathInjection(HoldBreathInjection injection)
-    {
-        lock (_inputInjectionEnqueueLock)
-        {
-            return EnqueueInputLocked(injection);
-        }
-    }
-
-    private bool EnqueueInputLocked(HoldBreathInjection injection)
-    {
-        var queue = _holdBreathInjectionQueue;
-        if (queue is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            queue.Add(injection);
-            return true;
-        }
-        catch (InvalidOperationException)
-        {
-            // CompleteAdding or Dispose raced us (ObjectDisposedException derives from this):
-            // shutting down, and Stop()'s ReleaseAllState-then-drain already handled the release.
-            return false;
-        }
-    }
-
-    private bool EnqueueKeyTap(
-        Key key,
-        int durationMs,
-        long autoRunGeneration = 0,
-        string? expectedForegroundExe = null,
-        long holdBreathGeneration = 0,
-        long foregroundGeneration = 0,
-        long altMouseGeneration = 0,
-        long altKeyboardGeneration = 0,
-        AltKeyboardPress? altKeyboardOwnerPress = null)
-    {
-        lock (_inputInjectionEnqueueLock)
-        {
-            var down = new HoldBreathInjection(
-                key,
-                IsDown: true,
-                PreSleepMs: 0,
-                AutoRunGeneration: autoRunGeneration,
-                ExpectedForegroundExe: expectedForegroundExe,
-                HoldBreathGeneration: holdBreathGeneration,
-                ForegroundGeneration: foregroundGeneration,
-                AltMouseGeneration: altMouseGeneration,
-                AltKeyboardGeneration: altKeyboardGeneration,
-                AltKeyboardOwnerPress: altKeyboardOwnerPress);
-            var up = new HoldBreathInjection(key, IsDown: false, PreSleepMs: durationMs,
-                AltKeyboardOwnerPress: altKeyboardOwnerPress);
-
-            if (!EnqueueInputLocked(down))
-            {
-                return false;
-            }
-
-            // Shutdown takes this same enqueue lock before CompleteAdding, so a paired UP cannot be
-            // split from its DOWN or interleaved with another producer.
-            return EnqueueInputLocked(up);
-        }
-    }
-
-    // Injector thread body: strict-FIFO single consumer, exits when Stop()/Start-rollback calls
-    // CompleteAdding and the queue drains. Takes NO locks — that is the point: SendInput's
-    // synchronous trip through every process's LL hook chain (measured ~300ms when a foreign hook
-    // stalls, e.g. the game's own hook while its UI opens a context menu) lands here, where it can
-    // stall nothing but the next queued hold-breath injection.
-    private void HoldBreathInjectionLoop()
-    {
-        var queue = _holdBreathInjectionQueue;
-        if (queue is null)
-        {
-            return;
-        }
-
-        // Executor-owned acknowledgement for 2x Normal. The release tap runs only if its matching
-        // initial tap actually reached SendInput; this keeps profile/shutdown invalidation from turning
-        // a skipped first tap into one stray tap on release.
-        long activeCapsTapToken = 0;
-
-        try
-        {
-            foreach (var injection in queue.GetConsumingEnumerable())
-            {
-                try
-                {
-                    // Anti-AFK atomic tap-sequence (§3.4): executed here as ONE queue item so a DOWN/UP
-                    // pair can never be split across a shutdown drain. Per-step abort at the TOP of each
-                    // iteration, BEFORE that key's DOWN (never between a DOWN and its UP — the finally
-                    // guarantees the UP), so a mid-sequence Stop/alt-tab/profile-switch leaves the
-                    // remaining keys UNPRESSED rather than leaking into a new window or overrunning
-                    // shutdown (bounds the post-Stop drain to one key-pair, not a whole 4-step sequence).
-                    if (injection.Sequence is { } steps)
-                    {
-                        foreach (var step in steps)
-                        {
-                            // Gate on _advancedModeEnabled too (C1): turning Advanced Mode off must
-                            // stop a still-queued ripple. An already-started step still completes its
-                            // paired UP (the finally below) — that one pair is the accepted residual.
-                            if (!_isRunning ||
-                                !_advancedModeEnabled ||
-                                queue.IsAddingCompleted ||
-                                injection.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-                                injection.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration) ||
-                                !ReferenceEquals(_activeProfile, injection.ExpectedProfile) ||
-                                injection.ExpectedProfile is not { IsEnabled: true } expectedProfile ||
-                                !expectedProfile.AntiAfk.IsEnabled ||
-                                !ForegroundMatchesActiveProfile())
-                            {
-                                break;
-                            }
-
-                            try
-                            {
-                                SendKey(step.Key, true);
-                                Thread.Sleep(step.DownMs);
-                            }
-                            finally
-                            {
-                                SendKey(step.Key, false);
-                            }
-
-                            Thread.Sleep(step.GapMs);
-                        }
-                        continue;
-                    }
-
-                    if (injection.Kind == InputInjectionKind.DummyKey)
-                    {
-                        if (queue.IsAddingCompleted ||
-                            (injection.LauncherGeneration != 0 &&
-                             injection.LauncherGeneration !=
-                             Volatile.Read(ref _windowsLauncherConfigurationGeneration)))
-                        {
-                            injection.Completion?.TrySetResult(false);
-                            continue;
-                        }
-
-                        if (!_inputSender.SendDummyKey() && IsDebugEnabled)
-                        {
-                            LogDebug("WindowsLauncher dummy key injection failed");
-                        }
-                        injection.Completion?.TrySetResult(true);
-                        continue;
-                    }
-
-                    if (injection.Kind == InputInjectionKind.CapsLockTap)
-                    {
-                        var isInitialTap = injection.IsDown;
-                        if (isInitialTap &&
-                            (!_isRunning ||
-                             queue.IsAddingCompleted ||
-                             (injection.CapsGeneration != 0 &&
-                              injection.CapsGeneration !=
-                              Volatile.Read(ref _capsConfigurationGeneration)) ||
-                             (injection.ForegroundGeneration != 0 &&
-                              (injection.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration) ||
-                               injection.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration)))))
-                        {
-                            if (IsDebugEnabled)
-                            {
-                                LogDebug($"CapsLock initial TAP skipped (stale boundary): {injection.Key}");
-                            }
-                            continue;
-                        }
-
-                        if (!isInitialTap && activeCapsTapToken != injection.CapsPressToken)
-                        {
-                            if (IsDebugEnabled)
-                            {
-                                LogDebug($"CapsLock release TAP skipped (initial tap not sent): {injection.Key}");
-                            }
-                            continue;
-                        }
-
-                        var downSent = _inputSender.SendKey(injection.Key, isKeyDown: true);
-                        if (!downSent)
-                        {
-                            LogDebug($"CapsLock TAP DOWN failed: {injection.Key}");
-                        }
-
-                        try
-                        {
-                            Thread.Sleep(injection.PreSleepMs);
-                        }
-                        finally
-                        {
-                            if (!_inputSender.SendKey(injection.Key, isKeyDown: false))
-                            {
-                                LogDebug($"CapsLock TAP UP failed: {injection.Key}");
-                            }
-                        }
-
-                        if (isInitialTap)
-                        {
-                            activeCapsTapToken = downSent ? injection.CapsPressToken : 0;
-                        }
-                        else
-                        {
-                            activeCapsTapToken = 0;
-                        }
-
-                        if (IsDebugEnabled)
-                        {
-                            LogDebug($"CapsLock 2x Normal {(isInitialTap ? "initial" : "release")} TAP: {injection.Key}");
-                        }
-                        continue;
-                    }
-
-                    // Shutdown drain: once CompleteAdding was called (Stop/Start-rollback), any
-                    // still-queued DOWN is stale pre-shutdown work — emitting a NEW press after the
-                    // hooks are gone (or into a later session, if Stop's bounded join timed out and
-                    // this worker outlived it) is never wanted. Releases still execute so recorded
-                    // state always pairs; an UP whose DOWN was skipped is a harmless no-op. The
-                    // queue's terminal state doubles as the per-session drain signal: a fresh
-                    // Start() gets a fresh queue, while this one stays completed forever.
-                    if (injection.IsDown && queue.IsAddingCompleted)
-                    {
-                        if (IsDebugEnabled) LogDebug($"HoldBreath inject DOWN skipped (shutdown drain): {injection.Key}");
-                        continue;
-                    }
-
-                    if (injection.IsDown && injection.ForegroundGeneration != 0
-                        && (injection.ForegroundGeneration != Volatile.Read(ref _publishedForegroundGeneration)
-                            || injection.ForegroundGeneration != Volatile.Read(ref _activeProfileGeneration)))
-                    {
-                        if (IsDebugEnabled) LogDebug($"Input DOWN skipped (foreground generation): {injection.Key}");
-                        continue;
-                    }
-
-                    if (injection.IsDown && injection.AltMouseGeneration != 0
-                        && injection.AltMouseGeneration != Volatile.Read(ref _altMouseGeneration))
-                    {
-                        if (IsDebugEnabled) LogDebug($"AltMouse DOWN skipped (stale configuration): {injection.Key}");
-                        continue;
-                    }
-
-                    if (injection.IsDown && injection.AltKeyboardGeneration != 0
-                        && injection.AltKeyboardGeneration != Volatile.Read(ref _altKeyboardGeneration))
-                    {
-                        if (IsDebugEnabled) LogDebug($"AltKeyboard DOWN skipped (stale configuration): {injection.Key}");
-                        continue;
-                    }
-
-                    // Per-press cancellation (panic handoff): the configuration generation is still
-                    // current — this press simply lost priority after its action was already queued.
-                    if (injection.IsDown && injection.AltKeyboardOwnerPress is { } ownerPress &&
-                        ownerPress.IsCancelled)
-                    {
-                        if (IsDebugEnabled) LogDebug($"AltKeyboard DOWN skipped (press cancelled by panic override): {injection.Key}");
-                        continue;
-                    }
-
-                    // Paired-UP skip: this tap's DOWN never reached SendInput (cancelled above, or
-                    // rejected by an earlier guard / the shutdown drain), so the UP would be an
-                    // unmatched synthetic release. When the DOWN DID send, IsDownSent is already set
-                    // (strict FIFO: the injector marked it while processing the DOWN) and the UP
-                    // drains normally even if the cancellation landed in between — a sent DOWN must
-                    // never strand its mapped key.
-                    if (!injection.IsDown && injection.AltKeyboardOwnerPress is { } upOwner &&
-                        !upOwner.IsDownSent)
-                    {
-                        if (IsDebugEnabled) LogDebug($"AltKeyboard UP skipped (paired DOWN never sent): {injection.Key}");
-                        continue;
-                    }
-
-                    if (injection.IsDown && injection.CombinedGeneration != 0
-                        && injection.CombinedGeneration != Volatile.Read(ref _combinedConfigurationGeneration))
-                    {
-                        if (IsDebugEnabled) LogDebug($"Combined DOWN skipped (stale configuration): {injection.Key}");
-                        continue;
-                    }
-
-                    if (injection.IsDown && injection.CapsGeneration != 0
-                        && injection.CapsGeneration != Volatile.Read(ref _capsConfigurationGeneration))
-                    {
-                        if (IsDebugEnabled) LogDebug($"Caps DOWN skipped (stale configuration): {injection.Key}");
-                        continue;
-                    }
-
-                    // A panic/release boundary invalidates queued hold-breath DOWNs. The paired UP
-                    // remains in FIFO and is still allowed to drain.
-                    if (injection.IsDown && injection.HoldBreathGeneration != 0
-                        && Volatile.Read(ref _holdBreathGeneration) != injection.HoldBreathGeneration)
-                    {
-                        if (IsDebugEnabled) LogDebug($"HoldBreath inject DOWN skipped (stale generation): {injection.Key}");
-                        continue;
-                    }
-                    // A2: a foreground-guarded Auto-Run DOWN (AutoRunGeneration != 0) fires only while its
-                    // epoch is still current AND the foreground window still belongs to the run's exe — so a
-                    // queued W/sprint DOWN can't drain into a window you alt-tabbed to (or after the run
-                    // ended). This runs on the injector thread, so the WindowBelongsToExe GetProcessById is
-                    // OFF the hook thread. UPs (gen 0) are never guarded, so the skipped DOWN's paired UP
-                    // still drains as a harmless no-op and FIFO pairing is preserved.
-                    if (injection.IsDown && injection.AutoRunGeneration != 0
-                        && (Volatile.Read(ref _autoRunInjectionGeneration) != injection.AutoRunGeneration
-                            || (!_bypassAutoRunForegroundOwnershipForTesting &&
-                                (injection.ExpectedForegroundExe is null ||
-                                 !WindowBelongsToExe(NativeMethods.GetForegroundWindow(), injection.ExpectedForegroundExe)))))
-                    {
-                        if (IsDebugEnabled) LogDebug($"AutoRun DOWN skipped (foreground guard): {injection.Key}");
-                        continue;
-                    }
-
-                    // Toggle-mode tap duration rides as pre-sleep on the UP entry.
-                    if (injection.PreSleepMs > 0)
-                    {
-                        Thread.Sleep(injection.PreSleepMs);
-                    }
-
-                    var sendStart = Stopwatch.GetTimestamp();
-                    var keyTransitionSent = SendKey(injection.Key, injection.IsDown);
-                    if (injection.IsDown && keyTransitionSent)
-                    {
-                        injection.AltKeyboardOwnerPress?.MarkDownSent();
-                    }
-
-                    if (IsDebugEnabled)
-                    {
-                        var sendMs = (Stopwatch.GetTimestamp() - sendStart) * TickToMilliseconds;
-                        LogDebug($"HoldBreath inject {(injection.IsDown ? "DOWN" : "UP")}: {injection.Key}, sendMs={sendMs:F1}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    injection.Completion?.TrySetResult(false);
-                    // A dead injector would strand every future hold-breath key; log and keep draining.
-                    LogDebug($"HoldBreath injector error: {ex.Message}");
-                }
-            }
-        }
-        catch (ObjectDisposedException)
-        {
-            // Stop() disposed the queue after the final item; clean exit.
-        }
-    }
-
-    // ==================== AUTO-RUN ====================
-
-    // Lock-free, hook-thread-only observation. It is deliberately separate from HandleAutoRun so physical
-    // release ownership is updated before Hold-Breath/other consumers can early-return the hook callback.
-    private AutoRunPhysicalEvent ObserveAutoRunPhysicalEvent(
-        int vkCode,
-        bool isKeyDown,
-        bool isKeyUp)
-    {
-        bool freshW = false;
-        bool freshS = false;
-
-        if (vkCode == VK_W)
-        {
-            freshW = ApplyAutoRunPhysicalKeyEvent(ref _wPhysicallyDown, isKeyDown, isKeyUp);
-        }
-        else if (vkCode == VK_S)
-        {
-            freshS = ApplyAutoRunPhysicalKeyEvent(ref _sPhysicallyDown, isKeyDown, isKeyUp);
-        }
-
-        if (vkCode == VK_W && isKeyUp)
-        {
-            CompleteAutoRunStopOnPhysicalWUp();
-        }
-
-        var active = _autoRunActive;
-        var physicalWHandoffEvent = vkCode == VK_W && _autoRunPhysicalWHandoff;
-        var suppressPhysicalWHandoffUp = active && physicalWHandoffEvent && isKeyUp;
-
-        if (vkCode == VK_W && isKeyUp && physicalWHandoffEvent)
-        {
-            _autoRunPhysicalWHandoff = false;
-            if (active)
-            {
-                BeginAutoRunAfterPhysicalWRelease();
-            }
-
-            // W may itself be the Auto-Run trigger. Clear its paired latches here because an earlier
-            // Hold-Breath consumer can return before HandleAutoRun reaches its ordinary key-up cleanup.
-            if (_autoRunConsumedTriggerVk == vkCode)
-            {
-                _autoRunConsumedTriggerVk = 0;
-            }
-            if (_triggerKeyDownVk == vkCode)
-            {
-                _triggerKeyDownVk = 0;
-            }
-        }
-
-        return new AutoRunPhysicalEvent(freshW, freshS, suppressPhysicalWHandoffUp);
-    }
-
-    private bool ArmAutoRunStopOnPhysicalWUp()
-    {
-        lock (_autoRunLock)
-        {
-            if (!_autoRunActive)
-            {
-                return false;
-            }
-
-            _autoRunStopOnPhysicalWUp = true;
-            return true;
-        }
-    }
-
-    private void CompleteAutoRunStopOnPhysicalWUp()
-    {
-        lock (_autoRunLock)
-        {
-            if (!_autoRunStopOnPhysicalWUp)
-            {
-                return;
-            }
-
-            _autoRunStopOnPhysicalWUp = false;
-            if (_autoRunActive)
-            {
-                if (IsDebugEnabled) LogDebug("AutoRun graceful stop on physical W UP");
-                ReleaseAutoRunState(includeBackground: true);
-            }
-        }
-    }
-
-    // Called UNCONDITIONALLY at the top of the keyboard dispatch region, BEFORE the handled-chain, so
-    // a cancel key (W/S) that is also a combined-mapping source is still seen for cancel detection.
-    // Returns true for the trigger chord and for the matching physical W-UP of an active handoff. Ordinary
-    // W/S/sprint events pass through so fresh movement keys can still cancel Auto-Run normally.
-    private bool HandleAutoRun(
-        int vkCode,
-        bool isKeyDown,
-        bool isKeyUp,
-        AutoRunPhysicalEvent physicalEvent)
-    {
-        bool freshW = physicalEvent.FreshW;
-        bool freshS = physicalEvent.FreshS;
-        bool freshSprint = false;
-        var active = _autoRunActive; // volatile read — lock-free hot path
-        var suppressPhysicalWHandoffUp = physicalEvent.SuppressPhysicalWHandoffUp;
-
-        var sprintVk = active ? KeyInteropUtilities.ToVirtualKey(_autoRunSprintKey) : 0;
-
-        // Sprint physical tracking (for the stamina toggle in 2b). Only while a run is active; the W/S
-        // guard avoids double-handling if sprint == W/S was configured (W/S still cancel via freshW/S).
-        if (active && sprintVk != 0 && vkCode == sprintVk && vkCode != VK_W && vkCode != VK_S)
-        {
-            freshSprint = ApplyAutoRunPhysicalKeyEvent(ref _sprintPhysicallyDown, isKeyDown, isKeyUp);
-        }
-
-        // 2) A fresh physical W begins a graceful manual takeover: pass it through, keep Auto-Run active,
-        //    and stop only on its matching physical UP. A fresh S still cancels immediately and passes
-        //    through so it moves you back. A key held THROUGH
-        //    activation produces no fresh edge (auto-repeat has wasDown == true), so releasing it keeps
-        //    you running. A Background run cancels on physical W/S ONLY while the game is focused (user's
-        //    choice: chord-only-while-unfocused, so stray W/S in another app can't kill it); a Foreground
-        //    run always cancels. The GetForegroundWindow cost is paid only on a fresh W/S edge while a
-        //    Background run is active.
-        // E3 exclusion: if this fresh W/S is ALSO the run's trigger key WITH its modifier physically down,
-        // it is a TOGGLE-OFF chord, not a bare cancel — skip step 2 so it falls to 3c (which toggles off
-        // AND consumes the key, so a W/S trigger doesn't leak). Without this, a Background run whose trigger
-        // is W/S can't be chord-toggled-off while unfocused (step 2's cancel is focus-gated and returns
-        // before 3c). Bare W arms stop-on-UP; bare S cancels immediately.
-        if (active && isKeyDown && (freshW || freshS)
-            && !(vkCode == _autoRunSnapshotTriggerVk && IsTriggerModifierDown(_autoRunSnapshotModifier)))
-        {
-            if (!_autoRunIsBackground || ForegroundMatchesAutoRunTarget())
-            {
-                if (freshW)
-                {
-                    if (ArmAutoRunStopOnPhysicalWUp() && IsDebugEnabled)
-                    {
-                        LogDebug("AutoRun physical W DOWN: graceful stop armed for matching UP");
-                    }
-                }
-                else
-                {
-                    ReleaseAutoRunState(includeBackground: true);
-                    if (IsDebugEnabled) LogDebug("AutoRun CANCEL on fresh physical S DOWN");
-                }
-            }
-            return false;
-        }
-
-        // 2b) Sprint stamina toggle (Hold mode only). The sprint key NEVER cancels auto-run; instead,
-        //     while a run with a sustained sprint is active, a FRESH physical sprint press toggles that
-        //     sprint OFF/ON (release to let in-game stamina recharge, press again to re-engage) and the
-        //     key is CONSUMED so the game never sees a raw sprint tap. A Background run acts on the sprint
-        //     key only while the game is focused (like cancel); otherwise it passes through to the focused
-        //     app. On auto-run exit, any still-held sprint is released by ReleaseAutoRunState (no stuck
-        //     sprint). Auto-run's W is untouched throughout — only the sprint hold toggles.
-        //     If the sprint key is ALSO this run's trigger key (a shared-key config), the TRIGGER wins:
-        //     the sprint-toggle is skipped so the chord still toggles auto-run OFF (codex tweak #1).
-        if (active && _autoRunSprintToggleable && sprintVk != 0 && vkCode == sprintVk
-            && vkCode != VK_W && vkCode != VK_S && vkCode != _autoRunSnapshotTriggerVk)
-        {
-            if (!_autoRunIsBackground || ForegroundMatchesAutoRunTarget())
-            {
-                if (isKeyDown && freshSprint)
-                {
-                    ToggleAutoRunSprintHold();
-                }
-                return true; // consume the sprint key's down / repeat / up
-            }
-        }
-
-        // 3) Trigger chord. The consumed-press cleanup (3a) and the fresh-edge keyup latch (3b) are
-        //    UNGATED (release-style, I3): once a chord press is in flight, its repeats + matching keyup
-        //    must be swallowed and the latches cleared even if Advanced Mode was turned off or the
-        //    profile changed (to a different/absent trigger) mid-press — otherwise a stray trigger key
-        //    leaks to the game (codex P3a #1) or a stale latch blocks a later activation.
-
-        // 3a. Suppress + clean up a chord press that already fired, matched by the STORED consumed VK
-        //     (the configured trigger key may have changed since the press).
-        if (_autoRunConsumedTriggerVk != 0 && vkCode == _autoRunConsumedTriggerVk)
-        {
-            if (isKeyUp)
-            {
-                _autoRunConsumedTriggerVk = 0;
-                if (_triggerKeyDownVk == vkCode) _triggerKeyDownVk = 0;
-                return true; // swallow the matching keyup so no dangling trigger keyup leaks
-            }
-            return isKeyDown; // swallow auto-repeats
-        }
-
-        // 3b. A non-consumed trigger key's keyup clears the fresh-edge latch UNGATED (so a stale latch
-        //     can't block a later activation) and passes through to the game.
-        if (isKeyUp && _triggerKeyDownVk == vkCode)
-        {
-            _triggerKeyDownVk = 0;
-            return suppressPhysicalWHandoffUp;
-        }
-
-        // Do this only AFTER the consumed-trigger cleanup above: W itself may be the configured trigger,
-        // and its key-up must still clear those latches even though the handoff release is suppressed.
-        if (suppressPhysicalWHandoffUp)
-        {
-            return true;
-        }
-
-        // 3c. A run is ACTIVE → the only chord action is TOGGLE-OFF, matched by the SNAPSHOT trigger so
-        //     it works even when _activeProfile is null/changed (essential for a decoupled Background
-        //     run that outlives its profile). Releases whichever transport is active.
-        if (_autoRunActive)
-        {
-            if (_autoRunSnapshotTriggerVk == 0 || vkCode != _autoRunSnapshotTriggerVk || !isKeyDown)
-            {
-                return false;
-            }
-            if (_triggerKeyDownVk == vkCode)
-            {
-                return false; // auto-repeat
-            }
-            _triggerKeyDownVk = vkCode;
-            if (!IsTriggerModifierDown(_autoRunSnapshotModifier))
-            {
-                // E1: shared-key config — this trigger key is ALSO the run's (Hold) sprint key. Without a
-                // modifier it is not a toggle-off chord, but it must NOT leak to the game: a raw sprint tap
-                // would release in-game sprint while we still track it as injected (state desync). Consume
-                // BOTH edges (3a swallows the repeats + matching keyup via the consumed latch). The
-                // stamina-toggle-via-tap is intentionally unavailable for a shared-key config; the
-                // modifier+key chord still toggles the run off. Distinct trigger keys pass through unchanged.
-                if (_autoRunSprintToggleable && sprintVk != 0 && sprintVk == vkCode && vkCode != VK_W && vkCode != VK_S)
-                {
-                    _autoRunConsumedTriggerVk = vkCode;
-                    return true;
-                }
-                return false;
-            }
-
-            ReleaseAutoRunState(includeBackground: true);
-            _autoRunConsumedTriggerVk = vkCode;
-            return true;
-        }
-
-        // 3d. No run active → TOGGLE-ON, gated on the feature being usable, matched by the LIVE profile
-        //     trigger. The game is foreground here (you press the chord while playing), so _activeProfile
-        //     and its exe are valid to snapshot for a Background run.
-        var configurationGeneration = Volatile.Read(ref _autoRunConfigurationGeneration);
-        var profile = _activeProfile; // benign lock-free read (like HandleRightClickHoldBreathDown)
-        if (!_advancedModeEnabled || !ProfileInputGenerationIsCurrent() ||
-            profile is not { IsEnabled: true } || !profile.AutoRun.IsEnabled)
-        {
-            return false;
-        }
-
-        var settings = profile.AutoRun;
-        var triggerVk = KeyInteropUtilities.ToVirtualKey(settings.TriggerKey);
-        if (triggerVk == 0 || vkCode != triggerVk || !isKeyDown)
-        {
-            return false;
-        }
-
-        // Trigger keydown + feature usable. Only a FRESH down (not an auto-repeat) forms a chord.
-        if (_triggerKeyDownVk == vkCode)
-        {
-            return false; // auto-repeat — pass through
-        }
-        _triggerKeyDownVk = vkCode;
-
-        // Require the selected side-agnostic modifier, or no modifier for a single-key trigger.
-        if (!IsTriggerModifierDown(settings.TriggerModifier))
-        {
-            return false; // trigger key without its modifier — pass through to the game
-        }
-
-        // Chord — activate; consume this press (repeats + keyup handled by 3a) ONLY if the run actually
-        // started (A1). If activation failed closed (foreground not the game), do NOT swallow the chord —
-        // pass it through (return false) so it isn't eaten in the wrong window. The fresh-edge latch
-        // (_triggerKeyDownVk) is cleared ungated by 3b on the trigger's keyup either way.
-        if (ActivateAutoRun(settings, profile, configurationGeneration))
-        {
-            _autoRunConsumedTriggerVk = vkCode;
-            return true;
-        }
-        return false;
-    }
-
-    // Applies one ordered physical hook event and reports whether it is a fresh DOWN edge. Kept pure so
-    // the held-through-activation -> repeat -> release -> new-press contract can be tested without faking
-    // native hook or GetAsyncKeyState behavior.
-    internal static bool ApplyAutoRunPhysicalKeyEvent(
-        ref bool physicallyDown,
-        bool isKeyDown,
-        bool isKeyUp)
-    {
-        if (isKeyDown)
-        {
-            var isFreshDown = !physicallyDown;
-            physicallyDown = true;
-            return isFreshDown;
-        }
-
-        if (isKeyUp)
-        {
-            physicallyDown = false;
-        }
-
-        return false;
-    }
-
-    private void SeedAutoRunMovementPhysicalState()
-    {
-        _wPhysicallyDown = (NativeMethods.GetAsyncKeyState(VK_W) & 0x8000) != 0;
-        _sPhysicallyDown = (NativeMethods.GetAsyncKeyState(VK_S) & 0x8000) != 0;
-    }
-
-    // None is a single-key trigger. VK_CONTROL/VK_MENU/VK_SHIFT report either side; Windows has no
-    // combined VK, so check both. Combined modifiers are intentionally unsupported (AutoRunSettings).
-    internal static bool IsTriggerModifierDown(System.Windows.Input.ModifierKeys modifier)
-    {
-        return modifier switch
-        {
-            System.Windows.Input.ModifierKeys.None => true,
-            System.Windows.Input.ModifierKeys.Control => (NativeMethods.GetAsyncKeyState(0x11) & 0x8000) != 0, // VK_CONTROL
-            System.Windows.Input.ModifierKeys.Alt => (NativeMethods.GetAsyncKeyState(0x12) & 0x8000) != 0,     // VK_MENU
-            System.Windows.Input.ModifierKeys.Shift => (NativeMethods.GetAsyncKeyState(0x10) & 0x8000) != 0,   // VK_SHIFT
-            System.Windows.Input.ModifierKeys.Windows =>
-                (NativeMethods.GetAsyncKeyState(0x5B) & 0x8000) != 0 || // VK_LWIN
-                (NativeMethods.GetAsyncKeyState(0x5C) & 0x8000) != 0,   // VK_RWIN
-            _ => false
-        };
-    }
-
-    // Under _autoRunLock, _isRunning re-checked. W/S physical state is deliberately preserved from the
-    // ordered hook stream: LowLevelKeyboardProc runs before asynchronous key state is updated, so querying
-    // GetAsyncKeyState here can turn a held key into a false "up" baseline and make its queued repeat cancel
-    // the run. Sprint still needs an activation snapshot because it is tracked only while a run is active.
-    // Enqueue-only (I5): no SendInput and no nested subsystem lock.
-    // Returns true iff a run was started (chord consumed). Returns false on any abort (service stopped,
-    // already active, foreground not the game, or a refused Background W post) — the caller must NOT
-    // consume the chord on false, so it passes through instead of being swallowed in the wrong window.
-    private bool ActivateAutoRun(
-        AutoRunSettings settings,
-        Profile profile,
-        long configurationGeneration)
-    {
-        lock (_autoRunLock)
-        {
-            if (!_isRunning || _autoRunActive || !_advancedModeEnabled ||
-                !profile.IsEnabled || !settings.IsEnabled ||
-                !ProfileInputGenerationIsCurrent() ||
-                configurationGeneration != Volatile.Read(ref _autoRunConfigurationGeneration))
-            {
-                return false;
-            }
-
-            // A1: FAIL CLOSED on foreground ownership — for BOTH transports — with NO Process.GetProcessById
-            // on the hook thread. _activeProfile lags real foreground during ProfileActivationService's
-            // color work, so a chord pressed right after an alt-tab could otherwise activate and inject W
-            // into the NEW foreground app. Confirm against the off-hook foreground snapshot: the LIVE
-            // foreground window must still equal the snapshot HWND, the snapshot PID must be resolved, and
-            // the snapshot exe must be THIS profile's game. Any mismatch (incl. a stale/absent snapshot)
-            // aborts — never a Foreground fallback into the wrong window. Only cheap non-blocking calls.
-            var hwnd = NativeMethods.GetForegroundWindow();
-            var exe = profile.NormalizedExecutable;
-            var snapshot = _foregroundIdentity;
-            // Resolve the LIVE owning PID of the foreground window and require it to equal the snapshot PID
-            // (codex sol/xhigh #3): matching the HWND alone is not enough — under HWND reuse the same handle
-            // could now belong to a DIFFERENT process, and a Background run would then target that foreign
-            // process. GetWindowThreadProcessId is cheap/non-blocking (safe on the hook thread).
-            NativeMethods.GetWindowThreadProcessId(hwnd, out var livePid);
-            if (snapshot is null ||
-                snapshot.Generation != Volatile.Read(ref _activeProfileGeneration) ||
-                snapshot.Generation != Volatile.Read(ref _publishedForegroundGeneration) ||
-                hwnd == IntPtr.Zero || hwnd != snapshot.Hwnd || snapshot.Pid == 0
-                || livePid == 0 || livePid != snapshot.Pid
-                || string.IsNullOrEmpty(exe)
-                || !string.Equals(snapshot.Exe, exe, StringComparison.OrdinalIgnoreCase))
-            {
-                LogDebug("AutoRun: foreground not confirmed as the profile game (cached identity / live PID); activation aborted (fail closed)");
-                return false;
-            }
-
-            // Transport: Background posts key messages to the game's HWND (survives alt-tab) via a
-            // non-blocking PostMessage; Foreground injects via the shared FIFO injector.
-            var background = settings.SendMode == AutoRunSendMode.Background;
-            if (background)
-            {
-                // Match AutoHotkey ControlSend's blank-control target: post to the window's TOPMOST CHILD
-                // control (the keyboard-input surface for many games, incl. GZW) rather than the top-level
-                // frame — but only if that child is in the SAME PROCESS (compare PIDs, not just the exe
-                // name: a CEF/helper child can share the exe name under a DIFFERENT PID). Focus-independent.
-                // framePid is the just-verified livePid (== snapshot.Pid).
-                var framePid = livePid;
-                var child = NativeMethods.GetWindow(hwnd, NativeMethods.GW_CHILD);
-                var childSameProcess = false;
-                if (child != IntPtr.Zero && framePid != 0)
-                {
-                    NativeMethods.GetWindowThreadProcessId(child, out var childPid);
-                    childSameProcess = childPid == framePid;
-                }
-                _autoRunTargetHwnd = childSameProcess ? child : hwnd;
-                _autoRunTargetExe = exe;
-                _autoRunTargetPid = framePid;
-                LogDebug($"AutoRun Background target=0x{_autoRunTargetHwnd.ToInt64():X} (child={childSameProcess}), exe={exe}");
-            }
-            _autoRunIsBackground = background;
-            _autoRunBackgroundTargetFocused = background;
-
-            // Snapshot the sprint key for the run's lifetime (a mid-run UI edit can't retarget it).
-            _autoRunSprintKey = settings.SprintKey;
-            // In Hold mode the sprint key becomes the sustained-sprint stamina toggle for this run.
-            _autoRunSprintToggleable = settings.SprintEnabled && settings.SprintMode == SprintActivation.Hold;
-            // Intent to hold sprint for the run (Hold mode). Current (_autoRunSprintInjected) is set false
-            // here and flipped true only when a DOWN actually lands; a fresh activation is a fresh epoch.
-            _autoRunSprintIntendedHeld = _autoRunSprintToggleable;
-            _autoRunSprintInjected = false;
-
-            // Snapshot the trigger for TOGGLE-OFF so it works even when _activeProfile is gone (bg run).
-            _autoRunSnapshotTriggerVk = KeyInteropUtilities.ToVirtualKey(settings.TriggerKey);
-            _autoRunSnapshotModifier = settings.TriggerModifier;
-
-            // If physical W is already down, it is the initial movement source. Do not emit a duplicate
-            // synthetic W-down into the same target; the handoff path below takes ownership on physical UP.
-            _autoRunPhysicalWHandoff = _wPhysicallyDown;
-            _autoRunSuppressedPhysicalWUp = false;
-            _autoRunStopOnPhysicalWUp = false;
-
-            // Do NOT re-seed W/S here. HandleAutoRun has already applied every physical W/S event in hook
-            // order, including a key held through this activation. Replacing that state from inside the
-            // callback is the self-cancel bug: GetAsyncKeyState can lag the hook event, and the next queued
-            // typematic DOWN is then misclassified as fresh. A real UP still clears the latch, so the next
-            // genuinely new W/S DOWN cancels normally. Profile switches and Background transport preserve
-            // this event-owned state; Start/watchdog replacement are the only native re-seed boundaries.
-            var sprintVk = KeyInteropUtilities.ToVirtualKey(_autoRunSprintKey);
-            _sprintPhysicallyDown = sprintVk != 0 && (NativeMethods.GetAsyncKeyState(sprintVk) & 0x8000) != 0;
-
-            // W-down: post (Background) or enqueue (Foreground) and record it (I2) only when physical W
-            // is not supplying the initial hold. A physical handoff avoids duplicate DOWN edges; its
-            // matching UP transfers ownership to the synthetic hold below HandleAutoRun.
-            // Background: if the target died between capture-validation and now, the post is REFUSED —
-            // abort activation and clear state so no zombie active run is left for ReleaseAllState to
-            // skip (per-post validation failure must clear state, §11.5; codex P3b #1).
-            // A2: a FOREGROUND run opens a new injector-guard epoch and stamps queued DOWNs with that
-            // epoch, the profile exe, and the exact foreground generation. A still-queued W/sprint DOWN
-            // therefore cannot drain after any focus publication, including a new HWND/PID for the same
-            // game. Background posts directly to its captured target and needs no injector stamp.
-            long gen = 0;
-            string? guardExe = null;
-            if (!background)
-            {
-                gen = Interlocked.Increment(ref _autoRunInjectionGeneration);
-                _activeAutoRunInjectionGeneration = gen;
-                guardExe = exe;
-            }
-            _autoRunForegroundGuardExe = guardExe; // used by a later Foreground sprint re-engage (null for Background)
-
-            _autoRunMoveInjected = false;
-            if (!_autoRunPhysicalWHandoff &&
-                !PostOrEnqueueAutoRunDown(Key.W, background, gen, guardExe, snapshot.Generation))
-            {
-                _autoRunIsBackground = false;
-                _autoRunTargetHwnd = IntPtr.Zero;
-                _autoRunTargetExe = null;
-                _autoRunTargetPid = 0;
-                _autoRunPhysicalWHandoff = false;
-                _autoRunSuppressedPhysicalWUp = false;
-                _autoRunBackgroundTargetFocused = false;
-                _autoRunSprintIntendedHeld = false; // no run → no sprint intent/current
-                _autoRunSprintInjected = false;
-                LogDebug("AutoRun Background: target window invalid at W post; activation aborted");
-                return false; // _autoRunActive stays false — no zombie run
-            }
-            if (!_autoRunPhysicalWHandoff)
-            {
-                _autoRunMoveInjected = true;
-            }
-            else if (IsDebugEnabled)
-            {
-                LogDebug("AutoRun W DOWN skipped: physical W handoff");
-            }
-
-            _autoRunSprintEnabled = settings.SprintEnabled;
-            if (settings.SprintEnabled && !background && !_autoRunPhysicalWHandoff)
-            {
-                QueueForegroundAutoRunSprintLocked(gen, guardExe, snapshot.Generation);
-            }
-
-            _autoRunOwnerProfile = profile;
-            _autoRunActive = true; // volatile write LAST — publishes records + snapshots to readers
-
-            // Background: start the dedicated thread (see BackgroundInputLoop). It does the delayed sprint
-            // activation (hold W → wait 40-60ms → press sprint) then re-posts W every tick so the run
-            // survives the game clearing its input on focus-loss (a single focused down does not persist
-            // through alt-tab). Started AFTER _autoRunActive so it sees the published run; Thread.Start is
-            // non-blocking and the thread waits on _autoRunLock (held here) before its first action.
-            // Overwrites any stale ref from a prior run. Foreground uses the injector and needs no thread.
-            if (background)
-            {
-                _backgroundInputRun = true;
-                var bgThread = new Thread(BackgroundInputLoop) { IsBackground = true, Name = "sWinBgInput" };
-                _backgroundInputThread = bgThread;
-                bgThread.Start();
-            }
-            if (IsDebugEnabled) LogDebug($"AutoRun ACTIVATED: transport={(background ? "Background" : "Foreground")}, sprintEnabled={settings.SprintEnabled}, mode={settings.SprintMode}, sprintKey={_autoRunSprintKey}");
-            return true; // run started — caller consumes the chord
-        }
-    }
-
-    // Routes a held-key DOWN to the active transport. Caller holds _autoRunLock. Returns whether the
-    // key was delivered: Foreground always true (enqueue can't refuse); Background = the post's
-    // validation result (false if the target window died — the caller must not record/keep the run).
-    private bool PostOrEnqueueAutoRunDown(
-        Key key,
-        bool background,
-        long gen,
-        string? guardExe,
-        long foregroundGeneration)
-    {
-        if (background)
-        {
-            return PostAutoRunKey(key, isDown: true);
-        }
-
-        // Foreground DOWN carries both the AutoRun epoch/exe guard and the exact foreground generation;
-        // UPs remain unconditional so every recorded hold still has a terminal release.
-        EnqueueHoldBreathInjection(new HoldBreathInjection(
-            key,
-            IsDown: true,
-            PreSleepMs: 0,
-            AutoRunGeneration: gen,
-            ExpectedForegroundExe: guardExe,
-            ForegroundGeneration: foregroundGeneration));
-        return true;
-    }
-
-    // Called from the keyboard hook when the initial physical W emits its real UP. That hook event is the
-    // authoritative physical release: because its target-visible UP is suppressed, GetAsyncKeyState remains
-    // logically down and must NOT be used as a second gate. Foreground queues ownership onto the executor;
-    // Background's dedicated thread observes the cleared latch and posts ownership there.
-    private void BeginAutoRunAfterPhysicalWRelease()
-    {
-        lock (_autoRunLock)
-        {
-            if (!_autoRunActive)
-            {
-                return;
-            }
-
-            _autoRunSuppressedPhysicalWUp = true;
-            if (_autoRunIsBackground || _autoRunMoveInjected)
-            {
-                if (IsDebugEnabled && _autoRunIsBackground)
-                {
-                    LogDebug("AutoRun physical W UP suppressed; Background handoff signaled");
-                }
-                return;
-            }
-
-            var foregroundGeneration = Volatile.Read(ref _activeProfileGeneration);
-            if (!EnqueueHoldBreathInjection(new HoldBreathInjection(
-                    Key.W,
-                    IsDown: true,
-                    PreSleepMs: 0,
-                    AutoRunGeneration: _activeAutoRunInjectionGeneration,
-                    ExpectedForegroundExe: _autoRunForegroundGuardExe,
-                    ForegroundGeneration: foregroundGeneration)))
-            {
-                LogDebug("AutoRun physical W handoff enqueue failed");
-                return;
-            }
-
-            _autoRunMoveInjected = true;
-            _autoRunSuppressedPhysicalWUp = false;
-            QueueForegroundAutoRunSprintLocked(
-                _activeAutoRunInjectionGeneration,
-                _autoRunForegroundGuardExe,
-                foregroundGeneration);
-
-            if (IsDebugEnabled)
-            {
-                LogDebug("AutoRun physical W UP suppressed; Foreground synthetic W DOWN queued");
-            }
-        }
-    }
-
-    // Caller holds _autoRunLock. The pending bit lets physical-W activation defer the entire scripted
-    // sequence until after the physical UP; FIFO ordering then guarantees W DOWN precedes sprint.
-    private void QueueForegroundAutoRunSprintLocked(
-        long autoRunGeneration,
-        string? guardExe,
-        long foregroundGeneration)
-    {
-        if (!_autoRunSprintEnabled)
-        {
-            return;
-        }
-        _autoRunSprintEnabled = false;
-
-        if (_autoRunSprintToggleable)
-        {
-            if (!_autoRunSprintIntendedHeld)
-            {
-                return;
-            }
-
-            if (EnqueueHoldBreathInjection(new HoldBreathInjection(
-                    _autoRunSprintKey,
-                    IsDown: true,
-                    PreSleepMs: 0,
-                    AutoRunGeneration: autoRunGeneration,
-                    ExpectedForegroundExe: guardExe,
-                    ForegroundGeneration: foregroundGeneration)))
-            {
-                _autoRunSprintInjected = true;
-                _autoRunSprintInjectedKey = _autoRunSprintKey;
-            }
-            return;
-        }
-
-        // Press mode: a self-releasing FIFO tap after the W handoff.
-        var rng = _random.Value!;
-        var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
-        for (int i = 0; i < warmupCalls; i++) rng.Next();
-        var duration = rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1);
-        EnqueueKeyTap(
-            _autoRunSprintKey,
-            duration,
-            autoRunGeneration: autoRunGeneration,
-            expectedForegroundExe: guardExe,
-            foregroundGeneration: foregroundGeneration);
-    }
-
-    // Unconditional release (I3) of the active run's W/sprint. includeBackground gates the DECOUPLING
-    // (§11.6): ordinary teardown (ReleaseAllState from profile/session switch + watchdog reinstall, and
-    // the eager focus-loss release) passes false and MUST skip a Background run — that run is meant to
-    // outlive profile churn. The hard-teardown sites (Stop / OnSessionSwitch / Advanced-off), an
-    // explicit chord toggle-off, and a focused physical cancel pass true. Enqueue-only (Foreground) or
-    // non-blocking PostMessage (Background), so safe on the hook / pool / dispatcher threads.
-    private void ReleaseAutoRunState(bool includeBackground)
-    {
-        lock (_autoRunLock)
-        {
-            if (!_autoRunActive)
-            {
-                return;
-            }
-
-            if (_autoRunIsBackground && !includeBackground)
-            {
-                return; // decoupled: a Background run ignores ordinary profile/hook churn
-            }
-
-            // Terminal release of an active run → open a new injector-guard epoch (A2) so any still-queued
-            // guarded Foreground DOWN is invalidated and skipped by the injector. NOT reached for a
-            // decoupled Background run left active by includeBackground:false (returned above).
-            Interlocked.Increment(ref _autoRunInjectionGeneration);
-
-            // Release the sprint UP if it is CURRENT or merely INTENDED-held (a Background Hold sprint whose
-            // current bit was cleared on focus-loss still has intent true — post an UP so nothing is left
-            // held even in that epoch). Use the injected key if current, else the run's snapshot key.
-            // While a physical-W handoff is still pending, sprint has not started yet. Do not emit a
-            // release-only sprint UP for that never-issued DOWN. Once the pending bit is consumed, intent
-            // remains a valid safety-release signal for Background focus-loss epochs.
-            bool releaseSprint = _autoRunSprintInjected ||
-                (_autoRunSprintIntendedHeld && !_autoRunSprintEnabled);
-            var sprintUpKey = _autoRunSprintInjected ? _autoRunSprintInjectedKey : _autoRunSprintKey;
-            bool releaseW = _autoRunMoveInjected || _autoRunSuppressedPhysicalWUp;
-
-            if (_autoRunIsBackground)
-            {
-                // Signal the Background thread to stop BEFORE posting the UPs. We do NOT join here: a chord
-                // toggle-off reaches this on the hook thread and I5 forbids blocking it. Clearing the run
-                // flag makes the thread exit on its next tick (it also re-checks _autoRunActive, which we
-                // set false below, both under _autoRunLock which the thread takes each tick), so no re-posted
-                // DOWN can land after the UP. The ref is left set for a Stop/Dispose off-hook join or the
-                // next activation to overwrite. Stop/Dispose additionally join via JoinBackgroundInputThread.
-                _backgroundInputRun = false;
-
-                // Best-effort post the UPs (each re-validates the target first). PostMessage is
-                // non-blocking, so this is safe under the lock. If the window is gone the UP can't
-                // land — the in-game "held" state is the documented Background residual (OS input
-                // stays clean; nothing is held system-wide).
-                if (releaseW) PostAutoRunKey(Key.W, isDown: false);
-                if (releaseSprint) PostAutoRunKey(sprintUpKey, isDown: false);
-                _autoRunTargetHwnd = IntPtr.Zero;
-                _autoRunTargetExe = null;
-                _autoRunTargetPid = 0;
-            }
-            else
-            {
-                if (releaseW) EnqueueHoldBreathInjection(new HoldBreathInjection(Key.W, IsDown: false, PreSleepMs: 0));
-                if (releaseSprint) EnqueueHoldBreathInjection(new HoldBreathInjection(sprintUpKey, IsDown: false, PreSleepMs: 0));
-            }
-
-            _autoRunMoveInjected = false;
-            _autoRunPhysicalWHandoff = false;
-            _autoRunSuppressedPhysicalWUp = false;
-            _autoRunStopOnPhysicalWUp = false;
-            _autoRunSprintInjected = false;
-            _autoRunSprintIntendedHeld = false;
-            _autoRunSprintToggleable = false;
-            _autoRunSprintEnabled = false;
-            _autoRunSprintKey = Key.None;
-            _autoRunSprintInjectedKey = Key.None;
-            _autoRunIsBackground = false;
-            _autoRunBackgroundTargetFocused = false;
-            _autoRunForegroundGuardExe = null;
-            _autoRunOwnerProfile = null;
-            _autoRunActive = false;
-        }
-    }
-
-    // Toggles the sustained sprint of an active Hold-mode run for stamina management: release it if
-    // held, else re-engage it. Routes by transport exactly like ActivateAutoRun/ReleaseAutoRunState
-    // (enqueue for Foreground, non-blocking PostMessage for Background), under _autoRunLock; re-checks
-    // _autoRunActive (the caller read it lock-free). Auto-run's W is untouched — only sprint toggles,
-    // and ReleaseAutoRunState still releases whatever sprint is held on exit (no stuck sprint).
-    private void ToggleAutoRunSprintHold()
-    {
-        lock (_autoRunLock)
-        {
-            if (!_autoRunActive)
-            {
-                return;
-            }
-
-            if (_autoRunSprintEnabled)
-            {
-                _autoRunSprintIntendedHeld = !_autoRunSprintIntendedHeld;
-                if (IsDebugEnabled)
-                {
-                    LogDebug($"AutoRun pending sprint intent toggled {(_autoRunSprintIntendedHeld ? "ON" : "OFF")}");
-                }
-                return;
-            }
-
-            if (_autoRunSprintInjected)
-            {
-                // Sprint currently held → turn it OFF (in-game stamina recharges; W keeps running). Intent
-                // goes false (the user chose to stop). CURRENT clears only once the UP actually lands: a
-                // transient Background PostMessage failure keeps current=true so terminal release still
-                // retries the UP (no stuck sprint). Foreground enqueue cannot fail (codex sol/xhigh tweak).
-                _autoRunSprintIntendedHeld = false;
-                if (_autoRunIsBackground)
-                {
-                    if (PostAutoRunKey(_autoRunSprintInjectedKey, isDown: false))
-                    {
-                        _autoRunSprintInjected = false;
-                    }
-                }
-                else
-                {
-                    EnqueueHoldBreathInjection(new HoldBreathInjection(_autoRunSprintInjectedKey, IsDown: false, PreSleepMs: 0));
-                    _autoRunSprintInjected = false;
-                }
-                if (IsDebugEnabled) LogDebug("AutoRun sprint toggled OFF (stamina)");
-            }
-            else
-            {
-                // Sprint currently off → engage it. Intent goes true unconditionally (the user wants sprint,
-                // so a later focus-regain also re-engages); current goes true only if the DOWN actually
-                // lands (Foreground always; Background could refuse if the target window died). This branch
-                // also handles the first physical press after an alt-tab (intent=true, current=false): it
-                // re-engages instead of the old stale "release + eaten" behaviour.
-                _autoRunSprintIntendedHeld = true;
-                if (_autoRunIsBackground)
-                {
-                    if (PostAutoRunKey(_autoRunSprintKey, isDown: true))
-                    {
-                        _autoRunSprintInjected = true;
-                        _autoRunSprintInjectedKey = _autoRunSprintKey;
-                    }
-                }
-                else
-                {
-                    // Foreground sprint re-engage: stamp with the run's active epoch + exe (A2) so a stale
-                    // re-engage DOWN is skipped if the run ended / focus left before it drains.
-                    EnqueueHoldBreathInjection(new HoldBreathInjection(
-                        _autoRunSprintKey,
-                        IsDown: true,
-                        PreSleepMs: 0,
-                        AutoRunGeneration: _activeAutoRunInjectionGeneration,
-                        ExpectedForegroundExe: _autoRunForegroundGuardExe,
-                        ForegroundGeneration: Volatile.Read(ref _activeProfileGeneration)));
-                    _autoRunSprintInjected = true;
-                    _autoRunSprintInjectedKey = _autoRunSprintKey;
-                }
-                if (IsDebugEnabled) LogDebug("AutoRun sprint toggled ON");
-            }
-        }
-    }
-
-    // Eager release when foreground LEAVES the active profile — called by ProfileActivationService
-    // BEFORE its color work, so a held Foreground W can't briefly leak into the incoming window during
-    // that window (the profile switch also releases via ReleaseAllState, but only after color work).
-    // includeBackground:false — a Background run is SUPPOSED to keep going while unfocused (§11.6).
-    public void ReleaseForegroundAutoRun()
-    {
-        ReleaseAutoRunState(includeBackground: false);
-    }
+    public void ReleaseForegroundAutoRun() => _autoRun.Release(includeBackground: false);
 
     public void ReleaseForegroundState()
     {
         lock (_profileLock)
         {
-            if (!_isRunning)
+            if (!_runtime.IsRunning)
             {
                 return;
             }
 
-            // Sticky arm survives the foreground handoff (its press is cancelled); the preceding
-            // SetForegroundIdentity raise already flipped the dot to gray. Active profile is
-            // deliberately unchanged — activation catches up next.
             ReleaseAllState(preserveRapidFireArm: true);
             RederivePhysicalModifierState();
         }
     }
 
-    // A1: off-hook publish of the foreground identity (see field). Called by ProfileActivationService on
-    // every foreground change, on the watcher thread — never the hook thread. Atomic reference swap.
     public void SetForegroundIdentity(
         IntPtr windowHandle,
         uint processId,
         string? normalizedExecutable,
         long foregroundGeneration)
     {
-        var generationChanged = Volatile.Read(ref _publishedForegroundGeneration) != foregroundGeneration;
-        _foregroundIdentity = new ForegroundIdentitySnapshot(
+        var generationChanged = _runtime.PublishedForegroundGeneration != foregroundGeneration;
+        _runtime.SetForegroundIdentity(
             windowHandle,
             processId,
             normalizedExecutable,
             foregroundGeneration);
-        Volatile.Write(ref _publishedForegroundGeneration, foregroundGeneration);
         if (generationChanged)
         {
-            // The ONLY raise deliberately made under a caller-held lock (the watcher's
-            // _publicationLock — this method owns no lock itself): a publication ahead of
-            // activation is exactly what flips a ready arm to not-ready, and delaying the raise
-            // until after the caller's lock could reorder it behind the matching activation.
-            // Safe because RapidFireArmChanged handlers are contractually enqueue-only and
-            // exception-isolated (see IInputHookService.RapidFireArmChanged).
             RaiseRapidFireArmChanged();
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool ProfileInputGenerationIsCurrent()
+    private bool ReleaseAllState(
+        bool preservePhysicalPairing = true,
+        bool preserveRapidFireArm = false)
     {
-        return Volatile.Read(ref _activeProfileGeneration) ==
-               Volatile.Read(ref _publishedForegroundGeneration);
-    }
-
-    // Posts one WM_KEYDOWN/WM_KEYUP to the Background target after re-validating it via the CHEAP PID
-    // compare (BackgroundTargetValid: GetWindowThreadProcessId == snapshot PID). This catches BOTH "window
-    // gone" (pid 0) AND "handle reused by another process" (pid mismatch) with no Process.GetProcessById —
-    // so it is safe on the HOOK thread (activation / toggle-off / cancel), where the heavier
-    // WindowBelongsToExe could stall past LowLevelHooksTimeout (B2). On validation failure it posts
-    // nothing (a same-process window swap remains the documented residual). PostMessage is
-    // async/non-blocking, so this never stalls on a foreign hook. Caller holds _autoRunLock. Returns
-    // whether the target was still valid.
-    private bool PostAutoRunKey(
-        Key key,
-        bool isDown,
-        bool repeat = false,
-        bool forceAttach = false)
-    {
-        if (!BackgroundTargetValid(_autoRunTargetHwnd))
-        {
-            return false;
-        }
-
-        var posted = PostKeyToWindow(_autoRunTargetHwnd, key, isDown, repeat, forceAttach);
-        if (IsDebugEnabled) LogDebug($"AutoRun Background post {(isDown ? "DOWN" : "UP")}: {key} to hwnd=0x{_autoRunTargetHwnd.ToInt64():X} posted={posted}");
-        return posted;
-    }
-
-    // Posts one WM_KEY* to hwnd using AutoHotkey ControlSend's technique: attach our (posting) thread to
-    // the target window's input thread around the post — the one thing ControlSend does that a bare
-    // PostMessage does not, and WITHOUT which games like GZW ignore a posted WM_KEYDOWN. AttachThreadInput
-    // is non-blocking and we detach right after the post, so the shared-input-queue coupling lasts only
-    // microseconds. Guards: skip if the target thread is unknown or is our own thread, and never attach
-    // to a hung window's queue (IsHungAppWindow is a non-blocking status check, not a SendMessage). A
-    // failed attach still posts (best-effort). Runs under _autoRunLock but stays non-blocking (I5 holds).
-    // `repeat` sets the previous-state bit for a sustained-key re-post (see BackgroundInputLoop).
-    private bool PostKeyToWindow(
-        IntPtr hwnd,
-        Key key,
-        bool isDown,
-        bool repeat,
-        bool forceAttach = false)
-    {
-        var vk = KeyInteropUtilities.ToVirtualKey(key);
-        if (vk == 0)
-        {
-            return true;
-        }
-
-        var scan = NativeMethods.MapVirtualKey((uint)vk, 0);
-        // Alt (VK_MENU / L/R) and F10 are SYSTEM keys — Windows delivers them as WM_SYSKEY*; a game reading
-        // an Alt sprint off WM_SYSKEYDOWN would never see a WM_KEYDOWN (D1). We only ever post a SINGLE key
-        // (never a non-Alt key while holding Alt), so the WM_SYSKEY* context bit (29) is always clear here.
-        var isSysKey = vk is 0x12 or 0xA4 or 0xA5 or 0x79; // VK_MENU, VK_LMENU, VK_RMENU, VK_F10
-        var lParam = BuildKeyLParam(scan, isDown, IsExtendedKey(key), repeat, altContext: false);
-        var msg = (uint)(isDown
-            ? (isSysKey ? NativeMethods.WM_SYSKEYDOWN : NativeMethods.WM_KEYDOWN)
-            : (isSysKey ? NativeMethods.WM_SYSKEYUP : NativeMethods.WM_KEYUP));
-
-        var targetThread = NativeMethods.GetWindowThreadProcessId(hwnd, out _);
-        var thisThread = NativeMethods.GetCurrentThreadId();
-        // Confine AttachThreadInput to the dedicated Background thread (B1(b)): attaching couples the
-        // caller's input queue to the game's, which must NEVER happen on the hook/dispatcher thread (a
-        // hung game could then stall hook dispatch). Hook-thread posts go BARE. The bg thread attaches for
-        // one startup/focus-regain reassertion and while the target is unfocused; its foreground heartbeat
-        // stays bare so physical A/D state is not reset every 35ms.
-        var onBackgroundThread = ReferenceEquals(Thread.CurrentThread, _backgroundInputThread);
-        // Attaching while the game is already foreground repeatedly resets/shares its keyboard-state table
-        // every 35ms, which can make physical A/D appear released until typematic reasserts them. A bare
-        // PostMessage is sufficient for the focused target; attach only to reach an unfocused target.
-        var targetIsForegroundProcess = onBackgroundThread && ForegroundIsAutoRunTargetProcess();
-        var attachCandidate = onBackgroundThread && (forceAttach || !targetIsForegroundProcess) &&
-            targetThread != 0 && targetThread != thisThread;
-        var targetIsHung = attachCandidate && NativeMethods.IsHungAppWindow(hwnd);
-        var willAttach = ShouldAttachBackgroundInput(
-            onBackgroundThread,
-            targetIsForegroundProcess,
-            targetThread,
-            thisThread,
-            targetIsHung,
-            forceAttach);
-
-        // AttachThreadInput resets the calling thread's keyboard-state table. Snapshot and restore it so
-        // this short-lived Background post does not corrupt other same-thread keyboard-state consumers.
-        byte[]? savedKeyState = null;
-        if (willAttach)
-        {
-            savedKeyState = new byte[256];
-            if (!NativeMethods.GetKeyboardState(savedKeyState))
-            {
-                // No snapshot means do not attach: a bare best-effort post is safer than resetting a
-                // keyboard-state table that cannot be restored. B3.
-                savedKeyState = null;
-                willAttach = false;
-            }
-        }
-
-        // Exception-safe (B3): detach and restore ALWAYS run — even on an asynchronous exception between
-        // attach and post — so we never leak the UI/game input-queue attachment or leave the key-state
-        // table reset.
-        bool attached = false;
-        try
-        {
-            attached = willAttach && NativeMethods.AttachThreadInput(thisThread, targetThread, true);
-            return NativeMethods.PostMessage(hwnd, msg, (IntPtr)vk, lParam);
-        }
-        finally
-        {
-            if (attached)
-            {
-                NativeMethods.AttachThreadInput(thisThread, targetThread, false);
-            }
-            if (savedKeyState != null)
-            {
-                NativeMethods.SetKeyboardState(savedKeyState);
-            }
-        }
-    }
-
-    internal static bool ShouldAttachBackgroundInput(
-        bool onBackgroundThread,
-        bool targetIsForegroundProcess,
-        uint targetThread,
-        uint currentThread,
-        bool targetIsHung,
-        bool forceAttach = false)
-    {
-        return onBackgroundThread && (forceAttach || !targetIsForegroundProcess) &&
-            targetThread != 0 && targetThread != currentThread && !targetIsHung;
-    }
-
-    // Dedicated Background input thread. First does the one-time delayed sprint activation (user spec: hold
-    // W → wait 40-60ms → press the sprint key; posting it back-to-back with W is read "too soon" by GZW and
-    // skipped), then re-posts W every AUTO_RUN_REPEAT_MS. W (movement) is STATE-based and the game clears
-    // input on focus-loss, so a single focused down does not persist through alt-tab — re-posting keeps the
-    // run alive. Sprint is NOT re-posted PER TICK (a per-tick modifier re-post reads as a fresh
-    // "dash"/fast-sprint, and SetKeyboardState is ignored by GZW). Instead a Hold sprint is re-asserted
-    // ONCE on each focus-REGAIN transition (W → BG_SPRINT_REENGAGE_QUIET_MS quiet window → one sprint DOWN),
-    // gated on intent so it survives alt-tab without the dash; current is cleared on focus-loss so the
-    // intent/current split stays accurate. A Press/toggle sprint persists as the game's OWN toggle state
-    // with no re-post — that is the working background-sprint path for GZW. (Regain re-assert needs in-game
-    // verification per game; see BG_SPRINT_REENGAGE_QUIET_MS.)
-    // Concurrency: every tick's shared-state read + posts happen under _autoRunLock (serializes with
-    // activate/release, like the old timer); Sleeps are OUTSIDE the lock. The thread exits when
-    // _backgroundInputRun is cleared, the run ends, or it is no longer the current run's thread
-    // (_backgroundInputThread identity — lets a stale thread bow out if a new run started).
-    private void BackgroundInputLoop()
-    {
-        try
-        {
-            // A held physical W owns movement until its UP passes through. Only then post the scripted W
-            // DOWN; afterward the existing delayed sprint/repost sequence may begin. All waiting is on this
-            // dedicated thread, never the low-level-hook thread.
-            if (!EnsureBackgroundAutoRunMovementStarted())
-            {
-                return;
-            }
-            DoDelayedBackgroundSprintActivation();
-
-            // Focus-transition state, OWNED by this loop (single thread → no cross-thread field needed).
-            // Activation fails closed unless the game was foreground (A1), so the run starts focused.
-            bool wasTargetForeground = true;
-            bool sprintReengagePending = false;
-            int sprintReengageDueTick = 0;
-
-            while (true)
-            {
-                bool stop = false;
-                lock (_autoRunLock)
-                {
-                    if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread
-                        || !_autoRunActive || !_autoRunIsBackground || !_isRunning || _disposed)
-                    {
-                        stop = true;
-                    }
-                    else if (!BackgroundTargetValid(_autoRunTargetHwnd))
-                    {
-                        // Target window died OR its HWND was reused by ANOTHER process (pid mismatch): do NOT
-                        // keep spinning or post into a reused/foreign window — hard-release the run (a per-post
-                        // validation failure is a teardown path, §11.5). Its UPs re-validate via
-                        // WindowBelongsToExe, so nothing lands on a foreign/dead window. codex R1 #1.
-                        if (IsDebugEnabled) LogDebug("AutoRun Background: target invalid (dead/reused pid) — hard-releasing the run");
-                        ReleaseAutoRunState(includeBackground: true); // re-entrant on _autoRunLock (held here)
-                        stop = true;
-                    }
-                    else
-                    {
-                        bool foreground = ForegroundIsAutoRunTargetProcess();
-                        _autoRunBackgroundTargetFocused = foreground;
-
-                        if (wasTargetForeground && !foreground)
-                        {
-                            // Focus LOST: the game clears its input, so a Hold sprint is no longer CURRENT
-                            // (intent is preserved). Cancel any pending re-engage. W keeps being re-posted
-                            // so movement resumes on return.
-                            if (_autoRunSprintInjected)
-                            {
-                                _autoRunSprintInjected = false;
-                                if (IsDebugEnabled) LogDebug("AutoRun Background: focus lost — sprint no longer current (intent preserved)");
-                            }
-                            sprintReengagePending = false;
-                        }
-                        else if (!wasTargetForeground && foreground)
-                        {
-                            // Focus REGAINED: the game cleared its key state on focus loss. Re-assert W either
-                            // immediately (ordinary movement) or before the one quiet-window sprint engage.
-                            if (_autoRunSprintToggleable && _autoRunSprintIntendedHeld && !_autoRunSprintInjected)
-                            {
-                                if (_autoRunActive && PostAutoRunKey(
-                                        Key.W,
-                                        isDown: true,
-                                        repeat: false,
-                                        forceAttach: true))
-                                {
-                                    _autoRunMoveInjected = true;
-                                }
-                                sprintReengagePending = true;
-                                sprintReengageDueTick = unchecked(Environment.TickCount + BG_SPRINT_REENGAGE_QUIET_MS);
-                                if (IsDebugEnabled) LogDebug("AutoRun Background: focus regained — sprint re-engage armed");
-                            }
-                            else
-                            {
-                                if (_autoRunActive && PostAutoRunKey(
-                                        Key.W,
-                                        isDown: true,
-                                        repeat: false,
-                                        forceAttach: true))
-                                {
-                                    _autoRunMoveInjected = true;
-                                }
-                            }
-                        }
-                        wasTargetForeground = foreground;
-
-                        if (sprintReengagePending && unchecked(Environment.TickCount - sprintReengageDueTick) >= 0)
-                        {
-                            // Due: post exactly one sprint DOWN, re-checked under this held lock. Clear the
-                            // pending attempt whether it lands or not (no per-tick retries). A physical
-                            // stamina toggle that engaged sprint first is seen here via _autoRunSprintInjected.
-                            sprintReengagePending = false;
-                            if (_autoRunSprintToggleable && _autoRunSprintIntendedHeld && !_autoRunSprintInjected
-                                && foreground && BackgroundTargetValid(_autoRunTargetHwnd))
-                            {
-                                if (PostAutoRunKey(_autoRunSprintKey, isDown: true))
-                                {
-                                    _autoRunSprintInjected = true;
-                                    _autoRunSprintInjectedKey = _autoRunSprintKey;
-                                    if (IsDebugEnabled) LogDebug("AutoRun Background: sprint re-engaged on focus regain");
-                                }
-                            }
-                        }
-                        else if (!sprintReengagePending)
-                        {
-                            // Movement: re-post W each tick once Auto-Run owns the synthetic hold.
-                            bool shouldPostW = _autoRunMoveInjected;
-                            bool wPosted = shouldPostW && PostKeyToWindow(_autoRunTargetHwnd, Key.W, isDown: true, repeat: true);
-                            if (wPosted)
-                            {
-                                _autoRunMoveInjected = true;
-                            }
-                            if (IsDebugEnabled && (++_autoRunRepostTicks % 28) == 0)
-                            {
-                                LogDebug($"AutoRun Background heartbeat: W posted={wPosted}, foreground={foreground}, sprintInjected={_autoRunSprintInjected}");
-                            }
-                        }
-                    }
-                }
-                if (stop) break;
-
-                // Normally tick every 35ms; while a re-engage is pending, sleep only until it is due so the
-                // 50ms quiet window is honoured without busy-waiting. Sleep is OUTSIDE the lock.
-                int sleepMs = AUTO_RUN_REPEAT_MS;
-                if (sprintReengagePending)
-                {
-                    int remaining = unchecked(sprintReengageDueTick - Environment.TickCount);
-                    sleepMs = Math.Max(1, Math.Min(AUTO_RUN_REPEAT_MS, remaining));
-                }
-                Thread.Sleep(sleepMs);
-            }
-        }
-        catch (Exception ex)
-        {
-            if (IsDebugEnabled) LogDebug($"BackgroundInputLoop exception: {ex}");
-
-            // F2: an exception must NOT leave the run marked active (a zombie only clearable by
-            // toggle-off/Stop/session/Advanced-off, still "moving" per Anti-AFK's guard 4). Terminalize
-            // and post the paired UPs while STILL HOLDING _autoRunLock (codex): PostMessage is non-blocking
-            // and this is the dedicated bg thread (I5 holds), and serializing the UP under the lock stops a
-            // replacement activation from posting its W-DOWN first and having our stale UP cancel it. We do
-            // NOT call ReleaseAutoRunState here (its native posts could throw before it clears state).
-            lock (_autoRunLock)
-            {
-                if (_backgroundInputThread == Thread.CurrentThread && _autoRunActive && _autoRunIsBackground)
-                {
-                    var hwnd = _autoRunTargetHwnd;
-                    var releaseW = _autoRunMoveInjected || _autoRunSuppressedPhysicalWUp;
-                    // Release sprint if CURRENT or INTENDED-held (same predicate as ReleaseAutoRunState), using
-                    // the injected key if current, else the run's snapshot key.
-                    var releaseSprint = _autoRunSprintInjected ||
-                        (_autoRunSprintIntendedHeld && !_autoRunSprintEnabled);
-                    var sprintKey = _autoRunSprintInjected ? _autoRunSprintInjectedKey : _autoRunSprintKey;
-
-                    // Terminal release of an active run → invalidate any in-flight guarded injector DOWNs (A2).
-                    Interlocked.Increment(ref _autoRunInjectionGeneration);
-                    _backgroundInputRun = false;
-                    _autoRunMoveInjected = false;
-                    _autoRunPhysicalWHandoff = false;
-                    _autoRunSuppressedPhysicalWUp = false;
-                    _autoRunStopOnPhysicalWUp = false;
-                    _autoRunSprintInjected = false;
-                    _autoRunSprintIntendedHeld = false;
-                    _autoRunSprintToggleable = false;
-                    _autoRunSprintEnabled = false;
-                    _autoRunSprintKey = Key.None;
-                    _autoRunSprintInjectedKey = Key.None;
-                    _autoRunIsBackground = false;
-                    _autoRunBackgroundTargetFocused = false;
-                    _autoRunForegroundGuardExe = null;
-                    _autoRunOwnerProfile = null;
-                    _autoRunActive = false;
-                    _autoRunTargetHwnd = IntPtr.Zero;
-                    _autoRunTargetExe = null;
-                    _autoRunTargetPid = 0;
-
-                    // Best-effort paired UPs UNDER the lock (non-blocking). PostKeyToWindow is exception-safe
-                    // (B3); wrap anyway so a second failure can't escape a thread that is exiting.
-                    try
-                    {
-                        if (hwnd != IntPtr.Zero && releaseW) PostKeyToWindow(hwnd, Key.W, isDown: false, repeat: false);
-                        if (hwnd != IntPtr.Zero && releaseSprint) PostKeyToWindow(hwnd, sprintKey, isDown: false, repeat: false);
-                    }
-                    catch { /* run already terminalized; nothing more we can do */ }
-                }
-            }
-        }
-    }
-
-    private bool EnsureBackgroundAutoRunMovementStarted()
-    {
-        bool loggedWait = false;
-
-        while (true)
-        {
-            bool waitForPhysicalRelease;
-            lock (_autoRunLock)
-            {
-                if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread ||
-                    !_autoRunActive || !_autoRunIsBackground || !_isRunning || _disposed)
-                {
-                    return false;
-                }
-
-                waitForPhysicalRelease = _autoRunPhysicalWHandoff;
-                if (!waitForPhysicalRelease)
-                {
-                    // Exactly one ControlSend-style attached reassertion establishes the held W for games
-                    // that ignore bare posts. Foreground heartbeats after this are deliberately bare.
-                    // A suppressed physical-UP handoff keeps the target logically down (repeat bit); normal
-                    // startup/focus recovery needs a fresh DOWN because the prior state may have been clear.
-                    var repeat = _autoRunSuppressedPhysicalWUp;
-                    if (!PostAutoRunKey(
-                            Key.W,
-                            isDown: true,
-                            repeat: repeat,
-                            forceAttach: true))
-                    {
-                        ReleaseAutoRunState(includeBackground: true);
-                        return false;
-                    }
-
-                    _autoRunMoveInjected = true;
-                    _autoRunSuppressedPhysicalWUp = false;
-                    if (IsDebugEnabled)
-                    {
-                        LogDebug("AutoRun Background physical W handoff complete: scripted W DOWN posted");
-                    }
-                    return true;
-                }
-
-                if (!loggedWait && IsDebugEnabled)
-                {
-                    LogDebug("AutoRun Background waiting for physical W UP");
-                    loggedWait = true;
-                }
-            }
-
-            Thread.Sleep(1);
-        }
-    }
-
-    // One-time delayed sprint activation for a Background run. After the initial physical/synthetic W hold,
-    // wait 40-60ms before touching the sprint key (GZW skips a sprint key posted back-to-back with W). Hold mode leaves
-    // the key held (recorded so ReleaseAutoRunState posts the paired UP — no stuck sprint); Press/toggle
-    // mode taps it (DOWN → 40-60ms → UP) to flip the game's sprint toggle, which then persists across
-    // alt-tab with no re-post. Sleeps are OUTSIDE _autoRunLock; every post re-checks the run + target under
-    // the lock. Runs on the Background thread, so blocking sleeps are safe (never the hook thread).
-    private void DoDelayedBackgroundSprintActivation()
-    {
-        bool hold;
-        Key sprintKey;
-        lock (_autoRunLock)
-        {
-            if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread
-                || !_autoRunActive || !_autoRunIsBackground || !_autoRunSprintEnabled)
-            {
-                return;
-            }
-            hold = _autoRunSprintToggleable; // Hold mode (else Press/toggle)
-            sprintKey = _autoRunSprintKey;
-        }
-
-        Thread.Sleep(RandomBackgroundDelay(BG_SPRINT_PREDELAY_MIN_MS, BG_SPRINT_PREDELAY_MAX_MS));
-
-        lock (_autoRunLock)
-        {
-            if (!_backgroundInputRun || _backgroundInputThread != Thread.CurrentThread
-                || !_autoRunActive || !_autoRunIsBackground || !BackgroundTargetValid(_autoRunTargetHwnd))
-            {
-                return;
-            }
-            // Consume the one-time pending flag UNCONDITIONALLY now (codex sol/xhigh #1): whatever we decide
-            // below, this delayed activation has run once.
-            if (!_autoRunSprintEnabled) return;
-            _autoRunSprintEnabled = false;
-
-            if (hold)
-            {
-                // Hold: only post the initial DOWN if the user STILL wants sprint held (a stamina toggle
-                // during the pre-delay window may have turned it off → intent=false; do NOT resurrect it),
-                // it is not already engaged, and the game is STILL foreground (if focus left during the
-                // delay the game cleared its input — leave intent=true,current=false and let the loop's
-                // focus-regain path do the W → 50ms → sprint sequence instead of posting into a stale epoch).
-                // RESIDUAL (codex sol/xhigh round 2): if focus LEFT and RETURNED entirely within this 40-60ms
-                // pre-delay, the foreground check below passes and the loop (edge-triggered on the boolean)
-                // may not register the crossed epoch. Benign for the INITIAL activation — sprint was never
-                // engaged, so this DOWN is a clean first engage (no prior sprint to "dash"). A strict epoch
-                // guarantee would need a monotonic foreground-generation token; not worth the hot-path
-                // complexity for a sub-60ms, non-human-reproducible blip.
-                if (!_autoRunSprintIntendedHeld) return;
-                if (_autoRunSprintInjected) return;
-                if (!ForegroundIsAutoRunTargetProcess()) return;
-
-                if (!PostAutoRunKey(sprintKey, isDown: true)) return; // sprint DOWN
-                if (IsDebugEnabled) LogDebug("AutoRun Background delayed sprint DOWN posted (mode=Hold)");
-                // Held: record CURRENT so ReleaseAutoRunState posts the paired UP (no stuck sprint). Intent
-                // was set at activation; current now matches.
-                _autoRunSprintInjected = true;
-                _autoRunSprintInjectedKey = sprintKey;
-                return;
-            }
-
-            // Press/toggle: a one-shot tap that flips the game's OWN sprint toggle (no intent/current
-            // model). Post the DOWN best-effort.
-            if (!PostAutoRunKey(sprintKey, isDown: true)) return; // sprint DOWN
-            if (IsDebugEnabled) LogDebug("AutoRun Background delayed sprint DOWN posted (mode=Press)");
-        }
-
-        // Press/toggle: hold the tap briefly, then release. Post the UP ONLY if THIS worker still owns the
-        // current run (identity + active) — otherwise a stale tap could post into a REPLACEMENT run and
-        // truncate/release its sprint (codex R2 #1). If our run ended first, the unpaired DOWN is the
-        // documented residual (PostMessage-only: the game's toggle already fired on the DOWN edge and
-        // nothing is held system-wide).
-        Thread.Sleep(RandomBackgroundDelay(BG_SPRINT_TAP_MIN_MS, BG_SPRINT_TAP_MAX_MS));
-        lock (_autoRunLock)
-        {
-            if (_backgroundInputRun && _backgroundInputThread == Thread.CurrentThread
-                && _autoRunActive && _autoRunIsBackground && BackgroundTargetValid(_autoRunTargetHwnd))
-            {
-                PostAutoRunKey(sprintKey, isDown: false); // sprint UP (completes the tap)
-                if (IsDebugEnabled) LogDebug("AutoRun Background delayed sprint UP posted (tap complete)");
-            }
-        }
-    }
-
-    // Random dwell in [minMs, maxMs] for the Background sprint activation timing, on the Background thread's
-    // own ThreadLocal Random.
-    private int RandomBackgroundDelay(int minMs, int maxMs) => _random.Value!.Next(minMs, maxMs + 1);
-
-    // Signals the Background thread to stop and joins it (bounded), off the hook thread — called only from
-    // Stop/Dispose (app lifecycle). Signals under _autoRunLock, then joins OUTSIDE it so the thread can take
-    // _autoRunLock to finish its final tick and exit. A chord toggle-off must NOT call this (I5):
-    // ReleaseAutoRunState signals only.
-    private void JoinBackgroundInputThread()
-    {
-        Thread? t;
-        lock (_autoRunLock)
-        {
-            _backgroundInputRun = false;
-            t = _backgroundInputThread;
-            _backgroundInputThread = null;
-        }
-        if (t != null && t != Thread.CurrentThread && t.IsAlive)
-        {
-            t.Join(300);
-        }
-    }
-
-    // Cheap foreground-process check for the sprint re-establish edge (no Process.GetProcessById on the
-    // 28Hz path). True iff the current foreground window belongs to the Background run's target process.
-    private bool ForegroundIsAutoRunTargetProcess()
-    {
-        var fg = NativeMethods.GetForegroundWindow();
-        if (fg == IntPtr.Zero || _autoRunTargetPid == 0)
-        {
-            return false;
-        }
-
-        NativeMethods.GetWindowThreadProcessId(fg, out var fgPid);
-        return fgPid == _autoRunTargetPid;
-    }
-
-    // Cheap hot-path validity check for the Background target (called every ~35ms on the Background
-    // thread): valid iff the HWND still resolves to the SAME process instance we exe-validated at
-    // activation. GetWindowThreadProcessId returns pid 0 for a dead handle and the reusing process's pid
-    // for a reused one, so this single non-blocking call catches BOTH "window gone" AND "handle reused by
-    // another process" (the case that must never receive an attach / SetKeyboardState / post) with NO
-    // Process.GetProcessById on the 28Hz path (WindowBelongsToExe does that heavier check, kept for the
-    // teardown UPs). A same-process window swap remains the documented residual. Caller holds _autoRunLock.
-    private bool BackgroundTargetValid(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero || _autoRunTargetPid == 0)
-        {
-            return false;
-        }
-        NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-        return pid != 0 && pid == _autoRunTargetPid;
-    }
-
-    // WM_KEY*/WM_SYSKEY* lParam: bits 0-15 repeat count (1), 16-23 scan code, 24 extended-key, 29 context
-    // (ALT held, for WM_SYSKEY*), 30 previous-state (1 on keyup), 31 transition (1 on keyup). Zero-extended
-    // into the pointer-sized LPARAM.
-    private static IntPtr BuildKeyLParam(uint scanCode, bool isDown, bool extended, bool repeat = false, bool altContext = false)
-    {
-        uint lp = 1u;
-        lp |= (scanCode & 0xFFu) << 16;
-        if (extended) lp |= 1u << 24;
-        if (altContext) lp |= 1u << 29;             // WM_SYSKEY* context bit: ALT down when the key was pressed
-        if (!isDown) lp |= (1u << 30) | (1u << 31); // keyup: previous-state + transition bits
-        else if (repeat) lp |= 1u << 30;            // auto-repeat keydown: previous-state = down
-        return (IntPtr)(long)lp;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsExtendedKey(Key key)
-    {
-        return key is Key.RightAlt or Key.RightCtrl or Key.Insert or Key.Delete or
-                      Key.Home or Key.End or Key.PageUp or Key.PageDown or
-                      Key.Up or Key.Down or Key.Left or Key.Right or
-                      Key.NumLock or Key.PrintScreen or Key.Divide or Key.Apps;
-    }
-
-    // True iff the current foreground window belongs to the Background run's target PROCESS. Gates the
-    // physical W/S/sprint cancel of a Background run to "only while the game is focused" (§11.6). This is
-    // reached on the HOOK thread (cancel / sprint-toggle), so it uses the CHEAP PID compare
-    // (ForegroundIsAutoRunTargetProcess) — never Process.GetProcessById (WindowBelongsToExe), which could
-    // stall past LowLevelHooksTimeout and freeze all input (B2). The exe→PID binding was established
-    // off-hot-path at activation; the PID compare here is equivalent for a live run (same process).
-    private bool ForegroundMatchesAutoRunTarget()
-    {
-        return ForegroundIsAutoRunTargetProcess();
-    }
-
-    // Validates that a window is alive and its owning process's exe equals the given normalized name.
-    // Mirrors ForegroundWatcher.ResolveProcessName + ExecutableName.Normalize. Does NOT catch a
-    // same-process window swap (the stale handle still passes IsWindow + PID→exe) — documented residual.
-    private static bool WindowBelongsToExe(IntPtr hwnd, string? normalizedExe)
-    {
-        if (hwnd == IntPtr.Zero || string.IsNullOrEmpty(normalizedExe) || !NativeMethods.IsWindow(hwnd))
-        {
-            return false;
-        }
-
-        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-        if (pid == 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
-            return string.Equals(ExecutableName.Normalize(process.ProcessName), normalizedExe, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false; // process exited between the PID query and the open — treat as invalid
-        }
-    }
-
-    // ==================== ANTI-AFK ====================
-
-    // Fixed-period tick (single-flight). Fires ONE atomic WASD sequence iff ALL guards hold. Runs on a
-    // threadpool timer thread; reads volatile runtime state + native idle/foreground, enqueues on the
-    // shared injector. No locks (guard 4 reads _autoRunActive volatile; the injector serializes work).
-    private void AntiAfkTick()
-    {
-        if (!_isRunning || _disposed)
-        {
-            return;
-        }
-
-        // Single-flight: a slow injector must not let ticks overlap (Interlocked, like the watchdog).
-        if (Interlocked.CompareExchange(ref _antiAfkTickRunning, 1, 0) != 0)
-        {
-            return;
-        }
-
-        try
-        {
-            // One throttled diagnostic per ~minute, evaluated at EVERY guard so "why didn't it fire" is
-            // answerable even when an early guard (auto-run active / foreground mismatch) returns before
-            // the idle snapshot below.
-            bool logReason = IsDebugEnabled && (++_antiAfkDiagTicks % 12) == 0;
-
-            // Guard 2: Advanced-Mode-gated feature — off → this tick simply no-ops (no explicit disarm).
-            if (!_advancedModeEnabled)
-            {
-                if (logReason) LogDebug("Anti-AFK skip: advanced-mode-off");
-                return;
-            }
-
-            if (!ProfileInputGenerationIsCurrent())
-            {
-                if (logReason) LogDebug("Anti-AFK skip: foreground activation generation is stale");
-                return;
-            }
-
-            // Guard 3: an active game profile that has Anti-AFK enabled.
-            var profile = _activeProfile;
-            if (profile is null)
-            {
-                if (logReason) LogDebug("Anti-AFK skip: no active profile");
-                return;
-            }
-
-            if (!profile.IsEnabled)
-            {
-                if (logReason) LogDebug($"Anti-AFK skip: active profile disabled ({profile.Name})");
-                return;
-            }
-
-            if (!profile.AntiAfk.IsEnabled)
-            {
-                if (logReason) LogDebug($"Anti-AFK skip: anti-afk disabled ({profile.Name})");
-                return;
-            }
-
-            // Guard 4 (fast pre-check): Auto-Run counts as activity — never overlap a WASD tap onto a
-            // held W. This volatile read is only an optimization; the AUTHORITATIVE re-check is under
-            // _autoRunLock at the fire point below (codex P4 #1), so an Auto-Run activation racing this
-            // tick cannot interleave its W-down before our WASD in the FIFO.
-            if (_autoRunActive)
-            {
-                if (logReason) LogDebug("Anti-AFK skip: auto-run active");
-                return;
-            }
-
-            // Guard 5: KEYBOARD-ONLY physical idle AND cadence both satisfied. Keyboard idle is measured
-            // from _lastPhysicalKeyboardTick (Stopwatch domain; genuine physical keys only — injected
-            // events are filtered before that stamp). GetLastInputInfo is deliberately NOT used here: it
-            // is global (all devices), so mouse/peripheral noise kept the system "fresh" and this guard
-            // never tripped (debug.log: 69 fresh / 0 idle → Anti-AFK never fired). Cadence stays in the
-            // Environment.TickCount (uint) domain — do NOT mix the two raw values. Anti-AFK's own injected
-            // WASD is INPUT_IGNORE-filtered so it does NOT advance _lastPhysicalKeyboardTick; the cadence
-            // clause is what paces repeat ripples every interval while the keyboard stays idle, and a
-            // single REAL keypress resets keyboard idle and stops it.
-            var intervalMs = (uint)(Math.Clamp(profile.AntiAfk.IntervalMinutes, 1, 15) * 60_000);
-            var keyboardIdleMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _lastPhysicalKeyboardTick)) * TickToMilliseconds;
-            var now = unchecked((uint)Environment.TickCount);
-            var sinceLastFireMs = unchecked(now - _antiAfkLastFireTick);
-
-            // Diagnostic (throttled, ~once/min): the exact snapshot the decision uses, so a future "it
-            // didn't fire" investigation reads the reason straight from the log.
-            if (logReason)
-            {
-                LogDebug($"Anti-AFK idle check: keyboardIdle={keyboardIdleMs:F0}ms, sinceLastFire={sinceLastFireMs}ms, interval={intervalMs}ms");
-            }
-
-            if (keyboardIdleMs < intervalMs || sinceLastFireMs < intervalMs)
-            {
-                return; // not idle long enough / cadence — the idle-check line above logged the numbers
-            }
-
-            // Guard 6 (MANDATORY): the foreground process still matches the active profile.
-            // _activeProfile lags real foreground during ProfileActivationService's color work, so
-            // without this an idle-satisfied tick could inject WASD into a browser you alt-tabbed to.
-            if (!ForegroundMatchesActiveProfile())
-            {
-                if (logReason) LogDebug("Anti-AFK skip: foreground is not the active game (idle+cadence WERE met)");
-                return;
-            }
-
-            // Build the jittered sequence OUTSIDE the lock (RNG only), then check guard 4 AUTHORITATIVELY
-            // and enqueue ATOMICALLY under _autoRunLock: ActivateAutoRun holds this same lock while it
-            // enqueues its W-down and publishes _autoRunActive, so either we observe it active (skip) or
-            // we enqueue our WASD before its W-down takes the lock — never our W-up AFTER its held W-down
-            // (which would release Auto-Run's forward, codex P4 #1). Enqueue takes no other lock (I5), and
-            // the RNG work is already done, so the lock is held only for a check + a queue Add. Dummy
-            // Key/IsDown/PreSleep — the Sequence field carries the real work.
-            var sequence = BuildAntiAfkSequence();
-            lock (_autoRunLock)
-            {
-                // Re-check _isRunning (C2) as well as _autoRunActive: a tick racing Stop() (before its
-                // _isRunning=false flip) must not enqueue a ripple into a tearing-down injector.
-                if (!_isRunning || _autoRunActive || !ProfileInputGenerationIsCurrent() ||
-                    !ReferenceEquals(_activeProfile, profile) ||
-                    !profile.IsEnabled ||
-                    !profile.AntiAfk.IsEnabled)
-                {
-                    // Auto-Run won the race between guard-4's pre-check and this authoritative recheck.
-                    if (logReason && _autoRunActive) LogDebug("Anti-AFK skip: auto-run active (authoritative recheck)");
-                    return;
-                }
-
-                EnqueueHoldBreathInjection(
-                    new HoldBreathInjection(
-                        Key.None,
-                        IsDown: false,
-                        PreSleepMs: 0,
-                        Sequence: sequence,
-                        ForegroundGeneration: Volatile.Read(ref _activeProfileGeneration),
-                        ExpectedProfile: profile));
-                _antiAfkLastFireTick = now;
-            }
-
-            if (IsDebugEnabled) LogDebug($"Anti-AFK fired WASD ripple (keyboardIdle={keyboardIdleMs:F0}ms, interval={intervalMs}ms)");
-        }
-        finally
-        {
-            Volatile.Write(ref _antiAfkTickRunning, 0);
-        }
-    }
-
-    // W↓W↑ · gap · A↓A↑ · gap · S↓S↑ · gap · D↓D↑ — net-zero displacement, each tap human-jittered
-    // (reuses the hold-breath tap-duration idiom + RNG warmup). Sequential taps, never simultaneous
-    // (simultaneous W+S / A+D cancel and read as a single frame).
-    private TapStep[] BuildAntiAfkSequence()
-    {
-        var rng = _random.Value!;
-        var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
-        for (int i = 0; i < warmupCalls; i++) rng.Next();
-
-        TapStep Tap(Key key) => new(
-            key,
-            rng.Next(HOLD_BREATH_TAP_DURATION_MIN_MS, HOLD_BREATH_TAP_DURATION_MAX_MS + 1),
-            rng.Next(ANTI_AFK_GAP_MIN_MS, ANTI_AFK_GAP_MAX_MS + 1));
-
-        return new[] { Tap(Key.W), Tap(Key.A), Tap(Key.S), Tap(Key.D) };
-    }
-
-    // True iff the current foreground window's process matches the active profile's exe. Used by the
-    // Anti-AFK tick (fire-time gate, guard 6) and the injector's per-step sequence abort so WASD can
-    // only ever land in the profile's own game window.
-    private bool ForegroundMatchesActiveProfile()
-    {
-        var profile = _activeProfile;
-        if (profile is null)
-        {
-            return false;
-        }
-
-        var exe = profile.NormalizedExecutable;
-        return !string.IsNullOrEmpty(exe) && WindowBelongsToExe(NativeMethods.GetForegroundWindow(), exe);
-    }
-
-    // ==================== WINDOWS LAUNCHER ====================
-    
-    private bool HandleWindowsLauncher(int vkCode, bool isKeyDown, bool isKeyUp)
-    {
-        var key = KeyInteropUtilities.FromVirtualKey(vkCode);
-        if (key is null)
-        {
-            return false;
-        }
-
-        // On key-up, clear the latch. Suppress the lone up iff we latched its down, so the foreground app
-        // never receives a stray key-up for a hotkey we consumed.
-        if (isKeyUp)
-        {
-            lock (_heldLauncherKeysLock)
-            {
-                return _heldLauncherKeys.Remove(key.Value);
-            }
-        }
-
-        if (isKeyDown)
-        {
-            lock (_heldLauncherKeysLock)
-            {
-                if (_heldLauncherKeys.Contains(key.Value))
-                {
-                    return true;
-                }
-            }
-        }
-
-        var launcherGeneration =
-            Volatile.Read(ref _windowsLauncherConfigurationGeneration);
-        var profile = _windowsProfile;
-        if (profile is not { IsEnabled: true } || !profile.WindowsLauncher.IsEnabled)
-        {
-            return false;
-        }
-
-        if (!isKeyDown)
-        {
-            return false;
-        }
-
-        // P3: cheap dictionary/null checks first — saves 2 GetAsyncKeyState syscalls on every
-        // unhandled keydown while a launcher profile is enabled. Pure conjunction, so reordering
-        // against the Win-key check below cannot change the truth table.
-        if (!profile.WindowsLauncher.Launchers.TryGetValue(key.Value, out var binding))
-        {
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(binding.Path))
-        {
-            return false;
-        }
-
-        // Check if Windows key is pressed
-        bool winPressed = (NativeMethods.GetAsyncKeyState(KeyInteropUtilities.ToVirtualKey(Key.LWin)) & 0x8000) != 0 ||
-                          (NativeMethods.GetAsyncKeyState(KeyInteropUtilities.ToVirtualKey(Key.RWin)) & 0x8000) != 0;
-
-        if (!winPressed)
-        {
-            return false;
-        }
-
-        // H1: launch only on the FIRST key-down of a physical press. Typematic auto-repeat re-delivers
-        // WM_KEYDOWN; the latch ensures exactly one launch until the key is released, while still
-        // suppressing the repeats.
-        lock (_heldLauncherKeysLock)
-        {
-            if (launcherGeneration !=
-                Volatile.Read(ref _windowsLauncherConfigurationGeneration))
-            {
-                return false;
-            }
-
-            if (!_heldLauncherKeys.Add(key.Value))
-            {
-                return true;
-            }
-        }
-
-        // The shell never sees any key while Win is held (we consume the whole chord), so a bare
-        // Win press+release would pop the Start menu right after the launch and steal focus.
-        // Inject one benign tagged dummy-key event on the first latch so the shell marks the
-        // chord as used (same technique as PowerToys/AutoHotkey).
-        // Snapshot the binding on the hook thread (serialized with UI edits) so the pool-thread
-        // launch can't read a half-edited Path/Arguments/RunAsAdmin combination.
-        var path = binding.Path;
-        var arguments = binding.Arguments;
-        var runAsAdmin = binding.RunAsAdmin;
-
-        LogDebug($"WindowsLauncher: Win+{key.Value} → {path}");
-
-        // Queue the shell dummy through the same FIFO as every synthetic key. Launch continuation runs
-        // on the pool only after the executor acknowledges that command; the hook never waits.
-        _ = EnqueueDummyKeyEvent(launcherGeneration).ContinueWith(
-            task =>
-            {
-                if (task.Status == TaskStatus.RanToCompletion && task.Result)
-                {
-                    LaunchProcess(path, arguments, runAsAdmin);
-                }
-            },
-            CancellationToken.None,
-            TaskContinuationOptions.DenyChildAttach,
-            TaskScheduler.Default);
-
-        return true;
-    }
-
-    private void LaunchProcess(string path, string arguments, bool runAsAdmin)
-    {
-        try
-        {
-            ProcessLauncher.Launch(path, arguments, runAsAdmin, _logger);
-
-            LogDebug($"Launch successful: {path}");
-        }
-        catch (Exception ex)
-        {
-            LogDebug($"Launch failed: {path} - {ex.Message}");
-        }
-    }
-
-    // ==================== KEY INJECTION ====================
-    
-    // P6: DOWN is synchronous and takes place on the CALLER's thread (hook thread, or a hold-breath
-    // timer thread already holding _holdBreathLock) — deterministic, ordered ahead of whatever the
-    // user does next. Only the human-like duration + UP defer to the pool. Parameterized so Alt+Mouse
-    // (31-53ms) and hold-breath Toggle (20-31ms) share one implementation with unchanged distributions.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void FireTapKey(
-        Key key,
-        int minDurationMs,
-        int maxDurationMs,
-        long foregroundGeneration,
-        long altMouseGeneration,
-        long altKeyboardGeneration = 0,
-        AltKeyboardPress? altKeyboardOwnerPress = null)
-    {
-        if (_disposed || !_isRunning)
-        {
-            return;
-        }
-
-        var rng = _random.Value!;
-        var warmupCalls = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
-        for (int i = 0; i < warmupCalls; i++)
-        {
-            rng.Next();
-        }
-
-        var duration = rng.Next(minDurationMs, maxDurationMs + 1);
-        EnqueueKeyTap(
-            key,
-            duration,
-            foregroundGeneration: foregroundGeneration,
-            altMouseGeneration: altMouseGeneration,
-            altKeyboardGeneration: altKeyboardGeneration,
-            altKeyboardOwnerPress: altKeyboardOwnerPress);
-        if (IsDebugEnabled) LogDebug($"FireTapKey queued: {key}, duration={duration}ms, warmup={warmupCalls}");
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool SendKey(Key key, bool isKeyDown)
-    {
-        var sent = _inputSender.SendKey(key, isKeyDown);
-        if (!sent)
-        {
-            LogDebug($"SendKey FAILED: {key} ({(isKeyDown ? "DOWN" : "UP")})");
-        }
-
-        return sent;
-    }
-
-    private Task<bool> EnqueueDummyKeyEvent(long launcherGeneration = 0)
-    {
-        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!EnqueueHoldBreathInjection(
-                new HoldBreathInjection(
-                    Key.None,
-                    IsDown: false,
-                    PreSleepMs: 0,
-                    Kind: InputInjectionKind.DummyKey,
-                    Completion: completion,
-                    LauncherGeneration: launcherGeneration)))
-        {
-            completion.TrySetResult(false);
-        }
-
-        return completion.Task;
-    }
-
-    private bool IsCombinedOverrideActive(Key sourceKey, CombinedOverrideState expectedState)
-    {
-        lock (_combinedOverridesLock)
-        {
-            return _activeCombinedOverrides.TryGetValue(sourceKey, out var currentState) &&
-                   ReferenceEquals(currentState, expectedState);
-        }
-    }
-
-    // F-011: MUST be called under _combinedOverridesLock. Decrements the target's source-refcount; returns
-    // true only on the 1→0 transition (the last source released it), meaning the caller should send the
-    // target's UP. Returns false while another source still holds the target.
-    private bool DecrementCombinedTarget(Key target)
-    {
-        var count = _combinedTargetCounts.GetValueOrDefault(target);
-        if (count == 1)
-        {
-            _combinedTargetCounts.Remove(target); // codex #3: only 1→0 removes and requests the UP
-            return true;
-        }
-
-        if (count <= 0)
-        {
-            // Invariant failure — the target was not tracked; do NOT emit a spurious UP.
-            if (IsDebugEnabled) LogDebug($"Combined target refcount underflow for {target} (count={count})");
-            return false;
-        }
-
-        _combinedTargetCounts[target] = count - 1;
-        return false;
-    }
-
-    private void ReleaseRightClickOverrides()
-    {
-        List<Key>? targetsToRelease = null;
-
-        lock (_combinedOverridesLock)
-        {
-            if (_activeCombinedOverrides.Count == 0)
-            {
-                return;
-            }
-
-            List<Key>? sourcesToRemove = null;
-            foreach (var kvp in _activeCombinedOverrides)
-            {
-                if (kvp.Value.RightClickOnly)
-                {
-                    (sourcesToRemove ??= new List<Key>()).Add(kvp.Key);
-                }
-            }
-
-            if (sourcesToRemove is null)
-            {
-                return;
-            }
-
-            foreach (var source in sourcesToRemove)
-            {
-                if (_activeCombinedOverrides.Remove(source, out var state) && state is not null)
-                {
-                    _combinedSuppressionUntilUp[source] = state.SuppressOriginal;
-                    if (DecrementCombinedTarget(state.TargetKey))
-                    {
-                        (targetsToRelease ??= new List<Key>()).Add(state.TargetKey);
-                    }
-                }
-            }
-
-            _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
-            _combinedSuppressionUntilUpCount = _combinedSuppressionUntilUp.Count;
-            if (targetsToRelease is not null)
-            {
-                foreach (var target in targetsToRelease)
-                {
-                    EnqueueHoldBreathInjection(
-                        new HoldBreathInjection(target, IsDown: false, PreSleepMs: 0));
-                    if (IsDebugEnabled) LogDebug($"Force-release right-click override target: {target}");
-                }
-            }
-        }
-    }
-
-    // Advanced-Mode-off release of the gated capability among combined overrides: the un-suppressed
-    // (SuppressOriginal == false) ones, which are the non-1:1 mappings. Suppressed 1:1 overrides are
-    // game-safe and stay active. ENQUEUE each target UP on the injector (NOT synchronous SendKey):
-    // the Advanced-off setter calls this on the UI dispatcher/hook thread, where a SendInput trip
-    // through a stalled foreign hook would freeze input. Removing the dict entry means a later
-    // physical source repeats + key-up replay the original pass-through decision until that UP.
-    private void ReleaseUnsuppressedCombinedOverrides()
-    {
-        List<Key>? targetsToRelease = null;
-
-        lock (_combinedOverridesLock)
-        {
-            if (_activeCombinedOverrides.Count == 0)
-            {
-                return;
-            }
-
-            List<Key>? sourcesToRemove = null;
-            foreach (var kvp in _activeCombinedOverrides)
-            {
-                if (!kvp.Value.SuppressOriginal)
-                {
-                    (sourcesToRemove ??= new List<Key>()).Add(kvp.Key);
-                }
-            }
-
-            if (sourcesToRemove is null)
-            {
-                return;
-            }
-
-            Interlocked.Increment(ref _combinedConfigurationGeneration);
-            foreach (var source in sourcesToRemove)
-            {
-                if (_activeCombinedOverrides.Remove(source, out var state) && state is not null)
-                {
-                    _combinedSuppressionUntilUp[source] = state.SuppressOriginal;
-                    if (DecrementCombinedTarget(state.TargetKey))
-                    {
-                        (targetsToRelease ??= new List<Key>()).Add(state.TargetKey);
-                    }
-                }
-            }
-
-            _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
-            _combinedSuppressionUntilUpCount = _combinedSuppressionUntilUp.Count;
-            if (targetsToRelease is not null)
-            {
-                foreach (var target in targetsToRelease)
-                {
-                    EnqueueHoldBreathInjection(
-                        new HoldBreathInjection(target, IsDown: false, PreSleepMs: 0));
-                    if (IsDebugEnabled) LogDebug($"Advanced-off release un-suppressed target: {target} (queued)");
-                }
-            }
-        }
-    }
-
-    private void ReleaseAllOverrides(bool preserveSuppression = true)
-    {
-        List<Key> targetsToRelease;
-
-        lock (_combinedOverridesLock)
-        {
-            Interlocked.Increment(ref _combinedConfigurationGeneration);
-            if (_activeCombinedOverrides.Count == 0)
-            {
-                if (!preserveSuppression)
-                {
-                    _combinedSuppressionUntilUp.Clear();
-                    _combinedSuppressionUntilUpCount = 0;
-                }
-                return;
-            }
-
-            // F-011: everything is cleared, so every currently-held target reaches 0 → release each once.
-            targetsToRelease = new List<Key>(_combinedTargetCounts.Keys);
-            if (preserveSuppression)
-            {
-                foreach (var (source, state) in _activeCombinedOverrides)
-                {
-                    _combinedSuppressionUntilUp[source] = state.SuppressOriginal;
-                }
-            }
-            else
-            {
-                _combinedSuppressionUntilUp.Clear();
-            }
-            _activeCombinedOverrides.Clear();
-            _combinedTargetCounts.Clear();
-            _activeCombinedOverrideCount = 0;
-            _combinedSuppressionUntilUpCount = _combinedSuppressionUntilUp.Count;
-            foreach (var target in targetsToRelease)
-            {
-                EnqueueHoldBreathInjection(
-                    new HoldBreathInjection(target, IsDown: false, PreSleepMs: 0));
-                LogDebug($"Force-release combined override target: {target}");
-            }
-        }
-    }
-// ==================== STATE MANAGEMENT ====================
-    
-    // preserveRapidFireArm: ordinary switch boundaries (profile switch, watchdog reinstall,
-    // foreground release, hard-deactivate handoff) keep the STICKY arm — the in-flight press is
-    // still cancelled — while hard boundaries (Stop, session switch) disarm fully via
-    // preserveRapidFireArm:false. Returns whether the Rapid Fire arm actually transitioned off,
-    // for callers that must raise RapidFireArmChanged AFTER releasing _profileLock.
-    private bool ReleaseAllState(bool preservePhysicalPairing = true, bool preserveRapidFireArm = false)
-    {
-        var rapidFireArmCleared = false;
-        if (preserveRapidFireArm)
-        {
-            // Sticky arm: stop any in-flight burst but keep arm + owner.
-            CancelRapidFirePress();
-        }
-        else
-        {
-            rapidFireArmCleared = ReleaseRapidFireState(preservePhysicalPairing);
-        }
-
-        ReleaseAllOverrides(preserveSuppression: preservePhysicalPairing);
-        ResetMouseStates(preserveSuppressedUps: preservePhysicalPairing);
-        ResetKeyboardStates(preserveSuppressedUps: preservePhysicalPairing);
-        ReleaseCapsState(preservePhysicalPairing);
-        ReleaseHoldBreathState();
-        lock (_holdBreathLock)
-        {
-            _holdBreathPanicSuppressed = false;
-        }
+        var rapidFireArmCleared = preserveRapidFireArm
+            ? CancelRapidFirePressAndKeepArm()
+            : _rapidFire.Release(preservePhysicalPairing);
+
+        _remaps.ReleaseCombinedState(preservePhysicalPairing);
+        _gestures.ReleaseGestures(preservePhysicalPairing);
+        _remaps.ReleaseCapsStateOnly(preservePhysicalPairing);
+        _gestures.ReleaseHoldBreath();
+        _gestures.ReleasePanic(preservePhysicalPairing);
+        _autoRun.Release(includeBackground: false);
         if (!preservePhysicalPairing)
         {
-            Volatile.Write(ref _holdBreathPanicConsumedKeyVk, 0);
-            Volatile.Write(ref _holdBreathPanicConsumedMouseButton, 0);
-            Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
-            // Invalidate any outstanding derivation ticket: a closure still queued on the dying
-            // dispatcher must not unfence a post-boundary session.
-            Volatile.Write(ref _panicDerivationEpoch, 0);
-            _autoRunConsumedTriggerVk = 0;
-            _triggerKeyDownVk = 0;
-        }
-        // includeBackground:false — a decoupled Background run must survive ordinary teardown
-        // (ReleaseAllState is reached by profile switch AND watchdog reinstall). §11.6.
-        ReleaseAutoRunState(includeBackground: false);
-
-        if (!preservePhysicalPairing)
-        {
-            lock (_heldLauncherKeysLock)
-            {
-                _heldLauncherKeys.Clear();
-            }
+            _autoRun.ClearTriggerLatches();
+            _remaps.ClearLauncherState();
         }
 
-        _altPressed = false;
         _rightButtonPressed = false;
-
         LogDebug("All state released");
         return rapidFireArmCleared;
     }
 
-    // Swap-aware physical left-button seed for Rapid Fire. The LL hook reports the LOGICAL
-    // (post-swap) button while GetAsyncKeyState reports the PHYSICAL one, so query whichever
-    // physical VK currently maps to "left" — a hold across a restart/reinstall boundary must
-    // neither be mistaken for a fresh press nor lost as an in-progress one. Shared by Start and
-    // the watchdog reinstall paths (which release-then-rederive, same as Start).
-    private void DeriveRapidFirePhysicalLeftDown()
+    private bool CancelRapidFirePressAndKeepArm()
+    {
+        _rapidFire.CancelPress();
+        return false;
+    }
+
+    private void SeedRapidFirePhysicalLeftDown()
     {
         var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_RBUTTON
             : NativeMethods.VK_LBUTTON;
-        _rapidFirePhysicalLeftDown =
-            (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0;
+        _rapidFire.SeedPhysicalLeftButton(
+            (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0);
     }
 
-    // P9: ReleaseAllState() above force-clears both flags unconditionally, which is correct for
-    // Stop()/OnSessionSwitch (the desktop itself is going away). Called ONLY from
-    // ActivateProfile/DeactivateProfile, immediately after ReleaseAllState() and still inside
-    // _profileLock: re-derives what the user is STILL physically holding across the switch so
-    // AltMouse / RightClickOnly combined mappings don't go inert until the user releases and
-    // re-presses. Re-deriving _rightButtonPressed=true does NOT re-arm hold-breath (arming only
-    // happens on a real WM_RBUTTONDOWN) — it only lets RightClickOnly mappings work immediately,
-    // which matches physical reality.
     private void RederivePhysicalModifierState()
     {
-        _altPressed = (NativeMethods.GetAsyncKeyState(0xA4) & 0x8000) != 0 ||   // VK_LMENU
-                      (NativeMethods.GetAsyncKeyState(0xA5) & 0x8000) != 0;    // VK_RMENU
-
-        // GetAsyncKeyState reports the PHYSICAL button; the LL hook's WM_RBUTTONDOWN reports the
-        // LOGICAL (post-swap) button. Query whichever physical VK currently maps to "right" so this
-        // stays consistent with what HandleAltMouse/HandleCombinedMappings actually see on the hook.
+        _gestures.SeedAltPressed(IsPhysicalKeyDown(0xA4) || IsPhysicalKeyDown(0xA5));
+        SchedulePanicDerivation(() =>
+        {
+            _gestures.RederiveAltKeyboardPhysicalState(IsPhysicalKeyDown);
+            _gestures.RederivePanicTriggerPhysicalState(IsPhysicalKeyDown);
+        });
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
         _rightButtonPressed = (NativeMethods.GetAsyncKeyState(physicalRightVk) & 0x8000) != 0;
-
-        RederiveAltKeyboardPhysicalState();
-
-        // Re-publish the derived right-button state to the crosshair gate: a WM_RBUTTONUP swallowed by
-        // a hook reinstall cannot leave the overlay hidden forever. Visibility is idempotent, so an
-        // unchanged re-raise is free.
         if (_crosshairRightButtonWatch)
         {
             RightButtonStateChanged?.Invoke(this, _rightButtonPressed);
         }
     }
 
-    // Per-key re-derivation for Alt+Keyboard (P9 analog): after a hook-stream boundary (watchdog
-    // reinstall, profile switch) the typematic latches may no longer match physical reality — a hook
-    // that died mid-press missed UPs, and events that passed unprocessed during the fail-open swap
-    // window were never classified. GetAsyncKeyState gives the ACTUAL physical state per trigger key:
-    //  - physically UP   -> clear PhysicallyDown AND SuppressNextUp. A consumed DOWN's app-visible
-    //    stream was already cut, so nothing strands by clearing; KEEPING the latch would instead eat
-    //    the NEXT fresh press's UP (one dead press after every swallowed release).
-    //  - physically DOWN -> set PhysicallyDown (the repeats that follow are auto-repeats, not fresh
-    //    edges) and PRESERVE SuppressNextUp: an owned in-flight press still owes its UP.
-    private void RederiveAltKeyboardPhysicalState()
+    private void SchedulePanicDerivation(Action derive)
     {
         var dispatcher = _hookDispatcher;
         if (dispatcher is null)
         {
-            // Hooks not installed on a dispatcher-pumped thread: same un-serialized fallback the
-            // pre-existing Alt/right-button derivation above has always had.
-            RederiveAltKeyboardPhysicalStateCore(
-                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
-            RederivePanicTriggerPhysicalState();
+            derive();
             return;
         }
 
-        // Serialize with keyboard hook callbacks (same marshaling the watchdog reinstall uses): LL
-        // callbacks run BEFORE Windows updates the async key state, so a worker-thread
-        // GetAsyncKeyState can lag a DOWN the hook just classified and wrongly clear PhysicallyDown —
-        // the following repeats would then be misread as fresh presses and the swallowed UP could
-        // stick the key in the focused app. The hook's dispatcher delivers callbacks between queued
-        // operations, so this body never interleaves with one. The ticket fence (see
-        // _panicDerivationEpoch) keeps panic attempts native until the latch baseline lands.
-        SchedulePanicDerivationCore(() =>
-        {
-            RederiveAltKeyboardPhysicalStateCore(
-                vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
-            RederivePanicTriggerPhysicalState();
-        });
-    }
-
-    // Fresh-edge latch for the panic trigger (keyboard triggers only — mouse buttons don't
-    // typematic-repeat): re-read the ACTUAL physical state of the live trigger so a key held across
-    // a stream boundary or a live rebind keeps classifying its repeats as repeats, and a released
-    // key's stale latch cannot swallow the next fresh press's panic attempt.
-    private void RederivePanicTriggerPhysicalState()
-    {
-        RederivePanicTriggerPhysicalStateCore(
-            vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
-    }
-
-    // Dispatcher-marshaled, ticket-fenced derivation scheduler shared by the reconfigure path
-    // (live trigger rebind) and the boundary re-derivations: GetAsyncKeyState lags LL callbacks,
-    // so reading it off the hook thread could misclassify a DOWN the hook just recorded (same
-    // serialization rationale as RederiveAltKeyboardPhysicalState). See _panicDerivationEpoch for
-    // the fence semantics; retirement is ticket-owned so overlapping requests and aborted posts
-    // can never strand or prematurely clear it.
-    private void SchedulePanicDerivationCore(Action derive)
-    {
-        var dispatcher = _hookDispatcher;
-        if (dispatcher is null)
-        {
-            derive(); // synchronous: no fence needed
-            return;
-        }
-
-        var ticket = Interlocked.Increment(ref _panicDerivationTicketSequence);
-        Volatile.Write(ref _panicDerivationEpoch, ticket);
+        // GetAsyncKeyState can lag a DOWN just observed by the low-level hook. Queue the read on
+        // the hook dispatcher and fence panic handling until that serialized baseline lands.
+        var ticket = _gestures.BeginPanicDerivation();
         try
         {
             var operation = dispatcher.InvokeAsync(() =>
@@ -6530,233 +1645,24 @@ public sealed class InputHookService : IInputHookService
                 }
                 finally
                 {
-                    RetirePanicDerivationTicket(ticket);
+                    _gestures.RetirePanicDerivation(ticket);
                 }
             });
 
-            // Shutdown ABORTS queued operations without invoking the delegate (and without
-            // throwing): observe the abort so the ticket still retires. Subscribe FIRST, then
-            // re-read Status — WPF raises Aborted only to handlers registered at abort time, so a
-            // check-then-subscribe order can miss an abort that lands in between. Retirement is an
-            // idempotent CAS, so both paths firing concurrently is safe.
-            operation.Aborted += (_, _) => RetirePanicDerivationTicket(ticket);
+            // A shutdown-aborted operation never invokes its delegate, so it must retire here.
+            operation.Aborted += (_, _) => _gestures.RetirePanicDerivation(ticket);
             if (operation.Status == System.Windows.Threading.DispatcherOperationStatus.Aborted)
             {
-                RetirePanicDerivationTicket(ticket);
+                _gestures.RetirePanicDerivation(ticket);
             }
         }
         catch
         {
-            // Dispatcher refused the post outright: no closure will ever retire the ticket.
-            RetirePanicDerivationTicket(ticket);
+            _gestures.RetirePanicDerivation(ticket);
         }
     }
 
-    // Only the CURRENT request may unfence: a superseded request (a newer ticket was published) or
-    // an invalidated one (hard teardown / the Start seed wrote 0) leaves the fence to its owner.
-    // Retiring an already-retired ticket is a harmless no-op (the epoch no longer matches).
-    private void RetirePanicDerivationTicket(long ticket)
-    {
-        Interlocked.CompareExchange(ref _panicDerivationEpoch, 0, ticket);
-    }
-
-    // Dispatcher-marshaled variant for reconfigure paths (live trigger rebind).
-    private void SchedulePanicTriggerPhysicalStateRederivation()
-    {
-        SchedulePanicDerivationCore(RederivePanicTriggerPhysicalState);
-    }
-
-    private void RederivePanicTriggerPhysicalStateCore(Func<int, bool> isPhysicallyDown)
-    {
-        var profile = _activeProfile;
-        if (profile is null)
-        {
-            Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
-            return;
-        }
-
-        var trigger = profile.RightClickHoldBreath.PanicTrigger;
-        if (trigger is not { Kind: InputTriggerKind.KeyboardKey })
-        {
-            Volatile.Write(ref _panicKeyPhysicallyDownVk, 0);
-            return;
-        }
-
-        var vk = KeyInteropUtilities.ToVirtualKey(trigger.Key);
-        Volatile.Write(
-            ref _panicKeyPhysicallyDownVk,
-            vk != 0 && isPhysicallyDown(vk) ? vk : 0);
-    }
-
-    private void RederiveAltKeyboardPhysicalStateCore(Func<int, bool> isPhysicallyDown)
-    {
-        foreach (var (key, state) in _altKeyboardStates)
-        {
-            var vk = KeyInteropUtilities.ToVirtualKey(key);
-            if (vk == 0)
-            {
-                continue; // unmapped under the current layout: leave the latch untouched
-            }
-
-            if (isPhysicallyDown(vk))
-            {
-                state.PhysicallyDown = true;
-            }
-            else
-            {
-                state.PhysicallyDown = false;
-                Interlocked.Exchange(ref state.SuppressNextUp, 0);
-            }
-        }
-    }
-
-    private void CancelAltMouseGestures()
-    {
-        ResetMouseStates(preserveSuppressedUps: true);
-    }
-
-    private void CancelAltKeyboardGestures()
-    {
-        ResetKeyboardStates(preserveSuppressedUps: true);
-    }
-
-    private void ResetMouseStates(bool preserveSuppressedUps = true)
-    {
-        Interlocked.Increment(ref _altMouseGeneration);
-        foreach (var (button, state) in _mouseStates)
-        {
-            CancelHoldTimer(state);
-            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
-            Interlocked.Exchange(ref state.ActivePress, null);
-            if (!preserveSuppressedUps)
-            {
-                Interlocked.Exchange(ref state.SuppressNextUp, 0);
-            }
-
-            LogDebug($"Reset mouse state: {button}");
-        }
-    }
-
-    private void ResetKeyboardStates(bool preserveSuppressedUps = true)
-    {
-        Interlocked.Increment(ref _altKeyboardGeneration);
-        foreach (var (key, state) in _altKeyboardStates)
-        {
-            CancelAltKeyboardHoldTimer(state);
-            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
-            Interlocked.Exchange(ref state.ActivePress, null);
-            if (!preserveSuppressedUps)
-            {
-                Interlocked.Exchange(ref state.SuppressNextUp, 0);
-                state.PhysicallyDown = false;
-            }
-        }
-
-        // Debug-gated (unlike the 5-line mouse reset): the catalog-sized state map would otherwise
-        // flood the log on every profile switch / watchdog reinstall.
-        if (IsDebugEnabled)
-        {
-            foreach (var key in _altKeyboardStates.Keys)
-            {
-                LogDebug($"Reset Alt+Keyboard state: {key}");
-            }
-        }
-    }
-
-    // ==================== STATE CLASSES ====================
-    
-    private sealed class MouseButtonState
-    {
-        // Atomic state machine
-        public int TimerState = TIMER_IDLE;
-        
-        public AltMousePress? ActivePress;
-        public int SuppressNextUp;
-        
-        // Pre-allocated timer (reused for every click)
-        public readonly System.Threading.Timer HoldTimer;
-        public volatile TimerCallback? HoldCallback;
-
-        public MouseButtonState()
-        {
-            // Pre-allocate timer - will be reused throughout lifetime
-            HoldTimer = new System.Threading.Timer(_ => HoldCallback?.Invoke(null), null, Timeout.Infinite, Timeout.Infinite);
-        }
-    }
-
-    private sealed record AltMousePress(
-        Profile Profile,
-        long ForegroundGeneration,
-        long ConfigurationGeneration,
-        long DownTick,
-        Key? TapKey,
-        Key? HoldKey,
-        int HoldThresholdMs);
-
-    private sealed class AltKeyboardKeyState
-    {
-        // Atomic state machine
-        public int TimerState = TIMER_IDLE;
-
-        public AltKeyboardPress? ActivePress;
-        public int SuppressNextUp;
-
-        // Typematic edge tracking (hook-thread writes on DOWN/UP; hard teardown clears it on a pool
-        // thread, hence volatile): true from a trigger key's physical DOWN until its UP. A DOWN while
-        // this is set is an auto-repeat — it may never START a gesture (see HandleAltKeyboard).
-        public volatile bool PhysicallyDown;
-
-        // Pre-allocated timer (reused for every press)
-        public readonly System.Threading.Timer HoldTimer;
-        public volatile TimerCallback? HoldCallback;
-
-        public AltKeyboardKeyState()
-        {
-            // Pre-allocate timer - will be reused throughout lifetime
-            HoldTimer = new System.Threading.Timer(_ => HoldCallback?.Invoke(null), null, Timeout.Infinite, Timeout.Infinite);
-        }
-    }
-
-    private sealed record AltKeyboardPress(
-        Profile Profile,
-        long ForegroundGeneration,
-        long ConfigurationGeneration,
-        long DownTick,
-        Key? TapKey,
-        Key? HoldKey,
-        int HoldThresholdMs)
-    {
-        // Per-PRESS cancellation cell (the generation epoch is per-configuration and shared by every
-        // trigger key): set when a suppressing hold-breath panic takes over this key's event stream.
-        // A mapped DOWN already sitting in the shared injector queue re-checks this at send time, so
-        // an action queued by a gesture that later lost priority cannot fire after the panic won.
-        // Volatile: set from the hook thread, read by the injector thread. The paired UP still drains
-        // (a skipped DOWN's UP is a harmless no-op), preserving FIFO pairing.
-        private int _cancelled;
-
-        public bool IsCancelled => Volatile.Read(ref _cancelled) != 0;
-
-        public void Cancel() => Volatile.Write(ref _cancelled, 1);
-
-        // Pair-state cell for the tap's queued DOWN/UP pair: set by the injector right after its DOWN
-        // actually reached SendInput (past every guard). The paired UP checks it and skips itself
-        // when the DOWN never sent (cancelled or guard-rejected) — an ownerless synthetic UP is an
-        // unmatched release event. When cancellation lands AFTER the DOWN was sent, this stays set and
-        // the UP still drains, so a sent DOWN can never strand its mapped key. Single-writer (the
-        // one FIFO injector thread, strictly between the pair's DOWN and its UP) + volatile read.
-        private int _downSent;
-
-        public bool IsDownSent => Volatile.Read(ref _downSent) != 0;
-
-        public void MarkDownSent() => Volatile.Write(ref _downSent, 1);
-    }
-
-    private sealed class CombinedOverrideState
-    {
-        public required Key TargetKey { get; init; }
-        public required bool SuppressOriginal { get; init; }
-        public required bool RightClickOnly { get; init; }
-    }
+    private void RaiseRapidFireArmChanged() => RapidFireArmChanged?.Invoke(this, EventArgs.Empty);
 
     // ==================== LOGGING ====================
     

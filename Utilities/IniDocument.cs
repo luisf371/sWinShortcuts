@@ -154,12 +154,22 @@ public sealed class IniDocument
         // UNIQUE sibling temp file first (unique so two app instances saving the same INI don't clobber
         // each other's temp), then atomically replace the target (same directory = same volume).
         var tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        File.WriteAllText(tempPath, content);
         try
         {
+            File.WriteAllText(tempPath, content);
             if (File.Exists(path))
             {
-                File.Replace(tempPath, path, null);
+                try
+                {
+                    File.Replace(tempPath, path, null);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Some restricted hosts deny ReplaceFile while still allowing an atomic,
+                    // same-volume rename. Keep ReplaceFile as the primary path because it preserves
+                    // destination metadata; the sibling temp keeps this fallback on the same volume.
+                    File.Move(tempPath, path, overwrite: true);
+                }
             }
             else
             {
