@@ -209,6 +209,27 @@ public sealed class UpdateCheckServiceTests
     }
 
     [Fact]
+    public async Task CheckAsync_DisabledBeforeQueuedNotification_DoesNotNotify()
+    {
+        var vm = BuildViewModel();
+        Action? queued = null;
+        var service = new UpdateCheckService(vm, new NullLoggerService(), enqueue: action => queued = action,
+            fetch: _ => Task.FromResult<string?>(NewerBuildPayload), settingsPath: MakeSettingsPath())
+        {
+            Enabled = true,
+            CurrentBuildNumber = "42",
+        };
+
+        await service.CheckAsync();
+        var notification = Assert.IsType<Action>(queued);
+
+        service.Enabled = false;
+        notification();
+
+        Assert.False(vm.UpdateAvailable);
+    }
+
+    [Fact]
     public void Start_MissingOrDisabledKey_DoesNotFetch()
     {
         var vm = BuildViewModel();

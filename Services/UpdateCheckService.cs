@@ -138,7 +138,13 @@ public sealed class UpdateCheckService
             }
 
             int latestValue = latest!.Value;
-            _enqueue(() => _viewModel.NotifyUpdateAvailable(latestValue, current.Value));
+            _enqueue(() =>
+            {
+                if (Enabled)
+                {
+                    _viewModel.NotifyUpdateAvailable(latestValue, current.Value);
+                }
+            });
         }
         catch (Exception ex)
         {

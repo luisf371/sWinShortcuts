@@ -624,3 +624,8 @@
 - Settings dialog height 590→670 for the new "Updates" section (non-scrolling `*` row, `ResizeMode=NoResize` → must be explicit); manual no-clipping check still owed per the plan's UI list.
 - `UpdateCheckService` takes `MainViewModel` (Services→ViewModels reference, same assembly, DI fine; no cycle) and mutates it ONLY via the `RapidFireStatusService`-shape dispatcher enqueue.
 - Sandbox (reconfirmed): `dotnet`, `git`, and recursive `grep -rn .` all rejected ("could not be proven confined"); targeted single-dir `grep -l/-n dir/*.cs` works. Build/test deferred to CI; verified by full-diff read + host-pin/persistence greps (only GitHubUrls URLs; CheckForUpdates sites = loader + Settings read/write + MainWindow refresh + service Start).
+
+# 2026-08-26 (PR #17 review remediation)
+- Update links must use the existing fail-closed `ProcessLauncher` de-elevation path via absolute `%WINDIR%\explorer.exe`; direct `UseShellExecute` can launch browser content elevated when the app runs as admin.
+- `UpdateCheckService` rechecks `Enabled` inside the dispatcher callback so an in-flight response cannot show a stale banner after the user opts out.
+- Validation after remediation: Release build clean, focused update-check tests `29/29`, full Release suite `484/484`.

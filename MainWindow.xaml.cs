@@ -318,15 +318,18 @@ public partial class MainWindow : Window
     }
 
     // Constant bound URL (GitHubUrls via the view model) — no user input, no injection surface.
-    // Shell-open of an HTTPS URL; NOT ProcessLauncher.Launch (that is the de-elevating exe launcher).
     private void UpdateLink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
     {
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri.ToString())
+            var windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (string.IsNullOrEmpty(windowsDirectory))
             {
-                UseShellExecute = true
-            });
+                throw new InvalidOperationException("Could not resolve the Windows directory.");
+            }
+
+            ProcessLauncher.Launch(Path.Combine(windowsDirectory, "explorer.exe"),
+                $"\"{GitHubUrls.LatestReleasePageUrl}\"", runAsAdmin: false, _logger);
         }
         catch (Exception ex)
         {
