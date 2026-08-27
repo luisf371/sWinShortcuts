@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private readonly Services.IStartupService _startupService;
     private readonly Services.ILoggerService _logger;
     private readonly Services.IInputHookService _inputHook;
+    private readonly Services.UpdateCheckService _updateCheck;
     private readonly string _settingsPath;
     private bool _isLoaded;
     private bool _allowClose;
@@ -38,13 +39,14 @@ public partial class MainWindow : Window
 
     public bool AlwaysOnTopDesired => _alwaysOnTopDesired;
 
-    public MainWindow(MainViewModel viewModel, Services.IStartupService startupService, Services.ILoggerService logger, Services.IInputHookService inputHook)
+    public MainWindow(MainViewModel viewModel, Services.IStartupService startupService, Services.ILoggerService logger, Services.IInputHookService inputHook, Services.UpdateCheckService updateCheckService)
     {
         InitializeComponent();
         DataContext = _viewModel = viewModel;
         _startupService = startupService;
         _logger = logger;
         _inputHook = inputHook;
+        _updateCheck = updateCheckService;
         Loaded += OnLoaded;
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
@@ -291,6 +293,50 @@ public partial class MainWindow : Window
         // live value back into the view-model so the gray-out agrees after the modal closes.
         _viewModel.AdvancedModeEnabled = _inputHook.AdvancedModeEnabled;
         RefreshToggleKeys();
+        RefreshUpdateCheckSetting();
+    }
+
+    // Post-dialog sync for the persist-on-save update toggle (RefreshToggleKeys pattern).
+    private void RefreshUpdateCheckSetting()
+    {
+        try
+        {
+            var enabled = AppSettings.LoadCheckForUpdatesEnabled(_settingsPath);
+            var wasEnabled = _updateCheck.Enabled;
+            _updateCheck.Enabled = enabled;
+            if (enabled && !wasEnabled)
+            {
+                _ = _updateCheck.CheckAsync(); // fire-and-forget; single-flight guarded; failures only log
+            }
+        }
+        catch (Exception ex)
+        {
+            // Keep the current enabled state when settings cannot be read — but log it (a bare
+            // catch{} makes an INI read failure undiagnosable).
+            _logger.Log($"[UpdateCheck] Failed to re-read CheckForUpdates setting: {ex.Message}");
+        }
+    }
+
+    // Constant bound URL (GitHubUrls via the view model) — no user input, no injection surface.
+    private void UpdateLink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
+    {
+        try
+        {
+            var windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (string.IsNullOrEmpty(windowsDirectory))
+            {
+                throw new InvalidOperationException("Could not resolve the Windows directory.");
+            }
+
+            ProcessLauncher.Launch(Path.Combine(windowsDirectory, "explorer.exe"),
+                $"\"{GitHubUrls.LatestReleasePageUrl}\"", runAsAdmin: false, _logger);
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"[UpdateCheck] Failed to open release page: {ex.Message}");
+        }
+
+        e.Handled = true;
     }
 
     private void PinButton_Click(object sender, RoutedEventArgs e)

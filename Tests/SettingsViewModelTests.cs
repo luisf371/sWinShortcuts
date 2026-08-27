@@ -59,6 +59,32 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void CheckForUpdates_RoundTripsAndNotifies()
+    {
+        // Default OFF (card requirement): a fresh view model must report disabled.
+        var viewModel = new SettingsViewModel(new NullLoggerService(), new FakeInputHookService());
+        Assert.False(viewModel.CheckForUpdates);
+
+        var fired = 0;
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(SettingsViewModel.CheckForUpdates)) fired++;
+        };
+
+        viewModel.CheckForUpdates = true;
+        Assert.True(viewModel.CheckForUpdates);
+        Assert.Equal(1, fired);
+
+        // Setting the same value must not re-fire.
+        viewModel.CheckForUpdates = true;
+        Assert.Equal(1, fired);
+
+        viewModel.CheckForUpdates = false;
+        Assert.False(viewModel.CheckForUpdates);
+        Assert.Equal(2, fired);
+    }
+
+    [Fact]
     public void CanChooseAdmin_RequiresElevationEvenWhenStartupLoadedAndStartWithWindows()
     {
         var viewModel = new SettingsViewModel(new NullLoggerService(), new FakeInputHookService())

@@ -16,6 +16,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     private bool _startWithWindows;
     private bool _startAsAdmin;
     private bool _startMinimized;
+    private bool _checkForUpdates;
     private bool _enableDebugLogging;
     private Key _colorToggleKey = Key.None;
     private Key _rapidFireToggleKey = Key.None;
@@ -81,6 +82,21 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
             if (_startMinimized != value)
             {
                 _startMinimized = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    // Persisted as [App] CheckForUpdates by SettingsWindow on Save. Default OFF. MainWindow syncs
+    // UpdateCheckService after the dialog closes (incl. firing one check on a false→true flip).
+    public bool CheckForUpdates
+    {
+        get => _checkForUpdates;
+        set
+        {
+            if (_checkForUpdates != value)
+            {
+                _checkForUpdates = value;
                 OnPropertyChanged();
             }
         }

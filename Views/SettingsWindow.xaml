@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:sWinShortcuts.Converters"
         xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
-        Title="Settings" Width="380" Height="590"
+        Title="Settings" Width="380" Height="670"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{DynamicResource BackgroundElevatedBrush}">
@@ -128,6 +128,19 @@
             <CheckBox Content="Hook-loss watchdog (auto-recover dead hooks)"
                       IsChecked="{Binding HookWatchdogEnabled, Mode=TwoWay}"
                       ToolTip="Detects Windows silently removing the input hooks and re-installs them. Disable only to rule it out while troubleshooting."
+                      Margin="0,0,0,8"
+                      Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <Separator Margin="0,8,0,8" Background="{DynamicResource BorderBrush}"/>
+
+            <TextBlock Text="Updates"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,8"
+                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+
+            <CheckBox Content="Check for updates from GitHub"
+                      IsChecked="{Binding CheckForUpdates, Mode=TwoWay}"
+                      ToolTip="On start, compare this build with the latest GitHub release and show an in-app banner when a newer build exists. GitHub sees only the request for release metadata; nothing is sent."
                       Margin="0,0,0,8"
                       Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
 

@@ -143,6 +143,37 @@ public sealed partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     private Key rapidFireToggleKey = Key.None;
 
+    // ---- Update banner (session state; pushed only by UpdateCheckService via the dispatcher) ----
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowUpdateBanner))]
+    private bool updateAvailable;
+
+    // Session-only dismissal; never persisted. Deliberately NOT reset by NotifyUpdateAvailable, so
+    // a later check finding another build does not re-show a dismissed banner this session.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowUpdateBanner))]
+    private bool updateBannerDismissed;
+
+    [ObservableProperty]
+    private string updateBannerText = string.Empty;
+
+    public string UpdateDownloadUrl => GitHubUrls.LatestReleasePageUrl;
+
+    public bool ShowUpdateBanner => UpdateAvailable && !UpdateBannerDismissed;
+
+    /// <summary>Called (dispatcher-only) by UpdateCheckService when a newer build exists.</summary>
+    public void NotifyUpdateAvailable(int latestBuild, int? currentBuild)
+    {
+        UpdateBannerText = currentBuild is > 0
+            ? $"Update available — Build {latestBuild} (you have Build {currentBuild})"
+            : $"Update available — Build {latestBuild}";
+        UpdateAvailable = true;
+    }
+
+    [RelayCommand]
+    private void DismissUpdateBanner() => UpdateBannerDismissed = true;
+
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         if (_profiles.Count > 0)

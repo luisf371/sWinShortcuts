@@ -8,6 +8,7 @@ public static class AppSettings
 {
     public const string ColorToggleKeyName = "ColorToggleKey";
     public const string RapidFireToggleKeyName = "RapidFireToggleKey";
+    public const string CheckForUpdatesKeyName = "CheckForUpdates";
 
     public static string GetRootDirectory()
     {
@@ -68,6 +69,10 @@ public static class AppSettings
     {
         return IniDocument.Load(settingsPath).GetKey("App", RapidFireToggleKeyName);
     }
+
+    /// <summary>[App] CheckForUpdates — default OFF: only the literal "true" enables the GitHub update check.</summary>
+    public static bool LoadCheckForUpdatesEnabled(string settingsPath)
+        => IniDocument.Load(settingsPath).GetValue("App", CheckForUpdatesKeyName) == "true";
 
     public static void SetRapidFireToggleKey(IniDocument document, Key? key)
     {
