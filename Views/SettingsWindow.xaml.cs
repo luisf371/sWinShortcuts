@@ -125,6 +125,8 @@ public partial class SettingsWindow : Window
             // The current [App] key is authoritative; fall back to legacy [Window] until this save migrates it.
             var startMinimizedRaw = ini.GetValue("App", "StartMinimized") ?? ini.GetValue("Window", "StartMinimized");
             _vm.StartMinimized = startMinimizedRaw == "true";
+            // Default-off: only the literal "true" enables the update check (absent key = disabled).
+            _vm.CheckForUpdates = ini.GetValue("App", "CheckForUpdates") == "true";
             _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;
             _vm.RapidFireToggleKey = AppSettings.LoadRapidFireToggleKey(_settingsPath) ?? Key.None;
         }
@@ -136,6 +138,7 @@ public partial class SettingsWindow : Window
             // silently disable an upgrade-enabled gate the service already applied.
             _vm.AdvancedModeEnabled = _inputHookService.AdvancedModeEnabled;
             _vm.StartMinimized = false;
+            _vm.CheckForUpdates = false;
             _vm.ColorToggleKey = Key.None;
             _vm.RapidFireToggleKey = Key.None;
         }
@@ -153,6 +156,9 @@ public partial class SettingsWindow : Window
             ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
             ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
             ini.SetValue("App", "AdvancedMode", vm.AdvancedModeEnabled ? "true" : "false");
+            // Always a literal true/false: a null/whitespace value would REMOVE the key (IniDocument
+            // SetValue treats it as a delete), resurrecting the absent-key default on reload.
+            ini.SetValue("App", "CheckForUpdates", vm.CheckForUpdates ? "true" : "false");
             AppSettings.SetColorToggleKey(ini, vm.ColorToggleKey);
             AppSettings.SetRapidFireToggleKey(ini, vm.RapidFireToggleKey);
             ini.Save(_settingsPath);

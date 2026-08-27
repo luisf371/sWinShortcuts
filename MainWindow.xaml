@@ -1785,6 +1785,42 @@
                 </ContentControl>
         </Border>
         </Grid>
+
+        <!-- Update-available overlay chip (card: no popup; dismissible; links to GitHub).
+             Appended AFTER the content grid so it z-orders above it; local-attribute visibility
+             binding + the VisibleIfTrue converter (the only mechanism proven reliable here). -->
+        <Border x:Name="UpdateBanner"
+                Grid.Row="1"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Margin="0,0,0,20" Padding="14,8"
+                CornerRadius="8"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource AccentBrush}"
+                BorderThickness="1"
+                Visibility="{Binding ShowUpdateBanner, Converter={StaticResource VisibleIfTrue}}">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="&#xE777;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                           Foreground="{DynamicResource AccentBrush}"
+                           VerticalAlignment="Center" Margin="0,0,8,0"
+                           AutomationProperties.Name="Update available"/>
+                <TextBlock Text="{Binding UpdateBannerText}" VerticalAlignment="Center" Margin="0,0,12,0"
+                           Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
+                <TextBlock VerticalAlignment="Center" Margin="0,0,12,0"
+                           Foreground="{DynamicResource ForegroundPrimaryBrush}">
+                    <Hyperlink NavigateUri="{Binding UpdateDownloadUrl}"
+                               Foreground="{DynamicResource AccentBrush}"
+                               ToolTip="Opens the latest release page on GitHub in your browser."
+                               RequestNavigate="UpdateLink_RequestNavigate">Download from GitHub</Hyperlink>
+                </TextBlock>
+                <Button Content="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                        Width="24" Height="24" Padding="0"
+                        Background="Transparent" BorderThickness="0"
+                        Foreground="{DynamicResource ForegroundSecondaryBrush}"
+                        Command="{Binding DismissUpdateBannerCommand}"
+                        ToolTip="Dismiss update notification" ToolTipService.InitialShowDelay="0"
+                        AutomationProperties.Name="Dismiss update notification"/>
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>
 

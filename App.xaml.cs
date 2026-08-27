@@ -83,6 +83,12 @@ public partial class App : System.Windows.Application
         tray.Initialize(mainWindow);
 
         mainWindow.Show();
+
+        // Delayed self-check — no-op unless [App] CheckForUpdates=true AND this is a CI-numbered
+        // build ("dev" never phones home). Never blocks startup: the fetch is pool-side and the
+        // result is marshaled to the dispatcher by the service. Runs after the single-instance
+        // early-return above, so a duplicate instance never checks.
+        _host.Services.GetRequiredService<UpdateCheckService>().Start();
     }
 
     private static void ConfigureServices(HostBuilderContext context, IServiceCollection services)
@@ -107,6 +113,7 @@ public partial class App : System.Windows.Application
             provider => provider.GetRequiredService<ProfileActivationService>());
         services.AddSingleton<IDialogService, DialogService>();
         services.AddSingleton<MainViewModel>();
+        services.AddSingleton<UpdateCheckService>();
         services.AddSingleton<MainWindow>();
     }
 
