@@ -17,9 +17,6 @@ public sealed class IniProfileStore : IProfileStore
     private readonly string _rootDirectory;
     private readonly string _profilesDirectory;
     private readonly string _windowsProfilePath;
-    // Legacy location of the retired Color built-in: read ONCE by the Win.ini migration (below) and
-    // still read by AppSettings.LoadColorToggleKey. Never written.
-    private readonly string _colorProfilePath;
     private readonly Services.ILoggerService? _logger;
 
     public IniProfileStore(Services.ILoggerService? logger = null)
@@ -39,7 +36,6 @@ public sealed class IniProfileStore : IProfileStore
         _rootDirectory = rootDirectory;
         _profilesDirectory = Path.Combine(_rootDirectory, ProfileConstants.ProfilesDirectoryName);
         _windowsProfilePath = Path.Combine(_rootDirectory, ProfileConstants.WindowsProfileFileName);
-        _colorProfilePath = Path.Combine(_rootDirectory, ProfileConstants.ColorProfileFileName);
 
         // F-008: an inaccessible/redirected AppData must not abort construction (and thus the whole app).
         // Loads then fall back to in-memory defaults with persistence suspended; the app still starts with
@@ -216,10 +212,6 @@ public sealed class IniProfileStore : IProfileStore
         {
             var profile = ProfileFactory.CreateWindowsProfile();
             profile.SourcePath = path;
-            // codex P2: even a brand-new Win.ini must import an existing legacy Color.ini BEFORE the
-            // first save writes [Color] defaults — otherwise the created file suppresses the import
-            // forever. A failed import leaves the marker false so the next launch retries.
-            profile.LegacyColorImportCompleted = TryImportLegacyColorSettings(profile);
             SerializeWindowsProfile(profile).Save(path);
             return profile;
         }
@@ -240,115 +232,9 @@ public sealed class IniProfileStore : IProfileStore
             profileInstance.WindowsLauncher.Launchers[key] = binding;
         }
 
-        // codex P2: an explicit ColorImported marker — NOT [Color]-section presence — gates the
-        // one-time legacy import. Section presence is a false "done" signal: an autosave during a
-        // failed-import session writes [Color] defaults, which would suppress the user's legacy
-        // presets forever. The marker flips only when an import actually completed. Absent marker
-        // (any pre-merge Win.ini) reads as false -> import pending.
-        profileInstance.LegacyColorImportCompleted = document.GetBoolean("Profile", "ColorImported", false);
-
-        if (profileInstance.LegacyColorImportCompleted)
-        {
-            DeserializeColorSettings(document, profileInstance.ColorSettings);
-        }
-        else
-        {
-            // Base state: any [Color] values already in THIS Win.ini (e.g. defaults written by an
-            // autosave while the import was still pending); a successful legacy import overwrites.
-            if (document.GetSection("Color").Any())
-            {
-                DeserializeColorSettings(document, profileInstance.ColorSettings);
-            }
-
-            if (TryImportLegacyColorSettings(profileInstance))
-            {
-                profileInstance.LegacyColorImportCompleted = true;
-                try
-                {
-                    // Persist the imported values + marker so the import never re-fires. Best-effort:
-                    // on failure the in-memory marker is already true, so the next autosave writes
-                    // values + marker together — nothing is lost either way.
-                    SerializeWindowsProfile(profileInstance).Save(path);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger?.Log($"[Profile] Imported legacy color settings could not be persisted to '{path}': {ex}. The next save writes them.");
-                }
-            }
-            else
-            {
-                // F-008 (codex P2): the optional import must NEVER take down the Win.ini load (the two
-                // legacy built-ins failed independently before the merge). Keep the loaded launcher /
-                // Caps Lock settings and NO persistence suspension; the marker stays false, so the
-                // next launch retries even if an autosave writes [Color] defaults meanwhile.
-                _logger?.Log($"[Profile] Legacy Color.ini import into '{path}' did not complete; keeping loaded Win.ini settings and retrying on the next launch.");
-            }
-        }
+        DeserializeColorSettings(document, profileInstance.ColorSettings);
 
         return profileInstance;
-    }
-
-    // Imports the retired Color built-in's settings into the merged profile. Returns true when the
-    // import is COMPLETE — including the trivial case of no legacy Color.ini (nothing to import).
-    // Returns false only when a legacy file exists but could not be read (lock, ACL): the caller
-    // keeps the migration pending so the next launch retries. Color.ini is never written or deleted.
-    private bool TryImportLegacyColorSettings(Profile profile)
-    {
-        IniDocument legacyColor;
-        try
-        {
-            // Probe with an explicit open instead of File.Exists: Exists reports FALSE for an
-            // access-denied file (codex P2), which would silently read "can't read" as "nothing to
-            // import" and complete the migration over an unreadable legacy file. Only a genuinely
-            // missing file/directory means absent; any other failure keeps the import retryable.
-            using var probe = new FileStream(_colorProfilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            legacyColor = IniDocument.Load(_colorProfilePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return true; // no legacy Color profile — migration trivially complete
-        }
-        catch (DirectoryNotFoundException)
-        {
-            return true;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _logger?.Log($"[Profile] Failed to read legacy '{_colorProfilePath}': {ex}.");
-            return false;
-        }
-
-        var legacyWindowsMaster = profile.IsEnabled; // Win.ini's (or a fresh profile's) master
-        var legacyColorMaster = legacyColor.GetBoolean("Profile", "Enabled", true);
-
-        DeserializeColorSettings(legacyColor, profile.ColorSettings);
-        // The COLOR-ONLY switch ends at the legacy color profile's effective state — its own [Color]
-        // Enabled (just deserialized) AND its [Profile] Enabled master. (The merged SIDEBAR master is
-        // decided separately below.)
-        profile.ColorSettings.IsEnabled &= legacyColorMaster;
-
-        // codex P2: decouple the two legacy masters. Post-merge, BOTH feature families (Caps Lock /
-        // launchers AND the global color fallback) gate on the ONE sidebar master, so naively keeping
-        // Win.ini's master would silently kill global color for a user who disabled the old Windows
-        // profile but kept color (and vice versa). The merged master is on if EITHER side was on; a
-        // disabled legacy Windows master folds into its feature switches, preserving exactly what was
-        // running before the merge.
-        if (!legacyWindowsMaster)
-        {
-            profile.CapsLock.IsEnabled = false;
-            profile.WindowsLauncher.IsEnabled = false;
-        }
-
-        profile.IsEnabled = legacyWindowsMaster || legacyColorMaster;
-        return true;
     }
 
     private Profile LoadProfile(string path)
@@ -377,6 +263,19 @@ public sealed class IniProfileStore : IProfileStore
         return profile;
     }
 
+    private static (Key? TapKey, Key? HoldKey) ParseTapHold(string value)
+    {
+        var parts = value.Split('|');
+        return (
+            parts.Length > 0 ? KeySerializer.Deserialize(parts[0]) : null,
+            parts.Length > 1 ? KeySerializer.Deserialize(parts[1]) : null);
+    }
+
+    private static string FormatTapHold(Key? tapKey, Key? holdKey)
+    {
+        return $"{KeySerializer.Serialize(tapKey)}|{KeySerializer.Serialize(holdKey)}";
+    }
+
     private static void DeserializeAltMouse(IniDocument document, AltMouseSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("AltMouse", "Enabled", settings.IsEnabled);
@@ -384,88 +283,18 @@ public sealed class IniProfileStore : IProfileStore
 
         settings.Bindings.Clear();
 
-        // Try to load new format first (AltMouseBindings section)
-        var bindingsSection = document.GetSection("AltMouseBindings");
-        if (bindingsSection.Any())
+        foreach (var pair in document.GetSection("AltMouseBindings"))
         {
-            foreach (var pair in bindingsSection)
+            if (Enum.TryParse<Models.MouseButton>(pair.Key, out var button))
             {
-                if (Enum.TryParse<Models.MouseButton>(pair.Key, out var button))
+                var (tapKey, holdKey) = ParseTapHold(pair.Value);
+                var binding = new MouseButtonBinding
                 {
-                    var parts = pair.Value.Split('|');
-                    var binding = new MouseButtonBinding();
-                    
-                    if (parts.Length > 0)
-                    {
-                        binding.TapKey = KeySerializer.Deserialize(parts[0]);
-                    }
-                    
-                    if (parts.Length > 1)
-                    {
-                        binding.HoldKey = KeySerializer.Deserialize(parts[1]);
-                    }
-                    
-                    settings.Bindings[button] = binding;
-                }
-            }
-        }
-        else
-        {
-            // Fallback to old format for migration (AltMouse.Left, AltMouse.Right, AltMouse.Middle)
-            var leftTap = document.GetKey("AltMouse.Left", "Tap");
-            var leftHold = document.GetKey("AltMouse.Left", "Hold");
-            if (leftTap.HasValue || leftHold.HasValue)
-            {
-                settings.Bindings[Models.MouseButton.Left] = new MouseButtonBinding
-                {
-                    TapKey = leftTap,
-                    HoldKey = leftHold
+                    TapKey = tapKey,
+                    HoldKey = holdKey
                 };
-            }
 
-            var rightTap = document.GetKey("AltMouse.Right", "Tap");
-            var rightHold = document.GetKey("AltMouse.Right", "Hold");
-            if (rightTap.HasValue || rightHold.HasValue)
-            {
-                settings.Bindings[Models.MouseButton.Right] = new MouseButtonBinding
-                {
-                    TapKey = rightTap,
-                    HoldKey = rightHold
-                };
-            }
-
-            var middleTap = document.GetKey("AltMouse.Middle", "Tap");
-            var middleHold = document.GetKey("AltMouse.Middle", "Hold");
-            if (middleTap.HasValue || middleHold.HasValue)
-            {
-                settings.Bindings[Models.MouseButton.Middle] = new MouseButtonBinding
-                {
-                    TapKey = middleTap,
-                    HoldKey = middleHold
-                };
-            }
-
-            // Legacy master also wrote [AltMouse.Button4]/[AltMouse.Button5] -> XButton1(4)/XButton2(5).
-            var button4Tap = document.GetKey("AltMouse.Button4", "Tap");
-            var button4Hold = document.GetKey("AltMouse.Button4", "Hold");
-            if (button4Tap.HasValue || button4Hold.HasValue)
-            {
-                settings.Bindings[Models.MouseButton.XButton1] = new MouseButtonBinding
-                {
-                    TapKey = button4Tap,
-                    HoldKey = button4Hold
-                };
-            }
-
-            var button5Tap = document.GetKey("AltMouse.Button5", "Tap");
-            var button5Hold = document.GetKey("AltMouse.Button5", "Hold");
-            if (button5Tap.HasValue || button5Hold.HasValue)
-            {
-                settings.Bindings[Models.MouseButton.XButton2] = new MouseButtonBinding
-                {
-                    TapKey = button5Tap,
-                    HoldKey = button5Hold
-                };
+                settings.Bindings[button] = binding;
             }
         }
     }
@@ -488,20 +317,12 @@ public sealed class IniProfileStore : IProfileStore
                 continue;
             }
 
-            var parts = pair.Value.Split('|');
-            var binding = new AltKeyboardBinding();
-
-            if (parts.Length > 0)
+            var (tapKey, holdKey) = ParseTapHold(pair.Value);
+            settings.Bindings[triggerKey.Value] = new AltKeyboardBinding
             {
-                binding.TapKey = KeySerializer.Deserialize(parts[0]);
-            }
-
-            if (parts.Length > 1)
-            {
-                binding.HoldKey = KeySerializer.Deserialize(parts[1]);
-            }
-
-            settings.Bindings[triggerKey.Value] = binding;
+                TapKey = tapKey,
+                HoldKey = holdKey
+            };
         }
     }
 
@@ -509,63 +330,27 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.Mappings.Clear();
 
-        var overrides = document.GetSection("KeyMappingsOverrides");
+        settings.IsEnabled = document.GetBoolean("KeyMappings", "Enabled", settings.IsEnabled);
 
-        // Prefer the current format. A branch profile always writes [KeyMappings] Enabled=…;
-        // a legacy master INI never has it, so its absence (with no overrides) means "try legacy".
-        if (document.GetSection("KeyMappings").Any() || overrides.Any())
+        foreach (var pair in document.GetSection("KeyMappingsOverrides"))
         {
-            settings.IsEnabled = document.GetBoolean("KeyMappings", "Enabled", settings.IsEnabled);
+            var source = KeySerializer.Deserialize(pair.Key);
+            if (source is null) continue;
 
-            foreach (var pair in overrides)
+            var parts = pair.Value.Split('|');
+            var target = parts.Length > 0 ? KeySerializer.Deserialize(parts[0]) : null;
+            if (target is null) continue;
+
+            var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var sVal) ? sVal : true;
+            var rightClick = parts.Length > 2 && bool.TryParse(parts[2], out var rVal) ? rVal : false;
+
+            settings.Mappings.Add(new CombinedMappingEntry
             {
-                var source = KeySerializer.Deserialize(pair.Key);
-                if (source is null) continue;
-
-                var parts = pair.Value.Split('|');
-                var target = parts.Length > 0 ? KeySerializer.Deserialize(parts[0]) : null;
-                if (target is null) continue;
-
-                var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var sVal) ? sVal : true;
-                var rightClick = parts.Length > 2 && bool.TryParse(parts[2], out var rVal) ? rVal : false;
-
-                settings.Mappings.Add(new CombinedMappingEntry
-                {
-                    SourceKey = source.Value,
-                    TargetKey = target.Value,
-                    SuppressOriginalKey = suppress,
-                    RightClickOnly = rightClick
-                });
-            }
-
-            return;
-        }
-
-        // Legacy master migration: [RightMouse] Enabled/SuppressOriginal + [RightMouseOverrides] Src=Tgt.
-        // Each legacy override fired only while RMB was held with a single global SuppressOriginal flag,
-        // which is exactly CombinedMappingEntry { RightClickOnly = true, SuppressOriginalKey = <global> }.
-        var legacyOverrides = document.GetSection("RightMouseOverrides");
-        if (document.GetSection("RightMouse").Any() || legacyOverrides.Any())
-        {
-            settings.IsEnabled = document.GetBoolean("RightMouse", "Enabled", settings.IsEnabled);
-            var suppress = document.GetBoolean("RightMouse", "SuppressOriginal", true);
-
-            foreach (var pair in legacyOverrides)
-            {
-                var source = KeySerializer.Deserialize(pair.Key);
-                if (source is null) continue;
-
-                var target = KeySerializer.Deserialize(pair.Value);
-                if (target is null) continue;
-
-                settings.Mappings.Add(new CombinedMappingEntry
-                {
-                    SourceKey = source.Value,
-                    TargetKey = target.Value,
-                    SuppressOriginalKey = suppress,
-                    RightClickOnly = true
-                });
-            }
+                SourceKey = source.Value,
+                TargetKey = target.Value,
+                SuppressOriginalKey = suppress,
+                RightClickOnly = rightClick
+            });
         }
     }
 
@@ -607,25 +392,8 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.IsEnabled = document.GetBoolean("CapsLock", "Enabled", settings.IsEnabled);
 
-        // Compatibility: Hold and its older MomentaryShift name both used numeric value 2, which is now
-        // DoubleNormal. The former fourth Remap mode becomes Normal + the independent RemapEnabled flag.
-        var rawMode = document.GetString("CapsLock", "Mode", string.Empty);
-        var legacyDoubleNormal =
-            string.Equals(rawMode, "Hold", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(rawMode, "MomentaryShift", StringComparison.OrdinalIgnoreCase);
-        var legacyRemap =
-            string.Equals(rawMode, "Remap", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(rawMode, "3", StringComparison.OrdinalIgnoreCase);
-        settings.Mode = legacyDoubleNormal
-            ? CapsLockMode.DoubleNormal
-            : legacyRemap
-                ? CapsLockMode.Normal
-                : document.GetEnum("CapsLock", "Mode", settings.Mode);
-
-        settings.IsRemapEnabled = document.GetBoolean(
-            "CapsLock",
-            "RemapEnabled",
-            legacyRemap);
+        settings.Mode = document.GetEnum("CapsLock", "Mode", settings.Mode);
+        settings.IsRemapEnabled = document.GetBoolean("CapsLock", "RemapEnabled", settings.IsRemapEnabled);
         settings.RemapTarget = document.GetKey("CapsLock", "RemapTarget");
     }
 
@@ -645,11 +413,7 @@ public sealed class IniProfileStore : IProfileStore
     private static void DeserializeColorSettings(IniDocument document, ColorSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("Color", "Enabled", settings.IsEnabled);
-#pragma warning disable CS0618 // Type or member is obsolete
-        settings.SelectedDisplayId = document.GetString("Color", "SelectedDisplay", settings.SelectedDisplayId);
-#pragma warning restore CS0618
         settings.HasSecondary = document.GetBoolean("Color", "HasSecondary", settings.HasSecondary);
-        settings.ToggleKey = document.GetKey("Color", "ToggleKey");
         settings.ClearProfiles();
 
         // Primary keeps the historical [ColorDisplays] section (back-compat); Secondary is the new preset.
@@ -672,37 +436,18 @@ public sealed class IniProfileStore : IProfileStore
         foreach (var pair in section)
         {
             var parts = pair.Value.Split('|');
-
-            // Detect format: new format has 5 fields (IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance)
-            // Old format has 4 fields (Brightness|Contrast|Gamma|DigitalVibrance)
-            bool isEnabled;
-            int brightnessIndex, contrastIndex, gammaIndex, vibranceIndex;
-
-            if (parts.Length >= 5)
+            if (parts.Length < 5)
             {
-                // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
-                isEnabled = parts[0] == "1" || string.Equals(parts[0], "true", StringComparison.OrdinalIgnoreCase);
-                brightnessIndex = 1;
-                contrastIndex = 2;
-                gammaIndex = 3;
-                vibranceIndex = 4;
-            }
-            else
-            {
-                // Old format: Brightness|Contrast|Gamma|DigitalVibrance (defaults to enabled)
-                isEnabled = true;
-                brightnessIndex = 0;
-                contrastIndex = 1;
-                gammaIndex = 2;
-                vibranceIndex = 3;
+                continue;
             }
 
-            var brightness = ParsePercentage(parts, brightnessIndex, DisplayColorProfile.DefaultBrightness);
-            var contrast = ParsePercentage(parts, contrastIndex, DisplayColorProfile.DefaultContrast);
-            var gamma = parts.Length > gammaIndex && double.TryParse(parts[gammaIndex], NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGamma)
+            var isEnabled = parts[0] == "1" || string.Equals(parts[0], "true", StringComparison.OrdinalIgnoreCase);
+            var brightness = ParsePercentage(parts, 1, DisplayColorProfile.DefaultBrightness);
+            var contrast = ParsePercentage(parts, 2, DisplayColorProfile.DefaultContrast);
+            var gamma = double.TryParse(parts[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGamma)
                 ? parsedGamma
                 : DisplayColorProfile.DefaultGamma;
-            var vibrance = ClampDigitalVibrance(ParsePercentage(parts, vibranceIndex, DisplayColorProfile.DefaultDigitalVibrance));
+            var vibrance = ClampDigitalVibrance(ParsePercentage(parts, 4, DisplayColorProfile.DefaultDigitalVibrance));
 
             var entry = new DisplayColorProfile
             {
@@ -740,37 +485,28 @@ public sealed class IniProfileStore : IProfileStore
         document.SetBoolean("AltMouse", "Enabled", altMouse.IsEnabled);
         document.SetInt32("AltMouse", "HoldThreshold", altMouse.HoldThresholdMilliseconds);
         
-        // Remove old format sections
-        document.RemoveSection("AltMouse.Left");
-        document.RemoveSection("AltMouse.Right");
-        document.RemoveSection("AltMouse.Middle");
-        document.RemoveSection("AltMouseBindings");
-        
-        // Write new format
         foreach (var binding in altMouse.Bindings)
         {
-            var tapStr = binding.Value.TapKey.HasValue ? KeySerializer.Serialize(binding.Value.TapKey.Value) : "";
-            var holdStr = binding.Value.HoldKey.HasValue ? KeySerializer.Serialize(binding.Value.HoldKey.Value) : "";
-            var value = $"{tapStr}|{holdStr}";
-            document.SetString("AltMouseBindings", binding.Key.ToString(), value);
+            document.SetString(
+                "AltMouseBindings",
+                binding.Key.ToString(),
+                FormatTapHold(binding.Value.TapKey, binding.Value.HoldKey));
         }
 
         var altKeyboard = profile.AltKeyboard;
         document.SetBoolean("AltKeyboard", "Enabled", altKeyboard.IsEnabled);
         document.SetInt32("AltKeyboard", "HoldThreshold", altKeyboard.HoldThresholdMilliseconds);
 
-        document.RemoveSection("AltKeyboardBindings");
         foreach (var binding in altKeyboard.Bindings)
         {
-            var tapStr = binding.Value.TapKey.HasValue ? KeySerializer.Serialize(binding.Value.TapKey.Value) : "";
-            var holdStr = binding.Value.HoldKey.HasValue ? KeySerializer.Serialize(binding.Value.HoldKey.Value) : "";
-            var value = $"{tapStr}|{holdStr}";
-            document.SetString("AltKeyboardBindings", binding.Key.ToString(), value);
+            document.SetString(
+                "AltKeyboardBindings",
+                binding.Key.ToString(),
+                FormatTapHold(binding.Value.TapKey, binding.Value.HoldKey));
         }
 
         var mappings = profile.CombinedMappings;
         document.SetBoolean("KeyMappings", "Enabled", mappings.IsEnabled);
-        document.RemoveSection("KeyMappingsOverrides");
         foreach (var entry in mappings.Mappings)
         {
             var key = KeySerializer.Serialize(entry.SourceKey);
@@ -828,10 +564,6 @@ public sealed class IniProfileStore : IProfileStore
     {
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
         document.SetBoolean("Color", "HasSecondary", color.HasSecondary);
-        // Note: SelectedDisplayId is deprecated but kept for backward compatibility
-#pragma warning disable CS0618 // Type or member is obsolete
-        document.SetString("Color", "SelectedDisplay", color.SelectedDisplayId ?? string.Empty);
-#pragma warning restore CS0618
 
         // Serialize each variant EXPLICITLY (not SnapshotProfiles(), which returns whichever is currently
         // active) so an autosave while Secondary is toggled-on still writes Primary->[ColorDisplays].
@@ -841,7 +573,6 @@ public sealed class IniProfileStore : IProfileStore
 
     private static void WriteColorDisplaySection(IniDocument document, string sectionName, IReadOnlyDictionary<string, DisplayColorProfile> profiles)
     {
-        document.RemoveSection(sectionName);
         foreach (var pair in profiles)
         {
             // New format: IsEnabled|Brightness|Contrast|Gamma|DigitalVibrance
@@ -855,8 +586,6 @@ public sealed class IniProfileStore : IProfileStore
     {
         var document = new IniDocument();
         document.SetBoolean("Profile", "Enabled", profile.IsEnabled);
-        // One-time migration marker (see TryImportLegacyColorSettings): false = import still pending.
-        document.SetBoolean("Profile", "ColorImported", profile.LegacyColorImportCompleted);
         document.SetBoolean("WindowsLauncher", "Enabled", profile.WindowsLauncher.IsEnabled);
 
         var capsLock = profile.CapsLock;

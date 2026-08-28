@@ -122,9 +122,7 @@ public partial class SettingsWindow : Window
             _vm.AdvancedModeEnabled = advancedRaw is null
                 ? _inputHookService.AdvancedModeEnabled
                 : advancedRaw == "true";
-            // The current [App] key is authoritative; fall back to legacy [Window] until this save migrates it.
-            var startMinimizedRaw = ini.GetValue("App", "StartMinimized") ?? ini.GetValue("Window", "StartMinimized");
-            _vm.StartMinimized = startMinimizedRaw == "true";
+            _vm.StartMinimized = ini.GetValue("App", "StartMinimized") == "true";
             // Default-off: only the literal "true" enables the update check (absent key = disabled).
             _vm.CheckForUpdates = ini.GetValue("App", "CheckForUpdates") == "true";
             _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;

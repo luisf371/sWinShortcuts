@@ -629,3 +629,8 @@
 - Update links must use the existing fail-closed `ProcessLauncher` de-elevation path via absolute `%WINDIR%\explorer.exe`; direct `UseShellExecute` can launch browser content elevated when the app runs as admin.
 - `UpdateCheckService` rechecks `Enabled` inside the dispatcher callback so an in-flight response cannot show a stale banner after the user opts out.
 - Validation after remediation: Release build clean, focused update-check tests `29/29`, full Release suite `484/484`.
+
+# 2026-08-27 (current-format cleanup implementation)
+- Configuration now reads only app-level toggle/startup keys, `Win.ini`, current binding sections, five-field color rows, and current Caps Lock values; legacy `Color.ini`, per-button AltMouse, RightMouse, and old Caps aliases are intentionally ignored.
+- Remove-all binding commands must call the existing per-entry removers; `ObservableCollection.Clear()` emits a Reset without old items and leaves retained row handlers attached.
+- Release verification: `dotnet build .\sWinShortcuts.csproj -c Release` completed with 0 warnings/errors, and `dotnet test .\Tests\Tests.csproj -c Release --no-build --no-restore` passed 479/479.

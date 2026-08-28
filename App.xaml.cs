@@ -44,23 +44,17 @@ public partial class App : System.Windows.Application
             .ConfigureServices(ConfigureServices)
             .Build();
 
-        // The color preset key is an app-level setting. Seed the hook before hosted services start so
-        // ProfileActivationService never needs to read it from the Color profile. Read the legacy Color.ini
-        // value once for existing users and persist the migrated value when possible.
+        // The toggle keys are app-level settings. Seed the hook before hosted services start so profile
+        // activation never needs to resolve them from profile state.
         var inputHook = _host.Services.GetRequiredService<IInputHookService>();
         var settingsPath = AppSettings.GetSettingsPath();
 
-        // Each toggle-key source is independent: a read/migrate failure for one must not drop another
-        // feature's key for the whole session. Previously a single broad catch around all three meant a
-        // transiently locked/unreadable Color.ini (LoadColorToggleKey also reads legacy Color.ini) skipped
-        // SetRapidFireToggleKey entirely, silently disabling Rapid Fire despite a readable [App] value.
-        // Never rethrow — the app and input hooks must still start.
+        // Each toggle-key source is independent: a read failure for one must not drop another feature's
+        // key for the whole session. Never rethrow — the app and input hooks must still start.
         try { inputHook.SetColorToggleKey(AppSettings.LoadColorToggleKey(settingsPath)); }
         catch (Exception ex) { CrashReporter.Write("App.ToggleKey.Color", ex); }
         try { inputHook.SetRapidFireToggleKey(AppSettings.LoadRapidFireToggleKey(settingsPath)); }
         catch (Exception ex) { CrashReporter.Write("App.ToggleKey.RapidFire", ex); }
-        try { AppSettings.MigrateLegacyColorToggleKey(settingsPath); }
-        catch (Exception ex) { CrashReporter.Write("App.ToggleKey.Migrate", ex); }
 
         // Explicit ownership BEFORE anything can instantiate an overlay: WPF auto-assigns
         // Application.MainWindow to the FIRST-created Window, so the status dot (resolved below)

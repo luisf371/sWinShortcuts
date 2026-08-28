@@ -6,6 +6,7 @@ using sWinShortcuts.Services;
 using sWinShortcuts.ViewModels;
 using Tests.Fakes;
 using Xunit;
+using AppMouseButton = sWinShortcuts.Models.MouseButton;
 
 namespace Tests;
 
@@ -228,6 +229,62 @@ public sealed class ProfileRuntimeNotificationTests
         viewModel.CrosshairSizeAdjustment = 12;
         Assert.Equal(3, notifications);
         Assert.Equal(3, changes.Count);
+    }
+
+    [Fact]
+    public async Task RemoveAllBindings_DetachesRemovedEntriesAndKeepsModelsEmpty()
+    {
+        var store = new InMemoryProfileStore();
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.CombinedMappings.Mappings =
+        [
+            new() { SourceKey = Key.A, TargetKey = Key.B },
+            new() { SourceKey = Key.C, TargetKey = Key.D }
+        ];
+        profile.AltMouse.Bindings = new Dictionary<AppMouseButton, MouseButtonBinding>
+        {
+            [AppMouseButton.Left] = new() { TapKey = Key.E },
+            [AppMouseButton.Right] = new() { HoldKey = Key.F }
+        };
+        profile.AltKeyboard.Bindings = new Dictionary<Key, AltKeyboardBinding>
+        {
+            [Key.G] = new() { TapKey = Key.H },
+            [Key.I] = new() { HoldKey = Key.J }
+        };
+        store.Profiles.Add(profile);
+
+        var viewModel = new MainViewModel(
+            new ProfileManager(store),
+            new FakeDialogService(),
+            new FakeDisplayService(),
+            new RecordingColorControlService());
+        await viewModel.InitializeAsync();
+        var game = Assert.Single(viewModel.Profiles, candidate => ReferenceEquals(candidate.Model, profile));
+        viewModel.SelectedProfile = game;
+
+        var removedCombined = game.CombinedMappings.ToArray();
+        var removedAltMouse = game.AltMouseBindings.ToArray();
+        var removedAltKeyboard = game.AltKeyboardBindings.ToArray();
+        var changes = new List<ProfileChangeKind>();
+        game.ProfileChanged += (_, e) => changes.Add(e.Kind);
+
+        viewModel.RemoveAllCombinedMappingsCommand.Execute(null);
+        viewModel.RemoveAllAltMouseBindingsCommand.Execute(null);
+        viewModel.RemoveAllAltKeyboardBindingsCommand.Execute(null);
+
+        Assert.Empty(profile.CombinedMappings.Mappings);
+        Assert.Empty(profile.AltMouse.Bindings);
+        Assert.Empty(profile.AltKeyboard.Bindings);
+
+        changes.Clear();
+        removedCombined[0].TargetKey = Key.Z;
+        removedAltMouse[0].TapKey = Key.Z;
+        removedAltKeyboard[0].HoldKey = Key.Z;
+
+        Assert.Empty(profile.CombinedMappings.Mappings);
+        Assert.Empty(profile.AltMouse.Bindings);
+        Assert.Empty(profile.AltKeyboard.Bindings);
+        Assert.Empty(changes);
     }
 
     private sealed class RecordingProfileRuntimeService(

@@ -99,8 +99,6 @@ sWinShortcuts/
 // CRITICAL: Do NOT fall back to standard launch if de-elevation fails
 // (ProcessLauncher.Launch: the catch after LaunchAsDesktopUser throws by design)
 
-// Deprecated but kept for compat:
-// SelectedDisplayId in IniProfileStore (legacy [Color] SelectedDisplay read/write)
 ```
 
 ### Type Safety
@@ -123,8 +121,7 @@ InputHookService includes timing jitter:
 - Variable delays on key press duration
 
 ### Special Profiles
-- **Windows Profile** (`ProfileConstants.WindowsProfileName`): Global fallback, undeletable
-- **Color Profile** (`ProfileConstants.ColorProfileName`): Global color settings only
+- **Window [Default]** (`ProfileConstants.WindowsProfileName`): Global fallback and global color settings, undeletable
 
 ## COMMANDS
 
@@ -164,8 +161,7 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AddProfileAsync_Dupl
 
 ### Data Locations
 - Profiles: `%APPDATA%\sWinShortcuts\Profiles\{Name}.ini`
-- Windows profile: `%APPDATA%\sWinShortcuts\Win.ini`
-- Color profile: `%APPDATA%\sWinShortcuts\Color.ini`
+- Window [Default] profile: `%APPDATA%\sWinShortcuts\Win.ini`
 - Debug log: `%APPDATA%\sWinShortcuts\debug.log`
 - Crash report: `%APPDATA%\sWinShortcuts\crash.log` (always on, independent of debug logging; capped at 512 KiB)
 

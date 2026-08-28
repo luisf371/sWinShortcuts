@@ -708,9 +708,10 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public void RemoveAllCombinedMappings()
     {
-        if (CombinedMappings.Count == 0) return;
-        CombinedMappings.Clear();
-        // OnCombinedMappingsChanged will fire and update keys
+        while (CombinedMappings.Count > 0)
+        {
+            RemoveCombinedMapping(CombinedMappings[0]);
+        }
     }
 
     public void AddAltMouseBinding()
@@ -748,6 +749,14 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public void RemoveAllAltMouseBindings()
+    {
+        while (AltMouse.Bindings.Count > 0)
+        {
+            RemoveAltMouseBinding(AltMouse.Bindings[0]);
+        }
+    }
+
     public void AddAltKeyboardBinding()
     {
         var availableKeys = AvailableTriggerKeys;
@@ -780,6 +789,14 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         if (AltKeyboard.Bindings.Remove(entry))
         {
             OnPropertyChanged(nameof(AvailableTriggerKeys));
+        }
+    }
+
+    public void RemoveAllAltKeyboardBindings()
+    {
+        while (AltKeyboard.Bindings.Count > 0)
+        {
+            RemoveAltKeyboardBinding(AltKeyboard.Bindings[0]);
         }
     }
 

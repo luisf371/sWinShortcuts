@@ -184,16 +184,7 @@ public partial class MainWindow : Window
             _alwaysOnTopDesired = ini.GetValue("App", "AlwaysOnTop") != "false";
 
             // Start-minimized is an explicit user preference persisted under [App] by the Settings dialog.
-            // Fall back to the legacy [Window] StartMinimized value once for upgrades, then stop using it.
-            var startMinimizedRaw = ini.GetValue("App", "StartMinimized");
-            if (startMinimizedRaw is not null)
-            {
-                _startMinimized = startMinimizedRaw == "true";
-            }
-            else if (bool.TryParse(ini.GetValue("Window", "StartMinimized"), out var legacyStartMinimized))
-            {
-                _startMinimized = legacyStartMinimized;
-            }
+            _startMinimized = ini.GetValue("App", "StartMinimized") == "true";
 
             var width = ini.GetValue("Window", "Width");
             var height = ini.GetValue("Window", "Height");

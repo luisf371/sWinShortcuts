@@ -295,17 +295,17 @@ public sealed partial class MainViewModel : ViewModelBase
 
     private bool CanSaveProfile() => SelectedProfile is { Model.IsPersistenceSuspended: false };
 
-    private bool CanEditRightMouse() => SelectedProfile is { IsWindowsProfile: false };
+    private bool CanEditCustomProfileFeatures() => SelectedProfile is { IsWindowsProfile: false };
 
     // Combined mappings (global + right-click) commands
 
-    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void AddCombinedMapping()
     {
         SelectedProfile?.AddCombinedMapping();
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void RemoveCombinedMapping(CombinedMappingEntryViewModel? entry)
     {
         if (SelectedProfile is null)
@@ -316,7 +316,7 @@ public sealed partial class MainViewModel : ViewModelBase
         SelectedProfile.RemoveCombinedMapping(entry);
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditRightMouse))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void RemoveAllCombinedMappings()
     {
         if (SelectedProfile is null)
@@ -327,13 +327,13 @@ public sealed partial class MainViewModel : ViewModelBase
         SelectedProfile.RemoveAllCombinedMappings();
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditAltMouse))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void AddAltMouseBinding()
     {
         SelectedProfile?.AddAltMouseBinding();
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditAltMouse))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void RemoveAltMouseBinding(AltMouseBindingEntryViewModel? entry)
     {
         if (SelectedProfile is null)
@@ -344,30 +344,19 @@ public sealed partial class MainViewModel : ViewModelBase
         SelectedProfile.RemoveAltMouseBinding(entry);
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditAltMouse))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void RemoveAllAltMouseBindings()
     {
-        if (SelectedProfile is null)
-        {
-            return;
-        }
-
-        // Remove all entries by clearing the collection
-        while (SelectedProfile.AltMouseBindings.Count > 0)
-        {
-            SelectedProfile.RemoveAltMouseBinding(SelectedProfile.AltMouseBindings[0]);
-        }
+        SelectedProfile?.RemoveAllAltMouseBindings();
     }
 
-    private bool CanEditAltMouse() => SelectedProfile is { IsWindowsProfile: false };
-
-    [RelayCommand(CanExecute = nameof(CanEditAltKeyboard))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void AddAltKeyboardBinding()
     {
         SelectedProfile?.AddAltKeyboardBinding();
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditAltKeyboard))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void RemoveAltKeyboardBinding(AltKeyboardBindingEntryViewModel? entry)
     {
         if (SelectedProfile is null)
@@ -378,22 +367,11 @@ public sealed partial class MainViewModel : ViewModelBase
         SelectedProfile.RemoveAltKeyboardBinding(entry);
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditAltKeyboard))]
+    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
     private void RemoveAllAltKeyboardBindings()
     {
-        if (SelectedProfile is null)
-        {
-            return;
-        }
-
-        // Remove all entries by clearing the collection
-        while (SelectedProfile.AltKeyboardBindings.Count > 0)
-        {
-            SelectedProfile.RemoveAltKeyboardBinding(SelectedProfile.AltKeyboardBindings[0]);
-        }
+        SelectedProfile?.RemoveAllAltKeyboardBindings();
     }
-
-    private bool CanEditAltKeyboard() => SelectedProfile is { IsWindowsProfile: false };
 
     [RelayCommand(CanExecute = nameof(CanModifyProfile))]
     private async Task ModifyProfile()

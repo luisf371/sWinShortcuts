@@ -34,8 +34,8 @@ moment that program comes to the foreground.
 
 - **Application-aware**: profiles activate automatically based on the focused executable —
   no manual switching.
-- **Windows profile**: a built-in, undeletable global profile whose settings apply everywhere
-  a game profile doesn't override them.
+- **Window [Default] profile**: the single built-in, undeletable global profile. Its input
+  and color settings apply everywhere a game profile doesn't override them.
 - **Human-readable storage**: every profile is a plain `.ini` file you can edit by hand,
   back up, or share.
 
@@ -178,8 +178,7 @@ Open **Settings** from the tray menu or main window to configure:
 
 | Profile | Role |
 |---|---|
-| **Windows** | Built-in global fallback. Its settings apply in every app that doesn't have its own profile. Cannot be deleted. |
-| **Color Settings** | Built-in profile holding display color defaults. Cannot be deleted. |
+| **Window [Default]** | The single built-in global fallback, including global display color settings. Its settings apply in every app that doesn't have its own profile. Cannot be deleted. |
 | Your profiles | Matched against the foreground executable (name or full path). |
 
 ## Data & Configuration Files
@@ -190,8 +189,7 @@ Everything lives under `%APPDATA%\sWinShortcuts\`:
 |---|---|
 | `sWinShortcuts.ini` | App-level settings (`[App]` toggle keys, start-minimized) and window state |
 | `Profiles\<Name>.ini` | One file per profile — all feature settings |
-| `Win.ini` | The built-in Windows (global) profile |
-| `Color.ini` | The built-in color profile |
+| `Win.ini` | The built-in `Window [Default]` global profile, including display color settings |
 | `debug.log` | Verbose debug output (when enabled in Settings) |
 | `crash.log` | Crash reports |
 

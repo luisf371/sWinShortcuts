@@ -70,20 +70,18 @@ public class ProfileTests
     public void CustomProfile_WithReservedName_IsNotBuiltIn()
     {
         var fakeDefault = new Profile { Name = ProfileConstants.WindowsProfileName };
-        var fakeLegacyColor = new Profile { Name = ProfileConstants.ColorProfileName.ToUpper() };
 
         Assert.Equal(ProfileKind.Custom, fakeDefault.Kind);
         Assert.False(fakeDefault.IsWindowsProfile);
-        Assert.False(fakeLegacyColor.IsWindowsProfile);
     }
 
     [Fact]
-    public void ReservedProfileNames_CoverCurrentAndLegacyBuiltIns()
+    public void ReservedProfileNames_ContainsOnlyCurrentBuiltIn()
     {
-        Assert.Contains("Window [Default]", ProfileConstants.ReservedProfileNames);
-        Assert.Contains("Windows", ProfileConstants.ReservedProfileNames);
-        Assert.Contains("Color Settings", ProfileConstants.ReservedProfileNames);
-        Assert.True(ProfileConstants.IsReservedProfileName("windows")); // case-insensitive
+        Assert.Equal(["Window [Default]"], ProfileConstants.ReservedProfileNames);
+        Assert.True(ProfileConstants.IsReservedProfileName("window [default]"));
+        Assert.False(ProfileConstants.IsReservedProfileName("Windows"));
+        Assert.False(ProfileConstants.IsReservedProfileName("Color Settings"));
         Assert.False(ProfileConstants.IsReservedProfileName("My Game"));
     }
 
