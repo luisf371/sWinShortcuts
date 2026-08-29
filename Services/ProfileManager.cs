@@ -114,9 +114,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException($"Profile named '{name}' already exists.");
             }
 
-            // Reserved names stay blocked even when no profile currently carries them: the legacy
-            // built-in names ("Windows"/"Color Settings") must never be claimable by a custom profile,
-            // which could otherwise hijack an old app-level LastProfile value (restore matches by name).
+            // The built-in display name stays blocked even if the built-in was absent from a corrupt load.
             if (ProfileConstants.IsReservedProfileName(profile.Name))
             {
                 throw new InvalidOperationException($"'{profile.Name}' is a reserved profile name.");

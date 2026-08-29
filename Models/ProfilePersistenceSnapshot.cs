@@ -33,7 +33,6 @@ internal static class ProfilePersistenceSnapshot
             WindowsLauncher = CloneWindowsLauncher(source.WindowsLauncher),
             SourcePath = source.SourcePath,
             IsPersistenceSuspended = source.IsPersistenceSuspended,
-            LegacyColorImportCompleted = source.LegacyColorImportCompleted,
             Kind = source.Kind
         };
 
@@ -151,15 +150,11 @@ internal static class ProfilePersistenceSnapshot
 
     private static ColorSettings CloneColor(ColorSettings source)
     {
-#pragma warning disable CS0618 // Preserve the legacy compatibility value in the persistence snapshot.
         var clone = new ColorSettings
         {
             IsEnabled = source.IsEnabled,
-            HasSecondary = source.HasSecondary,
-            ToggleKey = source.ToggleKey,
-            SelectedDisplayId = source.SelectedDisplayId
+            HasSecondary = source.HasSecondary
         };
-#pragma warning restore CS0618
 
         foreach (var profile in source.SnapshotProfiles(ColorVariant.Primary).Values)
         {

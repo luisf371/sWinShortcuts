@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Windows.Input;
 
 namespace sWinShortcuts.Models;
 
@@ -28,7 +27,6 @@ public sealed class ColorSettings
     public bool IsEnabled { get; set; } = false;
 
     private bool _hasSecondary;
-    private Key? _toggleKey;
 
     /// <summary>
     /// Whether a Secondary preset has been configured for this profile. When false, only Primary is ever
@@ -40,22 +38,6 @@ public sealed class ColorSettings
         get { lock (_sync) { return _hasSecondary; } }
         set { lock (_sync) { _hasSecondary = value; } }
     }
-
-    /// <summary>
-    /// Legacy compatibility slot for the old Color.ini [Color] ToggleKey value.
-    /// New writes use the app-level [App] ColorToggleKey setting instead; runtime reads no longer use this
-    /// property. It remains so existing profiles can be loaded once and migrated without data loss.
-    /// Guarded by <c>_sync</c> for compatibility with older callers.
-    /// </summary>
-    public Key? ToggleKey
-    {
-        get { lock (_sync) { return _toggleKey; } }
-        set { lock (_sync) { _toggleKey = value; } }
-    }
-
-    // Legacy property kept for backward compatibility during INI migration
-    [Obsolete("Use per-display IsEnabled instead")]
-    public string SelectedDisplayId { get; set; } = string.Empty;
 
     /// <summary>
     /// Which preset is currently applied. Runtime state (not persisted).

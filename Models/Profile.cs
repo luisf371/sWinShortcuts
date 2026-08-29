@@ -53,16 +53,9 @@ public sealed class Profile
     // with those defaults, so IniProfileStore.SaveProfileAsync skips it while this flag is set.
     public bool IsPersistenceSuspended { get; set; }
 
-    // One-time legacy-Color.ini migration marker, persisted ONLY in Win.ini ([Profile] ColorImported).
-    // True (default) = nothing pending — a fresh/merged profile starts complete. LoadWindowsProfile sets
-    // it false when the marker is absent (pre-merge Win.ini, or a failed import) and flips it back only
-    // after the import actually completed, so an autosave that writes [Color] defaults mid-migration can
-    // never suppress the import (codex P2: section presence alone is a false "done" signal).
-    public bool LegacyColorImportCompleted { get; set; } = true;
-
     // F-007: built-in identity is an IMMUTABLE kind assigned at the load origin / factory, NOT derived
-    // from the mutable display Name. A custom INI declaring Name="Window [Default]"/"Windows" therefore
-    // stays Custom and can never route its save/delete onto Win.ini or bypass deletion guards.
+    // from the mutable display Name. A custom INI declaring Name="Window [Default]" therefore stays
+    // Custom and can never route its save/delete onto Win.ini or bypass deletion guards.
     public ProfileKind Kind { get; init; } = ProfileKind.Custom;
 
     public bool IsWindowsProfile => Kind == ProfileKind.Windows;

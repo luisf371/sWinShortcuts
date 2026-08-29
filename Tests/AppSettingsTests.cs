@@ -41,7 +41,7 @@ public sealed class AppSettingsTests
     }
 
     [Fact]
-    public void LoadColorToggleKey_PrefersAppValueOverLegacyColorValue()
+    public void LoadColorToggleKey_ConfiguredAppValue_ReturnsKey()
     {
         var root = CreateTempDirectory();
         try
@@ -51,10 +51,6 @@ public sealed class AppSettingsTests
             AppSettings.SetColorToggleKey(appSettings, Key.F8);
             appSettings.Save(settingsPath);
 
-            var legacy = new IniDocument();
-            legacy.SetKey("Color", "ToggleKey", Key.F9);
-            legacy.Save(Path.Combine(root, "Color.ini"));
-
             Assert.Equal(Key.F8, AppSettings.LoadColorToggleKey(settingsPath));
         }
         finally
@@ -63,9 +59,8 @@ public sealed class AppSettingsTests
         }
     }
 
-
     [Fact]
-    public void LoadColorToggleKey_ExplicitNoneWinsOverLegacyColorValue()
+    public void LoadColorToggleKey_ExplicitNone_ReturnsNull()
     {
         var root = CreateTempDirectory();
         try
@@ -74,10 +69,6 @@ public sealed class AppSettingsTests
             var appSettings = new IniDocument();
             AppSettings.SetColorToggleKey(appSettings, Key.None);
             appSettings.Save(settingsPath);
-
-            var legacy = new IniDocument();
-            legacy.SetKey("Color", "ToggleKey", Key.F9);
-            legacy.Save(Path.Combine(root, "Color.ini"));
 
             Assert.Null(AppSettings.LoadColorToggleKey(settingsPath));
         }
@@ -88,21 +79,33 @@ public sealed class AppSettingsTests
     }
 
     [Fact]
-    public void MigrateLegacyColorToggleKey_WritesAppValue()
+    public void LoadColorToggleKey_MissingKey_ReturnsNull()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var settingsPath = Path.Combine(root, "sWinShortcuts.ini");
+
+            Assert.Null(AppSettings.LoadColorToggleKey(settingsPath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LoadColorToggleKey_MissingKey_IgnoresColorIni()
     {
         var root = CreateTempDirectory();
         try
         {
             var settingsPath = Path.Combine(root, "sWinShortcuts.ini");
             var legacy = new IniDocument();
-            legacy.SetKey("Color", "ToggleKey", Key.F7);
+            legacy.SetKey("Color", "ToggleKey", Key.F9);
             legacy.Save(Path.Combine(root, "Color.ini"));
 
-            AppSettings.MigrateLegacyColorToggleKey(settingsPath);
-
-            var migrated = IniDocument.Load(settingsPath);
-            Assert.Equal("F7", migrated.GetValue("App", AppSettings.ColorToggleKeyName));
-            Assert.Equal(Key.F7, AppSettings.LoadColorToggleKey(settingsPath));
+            Assert.Null(AppSettings.LoadColorToggleKey(settingsPath));
         }
         finally
         {
