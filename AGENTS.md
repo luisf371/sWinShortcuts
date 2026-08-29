@@ -46,7 +46,8 @@ sWinShortcuts/
 | `InputHookService.cs` | 5664 | Keyboard/mouse callbacks | Lock-free, zero GC in callbacks; hosts the one-shot Rapid Fire click timer |
 | `ProfileViewModel.cs` | 816 | Profile editor VM | Auto-saves on property change |
 | `IniProfileStore.cs` | 790 | Profile serialization | Backward compat migrations |
-| `NvidiaColorControlService.cs` | 556 | Windows gamma + NVIDIA vibrance | Graceful NVAPI fallback |
+| `WindowsGammaService.cs` | 104 | Vendor-neutral Windows GDI gamma | Per-display fail-closed DC targeting |
+| `NvidiaColorControlService.cs` | 464 | NVIDIA digital vibrance | Graceful NVAPI fallback |
 | `AmdColorControlService.cs` | 302 | AMD vibrance routing/value mapping | ADL2 is serialized and fail-closed |
 | `MainViewModel.cs` | 861 | Profile list management | - |
 | `MainWindow.xaml.cs` | 537 | UI code-behind | - |

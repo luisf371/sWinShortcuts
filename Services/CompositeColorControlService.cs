@@ -12,10 +12,11 @@ public sealed class CompositeColorControlService : IColorControlService
     private readonly object _sync = new();
 
     public CompositeColorControlService(
+        WindowsGammaService gamma,
         NvidiaColorControlService nvidia,
         AmdColorControlService amd,
         ILoggerService logger)
-        : this(nvidia.ApplyGamma, nvidia.ApplyDigitalVibrance, amd.ApplyDigitalVibrance)
+        : this(gamma.ApplyGamma, nvidia.ApplyDigitalVibrance, amd.ApplyDigitalVibrance)
     {
         _logger = logger;
     }
