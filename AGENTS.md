@@ -46,7 +46,9 @@ sWinShortcuts/
 | `InputHookService.cs` | 5664 | Keyboard/mouse callbacks | Lock-free, zero GC in callbacks; hosts the one-shot Rapid Fire click timer |
 | `ProfileViewModel.cs` | 816 | Profile editor VM | Auto-saves on property change |
 | `IniProfileStore.cs` | 790 | Profile serialization | Backward compat migrations |
-| `NvidiaColorControlService.cs` | 568 | Display color control | Graceful NVAPI fallback |
+| `WindowsGammaService.cs` | 104 | Vendor-neutral Windows GDI gamma | Per-display fail-closed DC targeting |
+| `NvidiaColorControlService.cs` | 464 | NVIDIA digital vibrance | Graceful NVAPI fallback |
+| `AmdColorControlService.cs` | 302 | AMD vibrance routing/value mapping | ADL2 is serialized and fail-closed |
 | `MainViewModel.cs` | 861 | Profile list management | - |
 | `MainWindow.xaml.cs` | 537 | UI code-behind | - |
 
@@ -58,7 +60,7 @@ sWinShortcuts/
 | `IInputHookService` | `InputHookService` | Global hooks, input synthesis |
 | `IProfileStore` | `IniProfileStore` | INI persistence |
 | `IForegroundWatcher` | `ForegroundWatcher` | Window focus detection |
-| `IColorControlService` | `NvidiaColorControlService` | Display gamma/vibrance |
+| `IColorControlService` | `CompositeColorControlService` | Display gamma + vendor-routed vibrance |
 
 ## CONVENTIONS
 
@@ -156,7 +158,7 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AddProfileAsync_Dupl
 
 ### Known Limitations
 - Some protected processes don't expose executable path (falls back to process name)
-- NVAPI digital vibrance only works on NVIDIA GPUs
+- Digital vibrance requires a supported NVIDIA driver or AMD Radeon Software Adrenalin 25.3.1+; other GPUs retain gamma-only color controls
 - De-elevation uses COM Shell.Application (complex path in ProcessLauncher)
 
 ### Data Locations

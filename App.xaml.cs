@@ -95,7 +95,10 @@ public partial class App : System.Windows.Application
         services.AddSingleton<ISystemTrayService, SystemTrayService>();
         services.AddSingleton<IStartupService, StartupService>();
         services.AddSingleton<IDisplayService, DisplayService>();
-        services.AddSingleton<IColorControlService, NvidiaColorControlService>();
+        services.AddSingleton<WindowsGammaService>();
+        services.AddSingleton<NvidiaColorControlService>();
+        services.AddSingleton<AmdColorControlService>();
+        services.AddSingleton<IColorControlService, CompositeColorControlService>();
         services.AddSingleton<ILoggerService, FileLoggerService>();
         services.AddSingleton<ICrosshairService, CrosshairService>();
         services.AddSingleton<RapidFireStatusService>();

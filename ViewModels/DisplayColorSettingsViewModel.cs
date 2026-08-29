@@ -76,6 +76,23 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
     /// </summary>
     public bool IsPrimary => _displayInfo.IsPrimary;
 
+    public string DetectedGpuLabel
+    {
+        get
+        {
+            var adapterName = string.IsNullOrWhiteSpace(_displayInfo.AdapterName)
+                ? "unknown (virtual display)"
+                : _displayInfo.AdapterName;
+
+            return _displayInfo.GpuVendor switch
+            {
+                GpuVendor.Nvidia or GpuVendor.Amd => $"Detected GPU: {adapterName}",
+                GpuVendor.Intel => $"Detected GPU: {adapterName} — vibrance unsupported",
+                _ => $"Detected GPU: {adapterName} — vibrance unavailable"
+            };
+        }
+    }
+
     /// <summary>
     /// Whether this individual display's color adjustments are enabled
     /// </summary>

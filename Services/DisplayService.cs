@@ -12,6 +12,10 @@ namespace sWinShortcuts.Services;
 
 public sealed class DisplayService : IDisplayService, IDisposable
 {
+    private const uint MAX_DISPLAY_ADAPTERS = 64;
+    private const uint MAX_DISPLAY_OUTPUTS = 64;
+    private const int DXGI_ERROR_NOT_FOUND = unchecked((int)0x887A0002);
+
     private readonly object _lock = new();
     private List<DisplayInfo>? _cachedDisplays;
     private bool _disposed;
@@ -64,9 +68,30 @@ public sealed class DisplayService : IDisplayService, IDisposable
         }
     }
 
+    internal static GpuVendor ParseGpuVendor(uint vendorId)
+    {
+        return vendorId switch
+        {
+            0x10DE => GpuVendor.Nvidia,
+            0x1002 => GpuVendor.Amd,
+            0x8086 => GpuVendor.Intel,
+            _ => GpuVendor.Unknown
+        };
+    }
+
     private static List<DisplayInfo> RefreshDisplays()
     {
         var list = new List<DisplayInfo>();
+        Dictionary<string, (string Name, GpuVendor Vendor)> adapters;
+
+        try
+        {
+            adapters = EnumerateDxgiAdapters();
+        }
+        catch
+        {
+            adapters = new Dictionary<string, (string Name, GpuVendor Vendor)>(StringComparer.OrdinalIgnoreCase);
+        }
 
         foreach (var screen in Screen.AllScreens.OrderByDescending(screen => screen.Primary))
         {
@@ -92,16 +117,109 @@ public sealed class DisplayService : IDisplayService, IDisposable
                 friendlyName += " (Primary)";
             }
 
+            adapters.TryGetValue(screen.DeviceName, out var adapterInfo);
+
             list.Add(new DisplayInfo
             {
                 Id = monitorId,
                 DeviceName = screen.DeviceName,
                 Name = friendlyName,
+                AdapterName = adapterInfo.Name ?? string.Empty,
+                GpuVendor = adapterInfo.Vendor,
                 IsPrimary = screen.Primary
             });
         }
 
         return list;
+    }
+
+    internal static Dictionary<string, (string Name, GpuVendor Vendor)> EnumerateDxgiAdapters()
+    {
+        var adapters = new Dictionary<string, (string Name, GpuVendor Vendor)>(StringComparer.OrdinalIgnoreCase);
+        var factoryId = typeof(NativeMethods.IDXGIFactory1).GUID;
+        if (NativeMethods.CreateDXGIFactory1(ref factoryId, out var factory) < 0 || factory is null)
+        {
+            return adapters;
+        }
+
+        try
+        {
+            for (uint adapterIndex = 0; adapterIndex < MAX_DISPLAY_ADAPTERS; adapterIndex++)
+            {
+                NativeMethods.IDXGIAdapter1? adapter = null;
+                try
+                {
+                    var result = factory.EnumAdapters1(adapterIndex, out adapter);
+                    if (result == DXGI_ERROR_NOT_FOUND)
+                    {
+                        break;
+                    }
+
+                    if (result < 0 || adapter is null || adapter.GetDesc1(out var adapterDescription) < 0)
+                    {
+                        continue;
+                    }
+
+                    AddDxgiOutputs(adapter, adapterDescription, adapters);
+                }
+                finally
+                {
+                    if (adapter is not null)
+                    {
+                        Marshal.ReleaseComObject(adapter);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(factory);
+        }
+
+        return adapters;
+    }
+
+    private static void AddDxgiOutputs(
+        NativeMethods.IDXGIAdapter1 adapter,
+        NativeMethods.DXGI_ADAPTER_DESC1 adapterDescription,
+        Dictionary<string, (string Name, GpuVendor Vendor)> adapters)
+    {
+        var adapterInfo = (adapterDescription.Description?.Trim() ?? string.Empty,
+            ParseGpuVendor(adapterDescription.VendorId));
+
+        for (uint outputIndex = 0; outputIndex < MAX_DISPLAY_OUTPUTS; outputIndex++)
+        {
+            NativeMethods.IDXGIOutput? output = null;
+            try
+            {
+                var result = adapter.EnumOutputs(outputIndex, out output);
+                if (result == DXGI_ERROR_NOT_FOUND)
+                {
+                    break;
+                }
+
+                if (result < 0 ||
+                    output is null ||
+                    output.GetDesc(out var outputDescription) < 0 ||
+                    outputDescription.AttachedToDesktop == 0 ||
+                    string.IsNullOrWhiteSpace(outputDescription.DeviceName))
+                {
+                    continue;
+                }
+
+                if (!adapters.TryAdd(outputDescription.DeviceName, adapterInfo))
+                {
+                    adapters[outputDescription.DeviceName] = (string.Empty, GpuVendor.Unknown);
+                }
+            }
+            finally
+            {
+                if (output is not null)
+                {
+                    Marshal.ReleaseComObject(output);
+                }
+            }
+        }
     }
 
     private static string? GetMonitorInterfaceId(string adapterDeviceName)
