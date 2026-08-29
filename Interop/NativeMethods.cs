@@ -285,6 +285,101 @@ internal static class NativeMethods
 
     internal const uint EDD_GET_DEVICE_INTERFACE_NAME = 0x00000001;
 
+    [DllImport("dxgi.dll", ExactSpelling = true)]
+    internal static extern int CreateDXGIFactory1(
+        ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IDXGIFactory1? factory);
+
+    [ComImport]
+    [Guid("770AAE78-F26F-4DBA-A829-253C83D1B387")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IDXGIFactory1
+    {
+        [PreserveSig] int SetPrivateData(ref Guid name, uint dataSize, IntPtr data);
+        [PreserveSig] int SetPrivateDataInterface(ref Guid name, IntPtr unknown);
+        [PreserveSig] int GetPrivateData(ref Guid name, ref uint dataSize, IntPtr data);
+        [PreserveSig] int GetParent(ref Guid riid, out IntPtr parent);
+        [PreserveSig] int EnumAdapters(uint adapterIndex, out IntPtr adapter);
+        [PreserveSig] int MakeWindowAssociation(IntPtr windowHandle, uint flags);
+        [PreserveSig] int GetWindowAssociation(out IntPtr windowHandle);
+        [PreserveSig] int CreateSwapChain(IntPtr device, IntPtr description, out IntPtr swapChain);
+        [PreserveSig] int CreateSoftwareAdapter(IntPtr module, out IntPtr adapter);
+        [PreserveSig] int EnumAdapters1(uint adapterIndex, [MarshalAs(UnmanagedType.Interface)] out IDXGIAdapter1? adapter);
+        [PreserveSig] int IsCurrent();
+    }
+
+    [ComImport]
+    [Guid("29038F61-3839-4626-91FD-086879011A05")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IDXGIAdapter1
+    {
+        [PreserveSig] int SetPrivateData(ref Guid name, uint dataSize, IntPtr data);
+        [PreserveSig] int SetPrivateDataInterface(ref Guid name, IntPtr unknown);
+        [PreserveSig] int GetPrivateData(ref Guid name, ref uint dataSize, IntPtr data);
+        [PreserveSig] int GetParent(ref Guid riid, out IntPtr parent);
+        [PreserveSig] int EnumOutputs(uint outputIndex, [MarshalAs(UnmanagedType.Interface)] out IDXGIOutput? output);
+        [PreserveSig] int GetDesc(IntPtr description);
+        [PreserveSig] int CheckInterfaceSupport(ref Guid interfaceName, out long userModeDriverVersion);
+        [PreserveSig] int GetDesc1(out DXGI_ADAPTER_DESC1 description);
+    }
+
+    [ComImport]
+    [Guid("AE02EEDB-C735-4690-8D52-5A8DC20213AA")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IDXGIOutput
+    {
+        [PreserveSig] int SetPrivateData(ref Guid name, uint dataSize, IntPtr data);
+        [PreserveSig] int SetPrivateDataInterface(ref Guid name, IntPtr unknown);
+        [PreserveSig] int GetPrivateData(ref Guid name, ref uint dataSize, IntPtr data);
+        [PreserveSig] int GetParent(ref Guid riid, out IntPtr parent);
+        [PreserveSig] int GetDesc(out DXGI_OUTPUT_DESC description);
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct DXGI_ADAPTER_DESC1
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+        public string Description;
+
+        public uint VendorId;
+        public uint DeviceId;
+        public uint SubSysId;
+        public uint Revision;
+        public UIntPtr DedicatedVideoMemory;
+        public UIntPtr DedicatedSystemMemory;
+        public UIntPtr SharedSystemMemory;
+        public LUID AdapterLuid;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct DXGI_OUTPUT_DESC
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DeviceName;
+
+        public RECT DesktopCoordinates;
+        public int AttachedToDesktop;
+        public int Rotation;
+        public IntPtr Monitor;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct LUID
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern bool EnumDisplayDevices(string? lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
 

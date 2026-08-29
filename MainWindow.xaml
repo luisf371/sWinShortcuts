@@ -1521,11 +1521,25 @@
                                                             Padding="4,12,12,12"
                                                             Margin="0,0,0,12">
                                                         <StackPanel>
-                                                            <!-- Monitor header with checkbox -->
+                                                            <!-- Monitor header with checkbox and detected GPU -->
                                                             <CheckBox IsChecked="{Binding IsEnabled}"
-                                                                      Content="{Binding DisplayName}"
-                                                                      FontWeight="SemiBold"
-                                                                      Margin="0,0,0,12" />
+                                                                      Margin="0,0,0,12"
+                                                                      HorizontalContentAlignment="Stretch">
+                                                                <Grid>
+                                                                    <Grid.ColumnDefinitions>
+                                                                        <ColumnDefinition Width="Auto" />
+                                                                        <ColumnDefinition Width="*" />
+                                                                    </Grid.ColumnDefinitions>
+                                                                    <TextBlock Text="{Binding DisplayName}"
+                                                                               FontWeight="SemiBold" />
+                                                                    <TextBlock Grid.Column="1"
+                                                                               Text="{Binding DetectedGpuLabel}"
+                                                                               Margin="8,0,0,0"
+                                                                               Foreground="{StaticResource ForegroundPrimaryBrush}"
+                                                                               Opacity="0.68"
+                                                                               TextWrapping="Wrap" />
+                                                                </Grid>
+                                                            </CheckBox>
                                                             
                                                             <!-- Sliders container - enabled when monitor checkbox is checked -->
                                                             <StackPanel IsEnabled="{Binding AreControlsEnabled}"
@@ -1647,7 +1661,7 @@
                                                                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                                                         <TextBlock Text="Digital Vibrance" VerticalAlignment="Center" />
                                                                         <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                                                   ToolTip="Digital Vibrance is NVIDIA-only (requires NVIDIA GPU/drivers)."
+                                                                                   ToolTip="Digital Vibrance requires a supported NVIDIA or AMD GPU driver. AMD requires Radeon Software Adrenalin 25.3.1 or later."
                                                                                    ToolTipService.InitialShowDelay="0"
                                                                                    ToolTipService.Placement="Right" />
                                                                     </StackPanel>

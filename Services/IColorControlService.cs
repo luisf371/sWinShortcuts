@@ -5,7 +5,7 @@ namespace sWinShortcuts.Services;
 /// <summary>
 /// Outcome of a single display color apply, so the orchestrator can dedup correctly:
 /// only <see cref="Failed"/> (an intended write that failed transiently) is retry-worthy;
-/// <see cref="Skipped"/> (deliberate no-op: NVAPI unavailable, fail-closed CreateDC, unmappable DVC)
+/// <see cref="Skipped"/> (deliberate no-op: vendor API unavailable, fail-closed CreateDC, unmappable vibrance)
 /// counts as applied to avoid a per-event retry storm.
 /// </summary>
 public enum ColorApplyOutcome

@@ -10,9 +10,9 @@ using sWinShortcuts.Models;
 namespace sWinShortcuts.Services;
 
 /// <summary>
-/// Tries to apply brightness/contrast/gamma using Windows gamma ramps and digital vibrance via NVAPI (best effort).
+/// Applies brightness/contrast/gamma using Windows gamma ramps and digital vibrance via NVAPI (best effort).
 /// </summary>
-public sealed class NvidiaColorControlService : IColorControlService, IDisposable
+public sealed class NvidiaColorControlService : IDisposable
 {
     private const int DvcMinLevel = 0;
     private const int DvcMaxLevel = 63;
@@ -30,38 +30,26 @@ public sealed class NvidiaColorControlService : IColorControlService, IDisposabl
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
 
-    public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)
+    internal ColorApplyOutcome ApplyGamma(DisplayInfo display, DisplayColorProfile profile)
     {
         ArgumentNullException.ThrowIfNull(display);
         ArgumentNullException.ThrowIfNull(profile);
 
         lock (_sync)
         {
-            _logger.Log($@"[Color][NVAPI] Apply requested for display '{display.DeviceName}' (Id='{display.Id}').
-                        Brightness={profile.Brightness}, Contrast={profile.Contrast}, Gamma={profile.Gamma}, DigitalVibrance={profile.DigitalVibrance}");
-
-            // Gamma ramp baseline (works even without NVAPI); digital vibrance via NVAPI (best effort).
-            var gamma = TryApplyGammaRampToDevice(profile, display.DeviceName);
-            var dvc = TryApplyNvapiDvc(display, profile);
-
-            // Any genuine (retry-worthy) failure wins so the orchestrator does NOT dedup and will retry.
-            if (gamma == ColorApplyOutcome.Failed || dvc == ColorApplyOutcome.Failed)
-            {
-                return ColorApplyOutcome.Failed;
-            }
-
-            if (gamma == ColorApplyOutcome.Applied || dvc == ColorApplyOutcome.Applied)
-            {
-                return ColorApplyOutcome.Applied;
-            }
-
-            return ColorApplyOutcome.Skipped;
+            return TryApplyGammaRampToDevice(profile, display.DeviceName);
         }
     }
 
-    private ColorApplyOutcome TryApplyGammaRamp(DisplayColorProfile profile)
+    internal ColorApplyOutcome ApplyDigitalVibrance(DisplayInfo display, DisplayColorProfile profile)
     {
-        return TryApplyGammaRampToDevice(profile, null);
+        ArgumentNullException.ThrowIfNull(display);
+        ArgumentNullException.ThrowIfNull(profile);
+
+        lock (_sync)
+        {
+            return TryApplyNvapiDvc(display, profile);
+        }
     }
 
     private static NativeMethods.GammaRamp BuildGammaRamp(DisplayColorProfile profile)
