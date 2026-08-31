@@ -121,4 +121,74 @@ public sealed class SettingsViewModelTests
         viewModel.StartAsAdmin = true;
         Assert.True(viewModel.StartAsAdmin);
     }
+
+    [Fact]
+    public void EnableDebugLogging_UserToggle_RecordsEntryWithLoggerStateOrdering()
+    {
+        var logger = new NullLoggerService();
+        var viewModel = new SettingsViewModel(logger, new FakeInputHookService());
+
+        // Enable: the logger is switched on BEFORE the entry is written (it would otherwise be
+        // dropped by the logger's own gating — a recorded entry proves the ordering).
+        viewModel.EnableDebugLogging = true;
+        Assert.True(logger.IsEnabled);
+        Assert.Single(logger.Messages, m => m == "[Settings] Debug logging enabled via settings");
+
+        // Same-value reassignment records nothing.
+        viewModel.EnableDebugLogging = true;
+        Assert.Equal(1, logger.Messages.Count);
+
+        // Disable: the entry is written while the logger is still enabled, then it goes off.
+        viewModel.EnableDebugLogging = false;
+        Assert.False(logger.IsEnabled);
+        Assert.Equal("[Settings] Debug logging disabled via settings", logger.Messages[^1]);
+    }
+
+    [Fact]
+    public void EnableDebugLogging_ProgrammaticApply_ChangesStateWithoutViaSettingsEntry()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        var viewModel = new SettingsViewModel(logger, new FakeInputHookService());
+        viewModel.EnableDebugLogging = true;
+        logger.Messages.Clear();
+
+        // INI hydration to a DIFFERING value: the live state flips with no "via settings" entry —
+        // hydration is not a user toggle.
+        viewModel.SetEnableDebugLoggingProgrammatically(false);
+        Assert.False(viewModel.EnableDebugLogging);
+        Assert.False(logger.IsEnabled);
+        Assert.Empty(logger.Messages);
+
+        viewModel.SetEnableDebugLoggingProgrammatically(true);
+        Assert.True(viewModel.EnableDebugLogging);
+        Assert.True(logger.IsEnabled);
+        Assert.Empty(logger.Messages);
+    }
+
+    [Fact]
+    public void RollBackEnableDebugLogging_RecordsRollbackWithCauseAndOrdering()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        var viewModel = new SettingsViewModel(logger, new FakeInputHookService());
+        viewModel.EnableDebugLogging = true;
+        logger.Messages.Clear();
+
+        // Baseline equal to the current value: nothing recorded, no state touched.
+        viewModel.RollBackEnableDebugLogging(true);
+        Assert.True(logger.IsEnabled);
+        Assert.Empty(logger.Messages);
+
+        // Roll back to disabled: the entry is written while the logger still holds the enabled
+        // state being described.
+        viewModel.RollBackEnableDebugLogging(false);
+        Assert.False(viewModel.EnableDebugLogging);
+        Assert.False(logger.IsEnabled);
+        Assert.Single(logger.Messages, m => m == "[Settings] Debug logging disabled (settings dialog cancelled)");
+
+        // Roll back to enabled: the logger is re-enabled FIRST so the entry is recorded.
+        viewModel.RollBackEnableDebugLogging(true);
+        Assert.True(viewModel.EnableDebugLogging);
+        Assert.True(logger.IsEnabled);
+        Assert.Single(logger.Messages, m => m == "[Settings] Debug logging re-enabled (settings dialog cancelled)");
+    }
 }

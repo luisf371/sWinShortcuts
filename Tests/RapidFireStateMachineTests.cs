@@ -185,11 +185,62 @@ public sealed class RapidFireStateMachineTests
         Assert.Equal(expected, RapidFireStateMachine.CalculateSuccessorDelay(target, elapsed));
     }
 
+    [Fact]
+    public void Disarm_ToggleOffAndReassignment_LogTheirReasons()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var rapidFire = Create(runtime, sender, random, logger);
+
+        // Reassignment before anything is armed is a no-op release: nothing to report.
+        Assert.False(rapidFire.SetToggleKey(Key.F8));
+        Assert.Empty(logger.Messages);
+
+        Assert.True(Toggle(rapidFire, Key.F8));
+        Assert.Equal($"Rapid Fire armed for profile: {profile.Name}", Assert.Single(logger.Messages));
+
+        // Toggle-off is a real disarm and carries its reason.
+        Assert.True(Toggle(rapidFire, Key.F8));
+        Assert.Equal("Rapid Fire disarmed (toggle-off)", logger.Messages[^1]);
+        Assert.Single(logger.Messages, m => m == "Rapid Fire disarmed (toggle-off)");
+
+        logger.Messages.Clear();
+        Assert.True(Toggle(rapidFire, Key.F8));
+        Assert.True(rapidFire.SetToggleKey(Key.F9));
+        Assert.Equal("Rapid Fire disarmed (toggle key reassigned)", logger.Messages[^1]);
+        Assert.Single(logger.Messages, m => m == "Rapid Fire disarmed (toggle key reassigned)");
+    }
+
+    [Fact]
+    public void Disarm_OwnerReleaseLogsReason_NoOpReleasesStaySilent()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var rapidFire = Create(runtime, sender, random, logger);
+
+        // Disarmed machine: neither a direct release nor an owner-scoped release logs.
+        Assert.False(rapidFire.Release(preservePhysicalPairing: true));
+        Assert.False(rapidFire.ReleaseOwnedBy(profile));
+        Assert.Empty(logger.Messages);
+
+        rapidFire.SetToggleKey(Key.F8);
+        Assert.True(Toggle(rapidFire, Key.F8));
+        Assert.True(rapidFire.ReleaseOwnedBy(profile));
+        Assert.Single(logger.Messages, m => m == "Rapid Fire disarmed (owner settings changed/removed)");
+    }
+
     private static RapidFireStateMachine Create(
         InputRuntimeState runtime,
         IInputSender sender,
-        ThreadLocal<Random> random) =>
-        new(runtime, sender, random, new NullLoggerService(), new object());
+        ThreadLocal<Random> random,
+        NullLoggerService? logger = null) =>
+        new(runtime, sender, random, logger ?? new NullLoggerService(), new object());
 
     private static Profile RapidFireProfile(string name = "Game")
     {

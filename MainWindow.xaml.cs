@@ -76,11 +76,7 @@ public partial class MainWindow : Window
         }
 
         LoadWindowState();
-        
-        // Add logging for mouse events
-        this.MouseLeftButtonDown += (s, e) =>
-            _logger.Log($"MouseLeftButtonDown at: X={e.GetPosition(this).X}, Y={e.GetPosition(this).Y}, ClickCount={e.ClickCount}");
-            
+
         // Add logging for window state changes
         this.StateChanged += OnWindowStateChanged;
     }
@@ -154,9 +150,10 @@ public partial class MainWindow : Window
         {
             persisted = IniDocument.Load(_settingsPath).GetValue("App", "AdvancedMode");
         }
-        catch
+        catch (Exception ex)
         {
             // Treat a load failure as "absent" and re-resolve from the profiles below.
+            _logger.Log($"[Settings] Failed to read AdvancedMode; re-resolving from profiles: {ex.Message}");
         }
 
         bool advanced = persisted is not null
@@ -225,9 +222,9 @@ public partial class MainWindow : Window
                 _previousWindowState = WindowState;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore errors loading window state
+            _logger.Log($"[Settings] Failed to load window state: {ex.Message}");
         }
 
         // Outside the try so a settings-load failure still applies the default (pinned).
@@ -364,9 +361,10 @@ public partial class MainWindow : Window
             _viewModel.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? System.Windows.Input.Key.None;
             _viewModel.RapidFireToggleKey = AppSettings.LoadRapidFireToggleKey(_settingsPath) ?? System.Windows.Input.Key.None;
         }
-        catch
+        catch (Exception ex)
         {
             // Keep the last known values when settings cannot be read.
+            _logger.Log($"[Settings] Failed to re-read toggle keys: {ex.Message}");
         }
     }
 
@@ -420,29 +418,24 @@ public partial class MainWindow : Window
     {
         // Check if the double-click is within the title bar area
         var position = e.GetPosition(this);
-        _logger.Log($"Double-click detected at position: X={position.X}, Y={position.Y}");
-        
         if (position.Y <= 32) // Title bar height is 32
         {
-            _logger.Log("Double-click within title bar area - preventing maximize");
+            _logger.Log($"[UI] Double-click in title bar ({position.Y:F0}px) - maximize prevented");
             // Prevent double-click from maximizing the window
             e.Handled = true;
             return;
         }
-        
-        _logger.Log("Double-click outside title bar area - allowing default behavior");
+
+        _logger.Log("[UI] Double-click outside title bar - default allowed");
         // Allow default behavior for clicks outside title bar
         base.OnMouseDoubleClick(e);
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        var position = e.GetPosition(this);
-        _logger.Log($"TitleBar_MouseLeftButtonDown at: X={position.X}, Y={position.Y}, ClickCount={e.ClickCount}");
-        
         if (e.ClickCount == 2)
         {
-            _logger.Log("Double-click detected on title bar - preventing maximize");
+            _logger.Log("[UI] Double-click on title bar - preventing maximize");
             e.Handled = true;
         }
     }
@@ -471,7 +464,7 @@ public partial class MainWindow : Window
         // Intercept non-client double-click messages (title bar double-clicks)
         if (msg == WM_NCLBUTTONDBLCLK)
         {
-            _logger.Log("Intercepted WM_NCLBUTTONDBLCLK - preventing maximize");
+            _logger.Log("[UI] Intercepted WM_NCLBUTTONDBLCLK - preventing maximize");
             handled = true;
             return IntPtr.Zero;
         }
@@ -513,7 +506,7 @@ public partial class MainWindow : Window
 
     private void OnWindowStateChanged(object? sender, EventArgs e)
     {
-        _logger.Log($"Window state changed to: {WindowState}");
+        _logger.Log($"[UI] Window state changed to: {WindowState}");
 
         if (WindowState == WindowState.Minimized && !_isMinimizingToTray)
         {
@@ -610,9 +603,9 @@ public partial class MainWindow : Window
             updater(document);
             document.Save(_settingsPath);
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore errors updating settings
+            _logger.Log($"[Settings] Failed to update '{_settingsPath}': {ex.Message}");
         }
     }
 

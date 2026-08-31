@@ -82,9 +82,13 @@ public sealed class WindowsGammaService
             }
 
             var ramp = BuildGammaRamp(profile);
-            return NativeMethods.SetDeviceGammaRamp(hdc, ref ramp)
-                ? ColorApplyOutcome.Applied
-                : ColorApplyOutcome.Failed;
+            if (!NativeMethods.SetDeviceGammaRamp(hdc, ref ramp))
+            {
+                _logger.Log($"[Color] SetDeviceGammaRamp failed for device '{deviceName ?? "<desktop>"}'.");
+                return ColorApplyOutcome.Failed;
+            }
+
+            return ColorApplyOutcome.Applied;
         }
         finally
         {

@@ -107,12 +107,60 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         get => _enableDebugLogging;
         set
         {
-            if (_enableDebugLogging != value)
+            if (_enableDebugLogging == value)
             {
-                _enableDebugLogging = value;
-                _loggerService.IsEnabled = value;
-                OnPropertyChanged();
+                return;
             }
+
+            _enableDebugLogging = value;
+            if (value)
+            {
+                _loggerService.IsEnabled = true; // enable FIRST so the entry is not dropped
+                _loggerService.Log("[Settings] Debug logging enabled via settings");
+            }
+            else
+            {
+                _loggerService.Log("[Settings] Debug logging disabled via settings"); // while still enabled
+                _loggerService.IsEnabled = false;
+            }
+
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>
+    /// Non-user apply path (INI hydration in SettingsWindow.LoadIniState, Cancel rollback in
+    /// RollBackLiveSettings): updates the VM and the live logger WITHOUT a "via settings" entry —
+    /// neither is a user toggle. Keeps the field and the live logger in lockstep, so a change
+    /// seen by the user setter always implies a live-state change.
+    /// </summary>
+    public void SetEnableDebugLoggingProgrammatically(bool value)
+    {
+        _enableDebugLogging = value;
+        _loggerService.IsEnabled = value;
+        OnPropertyChanged(nameof(EnableDebugLogging));
+    }
+
+    /// <summary>
+    /// Dialog-cancel rollback to the baseline the dialog opened with. Order-sensitive with the
+    /// logger itself: the entry is written while the logger still holds the state being described.
+    /// </summary>
+    public void RollBackEnableDebugLogging(bool baseline)
+    {
+        if (_enableDebugLogging == baseline)
+        {
+            return;
+        }
+
+        if (baseline)
+        {
+            SetEnableDebugLoggingProgrammatically(true); // enable first so the entry is recorded
+            _loggerService.Log("[Settings] Debug logging re-enabled (settings dialog cancelled)");
+        }
+        else
+        {
+            _loggerService.Log("[Settings] Debug logging disabled (settings dialog cancelled)");
+            SetEnableDebugLoggingProgrammatically(false);
         }
     }
 

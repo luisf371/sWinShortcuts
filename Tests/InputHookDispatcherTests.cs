@@ -349,6 +349,80 @@ public sealed class InputHookDispatcherTests
         }
     }
 
+    [Fact]
+    public void ReleaseForegroundState_LogsArmPreservedReleaseRequest()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var service = new InputHookService(logger, new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateRapidFireProfile(), foregroundGeneration: 1, altPressed: false);
+            service.ReleaseForegroundState();
+            Assert.Contains("All state release requested (rapidFireArmPreserved=True)", logger.Messages);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void StopInputExecutorForTesting_LogsArmReleasedReleaseRequest()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var service = new InputHookService(logger, new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+
+        // Drives the private ReleaseAllState through the reflection extension (its three-argument
+        // invocation — the arity contract every StopInputExecutorForTesting cleanup relies on).
+        service.StopInputExecutorForTesting();
+        Assert.Contains("All state release requested (rapidFireArmPreserved=False)", logger.Messages);
+    }
+
+    [Fact]
+    public void ReconcileProfileSettings_HardDeactivation_IsLogged()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var service = new InputHookService(logger, new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+            service.ReconcileProfileSettings(profile, ProfileChangeKind.Removed);
+            Assert.Contains("Profile hard-deactivated: 'Game' (changeKind=Removed)", logger.Messages);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void SessionSwitchAway_RequestsReleaseOfAllInjectedState()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var service = new InputHookService(logger, new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            RaiseSessionSwitch(service, SessionSwitchReason.SessionLock);
+            Assert.Contains(
+                "Session switch (SessionLock): release requested for all injected state",
+                logger.Messages);
+            Assert.Contains("All state release requested (rapidFireArmPreserved=False)", logger.Messages);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
     private static AutoRunStateMachine GetAutoRun(InputHookService service) =>
         (AutoRunStateMachine)typeof(InputHookService)
             .GetField("_autoRun", BindingFlags.Instance | BindingFlags.NonPublic)!

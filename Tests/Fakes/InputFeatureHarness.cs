@@ -61,7 +61,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             _runtime.SetAdvancedMode(value);
             if (!value)
             {
-                if (_rapidFire.Release(preservePhysicalPairing: true))
+                if (_rapidFire.Release(preservePhysicalPairing: true, reason: "Advanced Mode disabled"))
                 {
                     RaiseRapidFireArmChanged();
                 }
@@ -506,7 +506,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             }
 
             _runtime.SetRunning(false);
-            armChanged = ReleaseAllState(preservePhysicalPairing: false);
+            armChanged = ReleaseAllState(preservePhysicalPairing: false, rapidFireDisarmReason: "Stop");
             _autoRun.Release(includeBackground: true);
             _autoRun.JoinBackgroundInputThread();
             _executor.StopAndDrain();
@@ -535,11 +535,12 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
 
     private bool ReleaseAllState(
         bool preservePhysicalPairing = true,
-        bool preserveRapidFireArm = false)
+        bool preserveRapidFireArm = false,
+        string? rapidFireDisarmReason = null)
     {
         var armChanged = preserveRapidFireArm
             ? CancelRapidFirePressAndKeepArm()
-            : _rapidFire.Release(preservePhysicalPairing);
+            : _rapidFire.Release(preservePhysicalPairing, rapidFireDisarmReason);
         _remaps.ReleaseCombinedState(preservePhysicalPairing);
         _gestures.ReleaseGestures(preservePhysicalPairing);
         _remaps.ReleaseCapsStateOnly(preservePhysicalPairing);

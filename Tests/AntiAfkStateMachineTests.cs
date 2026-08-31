@@ -650,8 +650,106 @@ public sealed class AntiAfkStateMachineTests
     }
 
     [Fact]
-    public void CaptureForegroundTarget_FailedCaptureForOwnerItself_KeepsOwnTarget()
+    public void TargetRelease_OwnerTeardownAndStop_LogActualRemovalsOnly()
     {
+        long timestamp = 0;
+        uint tick = 0;
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, _, _, profile, _) = CreateMachine(() => timestamp, () => tick, logger);
+        var foreign = CreateOtherProfile();
+        using (machine)
+        {
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Background;
+
+            // Nothing retained: every release path is a no-op and stays silent.
+            machine.ReleaseForegroundTarget();
+            machine.ReleaseOwnedBy(profile);
+            machine.Stop();
+            Assert.Empty(logger.Messages);
+
+            machine.CaptureForegroundTarget(profile);
+
+            // A foreign owner's release must not remove — and must not report — the retained target.
+            machine.ReleaseOwnedBy(foreign);
+            Assert.DoesNotContain(logger.Messages, m => m.Contains("background target released"));
+
+            machine.ReleaseOwnedBy(profile);
+            Assert.Contains(
+                $"Anti-AFK: background target released (owner removed/disabled: {profile.Name})",
+                logger.Messages);
+
+            // Session teardown logs its own removal; a second call with no retained target is silent.
+            machine.CaptureForegroundTarget(profile);
+            machine.ReleaseForegroundTarget();
+            var teardownReleases = logger.Messages.Count(
+                m => m == "Anti-AFK: background target released (session teardown)");
+            Assert.Equal(1, teardownReleases);
+            machine.ReleaseForegroundTarget();
+            Assert.Equal(
+                teardownReleases,
+                logger.Messages.Count(m => m == "Anti-AFK: background target released (session teardown)"));
+
+            // Stop with a retained target logs the app-exit removal; Stop with nothing retained
+            // stays silent (Dispose() delegates to Stop() and likewise finds no target).
+            machine.CaptureForegroundTarget(profile);
+            machine.Stop();
+            var stopReleases = logger.Messages.Count(m => m == "Anti-AFK: background target released (Stop)");
+            Assert.Equal(1, stopReleases);
+            machine.Stop();
+            Assert.Equal(
+                stopReleases,
+                logger.Messages.Count(m => m == "Anti-AFK: background target released (Stop)"));
+        }
+    }
+
+    [Fact]
+    public async Task Tick_SameValuedRecaptureBeatsInvalidation_NoReleaseOrInvalidEntry()
+    {
+        long timestamp = 0;
+        uint tick = 0;
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, transport, _, profile, _) = CreateMachine(() => timestamp, () => tick, logger);
+        using (machine)
+        {
+            // Game stays active and focused (no DeactivateAndUnfocus); Forced skips the idle gate.
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
+            machine.CaptureForegroundTarget(profile);
+            timestamp = Stopwatch.Frequency * 60;
+            tick = 60_000;
+
+            // Park the tick inside the POST-arbitration TargetStillValid: it has already snapshotted
+            // the target (the Tick_DisabledDuringFinalTargetValidation seam — read #1 is the
+            // pre-arbitration check, read #2 this one) while the slot still holds that snapshot.
+            transport.BlockProcessReadNumber = 2;
+            var tickTask = Task.Run(machine.Tick);
+            Assert.True(transport.ProcessReadEntered.Wait(TimeSpan.FromSeconds(2)));
+
+            // The snapshotted window now fails PID revalidation, and the same game recaptures: the
+            // publish installs a fresh AntiAfkTarget that is VALUE-equal to (but reference-distinct
+            // from) the snapshotted one — the exact racing recapture AntiAfkTarget's record equality
+            // used to misreport as a removal.
+            transport.ProcessIds[(IntPtr)100] = 9;
+            machine.CaptureForegroundTarget(profile);
+
+            transport.ReleaseProcessRead.Set();
+            await tickTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // The losing invalidation CAS logged nothing — no release, no invalid entry...
+            Assert.DoesNotContain(logger.Messages, m => m.Contains("background target released"));
+            Assert.DoesNotContain(logger.Messages, m => m.Contains("background target invalid"));
+            // ...and the tick posted nothing (its snapshot failed revalidation after the swap).
+            Assert.Empty(transport.Posts);
+
+            // The replacement survived: restore the PID and the next tick drives a full WASD ripple
+            // (the cadence gate needs no tick advance — the aborted ripple never set _lastFireTick).
+            transport.ProcessIds[(IntPtr)100] = 7;
+            machine.Tick();
+            AssertWasdRipple(transport.Posts.ToArray(), expectedWindow: (IntPtr)100);
+        }
+    }
+
+    [Fact]
+    public void CaptureForegroundTarget_FailedCaptureForOwnerItself_KeepsOwnTarget()    {
         long timestamp = 0;
         uint tick = 0;
         var (machine, _, transport, _, profile, runtime) = CreateMachine(() => timestamp, () => tick);
