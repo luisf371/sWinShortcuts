@@ -99,6 +99,27 @@ public sealed class AutoRunStateMachineTests
     }
 
     [Fact]
+    public void AntiAfkTap_PriorBackgroundWorkerStillAlive_FailsClosed()
+    {
+        var (machine, _, _, _) = CreateMachine(AutoRunSendMode.Foreground);
+        using var releaseWorker = new ManualResetEventSlim(false);
+        var priorWorker = new Thread(releaseWorker.Wait) { IsBackground = true };
+        priorWorker.Start();
+        machine.SetBackgroundThreadForTesting(priorWorker);
+
+        try
+        {
+            Assert.False(machine.TryBeginAntiAfkTap());
+        }
+        finally
+        {
+            releaseWorker.Set();
+            Assert.True(priorWorker.Join(TimeSpan.FromSeconds(2)));
+            machine.SetBackgroundThreadForTesting(null);
+        }
+    }
+
+    [Fact]
     public void BackgroundActivation_PostsOnlyFromOwnedWorker()
     {
         var callerThread = Environment.CurrentManagedThreadId;

@@ -553,6 +553,10 @@ public sealed class InputHookService : IInputHookService
 
                 RederivePhysicalModifierState();
                 _autoRun.SeedMovementPhysicalState();
+                if (_runtime.ActiveProfile is { } profile)
+                {
+                    _antiAfk.CaptureForegroundTarget(profile);
+                }
                 LogDebug($"Session switch ({e.Reason}): re-derived physical state");
             }
 
@@ -579,6 +583,9 @@ public sealed class InputHookService : IInputHookService
             // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; the desktop is going away
             // (lock/logoff), so release it here too.
             _autoRun.Release(includeBackground: true);
+            // The retained Anti-AFK background target belongs to a live desktop session too — the
+            // game window's input queue is going away with it.
+            _antiAfk.ReleaseForegroundTarget();
             LogDebug($"Session switch ({e.Reason}): released all injected state");
         }
 
@@ -1004,6 +1011,7 @@ public sealed class InputHookService : IInputHookService
                 // raise lives AFTER the lock.
                 generationChanged = _runtime.ActiveProfileGeneration != foregroundGeneration;
                 _runtime.SetActiveProfile(profile, foregroundGeneration);
+                _antiAfk.CaptureForegroundTarget(profile);
             }
             else
             {
@@ -1020,6 +1028,11 @@ public sealed class InputHookService : IInputHookService
                 _runtime.SetActiveProfileReference(profile);
                 RederivePhysicalModifierState();
                 _runtime.SetActiveProfileGeneration(foregroundGeneration);
+                // Retain the game window for Anti-AFK's Background/Forced posting. Necessarily runs
+                // AFTER the profile/generation are published (the lock-free tick already observes
+                // them), which is why the capture's failure path CAS-clears foreign-owned targets
+                // and the tick re-checks ownership per step.
+                _antiAfk.CaptureForegroundTarget(profile);
                 changed = true;
 
                 LogDebug($"Profile activated: {profile.Name}");
@@ -1111,6 +1124,7 @@ public sealed class InputHookService : IInputHookService
             }
 
             _autoRun.ReleaseOwnedBy(profile);
+            _antiAfk.ReleaseOwnedBy(profile);
             if (_rapidFire.ReleaseOwnedBy(profile))
             {
                 RaiseRapidFireArmChanged();
@@ -1168,6 +1182,18 @@ public sealed class InputHookService : IInputHookService
             {
                 RaiseRapidFireArmChanged();
             }
+        }
+
+        // Anti-AFK's retained background target: released ONLY on the identity/removal/master-disable
+        // boundaries (and the hard-deactivation branch above). ProfileChangeKind.AntiAfk is
+        // deliberately EXCLUDED — the Mode dropdown and interval edits raise that kind, those
+        // settings are read live by the tick, and the target is recaptured only on activation, so
+        // releasing here would make a just-selected Background/Forced mode inert until the game is
+        // refocused.
+        if ((changeKind & (ProfileChangeKind.Removed | ProfileChangeKind.Identity)) != 0 ||
+            ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
+        {
+            _antiAfk.ReleaseOwnedBy(profile);
         }
 
     }

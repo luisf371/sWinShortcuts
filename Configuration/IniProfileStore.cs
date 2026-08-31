@@ -386,6 +386,8 @@ public sealed class IniProfileStore : IProfileStore
         // Clamp to the UI's 1..15 slider range on load (mirrors the Delay clamp above) so a
         // hand-edited or out-of-range INI can't drive the always-ticking timer with a bogus period.
         settings.IntervalMinutes = Math.Clamp(document.GetInt32("AntiAfk", "IntervalMinutes", settings.IntervalMinutes), 1, 15);
+        // Missing/old INIs (no key) fall back to Foreground via the model default.
+        settings.SendMode = document.GetEnum("AntiAfk", "SendMode", settings.SendMode);
     }
 
     private static void DeserializeCapsLock(IniDocument document, CapsLockSettings settings)
@@ -545,6 +547,7 @@ public sealed class IniProfileStore : IProfileStore
         var antiAfk = profile.AntiAfk;
         document.SetBoolean("AntiAfk", "Enabled", antiAfk.IsEnabled);
         document.SetInt32("AntiAfk", "IntervalMinutes", antiAfk.IntervalMinutes);
+        document.SetEnum("AntiAfk", "SendMode", antiAfk.SendMode);
 
         var capsLock = profile.CapsLock;
         document.SetBoolean("CapsLock", "Enabled", capsLock.IsEnabled);

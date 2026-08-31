@@ -4,6 +4,37 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## August 31, 2026 (Build 92)
+
+### Added
+- **Anti-AFK Background Modes**:
+  - Added **Foreground**, **Background**, and **Forced** send modes for Anti-AFK, configurable via a new dropdown in each profile's Advanced settings tab.
+  - **Background & Forced Modes**: Sends subtle WASD movement taps directly to the game window or child window without stealing keyboard focus or interrupting active desktop work.
+  - **Child Window Targeting**: Automatically resolves game child windows within the target process so background key messages reach custom game renderers.
+
+### Changed & Improved
+- **Anti-AFK & Auto-Run Input Coordination**:
+  - Synchronized Anti-AFK keystrokes with Auto-Run to prevent overlapping movement injections while running.
+  - Added target window recapture and validation across profile switches and Windows lock/unlock session changes.
+  - Preserved background keyboard state during thread attachment to ensure Caps Lock and modifier key states remain consistent.
+
+---
+
+## August 30, 2026 (Build 90)
+
+### Added
+- **Profile Deletion Confirmation**:
+  - Added a confirmation dialog when deleting a profile to prevent accidental data loss.
+  - Added a quick-delete shortcut: hold `Shift` while clicking **Remove** to delete immediately without a confirmation prompt.
+
+### Changed & Improved
+- **Sidebar & Profile List Polish**:
+  - Disabled profiles are now visually dimmed to gray in the sidebar list for clearer status recognition.
+  - Long profile names are cleanly trimmed with full name tooltips on hover.
+  - Applied sleek, minimalist custom scrollbars to the sidebar profile list.
+
+---
+
 ## August 29, 2026 (Build 84)
 
 ### Added
