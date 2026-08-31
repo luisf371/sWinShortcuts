@@ -123,12 +123,11 @@ public sealed class WindowsInputSender : IInputSender
     }
 
     /// <summary>
-    /// The single SendInput boundary for every injected event. On a short count the last error is
-    /// captured immediately (nothing but the count comparison sits between the P/Invoke and the
-    /// read) and one entry records what only this boundary can observe: the inserted-event count
-    /// and the captured code. SendInput returns the number of events successfully inserted, and
-    /// neither that value nor the error code identifies why input was blocked (UIPI blocking in
-    /// particular is not reported) — the code is a captured diagnostic, never the rejection reason.
+    /// On a short count the last error is captured immediately (nothing but the count comparison
+    /// sits between the P/Invoke and the read) and one entry records what only this boundary can
+    /// observe: the inserted-event count and the captured code. Neither value identifies why input
+    /// was blocked (UIPI blocking in particular is not reported), so the code is a captured
+    /// diagnostic, never the rejection reason.
     /// The count also exposes a partial insertion of the two-event virtual-key tap (sent=1/2).
     /// The description is constructed only here — after a short count, inside the IsEnabled branch.
     /// </summary>

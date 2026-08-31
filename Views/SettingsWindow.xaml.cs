@@ -137,7 +137,7 @@ public partial class SettingsWindow : Window
         {
             // Written BEFORE the safe-default assignments: the debug-logging default below disables
             // the logger, which would otherwise drop the very entry explaining the failure.
-            _logger.Log($"[Settings] Failed to load settings INI '{_settingsPath}'; using safe defaults: {ex.Message}");
+            _logger.Log($"[Settings] Failed to load app settings; using safe defaults: {ex.Message}");
             _vm.SetEnableDebugLoggingProgrammatically(false);
             _vm.HookWatchdogEnabled = true;
             // Fall back to the live service value (never a blind false) so a read failure can't
@@ -175,7 +175,7 @@ public partial class SettingsWindow : Window
             // F-016: no longer swallowed. The caller keeps the dialog open and shows this, so a
             // read-only/locked INI can't report "saved" and then silently revert on restart. The
             // debug entry records the same failure the MessageBox surfaces.
-            _logger.Log($"[Settings] Failed to save settings INI '{_settingsPath}': {ex.Message}");
+            _logger.Log($"[Settings] Failed to save app settings: {ex.Message}");
             error = ex.Message;
             return false;
         }

@@ -136,7 +136,7 @@ public sealed class SettingsViewModelTests
 
         // Same-value reassignment records nothing.
         viewModel.EnableDebugLogging = true;
-        Assert.Equal(1, logger.Messages.Count);
+        Assert.Single(logger.Messages);
 
         // Disable: the entry is written while the logger is still enabled, then it goes off.
         viewModel.EnableDebugLogging = false;

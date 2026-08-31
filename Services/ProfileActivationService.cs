@@ -637,8 +637,6 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             }
             catch (Exception ex)
             {
-                // The try wraps the whole loop body — the activate branch AND the deactivate branch
-                // (each with its crosshair apply) — so name the transition, not just activation.
                 _logger.Log($"[Input] Foreground profile transition failed: {ex}");
             }
         }
@@ -869,7 +867,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             // fail-closed CreateDC, unmappable DVC) count as applied to avoid a per-event retry storm.
             if (outcome == ColorApplyOutcome.Failed)
             {
-                _logger.Log($"[Color] Apply failed for display '{displayPlan.DisplayId}' (outcome={outcome}); will retry on the next event.");
+                _logger.Log($"[Color] Apply failed for display '{displayPlan.DisplayId}'; will retry on the next event.");
                 allApplied = false;
             }
         }

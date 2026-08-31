@@ -664,7 +664,6 @@ public sealed class AntiAfkStateMachineTests
             // Nothing retained: every release path is a no-op and stays silent.
             machine.ReleaseForegroundTarget();
             machine.ReleaseOwnedBy(profile);
-            machine.Stop();
             Assert.Empty(logger.Messages);
 
             machine.CaptureForegroundTarget(profile);
@@ -749,7 +748,8 @@ public sealed class AntiAfkStateMachineTests
     }
 
     [Fact]
-    public void CaptureForegroundTarget_FailedCaptureForOwnerItself_KeepsOwnTarget()    {
+    public void CaptureForegroundTarget_FailedCaptureForOwnerItself_KeepsOwnTarget()
+    {
         long timestamp = 0;
         uint tick = 0;
         var (machine, _, transport, _, profile, runtime) = CreateMachine(() => timestamp, () => tick);

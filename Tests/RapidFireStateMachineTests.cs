@@ -235,6 +235,27 @@ public sealed class RapidFireStateMachineTests
         Assert.Single(logger.Messages, m => m == "Rapid Fire disarmed (owner settings changed/removed)");
     }
 
+    [Fact]
+    public void Release_LoggingDisabled_DoesNotAllocate()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, new RecordingInputSender(), random);
+        rapidFire.SetToggleKey(Key.F8);
+
+        Assert.True(Toggle(rapidFire, Key.F8));
+        Assert.True(rapidFire.Release(preservePhysicalPairing: true, reason: "warmup"));
+        Assert.True(Toggle(rapidFire, Key.F8));
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var released = rapidFire.Release(preservePhysicalPairing: true, reason: "test");
+        var after = GC.GetAllocatedBytesForCurrentThread();
+
+        Assert.True(released);
+        Assert.Equal(before, after);
+    }
+
     private static RapidFireStateMachine Create(
         InputRuntimeState runtime,
         IInputSender sender,

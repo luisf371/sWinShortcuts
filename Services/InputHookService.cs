@@ -1620,7 +1620,10 @@ public sealed class InputHookService : IInputHookService
         _rightButtonPressed = false;
         // Requested, not completed: the injected-key releases are queued to the executor (foreground
         // UPs) or signaled to the Background Auto-Run worker, which flushes them later.
-        LogDebug($"All state release requested (rapidFireArmPreserved={preserveRapidFireArm})");
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"All state release requested (rapidFireArmPreserved={preserveRapidFireArm})");
+        }
         return rapidFireArmCleared;
     }
 

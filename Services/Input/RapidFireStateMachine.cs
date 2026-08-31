@@ -227,9 +227,9 @@ internal sealed class RapidFireStateMachine : IDisposable
             _physicalLeftDown = false;
         }
 
-        if (wasArmed)
+        if (wasArmed && _logger.IsEnabled)
         {
-            Log($"Rapid Fire disarmed{(reason is null ? string.Empty : $" ({reason})")}");
+            _logger.Log($"Rapid Fire disarmed{(reason is null ? string.Empty : $" ({reason})")}");
         }
 
         return wasArmed;
@@ -372,8 +372,7 @@ internal sealed class RapidFireStateMachine : IDisposable
                 return;
             }
 
-            // Short-count diagnostics live at the SendInput boundary (WindowsInputSender); the bare
-            // bool returned here cannot distinguish a rejection from a vk-mapping skip.
+            // WindowsInputSender logs which SendInput call failed; this bool adds no useful detail.
             _inputSender.SendLeftClick(holdMilliseconds);
         }
         catch (Exception ex)

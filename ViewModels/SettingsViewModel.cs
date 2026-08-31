@@ -128,24 +128,16 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         }
     }
 
-    /// <summary>
-    /// Non-user apply path (INI hydration in SettingsWindow.LoadIniState, Cancel rollback in
-    /// RollBackLiveSettings): updates the VM and the live logger WITHOUT a "via settings" entry —
-    /// neither is a user toggle. Keeps the field and the live logger in lockstep, so a change
-    /// seen by the user setter always implies a live-state change.
-    /// </summary>
-    public void SetEnableDebugLoggingProgrammatically(bool value)
+    // Applies hydration/cancel state without recording a user toggle.
+    internal void SetEnableDebugLoggingProgrammatically(bool value)
     {
         _enableDebugLogging = value;
         _loggerService.IsEnabled = value;
         OnPropertyChanged(nameof(EnableDebugLogging));
     }
 
-    /// <summary>
-    /// Dialog-cancel rollback to the baseline the dialog opened with. Order-sensitive with the
-    /// logger itself: the entry is written while the logger still holds the state being described.
-    /// </summary>
-    public void RollBackEnableDebugLogging(bool baseline)
+    // Logs before disabling or after enabling so the rollback entry survives.
+    internal void RollBackEnableDebugLogging(bool baseline)
     {
         if (_enableDebugLogging == baseline)
         {

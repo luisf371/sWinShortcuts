@@ -148,9 +148,7 @@ public sealed class NvidiaColorControlService : IDisposable
 
             if (_nvapiAvailableChecked && !_nvapiInitialized)
             {
-                // Latch-once, mirroring AmdColorControlService.EnsureAvailable: the per-apply skip
-                // marker in ApplyDigitalVibrance is the single recurring line for a non-NVIDIA
-                // system; first-time detail stays at the NvAPI_Initialize sites below.
+                // Initialization already logged the failure; keep repeat applies to one skip entry.
                 return false;
             }
 

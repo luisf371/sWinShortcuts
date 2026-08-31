@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Reflection;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
@@ -134,7 +133,7 @@ public class ProfileActivationColorPlanTests
     }
 
     [Fact]
-    public async Task ApplyColorPlan_DisplayAbsentFromHardware_LogsAndKeepsRetrying()
+    public async Task ApplyColorPlan_DisplayAbsentFromHardware_ReturnsFalseAndLogsFailure()
     {
         var manager = await CreateManagerAsync();
         var logger = new NullLoggerService { IsEnabled = true };
@@ -157,7 +156,7 @@ public class ProfileActivationColorPlanTests
     }
 
     [Fact]
-    public async Task ApplyColorPlan_FailedOutcome_LogsAndKeepsRetrying()
+    public async Task ApplyColorPlan_FailedOutcome_ReturnsFalseAndLogsFailure()
     {
         var manager = await CreateManagerAsync();
         var logger = new NullLoggerService { IsEnabled = true };
@@ -174,7 +173,7 @@ public class ProfileActivationColorPlanTests
 
         Assert.False(ApplyColorPlan(service, SingleDisplayPlan("DISPLAY1"), [CreateDisplay("DISPLAY1")]));
         Assert.Contains(
-            "[Color] Apply failed for display 'DISPLAY1' (outcome=Failed); will retry on the next event.",
+            "[Color] Apply failed for display 'DISPLAY1'; will retry on the next event.",
             logger.Messages);
     }
 

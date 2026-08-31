@@ -426,7 +426,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        _logger.Log("[UI] Double-click outside title bar - default allowed");
         // Allow default behavior for clicks outside title bar
         base.OnMouseDoubleClick(e);
     }
@@ -605,7 +604,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _logger.Log($"[Settings] Failed to update '{_settingsPath}': {ex.Message}");
+            _logger.Log($"[Settings] Failed to update app settings: {ex.Message}");
         }
     }
 

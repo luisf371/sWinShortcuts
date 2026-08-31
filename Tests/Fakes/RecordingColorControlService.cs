@@ -7,7 +7,6 @@ public sealed class RecordingColorControlService : IColorControlService
 {
     public List<AppliedColorProfile> AppliedProfiles { get; } = [];
 
-    /// <summary>Outcome returned by the next apply (default Applied) so callers' failure paths are drivable.</summary>
     public ColorApplyOutcome Outcome { get; set; } = ColorApplyOutcome.Applied;
 
     public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)

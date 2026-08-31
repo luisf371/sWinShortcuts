@@ -57,7 +57,8 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
     // Retained background-posting target. Explicit Volatile/Interlocked ops (the codebase idiom —
     // avoids CS0420 on a volatile field): the capture publish is a volatile write; every clear is
     // interlocked so a stale release can never erase a newer capture. Only Stop()/session teardown
-    // clear unconditionally (Interlocked.Exchange).
+    // clear unconditionally (Interlocked.Exchange). Compare CAS results by reference: record
+    // equality can match a newer same-valued capture.
     private AntiAfkTarget? _retainedTarget;
     private AntiAfkTarget? _reportedPostFailureTarget;
     private int _lastPostError;
@@ -174,9 +175,6 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         var observed = Volatile.Read(ref _retainedTarget);
         if (observed is not null
             && !ReferenceEquals(observed.Profile, profile)
-            // ReferenceEquals, never ==: AntiAfkTarget is a record (value equality), so a racing
-            // same-valued recapture makes the failed CAS return a value-equal replacement that ==
-            // would misread as a win — logging a release that never happened.
             && ReferenceEquals(Interlocked.CompareExchange(ref _retainedTarget, null, observed), observed))
         {
             Log("Anti-AFK: background target released (capture failed for the newly focused profile)");
@@ -194,10 +192,6 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         var observed = Volatile.Read(ref _retainedTarget);
         if (observed is not null
             && ReferenceEquals(observed.Profile, profile)
-            // ReferenceEquals, never ==: AntiAfkTarget is a record (value equality), so a racing
-            // same-valued recapture makes the failed CAS return a value-equal replacement that ==
-            // would misread as a win (the same rule as the guards in CaptureForegroundTarget and
-            // ReleaseInvalidTarget). Log only after a CAS this call actually won.
             && ReferenceEquals(Interlocked.CompareExchange(ref _retainedTarget, null, observed), observed))
         {
             Log($"Anti-AFK: background target released (owner removed/disabled: {profile.Name})");
@@ -566,9 +560,6 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
 
     private void ReleaseInvalidTarget(AntiAfkTarget target)
     {
-        // ReferenceEquals, never ==: AntiAfkTarget is a record (value equality), so a racing
-        // same-valued recapture makes the failed CAS return a value-equal replacement that ==
-        // would misread as a win — logging an invalidation for a target that was never removed.
         if (ReferenceEquals(Interlocked.CompareExchange(ref _retainedTarget, null, target), target))
         {
             Log($"Anti-AFK background target invalid: hwnd=0x{target.WindowHandle.ToInt64():X} expected-pid={target.ProcessId}");

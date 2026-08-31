@@ -568,7 +568,10 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 _backgroundThread = thread;
                 thread.Start();
             }
-            Log($"AutoRun activated ({(background ? "background" : "foreground")}) for profile: {profile.Name}");
+            if (_logger.IsEnabled)
+            {
+                _logger.Log($"AutoRun activated ({(background ? "background" : "foreground")}) for profile: {profile.Name}");
+            }
             return true;
         }
     }
@@ -641,9 +644,12 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         // and the background path only signals the worker via release flags flushed later in
         // FlushBackgroundReleasesLocked. Emitted before ResetRunState, while _isBackground is still
         // valid, and only for real releases — the gate above keeps no-ops silent.
-        Log(reason is null
-            ? $"AutoRun release requested ({(_isBackground ? "background" : "foreground")})"
-            : $"AutoRun release requested ({reason})");
+        if (_logger.IsEnabled)
+        {
+            _logger.Log(reason is null
+                ? $"AutoRun release requested ({(_isBackground ? "background" : "foreground")})"
+                : $"AutoRun release requested ({reason})");
+        }
         Interlocked.Increment(ref _injectionGeneration);
         bool releaseSprint = _sprintInjected || (_sprintIntendedHeld && !_sprintPending);
         var sprintUpKey = _sprintInjected ? _sprintInjectedKey : _sprintKey;
