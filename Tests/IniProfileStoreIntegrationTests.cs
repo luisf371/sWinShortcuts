@@ -518,6 +518,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "antiafk.exe");
         profile.AntiAfk.IsEnabled = true;
         profile.AntiAfk.IntervalMinutes = 10;
+        profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
         _createdProfiles.Add(profile);
 
         await _store.SaveProfileAsync(profile, CancellationToken.None);
@@ -527,6 +528,28 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.NotNull(loaded);
         Assert.True(loaded.AntiAfk.IsEnabled);
         Assert.Equal(10, loaded.AntiAfk.IntervalMinutes);
+        Assert.Equal(AntiAfkSendMode.Forced, loaded.AntiAfk.SendMode);
+    }
+
+    [Fact]
+    public async Task Load_InvalidAntiAfkSendMode_FallsBackToForeground()
+    {
+        // GetEnum's Enum.IsDefined guard: a hand-edited/corrupt value must degrade to the default
+        // (Foreground = current behavior), never an undefined member.
+        var profilesDir = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDir);
+        File.WriteAllText(
+            Path.Combine(profilesDir, "InvalidAfkMode.ini"),
+            "[Profile]\nName=InvalidAfkMode\nExecutable=invalidafk.exe\nEnabled=true\n" +
+            "[AntiAfk]\nEnabled=true\nIntervalMinutes=3\nSendMode=Nonsense\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p =>
+            string.Equals(p.NormalizedExecutable, "invalidafk", StringComparison.OrdinalIgnoreCase));
+
+        Assert.True(loaded.AntiAfk.IsEnabled);
+        Assert.Equal(3, loaded.AntiAfk.IntervalMinutes);
+        Assert.Equal(AntiAfkSendMode.Foreground, loaded.AntiAfk.SendMode);
     }
 
     [Fact]

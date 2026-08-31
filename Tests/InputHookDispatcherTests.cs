@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Windows.Input;
+using Microsoft.Win32;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
@@ -314,10 +315,59 @@ public sealed class InputHookDispatcherTests
         }
     }
 
+    [Fact]
+    public void SessionUnlock_ActiveProfileStillPublished_RecapturesAntiAfkTarget()
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+        var profile = new Profile
+        {
+            Name = "Game",
+            Executable = "game.exe",
+            AntiAfk =
+            {
+                IsEnabled = true,
+                SendMode = AntiAfkSendMode.Background
+            }
+        };
+
+        try
+        {
+            service.SetForegroundIdentity((IntPtr)100, 7, profile.NormalizedExecutable, 1);
+            service.ActivateProfile(profile, 1);
+            Assert.NotNull(GetRetainedAntiAfkTarget(service));
+
+            RaiseSessionSwitch(service, SessionSwitchReason.SessionLock);
+            Assert.Null(GetRetainedAntiAfkTarget(service));
+
+            RaiseSessionSwitch(service, SessionSwitchReason.SessionUnlock);
+            Assert.NotNull(GetRetainedAntiAfkTarget(service));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
     private static AutoRunStateMachine GetAutoRun(InputHookService service) =>
         (AutoRunStateMachine)typeof(InputHookService)
             .GetField("_autoRun", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(service)!;
+
+    private static object? GetRetainedAntiAfkTarget(InputHookService service)
+    {
+        var antiAfk = typeof(InputHookService)
+            .GetField("_antiAfk", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(service)!;
+        return typeof(AntiAfkStateMachine)
+            .GetField("_retainedTarget", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(antiAfk);
+    }
+
+    private static void RaiseSessionSwitch(InputHookService service, SessionSwitchReason reason) =>
+        typeof(InputHookService)
+            .GetMethod("OnSessionSwitch", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(service, [service, new SessionSwitchEventArgs(reason)]);
 
     private static Profile CreateRapidFireProfile() => new()
     {
