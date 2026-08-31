@@ -32,6 +32,7 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IReadOnlyList<HoldBreathMode> _holdBreathModes = Enum.GetValues<HoldBreathMode>();
     private readonly IReadOnlyList<SprintActivation> _sprintActivationModes = Enum.GetValues<SprintActivation>();
     private readonly IReadOnlyList<AutoRunSendMode> _autoRunSendModes = Enum.GetValues<AutoRunSendMode>();
+    private readonly IReadOnlyList<AntiAfkSendMode> _antiAfkSendModes = Enum.GetValues<AntiAfkSendMode>();
     private readonly IReadOnlyList<ModifierKeys> _triggerModifiers =
         new[] { ModifierKeys.None, ModifierKeys.Control, ModifierKeys.Alt, ModifierKeys.Shift, ModifierKeys.Windows };
     private readonly IDisplayService _displayService;
@@ -99,6 +100,8 @@ public sealed partial class MainViewModel : ViewModelBase
     public IReadOnlyList<SprintActivation> SprintActivationModes => _sprintActivationModes;
 
     public IReadOnlyList<AutoRunSendMode> AutoRunSendModes => _autoRunSendModes;
+
+    public IReadOnlyList<AntiAfkSendMode> AntiAfkSendModes => _antiAfkSendModes;
 
     public IReadOnlyList<ModifierKeys> TriggerModifiers => _triggerModifiers;
 

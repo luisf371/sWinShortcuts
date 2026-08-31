@@ -134,7 +134,8 @@ internal static class ProfilePersistenceSnapshot
         return new AntiAfkSettings
         {
             IsEnabled = source.IsEnabled,
-            IntervalMinutes = source.IntervalMinutes
+            IntervalMinutes = source.IntervalMinutes,
+            SendMode = source.SendMode
         };
     }
 

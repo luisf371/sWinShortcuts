@@ -104,6 +104,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     private volatile bool _physicalWHandoff;
     private bool _suppressedPhysicalWUp;
     private bool _stopOnPhysicalWUp;
+    private bool _antiAfkTapInFlight;
 
     internal readonly record struct PhysicalEvent(
         bool FreshW,
@@ -359,6 +360,30 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         }
     }
 
+    // Anti-AFK's posted (Background/Forced) ripple arbitrates against Auto-Run under the same lock
+    // that publishes _active — the authoritative check + commit at the point of conflict, mirroring
+    // TryEnqueueWhileInactive above. The latch is bounded by one tap step (~150 ms incl. sleeps).
+    internal bool TryBeginAntiAfkTap()
+    {
+        lock (_autoRunLock)
+        {
+            if (_active || _runtime.IsDisposed || !_runtime.IsRunning)
+            {
+                return false;
+            }
+            _antiAfkTapInFlight = true;
+            return true;
+        }
+    }
+
+    internal void EndAntiAfkTap()
+    {
+        lock (_autoRunLock)
+        {
+            _antiAfkTapInFlight = false;
+        }
+    }
+
     internal void JoinBackgroundInputThread()
     {
         Thread? thread;
@@ -453,6 +478,16 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             }
 
             if (_backgroundThread?.IsAlive == true)
+            {
+                return false;
+            }
+
+            // An Anti-AFK background tap step is in flight (a ~150 ms-per-step window): activating
+            // now would interleave this run's W/sprint work with the tap's per-step latch. Fail
+            // closed once — the chord passes through to the game and the user re-presses — a
+            // lesser evil than a stray tap-side release cancelling an active run later. The
+            // tick-level _autoRun.IsActive gate already blocks new ripples while a run is active.
+            if (_antiAfkTapInFlight)
             {
                 return false;
             }
@@ -1024,7 +1059,9 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         return processId != 0 && processId == _targetPid;
     }
 
-    private static IntPtr BuildKeyLParam(uint scanCode, bool isDown, bool extended, bool repeat)
+    // Internal so AntiAfkStateMachine's posted ripple reuses the byte-identical lParam/extended-key
+    // logic instead of copying it (semantic drift between the two background transports).
+    internal static IntPtr BuildKeyLParam(uint scanCode, bool isDown, bool extended, bool repeat)
     {
         uint value = 1u | ((scanCode & 0xFFu) << 16);
         if (extended) value |= 1u << 24;
@@ -1033,7 +1070,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         return (IntPtr)(long)value;
     }
 
-    private static bool IsExtendedKey(Key key) => key is
+    internal static bool IsExtendedKey(Key key) => key is
         Key.RightAlt or Key.RightCtrl or Key.Insert or Key.Delete or Key.Home or Key.End or
         Key.PageUp or Key.PageDown or Key.Up or Key.Down or Key.Left or Key.Right or Key.NumLock or
         Key.PrintScreen or Key.Divide or Key.Apps;

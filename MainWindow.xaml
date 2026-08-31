@@ -1265,7 +1265,7 @@
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Prevents idle kicks by sending WASD tap — but ONLY after your KEYBOARD has been genuinely inactive for the set interval (mouse movement does NOT reset it). Any real keypress resets the timer, so it never fires while you're actively playing, and it only runs while this game is focused."
+                                                           ToolTip="Prevents idle kicks by sending WASD tap — but ONLY after your KEYBOARD has been genuinely inactive for the set interval (mouse movement does NOT reset it). Any real keypress resets the timer, so it never fires while you're actively playing, and whether it needs the game focused depends on the Mode setting."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                             </StackPanel>
@@ -1284,7 +1284,7 @@
                                                     <TextBlock Text="Interval (min)"
                                                                VerticalAlignment="Center" />
                                                     <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                               ToolTip="How long the keyboard must be genuinely inactive before the WASD tap fires. Mouse movement does NOT reset the timer; any real keypress does. Only runs while the application is in the foreground."
+                                                               ToolTip="How long the keyboard must be genuinely inactive before the WASD tap fires. Mouse movement does NOT reset the timer; any real keypress does. With Foreground or Background this is the idle wait; Forced fires on this timer regardless of activity."
                                                                ToolTipService.InitialShowDelay="0"
                                                                ToolTipService.Placement="Right" />
                                                 </StackPanel>
@@ -1314,7 +1314,26 @@
                                                         Width="70"
                                                         HorizontalAlignment="Right" />
                                             </Grid>
-                                            <TextBlock Text="Only triggers after real KEYBOARD inactivity (mouse movement does not). Application must in be in foreground."
+                                            <Grid Margin="0,0,0,8">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <TextBlock Text="Mode"
+                                                               VerticalAlignment="Center" />
+                                                    <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                               ToolTip="Foreground: taps the keys only after you've gone AFK and the game is the focused window (classic behavior). Background: waits for the same AFK time, but sends the keys straight to the game window even while it's in the background. Forced: no AFK wait at all — sends the keys on the timer every interval, even while you're actively using your keyboard. Background and Forced work in most games but depend on the game accepting background input."
+                                                               ToolTipService.InitialShowDelay="0"
+                                                               ToolTipService.Placement="Right" />
+                                                </StackPanel>
+                                                <ComboBox Grid.Column="1"
+                                                          HorizontalAlignment="Left"
+                                                          Width="180"
+                                                          ItemsSource="{Binding DataContext.AntiAfkSendModes, ElementName=RootWindow}"
+                                                          SelectedItem="{Binding AntiAfkSendMode, Mode=TwoWay}" />
+                                            </Grid>
+                                            <TextBlock Text="Foreground and Background only trigger after real KEYBOARD inactivity (mouse movement does not reset it). Forced ignores inactivity and fires on the timer. Background and Forced send straight to the game window so they keep working while the game is unfocused."
                                                        TextWrapping="Wrap"
                                                        Margin="0,10,0,0"
                                                        FontSize="11"

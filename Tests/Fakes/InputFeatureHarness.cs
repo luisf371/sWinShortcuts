@@ -440,6 +440,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
                 }
             }
             _autoRun.ReleaseOwnedBy(profile);
+            _antiAfk.ReleaseOwnedBy(profile);
             if (_rapidFire.ReleaseOwnedBy(profile))
             {
                 RaiseRapidFireArmChanged();
@@ -483,6 +484,14 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             {
                 RaiseRapidFireArmChanged();
             }
+        }
+
+        // Mirrors InputHookService: AntiAfk-kind edits (Mode/interval) must NOT release the retained
+        // background target — those settings are read live by the tick.
+        if ((changeKind & (ProfileChangeKind.Removed | ProfileChangeKind.Identity)) != 0 ||
+            ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
+        {
+            _antiAfk.ReleaseOwnedBy(profile);
         }
     }
 

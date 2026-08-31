@@ -597,6 +597,20 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public AntiAfkSendMode AntiAfkSendMode
+    {
+        get => Model.AntiAfk.SendMode;
+        set
+        {
+            if (Model.AntiAfk.SendMode != value)
+            {
+                Model.AntiAfk.SendMode = value;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.AntiAfk);
+            }
+        }
+    }
+
     public bool CapsLockEnabled
     {
         get => Model.CapsLock.IsEnabled;
@@ -948,6 +962,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.Crosshair.ImagePath = CrosshairImagePath;
             Model.AntiAfk.IsEnabled = AntiAfkEnabled;
             Model.AntiAfk.IntervalMinutes = AntiAfkIntervalMinutes;
+            Model.AntiAfk.SendMode = AntiAfkSendMode;
             Model.CapsLock.IsEnabled = CapsLockEnabled;
             Model.CapsLock.Mode = CapsLockMode;
             Model.CapsLock.IsRemapEnabled = CapsLockRemapEnabled;

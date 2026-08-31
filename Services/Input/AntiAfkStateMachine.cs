@@ -2,7 +2,9 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Windows.Input;
+using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
+using sWinShortcuts.Utilities;
 using Timer = System.Threading.Timer;
 
 namespace sWinShortcuts.Services.Input;
@@ -11,9 +13,19 @@ namespace sWinShortcuts.Services.Input;
 /// Anti-AFK's timer is only a producer. Each callback fails closed at the runtime, lifecycle,
 /// profile, foreground, and Auto-Run boundaries before enqueueing. The executor calls the same
 /// component as a per-step lock-free guard, so a started step always releases but later steps abort.
+/// Foreground SendMode keeps that exact path; Background/Forced instead post the WASD taps straight
+/// to a PID-validated window of the profile's executable (never SendInput), using a target retained
+/// from the profile's last activation.
 /// </summary>
 internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
 {
+    /// <summary>
+    /// The retained game window a Background/Forced ripple posts to. Captured when the owning
+    /// profile activates (focus gained), kept after focus is lost, and revalidated (window => PID)
+    /// before every posted DOWN. Single slot, last-focused-game-wins.
+    /// </summary>
+    internal sealed record AntiAfkTarget(Profile Profile, IntPtr WindowHandle, uint ProcessId);
+
     private const int ANTI_AFK_PERIOD_MS = 5_000;
     private const int TAP_DURATION_MIN_MS = 20;
     private const int TAP_DURATION_MAX_MS = 30;
@@ -40,6 +52,12 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
     private long _lifecycleGeneration;
     private volatile bool _started;
     private int _disposed;
+
+    // Retained background-posting target. Explicit Volatile/Interlocked ops (the codebase idiom —
+    // avoids CS0420 on a volatile field): the capture publish is a volatile write; every clear is
+    // interlocked so a stale release can never erase a newer capture. Only Stop()/session teardown
+    // clear unconditionally (Interlocked.Exchange).
+    private AntiAfkTarget? _retainedTarget;
 
     internal AntiAfkStateMachine(
         InputRuntimeState runtime,
@@ -93,11 +111,74 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
             Interlocked.Increment(ref _lifecycleGeneration);
             timer = _timer;
             _timer = null;
+            // Hard lifecycle boundary: the retained target dies with the session (unconditional
+            // clear — nothing can capture after Stop, so no CAS is needed).
+            Interlocked.Exchange(ref _retainedTarget, null);
         }
         if (timer is null) return;
         timer.Change(Timeout.Infinite, Timeout.Infinite);
         timer.Dispose();
     }
+
+    /// <summary>
+    /// Captures the retained posting target from the published foreground identity. Called under
+    /// _profileLock from InputHookService.ActivateProfile AFTER the caller has already published
+    /// the profile as ActiveProfile and settled the generation (so the lock-free tick can observe
+    /// the new profile before this runs). Fail-closed on the same identity checks as
+    /// AutoRunStateMachine.Activate; on failure a target owned by a DIFFERENT profile is
+    /// CAS-cleared — the newly focused profile owns the slot now, and the previous owner must not
+    /// keep receiving background WASD after its capture could not be replaced.
+    /// </summary>
+    internal void CaptureForegroundTarget(Profile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        var snapshot = _runtime.ForegroundIdentity;
+        var executable = profile.NormalizedExecutable;
+        if (snapshot is not null
+            && snapshot.WindowHandle != IntPtr.Zero
+            && snapshot.ProcessId != 0
+            && snapshot.Generation == _runtime.ActiveProfileGeneration
+            && snapshot.Generation == _runtime.PublishedForegroundGeneration
+            && !string.IsNullOrEmpty(executable)
+            && string.Equals(snapshot.Executable, executable, StringComparison.OrdinalIgnoreCase))
+        {
+            // Last-focused-game-wins: a plain publish overwrites whatever was stored. A racing
+            // release compares against its observed reference, so it can never erase this capture.
+            Volatile.Write(ref _retainedTarget, new AntiAfkTarget(profile, snapshot.WindowHandle, snapshot.ProcessId));
+            return;
+        }
+
+        // Failed capture: `profile` has still just become the settled active — i.e. last-focused —
+        // profile, so a retained target owned by a different profile must not survive. A target
+        // owned by `profile` itself is kept (same executable — still its own window; per-DOWN PID
+        // revalidation handles death/reuse).
+        var observed = Volatile.Read(ref _retainedTarget);
+        if (observed is not null
+            && !ReferenceEquals(observed.Profile, profile)
+            && Interlocked.CompareExchange(ref _retainedTarget, null, observed) == observed)
+        {
+            Log("Anti-AFK: background target released (capture failed for the newly focused profile)");
+        }
+    }
+
+    /// <summary>
+    /// Owner-scoped release (identity edit, removal, master disable, hard deactivation). CAS
+    /// against the observed target so a racing newer capture (another game focused) survives.
+    /// </summary>
+    internal void ReleaseOwnedBy(Profile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+
+        var observed = Volatile.Read(ref _retainedTarget);
+        if (observed is not null && ReferenceEquals(observed.Profile, profile))
+        {
+            Interlocked.CompareExchange(ref _retainedTarget, null, observed);
+        }
+    }
+
+    /// <summary>Unconditional lifecycle clear (session switch away, hard teardown).</summary>
+    internal void ReleaseForegroundTarget() => Interlocked.Exchange(ref _retainedTarget, null);
 
     internal void NotePhysicalKeyboardActivity(long timestamp) =>
         Volatile.Write(ref _lastPhysicalKeyboardTick, timestamp);
@@ -164,8 +245,28 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 return;
             }
 
-            var profile = _runtime.ActiveProfile;
-            if (profile is not { IsEnabled: true } || !profile.AntiAfk.IsEnabled)
+            // Resolve the governing profile. The ACTIVE profile wins when it can run Anti-AFK;
+            // otherwise Background/Forced fall back to the retained target's owner — the game being
+            // unfocused is the normal Background case, and its IsEnabled/AntiAfk/SendMode are
+            // re-read live on every use below. Foreground hard-bails: with no active profile there
+            // is nothing to foreground-match against (the browser-leak guard).
+            var activeProfile = _runtime.ActiveProfile;
+            Profile? profile;
+            if (activeProfile is { IsEnabled: true } candidate && candidate.AntiAfk.IsEnabled)
+            {
+                profile = candidate;
+            }
+            else
+            {
+                var retainedOwner = Volatile.Read(ref _retainedTarget)?.Profile;
+                profile = retainedOwner is { IsEnabled: true } owner
+                    && owner.AntiAfk.IsEnabled
+                    && owner.AntiAfk.SendMode != AntiAfkSendMode.Foreground
+                    ? retainedOwner
+                    : null;
+            }
+
+            if (profile is null)
             {
                 if (logReason) Log("Anti-AFK skip: profile unavailable or disabled");
                 return;
@@ -176,49 +277,181 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 return;
             }
 
+            var mode = profile.AntiAfk.SendMode;
             var intervalMs = (uint)(Math.Clamp(profile.AntiAfk.IntervalMinutes, 1, 15) * 60_000);
             var keyboardIdleMs = (_timestamp() - Volatile.Read(ref _lastPhysicalKeyboardTick)) * TickToMilliseconds;
             var now = _tickCount();
             var sinceLastFireMs = unchecked(now - _lastFireTick);
-            if (keyboardIdleMs < intervalMs || sinceLastFireMs < intervalMs) return;
+            // Forced skips the keyboard-idle gate (fires on the timer regardless of activity); the
+            // since-last-fire cadence gate applies to every mode so each interval fires exactly once.
+            if (mode != AntiAfkSendMode.Forced && keyboardIdleMs < intervalMs) return;
+            if (sinceLastFireMs < intervalMs) return;
 
-            var foregroundGeneration = _runtime.ActiveProfileGeneration;
-            if (!ForegroundMatches(profile, foregroundGeneration))
+            if (mode == AntiAfkSendMode.Foreground)
             {
-                if (logReason) Log("Anti-AFK skip: foreground is not the active game");
+                TickForeground(profile, generation, requireStarted, now, logReason);
                 return;
             }
 
-            if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0
-                || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration))))
-            {
-                return;
-            }
-
-            var command = new InputCommand(
-                Key.None,
-                IsDown: false,
-                Kind: InputCommandKind.Sequence,
-                Sequence: BuildSequence(),
-                Guard: this,
-                ForegroundGeneration: foregroundGeneration,
-                ExpectedProfile: profile,
-                ExpectedExecutable: profile.NormalizedExecutable);
-
-            if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0
-                || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration))))
-            {
-                return;
-            }
-            if (_autoRun.TryEnqueueWhileInactive(command))
-            {
-                _lastFireTick = now;
-                Log("Anti-AFK fired WASD ripple");
-            }
+            FireBackgroundRipple(generation, requireStarted, now, logReason);
         }
         finally
         {
             Volatile.Write(ref _tickRunning, 0);
+        }
+    }
+
+    // The unchanged Foreground (SendInput) path: live foreground HWND/PID verified, WASD sequence
+    // enqueued on the FIFO executor via the Auto-Run arbitration.
+    private void TickForeground(Profile profile, long generation, bool requireStarted, uint now, bool logReason)
+    {
+        var foregroundGeneration = _runtime.ActiveProfileGeneration;
+        if (!ForegroundMatches(profile, foregroundGeneration))
+        {
+            if (logReason) Log("Anti-AFK skip: foreground is not the active game");
+            return;
+        }
+
+        if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0
+            || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration))))
+        {
+            return;
+        }
+
+        var command = new InputCommand(
+            Key.None,
+            IsDown: false,
+            Kind: InputCommandKind.Sequence,
+            Sequence: BuildSequence(),
+            Guard: this,
+            ForegroundGeneration: foregroundGeneration,
+            ExpectedProfile: profile,
+            ExpectedExecutable: profile.NormalizedExecutable);
+
+        if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0
+            || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration))))
+        {
+            return;
+        }
+        if (_autoRun.TryEnqueueWhileInactive(command))
+        {
+            _lastFireTick = now;
+            Log("Anti-AFK fired WASD ripple");
+        }
+    }
+
+    // Background/Forced: post the WASD ripple straight to the retained game window. Never SendInput,
+    // never the executor — so it is structurally impossible for these modes to type into whatever app
+    // currently has focus. Runs only on this timer (pool) thread; no sleeps are taken under any lock.
+    private void FireBackgroundRipple(
+        long generation,
+        bool requireStarted,
+        uint now,
+        bool logReason)
+    {
+        var target = Volatile.Read(ref _retainedTarget);
+        if (target is null)
+        {
+            if (logReason) Log("Anti-AFK skip: background target unavailable");
+            return;
+        }
+
+        // The ripple is committed to this target/owner/mode trio; the owner's settings govern.
+        var owner = target.Profile;
+        var mode = owner.AntiAfk.SendMode;
+        if (mode == AntiAfkSendMode.Foreground)
+        {
+            // The owner's live mode no longer selects a posted ripple (edited mid-tick); its next
+            // tick takes the Foreground path instead.
+            return;
+        }
+
+        // Ownership gate: activation publishes the new ActiveProfile BEFORE its capture runs, and
+        // this tick takes no lock — a different enabled active profile means that profile's own
+        // settings govern and the retained target must stay silent. null (game unfocused — the
+        // normal Background case) and owner (game focused) both pass.
+        var active = _runtime.ActiveProfile;
+        if (active is not null && !ReferenceEquals(active, owner))
+        {
+            if (logReason) Log("Anti-AFK skip: background target owner superseded");
+            return;
+        }
+
+        var sentAny = false;
+        try
+        {
+            foreach (var step in BuildSequence())
+            {
+                // Fail-closed per-step guards BEFORE the DOWN, mirroring CanExecute + the
+                // executor's per-step abort: an in-flight ripple cannot keep sending after the
+                // feature is disabled, the mode is switched, or another profile takes focus.
+                if (_runtime.IsDisposed || !_runtime.IsRunning || Volatile.Read(ref _disposed) != 0
+                    || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration)))
+                    || !_runtime.AdvancedModeEnabled
+                    || owner is not { IsEnabled: true }
+                    || !owner.AntiAfk.IsEnabled
+                    || owner.AntiAfk.SendMode != mode)
+                {
+                    break;
+                }
+
+                // Re-read live every step: a successful recapture aborts via the target-identity
+                // check below, but a FAILED recapture leaves the old target in place — only this
+                // check observes the ownership change.
+                var stepActive = _runtime.ActiveProfile;
+                if (stepActive is not null && !ReferenceEquals(stepActive, owner)) break;
+
+                // Recapture/clear aborts.
+                if (!ReferenceEquals(Volatile.Read(ref _retainedTarget), target)) break;
+
+                if (!TargetStillValid(target))
+                {
+                    // Dead/reused window: stop posting and clear (fail closed, no retry storm).
+                    Interlocked.CompareExchange(ref _retainedTarget, null, target);
+                    if (logReason) Log("Anti-AFK skip: background target invalid");
+                    break;
+                }
+
+                // The LAST guard before the DOWN — once acquired, the finally releases it on every
+                // path (abort after acquire, failed post, exception).
+                if (!_autoRun.TryBeginAntiAfkTap()) break;
+
+                try
+                {
+                    sentAny |= PostTapToWindow(target, step.Key, isDown: true);
+                    Thread.Sleep(step.DownMs);
+                }
+                finally
+                {
+                    // Every started DOWN is paired by an UP, mirroring InputExecutor.ExecuteSequence.
+                    try
+                    {
+                        PostTapToWindow(target, step.Key, isDown: false);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Anti-AFK background tap release failed: {ex.Message}");
+                    }
+
+                    _autoRun.EndAntiAfkTap();
+                }
+
+                Thread.Sleep(step.GapMs);
+            }
+        }
+        catch (Exception ex)
+        {
+            // The ripple runs on a System.Threading.Timer callback — an escaping exception would
+            // take the process down, so contain it like the executor's per-command catch.
+            Log($"Anti-AFK background ripple failed: {ex.Message}");
+        }
+
+        if (sentAny)
+        {
+            _lastFireTick = now;
+            Log(mode == AntiAfkSendMode.Forced
+                ? "Anti-AFK fired WASD ripple (forced)"
+                : "Anti-AFK fired WASD ripple (background)");
         }
     }
 
@@ -235,6 +468,77 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         if (foreground == IntPtr.Zero || foreground != snapshot.WindowHandle) return false;
         _transport.GetWindowThreadProcessId(foreground, out var processId);
         return processId != 0 && processId == snapshot.ProcessId;
+    }
+
+    private bool TargetStillValid(AntiAfkTarget target)
+    {
+        if (target.WindowHandle == IntPtr.Zero || target.ProcessId == 0) return false;
+        _transport.GetWindowThreadProcessId(target.WindowHandle, out var processId);
+        return processId != 0 && processId == target.ProcessId;
+    }
+
+    private bool ForegroundIsProcess(uint processId)
+    {
+        if (processId == 0) return false;
+        var foreground = _transport.GetForegroundWindow();
+        if (foreground == IntPtr.Zero) return false;
+        _transport.GetWindowThreadProcessId(foreground, out var foregroundPid);
+        return foregroundPid == processId;
+    }
+
+    // Mirrors AutoRunStateMachine.PostKeyToWindow's core: vk/scan, WM_SYSKEY selection, lParam bits,
+    // AttachThreadInput (only when the target is NOT the foreground process — attaching while the
+    // game is focused resets the shared keyboard state and blocks A/D), a keyboard-state snapshot
+    // restored after detach (CapsLock-safe), and the PostMessage result. NEVER called from the
+    // hook/dispatcher thread — the Anti-AFK tick is a System.Threading.Timer pool callback, so this
+    // always runs onBackgroundThread semantics.
+    private bool PostTapToWindow(AntiAfkTarget target, Key key, bool isDown)
+    {
+        if (isDown && _runtime.IsDisposed) return false;
+        var vk = KeyInteropUtilities.ToVirtualKey(key);
+        if (vk == 0) return true;
+        var scan = _transport.MapVirtualKey((uint)vk, 0);
+        var systemKey = vk is 0x12 or 0xA4 or 0xA5 or 0x79;
+        var message = (uint)(isDown
+            ? (systemKey ? NativeMethods.WM_SYSKEYDOWN : NativeMethods.WM_KEYDOWN)
+            : (systemKey ? NativeMethods.WM_SYSKEYUP : NativeMethods.WM_KEYUP));
+        var lParam = AutoRunStateMachine.BuildKeyLParam(scan, isDown, AutoRunStateMachine.IsExtendedKey(key), repeat: false);
+        var hwnd = target.WindowHandle;
+        var targetThread = _transport.GetWindowThreadProcessId(hwnd, out _);
+        var currentThread = _transport.GetCurrentThreadId();
+        var foreground = ForegroundIsProcess(target.ProcessId);
+        var candidate = !foreground && targetThread != 0 && targetThread != currentThread;
+        var targetHung = candidate && _transport.IsHungAppWindow(hwnd);
+        var willAttach = AutoRunStateMachine.ShouldAttachBackgroundInput(
+            onBackgroundThread: true,
+            targetIsForegroundProcess: foreground,
+            targetThread,
+            currentThread,
+            targetHung);
+
+        byte[]? savedState = null;
+        if (willAttach)
+        {
+            savedState = new byte[256];
+            if (!_transport.GetKeyboardState(savedState))
+            {
+                savedState = null;
+                willAttach = false;
+            }
+        }
+
+        bool attached = false;
+        try
+        {
+            attached = willAttach && _transport.AttachThreadInput(currentThread, targetThread, true);
+            if (isDown && _runtime.IsDisposed) return false;
+            return _transport.PostMessage(hwnd, message, (IntPtr)vk, lParam);
+        }
+        finally
+        {
+            if (attached) _transport.AttachThreadInput(currentThread, targetThread, false);
+            if (savedState is not null) _transport.SetKeyboardState(savedState);
+        }
     }
 
     private void Log(string message)
