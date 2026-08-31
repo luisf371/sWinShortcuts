@@ -39,9 +39,7 @@ public sealed class WindowsInputSender : IInputSender
         }
 
         var input = CreateKeyboardInput((ushort)virtualKey, scanCode, flags);
-        return SendInputLogged(
-            [input],
-            $"key {key} ({(isKeyDown ? "DOWN" : "UP")})");
+        return SendInputLogged([input], SendInputKind.KeyEvent, key, isKeyDown);
     }
 
     public bool SendVirtualKeyTap(int virtualKey)
@@ -65,7 +63,7 @@ public sealed class WindowsInputSender : IInputSender
             (ushort)virtualKey,
             scanCode,
             NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP);
-        return SendInputLogged([down, up], $"virtual-key tap 0x{virtualKey:X}");
+        return SendInputLogged([down, up], SendInputKind.VirtualKeyTap, virtualKey: virtualKey);
     }
 
     public bool SendLeftClick(int holdMilliseconds)
@@ -75,7 +73,7 @@ public sealed class WindowsInputSender : IInputSender
         var down = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTDOWN);
         var up = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTUP);
 
-        if (!SendInputLogged([down], "left-button DOWN"))
+        if (!SendInputLogged([down], SendInputKind.LeftButtonDown))
         {
             return false;
         }
@@ -94,10 +92,7 @@ public sealed class WindowsInputSender : IInputSender
                 // cannot leave the logical mouse button held after the physical button is released.
                 // Only a retry that also fails is logged — a first attempt the retry recovers stays
                 // silent (per-action noise discipline).
-                released = SendInputLogged(
-                    [up],
-                    "left-button UP failed after retry",
-                    " (button may be stuck)");
+                released = SendInputLogged([up], SendInputKind.LeftButtonUpRetry);
             }
         }
 
@@ -110,7 +105,21 @@ public sealed class WindowsInputSender : IInputSender
             0xFF,
             0,
             NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP);
-        return SendInputLogged([input], "dummy key");
+        return SendInputLogged([input], SendInputKind.DummyKey);
+    }
+
+    /// <summary>
+    /// Which injected-event shape a SendInput call carries. Callers pass the raw key/direction or
+    /// virtual-key value instead of a pre-built description so that successful, unlogged injections
+    /// perform no diagnostic string work — these calls run at injected-key frequency.
+    /// </summary>
+    private enum SendInputKind
+    {
+        KeyEvent,
+        VirtualKeyTap,
+        LeftButtonDown,
+        LeftButtonUpRetry,
+        DummyKey
     }
 
     /// <summary>
@@ -121,8 +130,14 @@ public sealed class WindowsInputSender : IInputSender
     /// neither that value nor the error code identifies why input was blocked (UIPI blocking in
     /// particular is not reported) — the code is a captured diagnostic, never the rejection reason.
     /// The count also exposes a partial insertion of the two-event virtual-key tap (sent=1/2).
+    /// The description is constructed only here — after a short count, inside the IsEnabled branch.
     /// </summary>
-    private bool SendInputLogged(NativeMethods.INPUT[] inputs, string description, string suffix = "")
+    private bool SendInputLogged(
+        NativeMethods.INPUT[] inputs,
+        SendInputKind kind,
+        Key key = Key.None,
+        bool isKeyDown = false,
+        int virtualKey = 0)
     {
         var sent = NativeMethods.SendInput((uint)inputs.Length, inputs, InputStructSize);
         if (sent == (uint)inputs.Length)
@@ -133,6 +148,15 @@ public sealed class WindowsInputSender : IInputSender
         var lastError = Marshal.GetLastWin32Error();
         if (_logger.IsEnabled)
         {
+            var description = kind switch
+            {
+                SendInputKind.KeyEvent => $"key {key} ({(isKeyDown ? "DOWN" : "UP")})",
+                SendInputKind.VirtualKeyTap => $"virtual-key tap 0x{virtualKey:X}",
+                SendInputKind.LeftButtonDown => "left-button DOWN",
+                SendInputKind.LeftButtonUpRetry => "left-button UP failed after retry",
+                _ => "dummy key"
+            };
+            var suffix = kind == SendInputKind.LeftButtonUpRetry ? " (button may be stuck)" : string.Empty;
             _logger.Log(
                 $"[Input] SendInput {description}: sent={sent}/{inputs.Length} lastError=0x{lastError:X}{suffix}");
         }
