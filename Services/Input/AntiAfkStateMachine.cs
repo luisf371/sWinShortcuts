@@ -59,6 +59,8 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
     // interlocked so a stale release can never erase a newer capture. Only Stop()/session teardown
     // clear unconditionally (Interlocked.Exchange).
     private AntiAfkTarget? _retainedTarget;
+    private AntiAfkTarget? _reportedPostFailureTarget;
+    private int _lastPostError;
 
     internal AntiAfkStateMachine(
         InputRuntimeState runtime,
@@ -155,6 +157,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
             // Last-focused-game-wins: a plain publish overwrites whatever was stored. A racing
             // release compares against its observed reference, so it can never erase this capture.
             Volatile.Write(ref _retainedTarget, new AntiAfkTarget(profile, window, snapshot.ProcessId));
+            Log($"Anti-AFK background target captured: hwnd=0x{window.ToInt64():X} pid={snapshot.ProcessId}");
             return;
         }
 
@@ -425,8 +428,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 if (!TargetStillValid(target))
                 {
                     // Dead/reused window: stop posting and clear (fail closed, no retry storm).
-                    Interlocked.CompareExchange(ref _retainedTarget, null, target);
-                    if (logReason) Log("Anti-AFK skip: background target invalid");
+                    ReleaseInvalidTarget(target);
                     break;
                 }
 
@@ -442,14 +444,25 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                     // leak one stale DOWN through that wait window.
                     if (!TargetStillValid(target))
                     {
-                        Interlocked.CompareExchange(ref _retainedTarget, null, target);
+                        ReleaseInvalidTarget(target);
                         break;
                     }
                     if (!CanPostBackgroundStep(target, owner, mode, generation, requireStarted)) break;
 
                     downPosted = PostTapToWindow(target, step.Key, isDown: true);
+                    if (!downPosted)
+                    {
+                        if (!ReferenceEquals(_reportedPostFailureTarget, target))
+                        {
+                            _reportedPostFailureTarget = target;
+                            Log(_lastPostError == 5
+                                ? "Anti-AFK background post failed: Win32 error 5 (access denied; run sWinShortcuts at the target's integrity level)"
+                                : $"Anti-AFK background post failed: Win32 error {_lastPostError}");
+                        }
+                        break;
+                    }
                     sentAny |= downPosted;
-                    if (downPosted) Thread.Sleep(step.DownMs);
+                    Thread.Sleep(step.DownMs);
                 }
                 finally
                 {
@@ -480,8 +493,8 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         {
             _lastFireTick = now;
             Log(mode == AntiAfkSendMode.Forced
-                ? "Anti-AFK fired WASD ripple (forced)"
-                : "Anti-AFK fired WASD ripple (background)");
+                ? "Anti-AFK queued WASD ripple (forced)"
+                : "Anti-AFK queued WASD ripple (background)");
         }
     }
 
@@ -528,6 +541,14 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         if (target.WindowHandle == IntPtr.Zero || target.ProcessId == 0) return false;
         _transport.GetWindowThreadProcessId(target.WindowHandle, out var processId);
         return processId != 0 && processId == target.ProcessId;
+    }
+
+    private void ReleaseInvalidTarget(AntiAfkTarget target)
+    {
+        if (Interlocked.CompareExchange(ref _retainedTarget, null, target) == target)
+        {
+            Log($"Anti-AFK background target invalid: hwnd=0x{target.WindowHandle.ToInt64():X} expected-pid={target.ProcessId}");
+        }
     }
 
     private bool ForegroundIsProcess(uint processId)
@@ -585,7 +606,9 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         {
             attached = willAttach && _transport.AttachThreadInput(currentThread, targetThread, true);
             if (isDown && _runtime.IsDisposed) return false;
-            return _transport.PostMessage(hwnd, message, (IntPtr)vk, lParam);
+            var posted = _transport.PostMessage(hwnd, message, (IntPtr)vk, lParam);
+            _lastPostError = posted ? 0 : _transport.GetLastWin32Error();
+            return posted;
         }
         finally
         {

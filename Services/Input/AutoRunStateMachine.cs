@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Input;
 using sWinShortcuts.Interop;
@@ -21,6 +22,7 @@ internal interface IAutoRunTransport
     bool SetKeyboardState(byte[] state);
     bool AttachThreadInput(uint sourceThread, uint targetThread, bool attach);
     bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    int GetLastWin32Error();
 }
 
 internal sealed class NativeAutoRunTransport : IAutoRunTransport
@@ -39,6 +41,7 @@ internal sealed class NativeAutoRunTransport : IAutoRunTransport
         NativeMethods.AttachThreadInput(sourceThread, targetThread, attach);
     public bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam) =>
         NativeMethods.PostMessage(window, message, wParam, lParam);
+    public int GetLastWin32Error() => Marshal.GetLastWin32Error();
 }
 
 /// <summary>

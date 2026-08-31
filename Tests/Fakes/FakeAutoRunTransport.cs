@@ -10,6 +10,7 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
     private int _blockNextForegroundRead;
     private int _processReadCount;
     private int _blockedProcessReadNumber;
+    private int _lastWin32Error;
 
     internal IntPtr ForegroundWindow { get; set; } = (IntPtr)100;
     internal IntPtr ChildWindow { get; set; }
@@ -29,7 +30,11 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
     internal int ForegroundCallCount => Volatile.Read(ref _foregroundCallCount);
     internal int BlockProcessReadNumber { set => Volatile.Write(ref _blockedProcessReadNumber, value); }
 
-    internal void FailNextPost() => Interlocked.Increment(ref _failPosts);
+    internal void FailNextPost(int error = 5)
+    {
+        Volatile.Write(ref _lastWin32Error, error);
+        Interlocked.Increment(ref _failPosts);
+    }
 
     public IntPtr GetForegroundWindow()
     {
@@ -78,4 +83,6 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
         PostEntered.Set();
         return Interlocked.Exchange(ref _failPosts, 0) == 0;
     }
+
+    public int GetLastWin32Error() => Volatile.Read(ref _lastWin32Error);
 }

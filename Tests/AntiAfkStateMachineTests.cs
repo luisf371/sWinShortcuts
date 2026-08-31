@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Windows.Input;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
+using sWinShortcuts.Services;
 using sWinShortcuts.Services.Input;
 using Tests.Fakes;
 using Xunit;
@@ -10,6 +11,43 @@ namespace Tests;
 
 public sealed class AntiAfkStateMachineTests
 {
+    [Fact]
+    public void Tick_ForcedPostDenied_LogsAccessDeniedAndStopsRipple()
+    {
+        long timestamp = 0;
+        uint tick = 0;
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, transport, _, profile, runtime) = CreateMachine(
+            () => timestamp,
+            () => tick,
+            logger);
+        using (machine)
+        {
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
+            machine.CaptureForegroundTarget(profile);
+            DeactivateAndUnfocus(runtime, transport);
+            transport.FailNextPost(error: 5);
+            tick = 60_000;
+
+            machine.Tick();
+
+            Assert.Single(transport.Posts);
+            Assert.Contains(
+                "Anti-AFK background target captured: hwnd=0x64 pid=7",
+                logger.Messages);
+            Assert.Contains(
+                "Anti-AFK background post failed: Win32 error 5 (access denied; run sWinShortcuts at the target's integrity level)",
+                logger.Messages);
+
+            transport.ProcessIds[(IntPtr)100] = 9;
+            machine.Tick();
+
+            Assert.Contains(
+                "Anti-AFK background target invalid: hwnd=0x64 expected-pid=7",
+                logger.Messages);
+        }
+    }
+
     [Fact]
     public void Tick_AtExactInterval_EnqueuesWasdSequence()
     {
@@ -757,7 +795,8 @@ public sealed class AntiAfkStateMachineTests
         FakeAutoRunTransport Transport, AutoRunStateMachine AutoRun, Profile Profile,
         InputRuntimeState Runtime) CreateMachine(
         Func<long> timestamp,
-        Func<uint> tickCount)
+        Func<uint> tickCount,
+        ILoggerService? logger = null)
     {
         var runtime = new InputRuntimeState();
         var profile = CreateProfile();
@@ -765,7 +804,7 @@ public sealed class AntiAfkStateMachineTests
         ConfigureRuntime(runtime, profile);
         var queue = new RecordingInputQueue();
         var random = new ThreadLocal<Random>(() => new Random(1));
-        var logger = new NullLoggerService();
+        logger ??= new NullLoggerService();
         var autoRun = new AutoRunStateMachine(runtime, queue, random, logger, transport);
         var machine = new AntiAfkStateMachine(
             runtime,
