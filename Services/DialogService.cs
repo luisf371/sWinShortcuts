@@ -78,6 +78,21 @@ public sealed class DialogService : IDialogService
         System.Windows.MessageBox.Show(System.Windows.Application.Current?.MainWindow, message, title, MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
+    public bool ShowRemoveProfileConfirmation(string profileName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(profileName);
+
+        var dialog = new ConfirmRemoveProfileDialog();
+        dialog.Configure(profileName);
+
+        if (System.Windows.Application.Current?.MainWindow is Window owner)
+        {
+            dialog.Owner = owner;
+        }
+
+        return dialog.ShowDialog() == true;
+    }
+
     private static AddProfileDialogResult? ShowProfileDialog(AddProfileDialogOptions options)
     {
         var dialog = new AddProfileDialog();

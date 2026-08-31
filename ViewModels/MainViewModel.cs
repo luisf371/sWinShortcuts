@@ -38,6 +38,9 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IDisplayService _displayService;
     private readonly IColorControlService _colorControlService;
     private readonly IProfileRuntimeService? _profileRuntimeService;
+    // Shift held at Remove-invocation time bypasses the delete confirmation dialog (the Remove button
+    // tooltip documents this). Seamed as a delegate so tests can pin the modifier state deterministically.
+    private readonly Func<bool> _removeBypassModifierDown;
     private readonly SemaphoreSlim _saveSemaphore = new(1, 1);
 
     // Autosave is debounced PER ProfileViewModel instance (stable across rename) so editing profile B
@@ -68,13 +71,15 @@ public sealed partial class MainViewModel : ViewModelBase
         IDialogService dialogService,
         IDisplayService displayService,
         IColorControlService colorControlService,
-        IProfileRuntimeService? profileRuntimeService = null)
+        IProfileRuntimeService? profileRuntimeService = null,
+        Func<bool>? removeBypassModifierDown = null)
     {
         _profileManager = profileManager ?? throw new ArgumentNullException(nameof(profileManager));
         _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorControlService = colorControlService ?? throw new ArgumentNullException(nameof(colorControlService));
         _profileRuntimeService = profileRuntimeService;
+        _removeBypassModifierDown = removeBypassModifierDown ?? DefaultRemoveBypassModifierDown;
         _keyOptionsWithNone = KeyCatalog.SortKeys(new[] { Key.None }.Concat(_keyOptions)).ToArray();
         _triggerKeyOptions = _keyOptions.Where(k => k != Key.LeftAlt && k != Key.RightAlt).ToArray();
         _holdBreathPanicTriggers = BuildHoldBreathPanicTriggers();
@@ -248,6 +253,16 @@ public sealed partial class MainViewModel : ViewModelBase
             return;
         }
 
+        // Confirmation gate: removal deletes durably from the store first (irreversible), so ask
+        // unless Shift was held at invocation. Declining returns before any mutation — selection,
+        // dirty state, and autosave are untouched. The modal disables its owner, so SelectedProfile
+        // cannot change during the call.
+        if (!_removeBypassModifierDown() &&
+            !_dialogService.ShowRemoveProfileConfirmation(SelectedProfile.Name))
+        {
+            return;
+        }
+
         try
         {
             await _profileManager.RemoveProfileAsync(SelectedProfile.Model);
@@ -261,6 +276,10 @@ public sealed partial class MainViewModel : ViewModelBase
     }
 
     private bool CanRemoveProfile() => SelectedProfile is { IsWindowsProfile: false };
+
+    // Read at command-invocation time (the Remove button is mouse/keyboard activated, so the live
+    // modifier state is the user's intent for THIS press).
+    private static bool DefaultRemoveBypassModifierDown() => Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
 
     [RelayCommand(CanExecute = nameof(CanSaveProfile))]
     private async Task SaveProfileAsync()

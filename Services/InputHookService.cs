@@ -553,6 +553,10 @@ public sealed class InputHookService : IInputHookService
 
                 RederivePhysicalModifierState();
                 _autoRun.SeedMovementPhysicalState();
+                if (_runtime.ActiveProfile is { } profile)
+                {
+                    _antiAfk.CaptureForegroundTarget(profile);
+                }
                 LogDebug($"Session switch ({e.Reason}): re-derived physical state");
             }
 

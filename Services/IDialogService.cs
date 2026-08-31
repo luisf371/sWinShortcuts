@@ -8,6 +8,8 @@ public interface IDialogService
 
     string? ShowOpenFileDialog(string title, string filter, string? initialPath = null);
 
+    bool ShowRemoveProfileConfirmation(string profileName);
+
     void ShowError(string message, string title);
 }
 

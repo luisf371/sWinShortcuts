@@ -144,9 +144,17 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
             && !string.IsNullOrEmpty(executable)
             && string.Equals(snapshot.Executable, executable, StringComparison.OrdinalIgnoreCase))
         {
+            var window = snapshot.WindowHandle;
+            var child = _transport.GetChildWindow(window);
+            if (child != IntPtr.Zero)
+            {
+                _transport.GetWindowThreadProcessId(child, out var childProcessId);
+                if (childProcessId == snapshot.ProcessId) window = child;
+            }
+
             // Last-focused-game-wins: a plain publish overwrites whatever was stored. A racing
             // release compares against its observed reference, so it can never erase this capture.
-            Volatile.Write(ref _retainedTarget, new AntiAfkTarget(profile, snapshot.WindowHandle, snapshot.ProcessId));
+            Volatile.Write(ref _retainedTarget, new AntiAfkTarget(profile, window, snapshot.ProcessId));
             return;
         }
 
@@ -412,25 +420,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 // the asynchronous activation worker has not published the new active profile
                 // yet, and the previous game must not keep receiving the ripple through that
                 // window.
-                if (_runtime.IsDisposed || !_runtime.IsRunning || Volatile.Read(ref _disposed) != 0
-                    || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration)))
-                    || !_runtime.AdvancedModeEnabled
-                    || !_runtime.ProfileInputGenerationIsCurrent()
-                    || owner is not { IsEnabled: true }
-                    || !owner.AntiAfk.IsEnabled
-                    || owner.AntiAfk.SendMode != mode)
-                {
-                    break;
-                }
-
-                // Re-read live every step: a successful recapture aborts via the target-identity
-                // check below, but a FAILED recapture leaves the old target in place — only this
-                // check observes the ownership change.
-                var stepActive = _runtime.ActiveProfile;
-                if (stepActive is not null && !ReferenceEquals(stepActive, owner)) break;
-
-                // Recapture/clear aborts.
-                if (!ReferenceEquals(Volatile.Read(ref _retainedTarget), target)) break;
+                if (!CanPostBackgroundStep(target, owner, mode, generation, requireStarted)) break;
 
                 if (!TargetStillValid(target))
                 {
@@ -444,17 +434,29 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 // path (abort after acquire, failed post, exception).
                 if (!_autoRun.TryBeginAntiAfkTap()) break;
 
+                var downPosted = false;
                 try
                 {
-                    sentAny |= PostTapToWindow(target, step.Key, isDown: true);
-                    Thread.Sleep(step.DownMs);
+                    // Arbitration can wait behind Auto-Run's lock. Recheck every live guard after
+                    // acquiring it so a concurrent disable, mode/owner change, or recapture cannot
+                    // leak one stale DOWN through that wait window.
+                    if (!TargetStillValid(target))
+                    {
+                        Interlocked.CompareExchange(ref _retainedTarget, null, target);
+                        break;
+                    }
+                    if (!CanPostBackgroundStep(target, owner, mode, generation, requireStarted)) break;
+
+                    downPosted = PostTapToWindow(target, step.Key, isDown: true);
+                    sentAny |= downPosted;
+                    if (downPosted) Thread.Sleep(step.DownMs);
                 }
                 finally
                 {
                     // Every started DOWN is paired by an UP, mirroring InputExecutor.ExecuteSequence.
                     try
                     {
-                        PostTapToWindow(target, step.Key, isDown: false);
+                        if (downPosted) PostTapToWindow(target, step.Key, isDown: false);
                     }
                     catch (Exception ex)
                     {
@@ -481,6 +483,29 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 ? "Anti-AFK fired WASD ripple (forced)"
                 : "Anti-AFK fired WASD ripple (background)");
         }
+    }
+
+    private bool CanPostBackgroundStep(
+        AntiAfkTarget target,
+        Profile owner,
+        AntiAfkSendMode mode,
+        long generation,
+        bool requireStarted)
+    {
+        if (_runtime.IsDisposed || !_runtime.IsRunning || Volatile.Read(ref _disposed) != 0
+            || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration)))
+            || !_runtime.AdvancedModeEnabled
+            || !_runtime.ProfileInputGenerationIsCurrent()
+            || owner is not { IsEnabled: true }
+            || !owner.AntiAfk.IsEnabled
+            || owner.AntiAfk.SendMode != mode
+            || !ReferenceEquals(Volatile.Read(ref _retainedTarget), target))
+        {
+            return false;
+        }
+
+        var active = _runtime.ActiveProfile;
+        return active is null || ReferenceEquals(active, owner);
     }
 
     private bool ForegroundMatches(Profile profile, long generation)

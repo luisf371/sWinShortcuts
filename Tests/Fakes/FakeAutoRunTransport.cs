@@ -8,6 +8,8 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
     private int _failPosts;
     private int _foregroundCallCount;
     private int _blockNextForegroundRead;
+    private int _processReadCount;
+    private int _blockedProcessReadNumber;
 
     internal IntPtr ForegroundWindow { get; set; } = (IntPtr)100;
     internal IntPtr ChildWindow { get; set; }
@@ -17,12 +19,15 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
     internal ManualResetEventSlim PostEntered { get; } = new(false);
     internal ManualResetEventSlim ForegroundEntered { get; } = new(false);
     internal ManualResetEventSlim ReleaseForeground { get; } = new(false);
+    internal ManualResetEventSlim ProcessReadEntered { get; } = new(false);
+    internal ManualResetEventSlim ReleaseProcessRead { get; } = new(false);
     internal bool BlockForegroundReads
     {
         get => Volatile.Read(ref _blockNextForegroundRead) != 0;
         set => Volatile.Write(ref _blockNextForegroundRead, value ? 1 : 0);
     }
     internal int ForegroundCallCount => Volatile.Read(ref _foregroundCallCount);
+    internal int BlockProcessReadNumber { set => Volatile.Write(ref _blockedProcessReadNumber, value); }
 
     internal void FailNextPost() => Interlocked.Increment(ref _failPosts);
 
@@ -42,6 +47,13 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
 
     public uint GetWindowThreadProcessId(IntPtr window, out uint processId)
     {
+        var readNumber = Interlocked.Increment(ref _processReadCount);
+        if (readNumber == Volatile.Read(ref _blockedProcessReadNumber))
+        {
+            Volatile.Write(ref _blockedProcessReadNumber, 0);
+            ProcessReadEntered.Set();
+            ReleaseProcessRead.Wait(TimeSpan.FromSeconds(2));
+        }
         ProcessIds.TryGetValue(window, out processId);
         return processId == 0 ? 0u : 1u;
     }

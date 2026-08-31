@@ -367,7 +367,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     {
         lock (_autoRunLock)
         {
-            if (_active || _runtime.IsDisposed || !_runtime.IsRunning)
+            if (_active || _backgroundThread?.IsAlive == true || _runtime.IsDisposed || !_runtime.IsRunning)
             {
                 return false;
             }

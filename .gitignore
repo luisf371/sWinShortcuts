@@ -21,5 +21,6 @@ obj/
 .jules/
 .tmp/
 .serena/
+.review-baseline/
 Internal_Doc/
 Docs/

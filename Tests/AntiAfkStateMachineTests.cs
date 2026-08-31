@@ -181,6 +181,28 @@ public sealed class AntiAfkStateMachineTests
     }
 
     [Fact]
+    public void Tick_BackgroundMode_SameProcessChildExists_PostsToChildWindow()
+    {
+        long timestamp = 0;
+        uint tick = 0;
+        var (machine, _, transport, _, profile, runtime) = CreateMachine(() => timestamp, () => tick);
+        using (machine)
+        {
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Background;
+            transport.ChildWindow = (IntPtr)101;
+            transport.ProcessIds[transport.ChildWindow] = 7;
+            machine.CaptureForegroundTarget(profile);
+            DeactivateAndUnfocus(runtime, transport);
+            timestamp = Stopwatch.Frequency * 60;
+            tick = 60_000;
+
+            machine.Tick();
+
+            AssertWasdRipple(transport.Posts.ToArray(), expectedWindow: transport.ChildWindow);
+        }
+    }
+
+    [Fact]
     public void Tick_BackgroundMode_KeyboardStillActive_DoesNotPost()
     {
         long timestamp = 0;
@@ -456,6 +478,39 @@ public sealed class AntiAfkStateMachineTests
             Assert.Equal(2, posts.Length);
             Assert.Equal((uint)NativeMethods.WM_KEYDOWN, posts[0].Message);
             Assert.Equal((uint)NativeMethods.WM_KEYUP, posts[1].Message);
+        }
+    }
+
+    [Fact]
+    public async Task Tick_DisabledDuringFinalTargetValidation_DoesNotPost()
+    {
+        uint tick = 0;
+        var (machine, _, transport, _, profile, runtime) = CreateMachine(
+            () => Stopwatch.Frequency * 60,
+            () => tick);
+        using (machine)
+        {
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
+            machine.CaptureForegroundTarget(profile);
+            DeactivateAndUnfocus(runtime, transport);
+            tick = 60_000;
+            // First read is the pre-arbitration target check; block the second, post-arbitration
+            // validation so the live-state check must still run afterward.
+            transport.BlockProcessReadNumber = 2;
+
+            var ripple = Task.Run(machine.Tick);
+            try
+            {
+                Assert.True(transport.ProcessReadEntered.Wait(TimeSpan.FromSeconds(2)));
+                profile.AntiAfk.IsEnabled = false;
+            }
+            finally
+            {
+                transport.ReleaseProcessRead.Set();
+            }
+
+            await ripple.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(transport.Posts);
         }
     }
 
