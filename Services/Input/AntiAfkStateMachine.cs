@@ -15,7 +15,8 @@ namespace sWinShortcuts.Services.Input;
 /// component as a per-step lock-free guard, so a started step always releases but later steps abort.
 /// Foreground SendMode keeps that exact path; Background/Forced instead post the WASD taps straight
 /// to a PID-validated window of the profile's executable (never SendInput), using a target retained
-/// from the profile's last activation.
+/// from the profile's last activation and snapshotted once per tick so the gates and the posted
+/// ripple always evaluate the same owner.
 /// </summary>
 internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
 {
@@ -245,25 +246,33 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 return;
             }
 
+            // Snapshot the retained target ONCE, before any gating: the background branch below
+            // evaluates its owner's mode, idle gate, and cadence against this same snapshot and
+            // posts to it, so a capture swap racing the tick can never apply one profile's gating
+            // semantics to another profile's window (the per-step target-identity check aborts
+            // anything still in flight after a swap).
+            var target = Volatile.Read(ref _retainedTarget);
+
             // Resolve the governing profile. The ACTIVE profile wins when it can run Anti-AFK;
-            // otherwise Background/Forced fall back to the retained target's owner — the game being
-            // unfocused is the normal Background case, and its IsEnabled/AntiAfk/SendMode are
-            // re-read live on every use below. Foreground hard-bails: with no active profile there
-            // is nothing to foreground-match against (the browser-leak guard).
+            // otherwise Background/Forced fall back to the snapshotted target's owner — the game
+            // being unfocused is the normal Background case, and its IsEnabled/AntiAfk/SendMode
+            // are re-read live on every use below. Foreground hard-bails: with no active profile
+            // there is nothing to foreground-match against (the browser-leak guard).
             var activeProfile = _runtime.ActiveProfile;
             Profile? profile;
             if (activeProfile is { IsEnabled: true } candidate && candidate.AntiAfk.IsEnabled)
             {
                 profile = candidate;
             }
+            else if (target?.Profile is { IsEnabled: true } owner
+                && owner.AntiAfk.IsEnabled
+                && owner.AntiAfk.SendMode != AntiAfkSendMode.Foreground)
+            {
+                profile = owner;
+            }
             else
             {
-                var retainedOwner = Volatile.Read(ref _retainedTarget)?.Profile;
-                profile = retainedOwner is { IsEnabled: true } owner
-                    && owner.AntiAfk.IsEnabled
-                    && owner.AntiAfk.SendMode != AntiAfkSendMode.Foreground
-                    ? retainedOwner
-                    : null;
+                profile = null;
             }
 
             if (profile is null)
@@ -277,23 +286,24 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 return;
             }
 
-            var mode = profile.AntiAfk.SendMode;
-            var intervalMs = (uint)(Math.Clamp(profile.AntiAfk.IntervalMinutes, 1, 15) * 60_000);
-            var keyboardIdleMs = (_timestamp() - Volatile.Read(ref _lastPhysicalKeyboardTick)) * TickToMilliseconds;
             var now = _tickCount();
-            var sinceLastFireMs = unchecked(now - _lastFireTick);
-            // Forced skips the keyboard-idle gate (fires on the timer regardless of activity); the
-            // since-last-fire cadence gate applies to every mode so each interval fires exactly once.
-            if (mode != AntiAfkSendMode.Forced && keyboardIdleMs < intervalMs) return;
-            if (sinceLastFireMs < intervalMs) return;
-
-            if (mode == AntiAfkSendMode.Foreground)
+            if (profile.AntiAfk.SendMode == AntiAfkSendMode.Foreground)
             {
+                var foregroundIntervalMs = (uint)(Math.Clamp(profile.AntiAfk.IntervalMinutes, 1, 15) * 60_000);
+                var foregroundIdleMs = (_timestamp() - Volatile.Read(ref _lastPhysicalKeyboardTick)) * TickToMilliseconds;
+                // Foreground keeps the dual idle+cadence gate: the ripple waits for real keyboard
+                // inactivity AND fires at most once per interval.
+                if (foregroundIdleMs < foregroundIntervalMs
+                    || unchecked(now - _lastFireTick) < foregroundIntervalMs)
+                {
+                    return;
+                }
+
                 TickForeground(profile, generation, requireStarted, now, logReason);
                 return;
             }
 
-            FireBackgroundRipple(generation, requireStarted, now, logReason);
+            FireBackgroundRipple(target, generation, requireStarted, now, logReason);
         }
         finally
         {
@@ -343,13 +353,16 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
     // Background/Forced: post the WASD ripple straight to the retained game window. Never SendInput,
     // never the executor — so it is structurally impossible for these modes to type into whatever app
     // currently has focus. Runs only on this timer (pool) thread; no sleeps are taken under any lock.
+    // The mode, idle, and cadence gates below evaluate the tick's TARGET SNAPSHOT — the same target
+    // the loop posts to — so gating and dispatch can never disagree about whose window and whose
+    // interval semantics apply.
     private void FireBackgroundRipple(
+        AntiAfkTarget? target,
         long generation,
         bool requireStarted,
         uint now,
         bool logReason)
     {
-        var target = Volatile.Read(ref _retainedTarget);
         if (target is null)
         {
             if (logReason) Log("Anti-AFK skip: background target unavailable");
@@ -377,6 +390,16 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
             return;
         }
 
+        var intervalMs = (uint)(Math.Clamp(owner.AntiAfk.IntervalMinutes, 1, 15) * 60_000);
+        var keyboardIdleMs = (_timestamp() - Volatile.Read(ref _lastPhysicalKeyboardTick)) * TickToMilliseconds;
+        var sinceLastFireMs = unchecked(now - _lastFireTick);
+        // Forced skips the keyboard-idle gate (fires on the timer regardless of activity); the
+        // since-last-fire cadence gate applies to every mode so each interval fires exactly once.
+        // Both are read from the SNAPSHOT owner — a target captured for a different profile
+        // mid-tick must never fire under this profile's already-passed gates.
+        if (mode != AntiAfkSendMode.Forced && keyboardIdleMs < intervalMs) return;
+        if (sinceLastFireMs < intervalMs) return;
+
         var sentAny = false;
         try
         {
@@ -385,9 +408,14 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                 // Fail-closed per-step guards BEFORE the DOWN, mirroring CanExecute + the
                 // executor's per-step abort: an in-flight ripple cannot keep sending after the
                 // feature is disabled, the mode is switched, or another profile takes focus.
+                // The generation check re-validates the foreground identity: it can advance while
+                // the asynchronous activation worker has not published the new active profile
+                // yet, and the previous game must not keep receiving the ripple through that
+                // window.
                 if (_runtime.IsDisposed || !_runtime.IsRunning || Volatile.Read(ref _disposed) != 0
                     || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration)))
                     || !_runtime.AdvancedModeEnabled
+                    || !_runtime.ProfileInputGenerationIsCurrent()
                     || owner is not { IsEnabled: true }
                     || !owner.AntiAfk.IsEnabled
                     || owner.AntiAfk.SendMode != mode)

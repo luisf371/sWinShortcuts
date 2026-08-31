@@ -460,6 +460,71 @@ public sealed class AntiAfkStateMachineTests
     }
 
     [Fact]
+    public void Tick_TargetSwappedBetweenGatingAndDispatch_DoesNotPostUnderWrongIntervalSemantics()
+    {
+        long timestamp = 0;
+        uint tick = 0;
+        Action? onTimestamp = null;
+        var (machine, _, transport, _, profile, runtime) = CreateMachine(
+            () => { onTimestamp?.Invoke(); return timestamp; },
+            () => tick);
+        var profileB = CreateOtherProfile();
+        using (machine)
+        {
+            // A Forced tick passes its gates while the keyboard is ACTIVE (Forced skips the idle
+            // gate). The injected keyboard-idle clock read is the deterministic seam between the
+            // tick's gating reads and its dispatch: racing exactly that window, game B focuses —
+            // its profile is published and its window captured, swapping the single retained slot
+            // to a Background owner whose idle gate was never evaluated. Nothing may be posted.
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
+            machine.CaptureForegroundTarget(profile);
+            DeactivateAndUnfocus(runtime, transport);
+            tick = 60_000;
+
+            onTimestamp = () =>
+            {
+                onTimestamp = null;
+                transport.ProcessIds[(IntPtr)200] = 9;
+                runtime.SetForegroundIdentity((IntPtr)200, 9, profileB.NormalizedExecutable, 2);
+                runtime.SetActiveProfile(profileB, 2);
+                machine.CaptureForegroundTarget(profileB);
+            };
+            machine.Tick();
+
+            Assert.Empty(transport.Posts);
+        }
+    }
+
+    [Fact]
+    public async Task Tick_ForegroundGenerationAdvancedMidRipple_PairsStartedKeyAndAbortsRest()
+    {
+        long timestamp = 0;
+        uint tick = 0;
+        var (machine, _, transport, _, profile, runtime) = CreateMachine(() => timestamp, () => tick);
+        using (machine)
+        {
+            // The game is focused and active at generation 1, so the ripple starts normally.
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Background;
+            machine.CaptureForegroundTarget(profile);
+            timestamp = Stopwatch.Frequency * 60;
+            tick = 60_000;
+
+            // Mid-ripple the foreground identity moves to another app at a FRESH generation while
+            // the activation worker has not published the new active profile yet: ActiveProfile
+            // still names the game, so neither the ownership veto nor the mode checks can abort —
+            // only the per-step generation guard can.
+            var posts = await RunRippleUntilFirstDownThen(
+                machine,
+                transport,
+                () => runtime.SetForegroundIdentity((IntPtr)999, 42, "browser.exe", 2));
+
+            Assert.Equal(2, posts.Length);
+            Assert.Equal((uint)NativeMethods.WM_KEYDOWN, posts[0].Message);
+            Assert.Equal((uint)NativeMethods.WM_KEYUP, posts[1].Message);
+        }
+    }
+
+    [Fact]
     public void ReleaseOwnedBy_StaleOwner_DoesNotEraseNewerCapture()
     {
         long timestamp = 0;
