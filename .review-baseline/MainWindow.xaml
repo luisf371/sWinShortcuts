@@ -118,82 +118,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
-        <!-- Minimal scrollbar (window scope so the sidebar ListBox gets it too, not just the tab
-             pages). The implicit style's Orientation=Horizontal trigger additionally keeps a
-             horizontal scrollbar unrenderable anywhere in MainWindow. Window-local on purpose:
-             promoting it to app level would restyle the Settings dialog. -->
-        <SolidColorBrush x:Key="ScrollBarTrackBrush" Color="#331E2A3B" />
-        <SolidColorBrush x:Key="ScrollBarThumbBrush" Color="#88E1E1E1" />
-        <Style x:Key="MinimalScrollBarButtonStyle" TargetType="RepeatButton">
-            <Setter Property="Focusable" Value="False" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="RepeatButton">
-                        <Border Background="Transparent" />
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style x:Key="MinimalScrollBarThumbStyle" TargetType="Thumb">
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Thumb">
-                        <Border x:Name="ThumbRoot"
-                                Background="{StaticResource ScrollBarThumbBrush}"
-                                CornerRadius="4" />
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ThumbRoot"
-                                        Property="Background"
-                                        Value="{DynamicResource AccentBrush}" />
-                            </Trigger>
-                            <Trigger Property="IsDragging" Value="True">
-                                <Setter TargetName="ThumbRoot"
-                                        Property="Background"
-                                        Value="{DynamicResource AccentDarkBrush}" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style TargetType="ScrollBar">
-            <Setter Property="Width" Value="8" />
-            <Setter Property="Background" Value="{StaticResource ScrollBarTrackBrush}" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ScrollBar">
-                        <Grid x:Name="Root"
-                              Width="{TemplateBinding Width}"
-                              Background="Transparent">
-                            <Border Background="{TemplateBinding Background}"
-                                    CornerRadius="4" />
-                            <Track x:Name="PART_Track"
-                                   IsDirectionReversed="True"
-                                   Margin="0">
-                                <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="ScrollBar.LineUpCommand"
-                                                  Style="{StaticResource MinimalScrollBarButtonStyle}" />
-                                </Track.DecreaseRepeatButton>
-                                <Track.Thumb>
-                                    <Thumb Style="{StaticResource MinimalScrollBarThumbStyle}" />
-                                </Track.Thumb>
-                                <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="ScrollBar.LineDownCommand"
-                                                  Style="{StaticResource MinimalScrollBarButtonStyle}" />
-                                </Track.IncreaseRepeatButton>
-                            </Track>
-                        </Grid>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-            <Style.Triggers>
-                <Trigger Property="Orientation" Value="Horizontal">
-                    <Setter Property="Visibility" Value="Collapsed" />
-                </Trigger>
-            </Style.Triggers>
-        </Style>
     </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
@@ -271,29 +195,12 @@
                          SelectedItem="{Binding SelectedProfile}"
                          Background="Transparent"
                          BorderThickness="0"
-                         Foreground="{DynamicResource ForegroundPrimaryBrush}"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                         ScrollViewer.VerticalScrollBarVisibility="Auto">
+                         Foreground="{DynamicResource ForegroundPrimaryBrush}">
                     <ListBox.ItemTemplate>
                         <DataTemplate DataType="{x:Type vm:ProfileViewModel}">
                             <StackPanel Orientation="Horizontal" Margin="4">
-                                <!-- Explicit style on purpose: it replaces the implicit app-wide
-                                     TextBlock style, so the default foreground is re-declared here.
-                                     Disabled rows dim to gray (live — IsEnabled raises PropertyChanged);
-                                     the tooltip keeps a clipped long name discoverable. -->
-                                <TextBlock Text="{Binding Name}" ToolTip="{Binding Name}">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
-                                            <Setter Property="Foreground" Value="{StaticResource ForegroundPrimaryBrush}" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsEnabled}" Value="False">
-                                                    <Setter Property="Foreground" Value="{StaticResource ForegroundSecondaryBrush}" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                                <TextBlock Text=" (disabled)" Margin="6,0,0,0" Foreground="{StaticResource ForegroundSecondaryBrush}">
+                                <TextBlock Text="{Binding Name}" />
+                                <TextBlock Text=" (disabled)" Margin="6,0,0,0" Foreground="{StaticResource ForegroundPrimaryBrush}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
                                             <Setter Property="Visibility" Value="Collapsed" />
@@ -317,8 +224,7 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <Button Grid.Column="0" Content="Add" Command="{Binding AddProfileCommand}" Margin="0,0,6,0" />
-                    <Button Grid.Column="1" Content="Remove" Command="{Binding RemoveProfileCommand}" Margin="6,0,0,0"
-                            ToolTip="Remove the selected profile. Hold Shift while clicking to delete immediately without the confirmation dialog." />
+                    <Button Grid.Column="1" Content="Remove" Command="{Binding RemoveProfileCommand}" Margin="6,0,0,0" />
                 </Grid>
             </Grid>
         </Border>
@@ -380,6 +286,79 @@
                                 Style="{StaticResource SettingsTabControlStyle}"
                                 ItemContainerStyle="{StaticResource SettingsTabItemStyle}"
                                 SelectedIndex="{Binding DataContext.SelectedTabIndex, ElementName=RootWindow, Mode=TwoWay}">
+                        <TabControl.Resources>
+                    <SolidColorBrush x:Key="ScrollBarTrackBrush" Color="#331E2A3B" />
+                    <SolidColorBrush x:Key="ScrollBarThumbBrush" Color="#88E1E1E1" />
+                    <Style x:Key="MinimalScrollBarButtonStyle" TargetType="RepeatButton">
+                        <Setter Property="Focusable" Value="False" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="RepeatButton">
+                                    <Border Background="Transparent" />
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                    <Style x:Key="MinimalScrollBarThumbStyle" TargetType="Thumb">
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="Thumb">
+                                    <Border x:Name="ThumbRoot"
+                                            Background="{StaticResource ScrollBarThumbBrush}"
+                                            CornerRadius="4" />
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="ThumbRoot"
+                                                    Property="Background"
+                                                    Value="{DynamicResource AccentBrush}" />
+                                        </Trigger>
+                                        <Trigger Property="IsDragging" Value="True">
+                                            <Setter TargetName="ThumbRoot"
+                                                    Property="Background"
+                                                    Value="{DynamicResource AccentDarkBrush}" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                    <Style TargetType="ScrollBar">
+                        <Setter Property="Width" Value="8" />
+                        <Setter Property="Background" Value="{StaticResource ScrollBarTrackBrush}" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ScrollBar">
+                                    <Grid x:Name="Root"
+                                          Width="{TemplateBinding Width}"
+                                          Background="Transparent">
+                                        <Border Background="{TemplateBinding Background}"
+                                                CornerRadius="4" />
+                                        <Track x:Name="PART_Track"
+                                               IsDirectionReversed="True"
+                                               Margin="0">
+                                            <Track.DecreaseRepeatButton>
+                                                <RepeatButton Command="ScrollBar.LineUpCommand"
+                                                              Style="{StaticResource MinimalScrollBarButtonStyle}" />
+                                            </Track.DecreaseRepeatButton>
+                                            <Track.Thumb>
+                                                <Thumb Style="{StaticResource MinimalScrollBarThumbStyle}" />
+                                            </Track.Thumb>
+                                            <Track.IncreaseRepeatButton>
+                                                <RepeatButton Command="ScrollBar.LineDownCommand"
+                                                              Style="{StaticResource MinimalScrollBarButtonStyle}" />
+                                            </Track.IncreaseRepeatButton>
+                                        </Track>
+                                    </Grid>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                        <Style.Triggers>
+                            <Trigger Property="Orientation" Value="Horizontal">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                        </TabControl.Resources>
                         <!-- Launcher is built-in-only (hosts the Windows Launcher group) and first
                              in the strip, so the built-in default opens on it: Launcher, Display,
                              System. Local Visibility binding — same pattern as Keys below. -->

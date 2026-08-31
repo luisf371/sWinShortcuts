@@ -11,11 +11,24 @@ public sealed class FakeDialogService : IDialogService
     // dialog failing during dispatcher shutdown must not leave a profile's edit lost / a task stuck).
     public bool ThrowOnError { get; set; }
 
+    // Remove-confirmation tracking: each call records the profile name and returns
+    // ConfirmRemoveProfileResult, so tests can pin accept/decline deterministically.
+    public int ConfirmRemoveProfileCount { get; private set; }
+    public string? LastConfirmRemoveProfileName { get; private set; }
+    public bool ConfirmRemoveProfileResult { get; set; } = true;
+
     public AddProfileDialogResult? ShowAddProfileDialog(string? profileName = null, string? executableName = null) => null;
 
     public AddProfileDialogResult? ShowEditProfileDialog(string profileName, string executableName) => null;
 
     public string? ShowOpenFileDialog(string title, string filter, string? initialPath = null) => null;
+
+    public bool ShowRemoveProfileConfirmation(string profileName)
+    {
+        ConfirmRemoveProfileCount++;
+        LastConfirmRemoveProfileName = profileName;
+        return ConfirmRemoveProfileResult;
+    }
 
     public void ShowError(string message, string title)
     {
