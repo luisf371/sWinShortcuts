@@ -4,6 +4,18 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## August 31, 2026 (Build 93)
+
+### Changed & Improved
+- **Debug Logging & Performance**:
+  - **Zero Memory Overhead**: Debug logging now uses zero temporary memory and creates no background lag when turned off, keeping inputs fast and responsive during gameplay.
+  - **Cleaner Log Labels**: Organized log messages with clear tags (`[UI]`, `[Settings]`, `[Input]`, `[Color]`, `[Launcher]`) and removed repetitive mouse-click spam from the main window.
+  - **Clear Feature Stop Reasons**: Log files now clearly state why features like Rapid Fire, Auto-Run, or Anti-AFK stopped (such as user toggle-off, hotkey reassignment, profile switching, or locking Windows).
+  - **Better Error Tracking**: Recorded low-level Windows error codes directly at the input sender so failed keys or clicks are accurately tracked without slowing down successful inputs.
+  - **Reliable Settings Logging**: Fixed Settings dialog logging so turning debug logs on or off is always saved properly.
+
+---
+
 ## August 31, 2026 (Build 92)
 
 ### Added
