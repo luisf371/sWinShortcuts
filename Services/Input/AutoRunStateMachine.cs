@@ -568,6 +568,10 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 _backgroundThread = thread;
                 thread.Start();
             }
+            if (_logger.IsEnabled)
+            {
+                _logger.Log($"AutoRun activated ({(background ? "background" : "foreground")}) for profile: {profile.Name}");
+            }
             return true;
         }
     }
@@ -633,9 +637,19 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         _queue.EnqueuePair(down, up);
     }
 
-    private void ReleaseLocked(bool includeBackground)
+    private void ReleaseLocked(bool includeBackground, string? reason = null)
     {
         if (!_active || (_isBackground && !includeBackground)) return;
+        // Requested, not completed: the foreground path only queues the UP commands to the executor
+        // and the background path only signals the worker via release flags flushed later in
+        // FlushBackgroundReleasesLocked. Emitted before ResetRunState, while _isBackground is still
+        // valid, and only for real releases — the gate above keeps no-ops silent.
+        if (_logger.IsEnabled)
+        {
+            _logger.Log(reason is null
+                ? $"AutoRun release requested ({(_isBackground ? "background" : "foreground")})"
+                : $"AutoRun release requested ({reason})");
+        }
         Interlocked.Increment(ref _injectionGeneration);
         bool releaseSprint = _sprintInjected || (_sprintIntendedHeld && !_sprintPending);
         var sprintUpKey = _sprintInjected ? _sprintInjectedKey : _sprintKey;
@@ -824,7 +838,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                     }
                     else if (!BackgroundTargetValid(_targetHwnd))
                     {
-                        ReleaseLocked(includeBackground: true);
+                        ReleaseLocked(includeBackground: true, reason: "background target validation failed");
                         stop = true;
                     }
                     else
@@ -939,7 +953,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             _transport.GetWindowThreadProcessId(foreground, out var foregroundPid);
             if (frame == IntPtr.Zero || foreground != frame || foregroundPid == 0 || foregroundPid != _targetPid)
             {
-                ReleaseLocked(includeBackground: true);
+                ReleaseLocked(includeBackground: true, reason: "background target validation failed");
                 return false;
             }
 
@@ -995,7 +1009,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 {
                     if (!PostAutoRunKey(Key.W, true, _suppressedPhysicalWUp, forceAttach: true))
                     {
-                        ReleaseLocked(includeBackground: true);
+                        ReleaseLocked(includeBackground: true, reason: "background movement injection failed");
                         return false;
                     }
                     _moveInjected = true;

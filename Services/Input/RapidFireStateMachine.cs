@@ -78,7 +78,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         }
 
         Volatile.Write(ref _toggleVk, vk);
-        return Release(preservePhysicalPairing: true);
+        return Release(preservePhysicalPairing: true, reason: "toggle key reassigned");
     }
 
     internal bool HandleToggleKey(int vkCode, bool isKeyDown, bool isKeyUp)
@@ -114,7 +114,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         _toggleDownLatched = true;
         if (IsReady())
         {
-            return Release(preservePhysicalPairing: true);
+            return Release(preservePhysicalPairing: true, reason: "toggle-off");
         }
 
         var armEpoch = Volatile.Read(ref _armEpoch);
@@ -153,7 +153,7 @@ internal sealed class RapidFireStateMachine : IDisposable
                 expectedPublishedGeneration == _runtime.PublishedForegroundGeneration &&
                 TryGetLiveOwner(out _))
             {
-                return Release(preservePhysicalPairing: true);
+                return Release(preservePhysicalPairing: true, reason: "toggle-off");
             }
         }
 
@@ -196,7 +196,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         Schedule(generation);
         if (_logger.IsEnabled)
         {
-            _logger.Log($"Rapid Fire armed: first synthetic click due in {_armedDelayMs} ms (interval={_intervalMs}, jitter={_jitterMs})");
+            _logger.Log($"Rapid Fire press started: first synthetic click due in {_armedDelayMs} ms (interval={_intervalMs}, jitter={_jitterMs})");
         }
     }
 
@@ -215,7 +215,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         CancelTimer();
     }
 
-    internal bool Release(bool preservePhysicalPairing)
+    internal bool Release(bool preservePhysicalPairing, string? reason = null)
     {
         var wasArmed = _armed || _ownerProfile is not null;
         Interlocked.Increment(ref _armEpoch);
@@ -227,6 +227,11 @@ internal sealed class RapidFireStateMachine : IDisposable
             _physicalLeftDown = false;
         }
 
+        if (wasArmed && _logger.IsEnabled)
+        {
+            _logger.Log($"Rapid Fire disarmed{(reason is null ? string.Empty : $" ({reason})")}");
+        }
+
         return wasArmed;
     }
 
@@ -234,7 +239,8 @@ internal sealed class RapidFireStateMachine : IDisposable
     {
         lock (_profileLock)
         {
-            return ReferenceEquals(_ownerProfile, profile) && Release(preservePhysicalPairing: true);
+            return ReferenceEquals(_ownerProfile, profile) &&
+                Release(preservePhysicalPairing: true, reason: "owner settings changed/removed");
         }
     }
 
@@ -366,10 +372,8 @@ internal sealed class RapidFireStateMachine : IDisposable
                 return;
             }
 
-            if (!_inputSender.SendLeftClick(holdMilliseconds))
-            {
-                Log("Rapid Fire click injection failed");
-            }
+            // WindowsInputSender logs which SendInput call failed; this bool adds no useful detail.
+            _inputSender.SendLeftClick(holdMilliseconds);
         }
         catch (Exception ex)
         {

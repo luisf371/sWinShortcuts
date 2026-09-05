@@ -141,7 +141,8 @@ public sealed class AutoRunStateMachineTests
     [Fact]
     public void BackgroundActivation_FailedInitialW_StopsRun()
     {
-        var (machine, _, transport, profile) = CreateMachine(AutoRunSendMode.Background);
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, transport, profile) = CreateMachine(AutoRunSendMode.Background, logger);
         transport.FailNextPost();
 
         Assert.True(Activate(machine, profile));
@@ -152,6 +153,66 @@ public sealed class AutoRunStateMachineTests
         var post = Assert.Single(transport.Posts);
         Assert.Equal((uint)NativeMethods.WM_KEYDOWN, post.Message);
         Assert.Equal(0x57, post.VirtualKey);
+        Assert.Single(logger.Messages, m => m == "AutoRun release requested (background movement injection failed)");
+    }
+
+    [Fact]
+    public void ForegroundActivationAndRelease_AreReportedWithMode()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, _, profile) = CreateMachine(AutoRunSendMode.Foreground, logger);
+
+        // No-op release while inactive: the early-return gate keeps it silent.
+        machine.Release(includeBackground: true);
+        Assert.Empty(logger.Messages);
+
+        Assert.True(Activate(machine, profile));
+        Assert.Equal("AutoRun activated (foreground) for profile: Game", Assert.Single(logger.Messages));
+
+        machine.Release(includeBackground: true);
+        Assert.Equal("AutoRun release requested (foreground)", logger.Messages[^1]);
+    }
+
+    [Fact]
+    public void BackgroundActivationAndRelease_AreReportedWithMode()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, transport, profile) = CreateMachine(AutoRunSendMode.Background, logger);
+
+        Assert.True(Activate(machine, profile));
+        Assert.True(transport.PostEntered.Wait(TimeSpan.FromSeconds(2)));
+
+        machine.Release(includeBackground: true);
+        machine.JoinBackgroundInputThread();
+
+        Assert.Equal("AutoRun activated (background) for profile: Game", logger.Messages[0]);
+        Assert.Equal("AutoRun release requested (background)", logger.Messages[^1]);
+    }
+
+    [Fact]
+    public void BackgroundTargetInvalidation_RequestsReleaseOnceWithReason()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, transport, profile) = CreateMachine(AutoRunSendMode.Background, logger);
+
+        Assert.True(Activate(machine, profile));
+        // Readiness signal: ResolveBackgroundTarget consumed the first foreground read and the
+        // loop's ForegroundIsTargetProcess the second, so initial resolution completed and the
+        // loop is running.
+        Assert.True(SpinWait.SpinUntil(() => transport.ForegroundCallCount >= 2, TimeSpan.FromSeconds(2)));
+
+        // Invalidate the RETAINED target's PID entry, not the foreground: BackgroundTargetValid
+        // revalidates the retained HWND->PID and never consults the foreground, and background
+        // Auto-Run intentionally survives pure focus moves — moving the foreground would leave
+        // this branch unexercised.
+        transport.ProcessIds[(IntPtr)100] = 9;
+
+        Assert.True(SpinWait.SpinUntil(() => !machine.IsActive, TimeSpan.FromSeconds(2)));
+        machine.JoinBackgroundInputThread();
+
+        // Exactly one: the release is requested once here and every subsequent ReleaseLocked call
+        // is silenced by its !_active early-return gate.
+        Assert.Single(logger.Messages, m => m == "AutoRun release requested (background target validation failed)");
     }
 
     [Fact]
@@ -197,7 +258,9 @@ public sealed class AutoRunStateMachineTests
     }
 
     private static (AutoRunStateMachine Machine, RecordingInputQueue Queue,
-        FakeAutoRunTransport Transport, Profile Profile) CreateMachine(AutoRunSendMode sendMode)
+        FakeAutoRunTransport Transport, Profile Profile) CreateMachine(
+        AutoRunSendMode sendMode,
+        NullLoggerService? logger = null)
     {
         var profile = new Profile
         {
@@ -224,7 +287,7 @@ public sealed class AutoRunStateMachineTests
             runtime,
             queue,
             new ThreadLocal<Random>(() => new Random(1)),
-            new NullLoggerService(),
+            logger ?? new NullLoggerService(),
             transport);
         return (machine, queue, transport, profile);
     }

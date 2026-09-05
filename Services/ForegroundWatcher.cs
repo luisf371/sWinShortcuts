@@ -9,8 +9,9 @@ using sWinShortcuts.Interop;
 
 namespace sWinShortcuts.Services;
 
-public sealed class ForegroundWatcher : IForegroundWatcher
+public sealed class ForegroundWatcher(ILoggerService logger) : IForegroundWatcher
 {
+    private readonly ILoggerService _logger = logger;
     private readonly object _lifecycleLock = new();
     private NativeMethods.WinEventDelegate? _callback;
     private IntPtr _hookHandle;
@@ -168,6 +169,10 @@ public sealed class ForegroundWatcher : IForegroundWatcher
         }
         catch (Exception ex)
         {
+            // Pre-start this only supplements the propagation through Start()/the app handlers;
+            // post-start it is the ONLY record, because TrySetException is a no-op once
+            // TrySetResult has run.
+            _logger.Log($"[Input] Foreground watcher hook thread failed: {ex}");
             started.TrySetException(ex);
         }
         finally
@@ -229,9 +234,12 @@ public sealed class ForegroundWatcher : IForegroundWatcher
             // an observed intermediate transition as a teardown request instead of activating it.
             ProcessForegroundChange(hwnd, NativeMethods.GetForegroundWindow());
         }
-        catch
+        catch (Exception ex)
         {
-            // Never let a managed subscriber exception escape a native WinEvent callback.
+            // Never let a managed subscriber exception escape a native WinEvent callback — but
+            // record what was lost (ex.Message only: a persistently broken subscriber can make this
+            // recur per foreground change).
+            _logger.Log($"[Input] Foreground watcher event failed: {ex.Message}");
         }
     }
 

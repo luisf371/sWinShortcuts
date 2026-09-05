@@ -637,7 +637,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             }
             catch (Exception ex)
             {
-                _logger.Log($"[Input] Profile activation failed: {ex}");
+                _logger.Log($"[Input] Foreground profile transition failed: {ex}");
             }
         }
     }
@@ -658,7 +658,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             }
             catch (Exception ex)
             {
-                _logger.Log($"[Color] ProcessForegroundChange failed: {ex}");
+                _logger.Log($"[Color] ProcessColorChange failed: {ex}");
             }
         }
     }
@@ -848,6 +848,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             if (display is null)
             {
                 // Wanted to apply/restore but the hardware isn't present — don't dedup; retry later.
+                _logger.Log($"[Color] Display '{displayPlan.DisplayId}' is in the plan but absent from hardware; will retry on the next event.");
                 allApplied = false;
                 continue;
             }
@@ -866,6 +867,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             // fail-closed CreateDC, unmappable DVC) count as applied to avoid a per-event retry storm.
             if (outcome == ColorApplyOutcome.Failed)
             {
+                _logger.Log($"[Color] Apply failed for display '{displayPlan.DisplayId}'; will retry on the next event.");
                 allApplied = false;
             }
         }

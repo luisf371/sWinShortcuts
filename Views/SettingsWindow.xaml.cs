@@ -12,6 +12,7 @@ public partial class SettingsWindow : Window
 {
     private readonly IStartupService _startupService;
     private readonly IInputHookService _inputHookService;
+    private readonly ILoggerService _logger;
     private readonly SettingsViewModel _vm;
 
     // Reuse the same INI storage path pattern used by MainWindow
@@ -41,6 +42,7 @@ public partial class SettingsWindow : Window
             : $"Build {BuildInfo.Number} — {BuildInfo.Date}";
         _startupService = startupService;
         _inputHookService = inputHookService;
+        _logger = loggerService;
         _vm = new SettingsViewModel(loggerService, inputHookService);
         DataContext = _vm;
 
@@ -85,8 +87,11 @@ public partial class SettingsWindow : Window
             _baselineVmStartAsAdmin = _vm.StartAsAdmin;
             _vm.IsStartupLoaded = true; // enables the startup checkboxes + Save now that the OS state is known
         }
-        catch
+        catch (Exception ex)
         {
+            // Recorded before the _closed early-return so the diagnostic exists even when the window
+            // closed before the await resumed (the MessageBox below is skipped in that case).
+            _logger.Log($"[Settings] Failed to read startup state: {ex.Message}");
             if (_closed)
             {
                 return;
@@ -110,7 +115,7 @@ public partial class SettingsWindow : Window
         try
         {
             var ini = IniDocument.Load(_settingsPath);
-            _vm.EnableDebugLogging = ini.GetValue("App", "EnableDebugLogging") == "true";
+            _vm.SetEnableDebugLoggingProgrammatically(ini.GetValue("App", "EnableDebugLogging") == "true");
             // Default-on: only the literal "false" disables (missing key = enabled).
             _vm.HookWatchdogEnabled = ini.GetValue("App", "HookWatchdog") != "false";
             // MainWindow resolves + persists [App] AdvancedMode at startup (incl. the upgrade
@@ -128,9 +133,12 @@ public partial class SettingsWindow : Window
             _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;
             _vm.RapidFireToggleKey = AppSettings.LoadRapidFireToggleKey(_settingsPath) ?? Key.None;
         }
-        catch
+        catch (Exception ex)
         {
-            _vm.EnableDebugLogging = false;
+            // Written BEFORE the safe-default assignments: the debug-logging default below disables
+            // the logger, which would otherwise drop the very entry explaining the failure.
+            _logger.Log($"[Settings] Failed to load app settings; using safe defaults: {ex.Message}");
+            _vm.SetEnableDebugLoggingProgrammatically(false);
             _vm.HookWatchdogEnabled = true;
             // Fall back to the live service value (never a blind false) so a read failure can't
             // silently disable an upgrade-enabled gate the service already applied.
@@ -165,7 +173,9 @@ public partial class SettingsWindow : Window
         catch (Exception ex)
         {
             // F-016: no longer swallowed. The caller keeps the dialog open and shows this, so a
-            // read-only/locked INI can't report "saved" and then silently revert on restart.
+            // read-only/locked INI can't report "saved" and then silently revert on restart. The
+            // debug entry records the same failure the MessageBox surfaces.
+            _logger.Log($"[Settings] Failed to save app settings: {ex.Message}");
             error = ex.Message;
             return false;
         }
@@ -313,8 +323,9 @@ public partial class SettingsWindow : Window
     private void RollBackLiveSettings()
     {
         // The VM setters ARE the live-apply path, so reassigning the baseline reverts both the VM and the
-        // underlying service (each setter no-ops if already equal).
-        _vm.EnableDebugLogging = _baselineDebugLogging;
+        // underlying service (each setter no-ops if already equal). Debug logging rolls back through its
+        // own non-user path so the rollback is logged with its actual cause, never "via settings".
+        _vm.RollBackEnableDebugLogging(_baselineDebugLogging);
         _vm.HookWatchdogEnabled = _baselineWatchdog;
         _vm.AdvancedModeEnabled = _baselineAdvancedMode;
         _vm.ColorToggleKey = _baselineColorToggleKey;

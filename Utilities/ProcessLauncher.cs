@@ -24,7 +24,7 @@ public static class ProcessLauncher
             }
             catch (Exception ex)
             {
-                logger?.Log($"Failed to launch as desktop user: {ex.Message}");
+                logger?.Log($"[Launcher] Failed to launch as desktop user '{path}': {ex.Message}");
                 // CRITICAL: Do NOT fall back to standard launch if de-elevation fails.
                 // That would result in running as Admin against the user's wishes.
                 throw new InvalidOperationException("Failed to launch application as limited user from admin context.", ex);
@@ -46,7 +46,7 @@ public static class ProcessLauncher
         }
         catch (Exception ex)
         {
-            logger?.Log($"Failed to launch process: {ex.Message}");
+            logger?.Log($"[Launcher] Failed to launch '{path}': {ex.Message}");
             throw;
         }
     }
@@ -77,7 +77,7 @@ public static class ProcessLauncher
             }
             catch (Exception ex)
             {
-                logger?.Log($"Fallback explorer launch failed: {ex.Message}");
+                logger?.Log($"[Launcher] Fallback explorer launch of '{resolvedPath}' failed: {ex.Message}");
                 // Fall through to COM method if this fails for some reason.
             }
         }

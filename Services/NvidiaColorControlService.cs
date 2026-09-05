@@ -148,7 +148,7 @@ public sealed class NvidiaColorControlService : IDisposable
 
             if (_nvapiAvailableChecked && !_nvapiInitialized)
             {
-                _logger.Log("[Color][NVAPI] NvAPI previously checked and unavailable.");
+                // Initialization already logged the failure; keep repeat applies to one skip entry.
                 return false;
             }
 

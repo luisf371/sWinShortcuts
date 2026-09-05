@@ -356,11 +356,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             return false;
         }
 
+        // Short-count and skip diagnostics live at the SendInput boundary (WindowsInputSender).
         var sent = _inputSender.SendDummyKey();
-        if (!sent && _logger.IsEnabled)
-        {
-            _logger.Log("WindowsLauncher dummy key injection failed");
-        }
         command.Completion?.TrySetResult(true);
         return sent;
     }
@@ -447,12 +444,9 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
 
     private bool SendKey(Key key, bool isKeyDown)
     {
-        var sent = _inputSender.SendKey(key, isKeyDown);
-        if (!sent && _logger.IsEnabled)
-        {
-            _logger.Log($"SendKey FAILED: {key} ({(isKeyDown ? "DOWN" : "UP")})");
-        }
-
-        return sent;
+        // IInputSender exposes a bare bool: a false can be a vk-mapping skip that never reached
+        // SendInput, and any last-error read here would be stale. The failure facts exist only at
+        // the sender boundary (WindowsInputSender), which logs them.
+        return _inputSender.SendKey(key, isKeyDown);
     }
 }

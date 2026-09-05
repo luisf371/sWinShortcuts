@@ -1,5 +1,6 @@
 using System.Windows.Input;
 using sWinShortcuts.Models;
+using sWinShortcuts.Services;
 using sWinShortcuts.Services.Input;
 using sWinShortcuts.Utilities;
 using Tests.Fakes;
@@ -329,6 +330,24 @@ public sealed class InputExecutorTests
             sender.ReleaseDown.Set();
             executor.StopAndDrain();
         }
+    }
+
+    [Fact]
+    public void WindowsInputSender_EarlyReturnSkips_LogDefinitiveReasonsWithoutErrorCodes()
+    {
+        var logger = new NullLoggerService { IsEnabled = true };
+        var sender = new WindowsInputSender(logger);
+
+        // vk==0: no virtual-key mapping — the request never reaches SendInput, so the skip states
+        // its reason without pretending an error code explains it.
+        Assert.False(sender.SendKey(Key.None, isKeyDown: true));
+        Assert.Contains("[Input] SendInput skipped: no virtual-key mapping for None", logger.Messages);
+
+        // Range guard: same shape, with the rejected key visible in the entry.
+        Assert.False(sender.SendVirtualKeyTap(0));
+        Assert.False(sender.SendVirtualKeyTap(0x10000));
+        Assert.Contains("[Input] SendInput skipped: virtual key 0x0 out of range", logger.Messages);
+        Assert.Contains("[Input] SendInput skipped: virtual key 0x10000 out of range", logger.Messages);
     }
 
     private static InputRuntimeState RunningRuntime()

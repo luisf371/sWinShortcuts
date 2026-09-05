@@ -1,3 +1,4 @@
+using System.Reflection;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
@@ -130,6 +131,62 @@ public class ProfileActivationColorPlanTests
         Assert.Equal(ColorVariant.Primary, profile.ColorSettings.ActiveVariant);
         Assert.Equal(40, Assert.Single(ProfileActivationService.BuildColorPlan(profile, displays, manager).Displays).Brightness);
     }
+
+    [Fact]
+    public async Task ApplyColorPlan_DisplayAbsentFromHardware_ReturnsFalseAndLogsFailure()
+    {
+        var manager = await CreateManagerAsync();
+        var logger = new NullLoggerService { IsEnabled = true };
+        var service = new ProfileActivationService(
+            manager,
+            new FakeForegroundWatcher(),
+            new FakeInputHookService(),
+            new FakeSystemTrayService(),
+            new RecordingColorControlService(),
+            new FakeDisplayService(),
+            new FakeCrosshairService(),
+            logger);
+
+        // The display is in the plan but absent from hardware: the plan stays un-deduped (retry on
+        // the next event) and the skip is now visible in the log.
+        Assert.False(ApplyColorPlan(service, SingleDisplayPlan("DISPLAY1"), []));
+        Assert.Contains(
+            "[Color] Display 'DISPLAY1' is in the plan but absent from hardware; will retry on the next event.",
+            logger.Messages);
+    }
+
+    [Fact]
+    public async Task ApplyColorPlan_FailedOutcome_ReturnsFalseAndLogsFailure()
+    {
+        var manager = await CreateManagerAsync();
+        var logger = new NullLoggerService { IsEnabled = true };
+        var color = new RecordingColorControlService { Outcome = ColorApplyOutcome.Failed };
+        var service = new ProfileActivationService(
+            manager,
+            new FakeForegroundWatcher(),
+            new FakeInputHookService(),
+            new FakeSystemTrayService(),
+            color,
+            new FakeDisplayService { Displays = [CreateDisplay("DISPLAY1")] },
+            new FakeCrosshairService(),
+            logger);
+
+        Assert.False(ApplyColorPlan(service, SingleDisplayPlan("DISPLAY1"), [CreateDisplay("DISPLAY1")]));
+        Assert.Contains(
+            "[Color] Apply failed for display 'DISPLAY1'; will retry on the next event.",
+            logger.Messages);
+    }
+
+    private static ColorPlan SingleDisplayPlan(string displayId) => new(
+        [new DisplayColorPlan(displayId, IsEnabled: true, Brightness: 60, Contrast: 50, Gamma: 1.0, DigitalVibrance: 50)]);
+
+    private static bool ApplyColorPlan(
+        ProfileActivationService service,
+        ColorPlan plan,
+        IReadOnlyList<DisplayInfo> displays) =>
+        (bool)typeof(ProfileActivationService)
+            .GetMethod("ApplyColorPlan", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(service, [plan, ColorPlan.Empty, displays])!;
 
     private static async Task<ProfileManager> CreateManagerAsync()
     {

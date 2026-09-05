@@ -9,11 +9,23 @@ public sealed class WindowsInputSender : IInputSender
 {
     private static readonly int InputStructSize = Marshal.SizeOf<NativeMethods.INPUT>();
 
+    private readonly ILoggerService _logger;
+
+    public WindowsInputSender(ILoggerService logger)
+    {
+        _logger = logger;
+    }
+
     public bool SendKey(Key key, bool isKeyDown)
     {
         var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
         if (virtualKey == 0)
         {
+            if (_logger.IsEnabled)
+            {
+                _logger.Log($"[Input] SendInput skipped: no virtual-key mapping for {key}");
+            }
+
             return false;
         }
 
@@ -27,13 +39,18 @@ public sealed class WindowsInputSender : IInputSender
         }
 
         var input = CreateKeyboardInput((ushort)virtualKey, scanCode, flags);
-        return NativeMethods.SendInput(1, [input], InputStructSize) == 1;
+        return SendInputLogged([input], SendInputKind.KeyEvent, key, isKeyDown);
     }
 
     public bool SendVirtualKeyTap(int virtualKey)
     {
         if (virtualKey is <= 0 or > ushort.MaxValue)
         {
+            if (_logger.IsEnabled)
+            {
+                _logger.Log($"[Input] SendInput skipped: virtual key 0x{virtualKey:X} out of range");
+            }
+
             return false;
         }
 
@@ -46,7 +63,7 @@ public sealed class WindowsInputSender : IInputSender
             (ushort)virtualKey,
             scanCode,
             NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP);
-        return NativeMethods.SendInput(2, [down, up], InputStructSize) == 2;
+        return SendInputLogged([down, up], SendInputKind.VirtualKeyTap, virtualKey: virtualKey);
     }
 
     public bool SendLeftClick(int holdMilliseconds)
@@ -56,7 +73,7 @@ public sealed class WindowsInputSender : IInputSender
         var down = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTDOWN);
         var up = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_LEFTUP);
 
-        if (NativeMethods.SendInput(1, [down], InputStructSize) != 1)
+        if (!SendInputLogged([down], SendInputKind.LeftButtonDown))
         {
             return false;
         }
@@ -73,7 +90,9 @@ public sealed class WindowsInputSender : IInputSender
             {
                 // A failed UP is the dangerous half of a split click; retry once so a transient failure
                 // cannot leave the logical mouse button held after the physical button is released.
-                released = NativeMethods.SendInput(1, [up], InputStructSize) == 1;
+                // Only a retry that also fails is logged — a first attempt the retry recovers stays
+                // silent (per-action noise discipline).
+                released = SendInputLogged([up], SendInputKind.LeftButtonUpRetry);
             }
         }
 
@@ -86,7 +105,62 @@ public sealed class WindowsInputSender : IInputSender
             0xFF,
             0,
             NativeMethods.KeyEventFlags.KEYEVENTF_KEYUP);
-        return NativeMethods.SendInput(1, [input], InputStructSize) == 1;
+        return SendInputLogged([input], SendInputKind.DummyKey);
+    }
+
+    /// <summary>
+    /// Which injected-event shape a SendInput call carries. Callers pass the raw key/direction or
+    /// virtual-key value instead of a pre-built description so that successful, unlogged injections
+    /// perform no diagnostic string work — these calls run at injected-key frequency.
+    /// </summary>
+    private enum SendInputKind
+    {
+        KeyEvent,
+        VirtualKeyTap,
+        LeftButtonDown,
+        LeftButtonUpRetry,
+        DummyKey
+    }
+
+    /// <summary>
+    /// On a short count the last error is captured immediately (nothing but the count comparison
+    /// sits between the P/Invoke and the read) and one entry records what only this boundary can
+    /// observe: the inserted-event count and the captured code. Neither value identifies why input
+    /// was blocked (UIPI blocking in particular is not reported), so the code is a captured
+    /// diagnostic, never the rejection reason.
+    /// The count also exposes a partial insertion of the two-event virtual-key tap (sent=1/2).
+    /// The description is constructed only here — after a short count, inside the IsEnabled branch.
+    /// </summary>
+    private bool SendInputLogged(
+        NativeMethods.INPUT[] inputs,
+        SendInputKind kind,
+        Key key = Key.None,
+        bool isKeyDown = false,
+        int virtualKey = 0)
+    {
+        var sent = NativeMethods.SendInput((uint)inputs.Length, inputs, InputStructSize);
+        if (sent == (uint)inputs.Length)
+        {
+            return true;
+        }
+
+        var lastError = Marshal.GetLastWin32Error();
+        if (_logger.IsEnabled)
+        {
+            var description = kind switch
+            {
+                SendInputKind.KeyEvent => $"key {key} ({(isKeyDown ? "DOWN" : "UP")})",
+                SendInputKind.VirtualKeyTap => $"virtual-key tap 0x{virtualKey:X}",
+                SendInputKind.LeftButtonDown => "left-button DOWN",
+                SendInputKind.LeftButtonUpRetry => "left-button UP failed after retry",
+                _ => "dummy key"
+            };
+            var suffix = kind == SendInputKind.LeftButtonUpRetry ? " (button may be stuck)" : string.Empty;
+            _logger.Log(
+                $"[Input] SendInput {description}: sent={sent}/{inputs.Length} lastError=0x{lastError:X}{suffix}");
+        }
+
+        return false;
     }
 
     private static NativeMethods.INPUT CreateKeyboardInput(

@@ -57,7 +57,8 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
     // Retained background-posting target. Explicit Volatile/Interlocked ops (the codebase idiom —
     // avoids CS0420 on a volatile field): the capture publish is a volatile write; every clear is
     // interlocked so a stale release can never erase a newer capture. Only Stop()/session teardown
-    // clear unconditionally (Interlocked.Exchange).
+    // clear unconditionally (Interlocked.Exchange). Compare CAS results by reference: record
+    // equality can match a newer same-valued capture.
     private AntiAfkTarget? _retainedTarget;
     private AntiAfkTarget? _reportedPostFailureTarget;
     private int _lastPostError;
@@ -115,8 +116,14 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
             timer = _timer;
             _timer = null;
             // Hard lifecycle boundary: the retained target dies with the session (unconditional
-            // clear — nothing can capture after Stop, so no CAS is needed).
-            Interlocked.Exchange(ref _retainedTarget, null);
+            // clear — nothing can capture after Stop, so no CAS is needed). The entry reports only
+            // an actual removal: after a session-teardown clear the slot is already null and this
+            // Exchange returns null, so Stop cannot double-report.
+            var retained = Interlocked.Exchange(ref _retainedTarget, null);
+            if (retained is not null)
+            {
+                Log("Anti-AFK: background target released (Stop)");
+            }
         }
         if (timer is null) return;
         timer.Change(Timeout.Infinite, Timeout.Infinite);
@@ -168,7 +175,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         var observed = Volatile.Read(ref _retainedTarget);
         if (observed is not null
             && !ReferenceEquals(observed.Profile, profile)
-            && Interlocked.CompareExchange(ref _retainedTarget, null, observed) == observed)
+            && ReferenceEquals(Interlocked.CompareExchange(ref _retainedTarget, null, observed), observed))
         {
             Log("Anti-AFK: background target released (capture failed for the newly focused profile)");
         }
@@ -183,14 +190,22 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         ArgumentNullException.ThrowIfNull(profile);
 
         var observed = Volatile.Read(ref _retainedTarget);
-        if (observed is not null && ReferenceEquals(observed.Profile, profile))
+        if (observed is not null
+            && ReferenceEquals(observed.Profile, profile)
+            && ReferenceEquals(Interlocked.CompareExchange(ref _retainedTarget, null, observed), observed))
         {
-            Interlocked.CompareExchange(ref _retainedTarget, null, observed);
+            Log($"Anti-AFK: background target released (owner removed/disabled: {profile.Name})");
         }
     }
 
     /// <summary>Unconditional lifecycle clear (session switch away, hard teardown).</summary>
-    internal void ReleaseForegroundTarget() => Interlocked.Exchange(ref _retainedTarget, null);
+    internal void ReleaseForegroundTarget()
+    {
+        if (Interlocked.Exchange(ref _retainedTarget, null) is { })
+        {
+            Log("Anti-AFK: background target released (session teardown)");
+        }
+    }
 
     internal void NotePhysicalKeyboardActivity(long timestamp) =>
         Volatile.Write(ref _lastPhysicalKeyboardTick, timestamp);
@@ -545,7 +560,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
 
     private void ReleaseInvalidTarget(AntiAfkTarget target)
     {
-        if (Interlocked.CompareExchange(ref _retainedTarget, null, target) == target)
+        if (ReferenceEquals(Interlocked.CompareExchange(ref _retainedTarget, null, target), target))
         {
             Log($"Anti-AFK background target invalid: hwnd=0x{target.WindowHandle.ToInt64():X} expected-pid={target.ProcessId}");
         }

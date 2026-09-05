@@ -46,7 +46,7 @@ internal static class InputHookServiceTestExtensions
         {
             runtime.SetRunning(false);
             Get<InputExecutor>(service, ExecutorField).StopAndDrain(
-                () => ReleaseAllStateMethod.Invoke(service, [false, false]),
+                () => ReleaseAllStateMethod.Invoke(service, [false, false, null]),
                 TimeSpan.FromSeconds(2));
         }
     }

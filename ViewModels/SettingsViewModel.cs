@@ -107,12 +107,52 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         get => _enableDebugLogging;
         set
         {
-            if (_enableDebugLogging != value)
+            if (_enableDebugLogging == value)
             {
-                _enableDebugLogging = value;
-                _loggerService.IsEnabled = value;
-                OnPropertyChanged();
+                return;
             }
+
+            _enableDebugLogging = value;
+            if (value)
+            {
+                _loggerService.IsEnabled = true; // enable FIRST so the entry is not dropped
+                _loggerService.Log("[Settings] Debug logging enabled via settings");
+            }
+            else
+            {
+                _loggerService.Log("[Settings] Debug logging disabled via settings"); // while still enabled
+                _loggerService.IsEnabled = false;
+            }
+
+            OnPropertyChanged();
+        }
+    }
+
+    // Applies hydration/cancel state without recording a user toggle.
+    internal void SetEnableDebugLoggingProgrammatically(bool value)
+    {
+        _enableDebugLogging = value;
+        _loggerService.IsEnabled = value;
+        OnPropertyChanged(nameof(EnableDebugLogging));
+    }
+
+    // Logs before disabling or after enabling so the rollback entry survives.
+    internal void RollBackEnableDebugLogging(bool baseline)
+    {
+        if (_enableDebugLogging == baseline)
+        {
+            return;
+        }
+
+        if (baseline)
+        {
+            SetEnableDebugLoggingProgrammatically(true); // enable first so the entry is recorded
+            _loggerService.Log("[Settings] Debug logging re-enabled (settings dialog cancelled)");
+        }
+        else
+        {
+            _loggerService.Log("[Settings] Debug logging disabled (settings dialog cancelled)");
+            SetEnableDebugLoggingProgrammatically(false);
         }
     }
 

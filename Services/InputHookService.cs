@@ -150,7 +150,7 @@ public sealed class InputHookService : IInputHookService
             // action — its tick self-gates on _runtime.AdvancedModeEnabled. (Auto-Run release is wired in P3a.)
             if (!value)
             {
-                if (_rapidFire.Release(preservePhysicalPairing: true))
+                if (_rapidFire.Release(preservePhysicalPairing: true, reason: "Advanced Mode disabled"))
                 {
                     // Gate closed: the arm is gone. Raised only when an arm was actually live;
                     // handlers are enqueue-only so this stays safe on the dispatcher thread.
@@ -312,7 +312,7 @@ public sealed class InputHookService : IInputHookService
                         NativeMethods.ProcessPowerThrottling, ref throttleState,
                         (uint)Marshal.SizeOf<NativeMethods.PROCESS_POWER_THROTTLING_STATE>()))
                 {
-                    LogDebug($"SetProcessInformation(IGNORE_TIMER_RESOLUTION) failed (pre-Win11?): 0x{Marshal.GetLastWin32Error():X}");
+                    LogDebug($"SetProcessInformation(IGNORE_TIMER_RESOLUTION) failed: 0x{Marshal.GetLastWin32Error():X} (best-effort Win11 timer-resolution opt-out; continuing with timeBeginPeriod)");
                 }
 
                 _timerResolutionRaised = NativeMethods.timeBeginPeriod(1) == 0; // TIMERR_NOERROR
@@ -503,7 +503,9 @@ public sealed class InputHookService : IInputHookService
             // release such a key and it would stay stuck system-wide beyond process exit.
             _runtime.SetRunning(false);
 
-            rapidFireArmCleared = ReleaseAllState(preservePhysicalPairing: false);
+            rapidFireArmCleared = ReleaseAllState(
+                preservePhysicalPairing: false,
+                rapidFireDisarmReason: "Stop");
             // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; Stop() (app exit) must still
             // release it — post the final UP before the injector drains below.
             _autoRun.Release(includeBackground: true);
@@ -579,14 +581,16 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
-            rapidFireArmCleared = ReleaseAllState(preservePhysicalPairing: false);
+            rapidFireArmCleared = ReleaseAllState(
+                preservePhysicalPairing: false,
+                rapidFireDisarmReason: $"session switch ({e.Reason})");
             // §11.6: ReleaseAllState skips a decoupled Background Auto-Run; the desktop is going away
             // (lock/logoff), so release it here too.
             _autoRun.Release(includeBackground: true);
             // The retained Anti-AFK background target belongs to a live desktop session too — the
             // game window's input queue is going away with it.
             _antiAfk.ReleaseForegroundTarget();
-            LogDebug($"Session switch ({e.Reason}): released all injected state");
+            LogDebug($"Session switch ({e.Reason}): release requested for all injected state");
         }
 
         // Raised only after _profileLock closed (hard boundary — the arm is gone).
@@ -1120,6 +1124,7 @@ public sealed class InputHookService : IInputHookService
                     RederivePhysicalModifierState();
                     _runtime.SetActiveProfileGeneration(long.MinValue);
                     notify = true;
+                    LogDebug($"Profile hard-deactivated: '{profile.Name}' (changeKind={changeKind})");
                 }
             }
 
@@ -1593,11 +1598,12 @@ public sealed class InputHookService : IInputHookService
 
     private bool ReleaseAllState(
         bool preservePhysicalPairing = true,
-        bool preserveRapidFireArm = false)
+        bool preserveRapidFireArm = false,
+        string? rapidFireDisarmReason = null)
     {
         var rapidFireArmCleared = preserveRapidFireArm
             ? CancelRapidFirePressAndKeepArm()
-            : _rapidFire.Release(preservePhysicalPairing);
+            : _rapidFire.Release(preservePhysicalPairing, rapidFireDisarmReason);
 
         _remaps.ReleaseCombinedState(preservePhysicalPairing);
         _gestures.ReleaseGestures(preservePhysicalPairing);
@@ -1612,7 +1618,12 @@ public sealed class InputHookService : IInputHookService
         }
 
         _rightButtonPressed = false;
-        LogDebug("All state released");
+        // Requested, not completed: the injected-key releases are queued to the executor (foreground
+        // UPs) or signaled to the Background Auto-Run worker, which flushes them later.
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"All state release requested (rapidFireArmPreserved={preserveRapidFireArm})");
+        }
         return rapidFireArmCleared;
     }
 
