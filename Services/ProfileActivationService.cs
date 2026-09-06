@@ -853,6 +853,12 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 continue;
             }
 
+            // A native call cannot be canceled; do not start the next display after stop.
+            if (_stopping)
+            {
+                return false;
+            }
+
             var outcome = _colorControlService.Apply(display, new DisplayColorProfile
             {
                 DisplayId = displayPlan.DisplayId,

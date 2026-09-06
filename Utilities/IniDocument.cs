@@ -14,14 +14,23 @@ public sealed class IniDocument
     {
         var document = new IniDocument();
 
-        if (!File.Exists(path))
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(path);
+        }
+        catch (FileNotFoundException)
+        {
+            return document;
+        }
+        catch (DirectoryNotFoundException)
         {
             return document;
         }
 
         string currentSection = string.Empty;
 
-        foreach (var rawLine in File.ReadAllLines(path))
+        foreach (var rawLine in lines)
         {
             var line = rawLine.Trim();
 

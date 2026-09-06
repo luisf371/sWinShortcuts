@@ -14,6 +14,8 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
 
     internal IntPtr ForegroundWindow { get; set; } = (IntPtr)100;
     internal IntPtr ChildWindow { get; set; }
+    internal Action<bool>? OnAttach { get; set; }
+    internal Action<IntPtr, uint, int, IntPtr>? OnPost { get; set; }
     internal ConcurrentDictionary<IntPtr, uint> ProcessIds { get; } = new();
     internal ConcurrentDictionary<int, short> KeyStates { get; } = new();
     internal ConcurrentQueue<(IntPtr Window, uint Message, int VirtualKey, int ThreadId)> Posts { get; } = new();
@@ -75,12 +77,17 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
 
     public bool SetKeyboardState(byte[] state) => true;
 
-    public bool AttachThreadInput(uint sourceThread, uint targetThread, bool attach) => true;
+    public bool AttachThreadInput(uint sourceThread, uint targetThread, bool attach)
+    {
+        OnAttach?.Invoke(attach);
+        return true;
+    }
 
     public bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam)
     {
         Posts.Enqueue((window, message, (int)wParam, Environment.CurrentManagedThreadId));
         PostEntered.Set();
+        OnPost?.Invoke(window, message, (int)wParam, lParam);
         return Interlocked.Exchange(ref _failPosts, 0) == 0;
     }
 

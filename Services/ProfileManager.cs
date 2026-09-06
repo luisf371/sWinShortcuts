@@ -298,6 +298,9 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException("Profile is not managed by this manager.");
             }
 
+            // A queued snapshot keeps its captured settings, but a completed rename owns the name.
+            persistenceSnapshot.Name = managedProfile.Name;
+
             // Check for duplicate profile name (excluding the current profile)
             if (_profiles.Any(p => !ReferenceEquals(p, managedProfile) &&
                                    string.Equals(

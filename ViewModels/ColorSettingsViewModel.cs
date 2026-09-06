@@ -77,7 +77,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
                 _colorService,
                 () => IsEnabled && (_parentEnabledCheck?.Invoke() ?? true),
                 _editingVariant,
-                _allowLiveUpdates);
+                allowLiveUpdates: _allowLiveUpdates && _runtimeService is null);
 
             displayVm.Changed += OnDisplayChanged;
             DisplayViewModels.Add(displayVm);

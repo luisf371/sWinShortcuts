@@ -15,13 +15,24 @@ public sealed class NvidiaColorControlService : IDisposable
 
     private readonly ILoggerService _logger;
     private readonly object _sync = new();
+    private readonly Func<DisplayInfo, DisplayColorProfile, ColorApplyOutcome> _applyNative;
+    private readonly Action _cleanupNative;
     private readonly Dictionary<string, IntPtr> _handleCache = new(StringComparer.OrdinalIgnoreCase);
     private bool _nvapiInitialized;
     private bool _nvapiAvailableChecked;
+    private int _disposeRequested;
 
     public NvidiaColorControlService(ILoggerService logger)
+        : this(logger, applyNative: null, cleanupNative: null)
+    {
+    }
+
+    internal NvidiaColorControlService(ILoggerService logger,
+        Func<DisplayInfo, DisplayColorProfile, ColorApplyOutcome>? applyNative, Action? cleanupNative)
     {
         _logger = logger;
+        _applyNative = applyNative ?? TryApplyNvapiDvc;
+        _cleanupNative = cleanupNative ?? CleanupNative;
         NvApiNative.Logger = logger;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
@@ -31,9 +42,19 @@ public sealed class NvidiaColorControlService : IDisposable
         ArgumentNullException.ThrowIfNull(display);
         ArgumentNullException.ThrowIfNull(profile);
 
+        if (Volatile.Read(ref _disposeRequested) != 0)
+        {
+            return ColorApplyOutcome.Skipped;
+        }
+
         lock (_sync)
         {
-            return TryApplyNvapiDvc(display, profile);
+            if (Volatile.Read(ref _disposeRequested) != 0)
+            {
+                return ColorApplyOutcome.Skipped;
+            }
+
+            return _applyNative(display, profile);
         }
     }
 
@@ -91,10 +112,10 @@ public sealed class NvidiaColorControlService : IDisposable
             }
         }
 
-        if (handles.Count == 1)
+        if (CanUseUnmatchedDisplay(display.GpuVendor, handles.Count))
         {
-            // Unambiguous single NV display: name matching sometimes legitimately fails (e.g. Optimus),
-            // so applying to the only handle is correct and cannot hit the wrong monitor.
+            // Name matching can fail (e.g. Optimus); a single-handle fallback still requires
+            // independent NVIDIA ownership evidence for the requested monitor.
             _logger.Log("[Color][NVAPI] Applying DVC to the single enumerated NV display handle.");
             return ApplyDvc(handles[0], profile) ? ColorApplyOutcome.Applied : ColorApplyOutcome.Failed;
         }
@@ -174,6 +195,23 @@ public sealed class NvidiaColorControlService : IDisposable
     // can return a constant non-terminal status; cap the loop defensively so it can never spin forever.
     private const int MaxNvDisplayEnum = 64;
 
+    internal static bool DisplayNamesMatch(string? requested, string? actual)
+    {
+        if (string.IsNullOrWhiteSpace(requested) || string.IsNullOrWhiteSpace(actual))
+        {
+            return false;
+        }
+
+        var left = requested.AsSpan();
+        var right = actual.AsSpan();
+        if (left.StartsWith(@"\\.\", StringComparison.Ordinal)) left = left[4..];
+        if (right.StartsWith(@"\\.\", StringComparison.Ordinal)) right = right[4..];
+        return left.Equals(right, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool CanUseUnmatchedDisplay(GpuVendor vendor, int handleCount)
+        => vendor == GpuVendor.Nvidia && handleCount == 1;
+
     private IntPtr FindDisplayHandle(string deviceName)
     {
         // deviceName usually looks like "\\.\DISPLAY1"
@@ -221,7 +259,7 @@ public sealed class NvidiaColorControlService : IDisposable
             }
 
             var name = nameBuilder.ToString();
-            if (name.Contains(normalized, StringComparison.OrdinalIgnoreCase))
+            if (DisplayNamesMatch(cacheKey, name))
             {
                 _logger.Log($"[Color][NVAPI] Matched NVAPI display handle index {i} for device '{cacheKey}' with NV name '{name}'.");
                 _handleCache[cacheKey] = handle;
@@ -244,30 +282,75 @@ public sealed class NvidiaColorControlService : IDisposable
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
+        if (Volatile.Read(ref _disposeRequested) != 0)
+        {
+            return;
+        }
+
         lock (_sync)
         {
+            if (Volatile.Read(ref _disposeRequested) != 0)
+            {
+                return;
+            }
+
             _handleCache.Clear();
         }
     }
 
     public void Dispose()
     {
-        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        if (Interlocked.Exchange(ref _disposeRequested, 1) != 0)
+        {
+            return;
+        }
 
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        try
+        {
+            // Keep native delegates rooted and serialized until any in-flight apply returns.
+            // A finite wait cannot inline this task. Timeout must never trigger synchronous cleanup.
+            var cleanup = Task.Run(CleanupOnWorker);
+            if (!cleanup.Wait(100))
+            {
+                _logger.Log("[Color][NVAPI] Native cleanup deferred beyond the 100 ms disposal wait.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"[Color][NVAPI] Could not schedule or wait for native cleanup; no synchronous retry: {ex}");
+        }
+    }
+
+    private void CleanupOnWorker()
+    {
         lock (_sync)
         {
-            _handleCache.Clear();
-
-            if (_nvapiInitialized)
+            try
             {
-                try
-                {
-                    NvApiNative.NvAPI_Unload();
-                }
-                catch
-                {
-                    // ignore
-                }
+                _handleCache.Clear();
+                _cleanupNative();
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"[Color][NVAPI] Native cleanup failed: {ex}");
+            }
+            finally
+            {
+                _nvapiInitialized = false;
+                _nvapiAvailableChecked = false;
+            }
+        }
+    }
+
+    private void CleanupNative()
+    {
+        if (_nvapiInitialized)
+        {
+            var status = NvApiNative.NvAPI_Unload();
+            if (status != NvApiNative.NVAPI_OK)
+            {
+                _logger.Log($"[Color][NVAPI] Native unload failed with status {status}.");
             }
         }
     }
@@ -304,9 +387,11 @@ public sealed class NvidiaColorControlService : IDisposable
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate int NvAPI_DVC_SetLevelDelegate(IntPtr displayHandle, int outputId, int level);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("nvapi64.dll", EntryPoint = "nvapi_QueryInterface", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr NvAPI_QueryInterface64(uint functionId);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("nvapi.dll", EntryPoint = "nvapi_QueryInterface", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr NvAPI_QueryInterface32(uint functionId);
 

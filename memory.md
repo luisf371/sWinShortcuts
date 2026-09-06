@@ -52,3 +52,16 @@
 - Hot-path diagnostic helpers must take raw values, not pre-built interpolated descriptions — an argument string is built on every call, including successes with logging disabled. `WindowsInputSender.SendInputLogged` takes the key/direction or virtual key plus a `SendInputKind` and constructs the description only after a short count, inside the `IsEnabled` branch.
 - State-machine `Log(string)` helpers cannot defer interpolation: callback-reachable Auto-Run/Rapid Fire diagnostics must check `ILoggerService.IsEnabled` before constructing the message. The disabled Rapid Fire release regression uses `GC.GetAllocatedBytesForCurrentThread` to keep that path allocation-free.
 
+
+# 2026-09-06 (Review fixes)
+
+- Desktop-user COM launching resolves ShellWindows.FindWindowSW(SWC_DESKTOP), then IServiceProvider → IShellBrowser → IShellView → folder Application. Keep full SDK vtable layouts including IOleWindow slots and release each acquired RCW once; never final-release cast aliases. Read-only STA/MTA regressions reproduced the enumeration failure and pass with the supported lookup.
+- Startup task queries use /HRESULT: only completed 0 means present and 0x80070002 means absent. Timeout/access/other errors abort before any task/Run-key mutation; registry errors propagate. A fresh nonexistent task query confirmed 0x80070002 without changing startup configuration.
+- Queued profile snapshots reconcile only Name to the managed profile inside ProfileManager's gate; retain captured feature values so a rename cannot be undone by a delayed autosave.
+- Settings hydration reads/parses one IniDocument before live setters; only true missing-file exceptions count as defaults. IsIniLoaded gates editing, Save and rollback baseline capture, independently of startup readiness.
+- Production color editors notify the activation worker; standalone direct writes additionally require the edited variant still be active when execution occurs. Do not bypass active/game/forced-preview precedence with a second color writer.
+- NVIDIA handle matching uses exact names after the leading \\.\ display prefix; unmatched single-handle fallback requires known NVIDIA ownership. Both NVAPI imports explicitly use System32-only DLL search.
+- Crosshair events publish desired held state under the configuration gate; dispatcher callbacks read the latest policy, and ungated profiles clear held state. Keep RMB callbacks enqueue-only and keep assets/window work outside the gate.
+- Background Auto-Run retains an activation-captured run/target through worker retirement, even before target resolution finishes: a suppressed physical W-up is already a release obligation. Native result accounting must carry movement vs sprint explicitly because SprintKey=W is valid. Keep epoch invalidation before reset and account successful DOWN before detach.
+- AMD/NVIDIA disposal closes admission before either lock acquisition, schedules one serialized cleanup, and waits only 100 ms. Timed-out/hung cleanup stays rooted and deferred; never unload in-flight native code or retry cleanup synchronously. Host disposal remains on the UI thread.
+- Anti-AFK validates captured HWND/PID again after AttachThreadInput, for both DOWN and UP, then performs the final live DOWN guard. Attachment can block while a window is destroyed/reused; rejected posts still detach and restore keyboard state.

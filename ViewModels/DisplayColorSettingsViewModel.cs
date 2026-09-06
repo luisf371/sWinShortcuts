@@ -211,7 +211,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
     /// </summary>
     private void ApplyToHardwareOrRevert()
     {
-        if (!_allowLiveUpdates)
+        if (!_allowLiveUpdates || _variant != _colorSettings.ActiveVariant)
         {
             return;
         }
@@ -246,7 +246,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 
     private void ApplyToHardware()
     {
-        if (!_allowLiveUpdates || !_isMasterEnabled() || !_isEnabled)
+        if (!_allowLiveUpdates || _variant != _colorSettings.ActiveVariant || !_isMasterEnabled() || !_isEnabled)
         {
             return;
         }
@@ -281,7 +281,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 
     private void ApplyToHardwareNow()
     {
-        if (!_allowLiveUpdates || !_isMasterEnabled() || !_isEnabled)
+        if (!_allowLiveUpdates || _variant != _colorSettings.ActiveVariant || !_isMasterEnabled() || !_isEnabled)
         {
             return;
         }

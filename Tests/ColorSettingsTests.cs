@@ -107,6 +107,71 @@ public class ColorSettingsTests
         Assert.True(sec["D2"].IsEnabled);
     }
 
+    [Fact]
+    public void EditingInactiveSecondary_DoesNotWriteDirectlyToHardware()
+    {
+        var display = new DisplayInfo { Id = "DISPLAY1", Name = "Monitor", DeviceName = "DISPLAY1" };
+        var settings = new ColorSettings { IsEnabled = true, HasSecondary = true };
+        settings.SetProfile(new DisplayColorProfile
+        {
+            DisplayId = display.Id, IsEnabled = true, Brightness = 30
+        }, ColorVariant.Primary);
+        settings.SetProfile(new DisplayColorProfile
+        {
+            DisplayId = display.Id, IsEnabled = true, Brightness = 70
+        }, ColorVariant.Secondary);
+        var color = new RecordingColorControlService();
+        using var vm = new ColorSettingsViewModel(
+            settings, new FakeDisplayService { Displays = [display] }, color, allowLiveUpdates: true);
+
+        vm.IsEditingSecondary = true;
+        color.AppliedProfiles.Clear();
+        vm.DisplayViewModels.Single().Brightness = 80;
+
+        Assert.Equal(ColorVariant.Primary, settings.ActiveVariant);
+        Assert.Empty(color.AppliedProfiles);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void InactivePreset_EnableToggle_DoesNotApplyOrRevertHardware(bool enable)
+    {
+        var display = new DisplayInfo { Id = "DISPLAY1", Name = "Monitor", DeviceName = "DISPLAY1" };
+        var settings = new ColorSettings { IsEnabled = true, HasSecondary = true };
+        var profile = new DisplayColorProfile { DisplayId = display.Id, IsEnabled = !enable };
+        settings.SetProfile(profile, ColorVariant.Secondary);
+        var color = new RecordingColorControlService();
+        using var vm = new DisplayColorSettingsViewModel(
+            display, profile, settings, color, () => true, ColorVariant.Secondary, allowLiveUpdates: true);
+
+        vm.IsEnabled = enable;
+
+        Assert.Empty(color.AppliedProfiles);
+    }
+
+    [Fact]
+    public void PendingHardwareApply_AfterVariantChange_RechecksActiveVariant()
+    {
+        var display = new DisplayInfo { Id = "DISPLAY1", Name = "Monitor", DeviceName = "DISPLAY1" };
+        var settings = new ColorSettings { IsEnabled = true, HasSecondary = true };
+        var profile = new DisplayColorProfile { DisplayId = display.Id, IsEnabled = true, Brightness = 30 };
+        settings.SetProfile(profile);
+        settings.EnsureSecondaryInitialized();
+        var color = new RecordingColorControlService();
+        using var vm = new DisplayColorSettingsViewModel(
+            display, profile, settings, color, () => true, allowLiveUpdates: true);
+        vm.Brightness = 40;
+        color.AppliedProfiles.Clear();
+        settings.SetActiveVariant(ColorVariant.Secondary);
+
+        // Execute the existing timer target after its scheduling-time state has changed.
+        typeof(DisplayColorSettingsViewModel).GetMethod("ApplyToHardwareNow",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(vm, null);
+
+        Assert.Empty(color.AppliedProfiles);
+    }
+
     private static (ColorSettingsViewModel vm, RecordingColorControlService color, FakeDisplayService displays) BuildLiveVm()
     {
         var display = new DisplayInfo { Id = @"\\.\DISPLAY1", Name = "Mon", DeviceName = @"\\.\DISPLAY1" };

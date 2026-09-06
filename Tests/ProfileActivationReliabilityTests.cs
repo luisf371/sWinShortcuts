@@ -445,6 +445,82 @@ public sealed class ProfileActivationReliabilityTests
         }
     }
 
+    [Theory]
+    [InlineData("active", 80)]
+    [InlineData("inactive", 30)]
+    [InlineData("game", 55)]
+    [InlineData("forced", 85)]
+    public async Task DefaultDisplayEdit_UsesCurrentActivationPlan(string context, int expectedBrightness)
+    {
+        var store = new InMemoryProfileStore();
+        var game = CreateColorProfile("Game", "game.exe", 55);
+        game.ColorSettings.HasSecondary = true;
+        game.ColorSettings.SetProfile(new DisplayColorProfile
+        {
+            DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 85
+        }, ColorVariant.Secondary);
+        store.Profiles.Add(game);
+        var manager = new ProfileManager(store);
+        await manager.InitializeAsync();
+        var global = manager.WindowsProfile;
+        global.ColorSettings.IsEnabled = true;
+        global.ColorSettings.HasSecondary = true;
+        global.ColorSettings.SetProfile(new DisplayColorProfile
+        {
+            DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 30
+        });
+        global.ColorSettings.EnsureSecondaryInitialized();
+        var watcher = new FakeForegroundWatcher();
+        var color = new QueuedColorControlService();
+        var displays = new FakeDisplayService { Displays = [CreateDisplay("DISPLAY1")] };
+        var service = new ProfileActivationService(manager, watcher, new FakeInputHookService(),
+            new FakeSystemTrayService(), color, displays, new FakeCrosshairService(), new NullLoggerService());
+        using var editor = new sWinShortcuts.ViewModels.ProfileViewModel(global, displays, color,
+            profileRuntimeService: service);
+        editor.ProfileChanged += (_, change) => service.NotifyProfileChanged(global, change.Kind);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitForAsync(() => color.Brightnesses.Contains(30));
+            if (context == "game")
+            {
+                watcher.RaiseForegroundChanged("game.exe", 123);
+                await WaitForAsync(() => color.Brightnesses.Contains(55));
+            }
+            else if (context == "forced")
+            {
+                service.SetForcedColorPreview(game.ColorSettings, ColorVariant.Secondary);
+                await WaitForAsync(() => color.Brightnesses.Contains(85));
+            }
+            else if (context == "inactive")
+            {
+                editor.ColorSettings.IsEditingSecondary = true;
+            }
+
+            var before = color.Brightnesses.Count;
+            editor.ColorSettings.DisplayViewModels.Single().Brightness = 80;
+            await WaitForAsync(() => color.Brightnesses.Count > before);
+
+            Assert.All(color.Brightnesses.ToArray().Skip(before), value => Assert.Equal(expectedBrightness, value));
+            Assert.Equal(ColorVariant.Primary, global.ColorSettings.ActiveVariant);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private sealed class QueuedColorControlService : IColorControlService
+    {
+        public System.Collections.Concurrent.ConcurrentQueue<int> Brightnesses { get; } = new();
+
+        public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)
+        {
+            Brightnesses.Enqueue(profile.Brightness);
+            return ColorApplyOutcome.Applied;
+        }
+    }
+
     private static Profile CreateColorProfile(string name, string executable, int brightness)
     {
         var profile = ProfileFactory.CreateCustomProfile(name, executable);

@@ -22,6 +22,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     private Key _rapidFireToggleKey = Key.None;
     private bool _hookWatchdogEnabled;
     private bool _advancedModeEnabled;
+    private bool _isIniLoaded;
     private bool _isStartupLoaded;
     private bool _isSaving;
 
@@ -226,6 +227,58 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         }
     }
 
+    internal bool TryLoadIniState(string settingsPath, out string? error)
+    {
+        error = null;
+        IsIniLoaded = false;
+        try
+        {
+            // Read and parse one snapshot before any setter can change a live service.
+            var ini = IniDocument.Load(settingsPath);
+            var enableDebugLogging = ini.GetValue("App", "EnableDebugLogging") == "true";
+            var hookWatchdogEnabled = ini.GetValue("App", "HookWatchdog") != "false";
+            // A missing upgrade preference keeps the value MainWindow already resolved.
+            var advancedRaw = ini.GetValue("App", "AdvancedMode");
+            var advancedModeEnabled = advancedRaw is null
+                ? _inputHookService.AdvancedModeEnabled
+                : advancedRaw == "true";
+            var startMinimized = ini.GetValue("App", "StartMinimized") == "true";
+            var checkForUpdates = ini.GetValue("App", "CheckForUpdates") == "true";
+            var colorToggleKey = ini.GetKey("App", "ColorToggleKey") ?? Key.None;
+            var rapidFireToggleKey = ini.GetKey("App", "RapidFireToggleKey") ?? Key.None;
+
+            SetEnableDebugLoggingProgrammatically(enableDebugLogging);
+            HookWatchdogEnabled = hookWatchdogEnabled;
+            AdvancedModeEnabled = advancedModeEnabled;
+            StartMinimized = startMinimized;
+            CheckForUpdates = checkForUpdates;
+            ColorToggleKey = colorToggleKey;
+            RapidFireToggleKey = rapidFireToggleKey;
+            IsIniLoaded = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _loggerService.Log($"[Settings] Failed to load app settings; live settings unchanged: {ex.Message}");
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    public bool IsIniLoaded
+    {
+        get => _isIniLoaded;
+        private set
+        {
+            if (_isIniLoaded != value)
+            {
+                _isIniLoaded = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(CanSave));
+            }
+        }
+    }
+
     // F-016: the startup checkbox state loads async off the dispatcher (schtasks GetState). Until it loads,
     // the startup controls AND Save are disabled so a premature Save can't apply/delete a startup task from
     // unknown state. While a save runs, the same controls are disabled so their values can't change mid-apply.
@@ -263,7 +316,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
 
     public bool CanEditStartup => IsStartupLoaded && !IsSaving;
 
-    public bool CanSave => IsStartupLoaded && !IsSaving;
+    public bool CanSave => IsIniLoaded && IsStartupLoaded && !IsSaving;
 
     public bool CanChooseAdmin => IsStartupLoaded && !IsSaving && StartWithWindows && IsRunningAsAdmin;
 

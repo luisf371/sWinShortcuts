@@ -1,5 +1,4 @@
 using System;
-using System.Threading;
 using System.Windows.Threading;
 using sWinShortcuts.Models;
 using sWinShortcuts.Views;
@@ -10,34 +9,39 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 {
     private readonly ILoggerService _logger;
     private readonly IInputHookService _inputHookService;
-    // Captured in the ctor, which DI builds on the UI thread. Null (headless unit tests) disables
-    // every window operation; the decision/observation logic still runs.
+    // Captured on the UI thread. Headless tests inject only the queue, never a window.
     private readonly Dispatcher? _dispatcher;
+    private readonly Action<Action>? _enqueue;
     private readonly object _gate = new();
 
-    // Applied configuration, mutated only under _gate. Value-based (NOT reference-based): live edits
-    // mutate the same Profile instance, so reference equality would swallow an image re-pick.
+    // Desired configuration and physical state are published together under _gate. Live edits
+    // mutate the same Profile, so compare values rather than the Profile reference.
     private bool _shown;
     private bool _reportsRightButton;
+    private bool _rightButtonHeld;
     private string _appliedImagePath = string.Empty;
     private int _appliedSizeAdjustment = CrosshairSettings.DefaultSizeAdjustment;
     private IntPtr _appliedHwnd;
+    private bool _hasAppliedConfiguration;
+    private bool _disposed;
 
-    // Window reference: created/closed only on the dispatcher. The hwnd is compared in the dedup so a
-    // monitor-changing re-focus of the same profile re-centers the overlay.
+    // Window operations are dispatcher-only and never run inside _gate.
     private CrosshairWindow? _window;
 
-    // Dispatcher-thread-only: the last RMB state delivered to the window. Both the apply callback and
-    // the RMB callback derive visibility from it, so their relative queue order cannot leave the
-    // overlay visible while the button is held (or hidden after release).
-    private bool _rightButtonHeld;
+    internal bool AppliedVisibility { get; private set; }
 
     public CrosshairService(ILoggerService logger, IInputHookService inputHookService)
+        : this(logger, inputHookService, enqueue: null)
+    {
+    }
+
+    internal CrosshairService(ILoggerService logger, IInputHookService inputHookService, Action<Action>? enqueue)
     {
         _logger = logger;
         _inputHookService = inputHookService;
-        _inputHookService.RightButtonStateChanged += OnRightButtonStateChanged;
+        _enqueue = enqueue;
         _dispatcher = System.Windows.Application.Current?.Dispatcher;
+        _inputHookService.RightButtonStateChanged += OnRightButtonStateChanged;
     }
 
     public void ApplyProfile(Profile? profile, IntPtr foregroundHwnd)
@@ -46,110 +50,141 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         var reportsRightButton = CrosshairDecision.ReportsRightButton(profile);
         var imagePath = profile?.Crosshair.ImagePath ?? string.Empty;
         var sizeAdjustment = profile?.Crosshair.SizeAdjustment ?? CrosshairSettings.DefaultSizeAdjustment;
-
-        var skipApply = false;
+        bool skipApply;
         lock (_gate)
         {
-            // Dedup: foreground churn re-fires the same profile repeatedly. Skip the dispatcher
-            // round-trip when nothing the overlay depends on changed. (hwnd only matters while
-            // shown — a hidden overlay has no position to preserve.)
-            if (_window is not null &&
+            if (_disposed)
+            {
+                return;
+            }
+
+            skipApply = _hasAppliedConfiguration && (_dispatcher is null || _window is not null) &&
                 shouldShow == _shown &&
                 reportsRightButton == _reportsRightButton &&
                 string.Equals(imagePath, _appliedImagePath, StringComparison.OrdinalIgnoreCase) &&
                 sizeAdjustment == _appliedSizeAdjustment &&
-                (!shouldShow || foregroundHwnd == _appliedHwnd))
+                (!shouldShow || foregroundHwnd == _appliedHwnd);
+            _shown = shouldShow;
+            _reportsRightButton = reportsRightButton;
+            _appliedImagePath = imagePath;
+            _appliedSizeAdjustment = sizeAdjustment;
+            _appliedHwnd = foregroundHwnd;
+            if (!reportsRightButton)
             {
-                skipApply = true;
+                _rightButtonHeld = false;
             }
-            else
-            {
-                _shown = shouldShow;
-                _reportsRightButton = reportsRightButton;
-                _appliedImagePath = imagePath;
-                _appliedSizeAdjustment = sizeAdjustment;
-                _appliedHwnd = foregroundHwnd;
-            }
+
+            // This setter takes no feature lock and may synchronously publish physical state.
+            // The reentrant monitor orders that event with this policy, including on deduped applies.
+            _inputHookService.SetRightButtonObservation(reportsRightButton);
         }
 
         if (!skipApply)
         {
-            RunOnDispatcher(() => ApplyOnDispatcher(shouldShow, foregroundHwnd, imagePath, sizeAdjustment), synchronous: _window is null);
+            RunOnDispatcher(ApplyOnDispatcher, synchronous: _window is null);
         }
-
-        // Always (re-)sync the hook gate, even on a deduped apply: while false the hook pays nothing,
-        // and arming re-publishes the current physical button state so a swallowed WM_RBUTTONUP can
-        // never leave the overlay stuck hidden.
-        _inputHookService.SetRightButtonObservation(reportsRightButton);
     }
 
     public void SetRightButtonHeld(bool isDown)
     {
         lock (_gate)
         {
-            if (!_shown || !_reportsRightButton)
+            if (_disposed || !_shown || !_reportsRightButton)
             {
                 return;
             }
+
+            _rightButtonHeld = isDown;
         }
 
-        // Hook thread: BeginInvoke only — the low-level mouse hook must never wait on the UI queue.
-        RunOnDispatcher(() =>
+        // Always enqueue, even on the UI thread. Input callbacks never wait or reload assets.
+        RunOnDispatcher(ApplyVisibilityOnDispatcher, synchronous: false, priority: DispatcherPriority.Input);
+    }
+
+    private void ApplyOnDispatcher()
+    {
+        bool shouldShow;
+        bool visible;
+        IntPtr foregroundHwnd;
+        string imagePath;
+        int sizeAdjustment;
+        lock (_gate)
         {
-            _rightButtonHeld = isDown;
-
-            lock (_gate)
-            {
-                // Config may have changed while this was queued; an ungated or hidden overlay's
-                // visibility is owned by the apply path, not by RMB state.
-                if (!_shown || !_reportsRightButton)
-                {
-                    return;
-                }
-            }
-
-            var window = _window;
-            if (window is null)
+            if (_disposed)
             {
                 return;
             }
 
-            if (isDown)
-            {
-                window.HideOverlay();
-            }
-            else
-            {
-                window.ShowOverlay();
-            }
-        }, synchronous: false, priority: DispatcherPriority.Input);
-    }
+            shouldShow = _shown;
+            visible = _shown && (!_reportsRightButton || !_rightButtonHeld);
+            foregroundHwnd = _appliedHwnd;
+            imagePath = _appliedImagePath;
+            sizeAdjustment = _appliedSizeAdjustment;
+            _hasAppliedConfiguration = true;
+            AppliedVisibility = visible;
+        }
 
-    private void ApplyOnDispatcher(bool shouldShow, IntPtr foregroundHwnd, string imagePath, int sizeAdjustment)
-    {
+        if (System.Windows.Application.Current is null)
+        {
+            return;
+        }
+
         if (shouldShow)
         {
             var window = _window ??= new CrosshairWindow();
             window.ApplyConfiguration(foregroundHwnd, imagePath, sizeAdjustment);
-            if (_rightButtonHeld)
+            if (visible)
             {
-                // An RMB-down delivered before this apply must keep winning.
-                window.HideOverlay();
+                window.ShowOverlay();
             }
             else
             {
-                window.ShowOverlay();
+                window.HideOverlay();
             }
         }
         else
         {
-            _rightButtonHeld = false;
+            _window?.HideOverlay();
+        }
+    }
+
+    private void ApplyVisibilityOnDispatcher()
+    {
+        bool visible;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            visible = _shown && (!_reportsRightButton || !_rightButtonHeld);
+            if (visible == AppliedVisibility)
+            {
+                return;
+            }
+
+            AppliedVisibility = visible;
+        }
+
+        if (visible)
+        {
+            _window?.ShowOverlay();
+        }
+        else
+        {
             _window?.HideOverlay();
         }
     }
 
     private void RunOnDispatcher(Action action, bool synchronous, DispatcherPriority priority = DispatcherPriority.Render)
     {
+        if (_enqueue is not null)
+        {
+            _enqueue(action);
+            return;
+        }
+
         var dispatcher = _dispatcher;
         if (dispatcher is null || dispatcher.HasShutdownStarted)
         {
@@ -158,16 +193,16 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
         try
         {
-            if (dispatcher.CheckAccess())
+            if (synchronous)
             {
-                action();
-            }
-            else if (synchronous)
-            {
-                // First window creation runs synchronously so a construction failure surfaces
-                // immediately in the caller's context (activation worker) instead of on a later
-                // dispatcher frame; every later mutation is queued (FIFO preserves apply order).
-                dispatcher.Invoke(action);
+                if (dispatcher.CheckAccess())
+                {
+                    action();
+                }
+                else
+                {
+                    dispatcher.Invoke(action);
+                }
             }
             else
             {
@@ -176,7 +211,6 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         }
         catch (Exception ex)
         {
-            // Dispatcher shutdown racing a queued op throws; an overlay must never take the app down.
             _logger.Log($"[Crosshair] Dispatcher operation failed: {ex}");
         }
     }
@@ -185,24 +219,30 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
     public void Dispose()
     {
-        _inputHookService.RightButtonStateChanged -= OnRightButtonStateChanged;
-
         CrosshairWindow? window;
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _inputHookService.RightButtonStateChanged -= OnRightButtonStateChanged;
             window = _window;
             _window = null;
             _shown = false;
             _reportsRightButton = false;
-        }
-
-        try
-        {
-            _inputHookService.SetRightButtonObservation(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.Log($"[Crosshair] Failed to clear right-button observation: {ex}");
+            _rightButtonHeld = false;
+            AppliedVisibility = false;
+            try
+            {
+                _inputHookService.SetRightButtonObservation(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"[Crosshair] Failed to clear right-button observation: {ex}");
+            }
         }
 
         if (window is not null)

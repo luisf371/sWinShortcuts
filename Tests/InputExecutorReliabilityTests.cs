@@ -1,3 +1,5 @@
+using System.Reflection;
+using sWinShortcuts.Interop;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
@@ -1091,6 +1093,78 @@ public sealed class InputExecutorReliabilityTests
         finally
         {
             service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Theory]
+    [InlineData(ProfileChangeKind.Master, true, true)]
+    [InlineData(ProfileChangeKind.Identity, true, true)]
+    [InlineData(ProfileChangeKind.Removed, true, true)]
+    [InlineData(ProfileChangeKind.AutoRun, true, true)]
+    [InlineData(ProfileChangeKind.None, true, false)]
+    [InlineData(ProfileChangeKind.Master, false, false)]
+    [InlineData(ProfileChangeKind.Identity, false, false)]
+    [InlineData(ProfileChangeKind.Removed, false, false)]
+    public void AutoRun_InactiveOwnerReconciliation_ReleasesOnlyInvalidatedOwner(
+        ProfileChangeKind changeKind, bool ownerChanged, bool expectedStop)
+    {
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var runtimeField = typeof(InputHookService).GetField("_runtime", flags);
+        Assert.NotNull(runtimeField);
+        var runtime = Assert.IsType<InputRuntimeState>(runtimeField.GetValue(service));
+        var owner = new Profile
+        {
+            Name = "Game", Executable = "game.exe",
+            AutoRun =
+            {
+                IsEnabled = true, TriggerKey = Key.R,
+                TriggerModifier = ModifierKeys.None, SendMode = AutoRunSendMode.Background
+            }
+        };
+        runtime.SetRunning(true);
+        runtime.SetAdvancedMode(true);
+        runtime.SetActiveProfile(owner, 1);
+        runtime.SetForegroundIdentity((IntPtr)100, 7, owner.NormalizedExecutable, 1);
+        var transport = new FakeAutoRunTransport();
+        transport.ProcessIds[(IntPtr)100] = 7;
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var machine = new AutoRunStateMachine(
+            runtime, new RecordingInputQueue(), random, new NullLoggerService(), transport);
+        var machineField = typeof(InputHookService).GetField("_autoRun", flags);
+        Assert.NotNull(machineField);
+        machineField.SetValue(service, machine);
+        try
+        {
+            var vk = KeyInterop.VirtualKeyFromKey(Key.R);
+            var physical = machine.ObservePhysicalEvent(vk, true, false);
+            Assert.True(machine.Handle(vk, true, false, physical));
+            Assert.True(transport.PostEntered.Wait(TimeSpan.FromSeconds(2)));
+            transport.ForegroundWindow = (IntPtr)200;
+            transport.ProcessIds[(IntPtr)200] = 9;
+            runtime.SetForegroundIdentity((IntPtr)200, 9, "other.exe", 2);
+            runtime.SetActiveProfile(null, 2);
+            machine.Release(includeBackground: false);
+            Assert.True(machine.IsActive);
+            var changed = ownerChanged ? owner : new Profile { Name = "Other", Executable = "other.exe" };
+            if (changeKind == ProfileChangeKind.Master) changed.IsEnabled = false;
+            if (changeKind == ProfileChangeKind.Identity) changed.Executable = "changed.exe";
+
+            service.ReconcileProfileSettings(changed, changeKind);
+
+            Assert.Equal(!expectedStop, machine.IsActive);
+            if (expectedStop)
+            {
+                machine.JoinBackgroundInputThread();
+                Assert.Contains(transport.Posts,
+                    p => p.VirtualKey == 0x57 && p.Message == NativeMethods.WM_KEYUP);
+            }
+        }
+        finally
+        {
+            machine.Release(includeBackground: true);
+            machine.JoinBackgroundInputThread();
+            runtime.SetRunning(false);
         }
     }
 

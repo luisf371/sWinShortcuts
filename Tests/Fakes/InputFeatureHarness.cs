@@ -453,7 +453,8 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
         {
             _autoRun.ConfigurationChanged(profile);
         }
-        if ((changeKind & (ProfileChangeKind.AutoRun | ProfileChangeKind.Removed)) != 0)
+        if ((changeKind & (ProfileChangeKind.AutoRun | ProfileChangeKind.Identity | ProfileChangeKind.Removed)) != 0
+            || ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
         {
             _autoRun.ReleaseOwnedBy(profile);
         }

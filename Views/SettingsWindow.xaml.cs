@@ -48,15 +48,15 @@ public partial class SettingsWindow : Window
 
         _settingsPath = AppSettings.GetSettingsPath();
 
-        LoadIniState();
-
-        // Baseline = the live-apply state the dialog opened with (from INI / the live services). OnClosing
-        // rolls the live services back to this on any non-Save close.
-        _baselineColorToggleKey = _vm.ColorToggleKey;
-        _baselineRapidFireToggleKey = _vm.RapidFireToggleKey;
-        _baselineDebugLogging = _vm.EnableDebugLogging;
-        _baselineWatchdog = _vm.HookWatchdogEnabled;
-        _baselineAdvancedMode = _vm.AdvancedModeEnabled;
+        if (_vm.TryLoadIniState(_settingsPath, out _))
+        {
+            // Only successfully hydrated settings can supply the Cancel rollback baseline.
+            _baselineColorToggleKey = _vm.ColorToggleKey;
+            _baselineRapidFireToggleKey = _vm.RapidFireToggleKey;
+            _baselineDebugLogging = _vm.EnableDebugLogging;
+            _baselineWatchdog = _vm.HookWatchdogEnabled;
+            _baselineAdvancedMode = _vm.AdvancedModeEnabled;
+        }
 
         // F-016: the startup checkbox state comes from schtasks (GetState), which can take seconds — load it
         // OFF the dispatcher after the window shows, so opening Settings can't stall the LL-hook thread.
@@ -66,6 +66,15 @@ public partial class SettingsWindow : Window
     private async void OnLoadedAsync(object sender, RoutedEventArgs e)
     {
         Loaded -= OnLoadedAsync;
+        if (!_vm.IsIniLoaded)
+        {
+            System.Windows.MessageBox.Show(this,
+                "Could not read app settings. Settings have not been changed. Close and reopen Settings to try again.",
+                "Settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+
         try
         {
             var state = await Task.Run(() => _startupService.GetState());
@@ -105,48 +114,6 @@ public partial class SettingsWindow : Window
                 "Settings",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
-        }
-    }
-
-    private void LoadIniState()
-    {
-        // Only the fast INI-backed live settings load here; the startup (schtasks) state is loaded async in
-        // OnLoadedAsync so no scheduled-task query runs on the dispatcher/hook thread.
-        try
-        {
-            var ini = IniDocument.Load(_settingsPath);
-            _vm.SetEnableDebugLoggingProgrammatically(ini.GetValue("App", "EnableDebugLogging") == "true");
-            // Default-on: only the literal "false" disables (missing key = enabled).
-            _vm.HookWatchdogEnabled = ini.GetValue("App", "HookWatchdog") != "false";
-            // MainWindow resolves + persists [App] AdvancedMode at startup (incl. the upgrade
-            // default). A PRESENT key is authoritative; but if that startup persist silently failed
-            // (UpdateSettings swallows save errors), the key can be ABSENT while the service already
-            // holds the resolved value — fall back to that live value, never a blind false, so saving
-            // settings here can't clobber an upgrade-enabled gate (codex P2 #1).
-            var advancedRaw = ini.GetValue("App", "AdvancedMode");
-            _vm.AdvancedModeEnabled = advancedRaw is null
-                ? _inputHookService.AdvancedModeEnabled
-                : advancedRaw == "true";
-            _vm.StartMinimized = ini.GetValue("App", "StartMinimized") == "true";
-            // Default-off: only the literal "true" enables the update check (absent key = disabled).
-            _vm.CheckForUpdates = ini.GetValue("App", "CheckForUpdates") == "true";
-            _vm.ColorToggleKey = AppSettings.LoadColorToggleKey(_settingsPath) ?? Key.None;
-            _vm.RapidFireToggleKey = AppSettings.LoadRapidFireToggleKey(_settingsPath) ?? Key.None;
-        }
-        catch (Exception ex)
-        {
-            // Written BEFORE the safe-default assignments: the debug-logging default below disables
-            // the logger, which would otherwise drop the very entry explaining the failure.
-            _logger.Log($"[Settings] Failed to load app settings; using safe defaults: {ex.Message}");
-            _vm.SetEnableDebugLoggingProgrammatically(false);
-            _vm.HookWatchdogEnabled = true;
-            // Fall back to the live service value (never a blind false) so a read failure can't
-            // silently disable an upgrade-enabled gate the service already applied.
-            _vm.AdvancedModeEnabled = _inputHookService.AdvancedModeEnabled;
-            _vm.StartMinimized = false;
-            _vm.CheckForUpdates = false;
-            _vm.ColorToggleKey = Key.None;
-            _vm.RapidFireToggleKey = Key.None;
         }
     }
 
@@ -198,12 +165,12 @@ public partial class SettingsWindow : Window
 
     private async void OnSaveClick(object sender, RoutedEventArgs e)
     {
-        if (_vm.IsSaving)
+        if (!_vm.CanSave)
         {
-            return; // guard a double-click while the async apply is in flight.
+            return; // Both loads must succeed, and a save must not already be in flight.
         }
 
-        // Save is only reachable when IsStartupLoaded (CanSave), so the snapshot below is the real OS state.
+        // Both INI settings and the OS startup state are known before anything can be persisted.
         _vm.IsSaving = true; // disables the startup controls + Save while the apply runs (codex #2)
         try
         {
@@ -314,7 +281,7 @@ public partial class SettingsWindow : Window
         // unsaved startup change stays self-consistent — AND running schtasks on this hook-owning dispatcher
         // thread could stall past LowLevelHooksTimeout and drop the LL hooks (codex CRITICAL: never run
         // scheduled-task work on the UI thread).
-        if (!_applied)
+        if (!_applied && _vm.IsIniLoaded)
         {
             RollBackLiveSettings();
         }

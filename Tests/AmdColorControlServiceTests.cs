@@ -234,6 +234,122 @@ public sealed class AmdColorControlServiceTests
         Assert.Equal(2, api.InitializeCalls);
     }
 
+    [Fact]
+    public async Task Dispose_WhenNativeApplyBlocked_ReturnsBeforeNativeCleanup()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var cleanup = new ManualResetEventSlim(false);
+        var api = new FakeAmdAdlApi
+        {
+            Displays = [new AmdDisplayTarget(@"\\.\DISPLAY1", 0, 0)],
+            BeforeSet = () =>
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(5));
+            },
+            BeforeDispose = () => cleanup.Set()
+        };
+        var service = CreateService(api);
+        var apply = Task.Run(() =>
+            service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(80)));
+        Task? dispose = null;
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+            dispose = Task.Run(service.Dispose);
+            await dispose.WaitAsync(TimeSpan.FromMilliseconds(500));
+            Assert.False(cleanup.IsSet);
+            Assert.Equal(ColorApplyOutcome.Skipped,
+                await Task.Run(() => service.ApplyDigitalVibrance(
+                    CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(90))).WaitAsync(TimeSpan.FromMilliseconds(500)));
+            await Task.Run(service.RefreshTopology).WaitAsync(TimeSpan.FromMilliseconds(500));
+            Assert.False(cleanup.IsSet);
+        }
+        finally
+        {
+            release.Set();
+            await apply.WaitAsync(TimeSpan.FromSeconds(2));
+            if (dispose is not null)
+            {
+                await dispose.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            service.Dispose();
+        }
+        Assert.True(cleanup.Wait(TimeSpan.FromSeconds(2)));
+        Assert.Equal(1, api.DisposeCalls);
+        Assert.Equal(0, api.RefreshCalls);
+    }
+
+    [Fact]
+    public async Task Dispose_WhenNativeCleanupBlocked_ReturnsAndRejectsNewWork()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var finished = new ManualResetEventSlim(false);
+        var api = new FakeAmdAdlApi
+        {
+            BeforeDispose = () =>
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(5));
+                finished.Set();
+            }
+        };
+        var service = CreateService(api);
+        var dispose = Task.Run(service.Dispose);
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+            await dispose.WaitAsync(TimeSpan.FromMilliseconds(500));
+            Assert.False(finished.IsSet);
+            await Task.Run(service.Dispose).WaitAsync(TimeSpan.FromMilliseconds(500));
+            Assert.Equal(ColorApplyOutcome.Skipped,
+                await Task.Run(() => service.ApplyDigitalVibrance(
+                    CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(80))).WaitAsync(TimeSpan.FromMilliseconds(500)));
+            await Task.Run(service.RefreshTopology).WaitAsync(TimeSpan.FromMilliseconds(500));
+        }
+        finally
+        {
+            release.Set();
+            await dispose.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.True(finished.Wait(TimeSpan.FromSeconds(2)));
+            service.Dispose();
+        }
+        Assert.Equal(1, api.DisposeCalls);
+        Assert.Equal(0, api.InitializeCalls);
+        Assert.Equal(0, api.RefreshCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Dispose_WhenCleanupCompletesOrThrows_IsAtMostOnce(bool throwCleanup)
+    {
+        using var cleanup = new ManualResetEventSlim(false);
+        var api = new FakeAmdAdlApi
+        {
+            BeforeDispose = () =>
+            {
+                cleanup.Set();
+                if (throwCleanup)
+                {
+                    throw new InvalidOperationException("Injected cleanup failure.");
+                }
+            }
+        };
+        var service = CreateService(api);
+
+        var error = Record.Exception(service.Dispose);
+        service.Dispose();
+
+        Assert.Null(error);
+        Assert.True(cleanup.Wait(TimeSpan.FromSeconds(2)));
+        Assert.Equal(1, api.DisposeCalls);
+        Assert.Equal(ColorApplyOutcome.Skipped,
+            service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(80)));
+    }
+
     private static AmdColorControlService CreateService(FakeAmdAdlApi api)
     {
         return new AmdColorControlService(new NullLoggerService { IsEnabled = true }, api);
@@ -263,6 +379,10 @@ public sealed class AmdColorControlServiceTests
 
     private sealed class FakeAmdAdlApi : IAmdAdlApi
     {
+        private int _disposeCalls;
+        public Action? BeforeSet { get; init; }
+        public Action? BeforeDispose { get; init; }
+        public int DisposeCalls => Volatile.Read(ref _disposeCalls);
         public bool InitializeResult { get; set; } = true;
         public IReadOnlyList<AmdDisplayTarget> Displays { get; init; } = [];
         public AmdSaturationRange Range { get; init; } = new(100, 0, 200, 1);
@@ -302,6 +422,7 @@ public sealed class AmdColorControlServiceTests
 
         public bool TrySetSaturation(AmdDisplayTarget target, int value)
         {
+            BeforeSet?.Invoke();
             SetCalls.Add((target, value));
             return SetResult;
         }
@@ -314,6 +435,8 @@ public sealed class AmdColorControlServiceTests
 
         public void Dispose()
         {
+            Interlocked.Increment(ref _disposeCalls);
+            BeforeDispose?.Invoke();
         }
     }
 }

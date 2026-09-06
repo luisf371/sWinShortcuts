@@ -261,4 +261,25 @@ public class ProfileManagerRegressionTests
         Assert.Equal(savesAfterRemoval, store.SaveCount);
         Assert.DoesNotContain(store.Profiles, p => p.Name == "Alpha");
     }
+
+    [Fact]
+    public async Task SaveProfileSnapshotAsync_AfterRename_UsesCurrentNameAndCapturedSettings()
+    {
+        var store = new InMemoryProfileStore();
+        var manager = new ProfileManager(store);
+        await manager.InitializeAsync();
+        var alpha = await manager.AddProfileAsync("Alpha", "alpha.exe");
+        var snapshot = ProfilePersistenceSnapshot.Create(alpha);
+        snapshot.IsEnabled = false;
+
+        await manager.RenameProfileAsync(alpha, "Beta");
+        await manager.AddProfileAsync("Alpha", "other.exe");
+        await manager.SaveProfileSnapshotAsync(alpha, snapshot);
+
+        Assert.Equal("Beta", store.SavedProfiles[^1].Name);
+        Assert.False(store.SavedProfiles[^1].IsEnabled);
+        Assert.Equal("Beta", alpha.Name);
+        Assert.True(alpha.IsEnabled);
+    }
+
 }

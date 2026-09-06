@@ -72,7 +72,8 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     private readonly object _autoRunLock = new();
 
     private volatile bool _active;
-    private Profile? _ownerProfile;
+    private volatile Profile? _ownerProfile;
+    private bool _activationPending;
     private long _injectionGeneration;
     private long _configurationGeneration = 1;
     private long _activeInjectionGeneration;
@@ -84,15 +85,13 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     private Key _sprintKey;
     private bool _sprintToggleable;
     private bool _sprintPending;
-    private bool _sprintIntendedHeld;
+    private volatile bool _sprintIntendedHeld;
 
-    private bool _isBackground;
-    private IntPtr _targetHwnd;
+    private volatile bool _isBackground;
+    private BackgroundRun _backgroundTarget;
     private uint _targetPid;
     private Thread? _backgroundThread;
-    private bool _backgroundRun;
-    private volatile bool _backgroundTargetFocused;
-    private bool _backgroundTargetResolved;
+    private volatile bool _backgroundRun;
     private bool _backgroundReleaseW;
     private bool _backgroundReleaseSprint;
     private Key _backgroundReleaseSprintKey;
@@ -113,6 +112,8 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         bool FreshW,
         bool FreshS,
         bool SuppressPhysicalWHandoffUp);
+
+    private readonly record struct BackgroundRun(Profile Owner, long Generation, IntPtr Window, uint ProcessId);
 
     internal AutoRunStateMachine(
         InputRuntimeState runtime,
@@ -352,7 +353,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     {
         lock (_autoRunLock)
         {
-            if (_active || _runtime.IsDisposed || !_runtime.IsRunning
+            if (_active || _activationPending || _backgroundThread is not null || _runtime.IsDisposed || !_runtime.IsRunning
                 || command.ExpectedProfile is not { IsEnabled: true } profile
                 || !_runtime.ProfileInputGenerationIsCurrent(profile, command.ForegroundGeneration)
                 || !profile.AntiAfk.IsEnabled)
@@ -370,7 +371,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     {
         lock (_autoRunLock)
         {
-            if (_active || _backgroundThread?.IsAlive == true || _runtime.IsDisposed || !_runtime.IsRunning)
+            if (_active || _activationPending || _backgroundThread is not null || _runtime.IsDisposed || !_runtime.IsRunning)
             {
                 return false;
             }
@@ -392,6 +393,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         Thread? thread;
         lock (_autoRunLock)
         {
+            if (_isBackground || _activationPending) ReleaseLocked(includeBackground: true);
             _backgroundRun = false;
             thread = _backgroundThread;
         }
@@ -471,37 +473,35 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
 
     private bool Activate(AutoRunSettings settings, Profile profile, long configurationGeneration)
     {
+        long generation;
+        ForegroundIdentitySnapshot? snapshot;
+        bool background;
+        Key sprintKey;
+        bool sprintEnabled;
+        bool sprintToggleable;
+        int triggerVk;
+        ModifierKeys triggerModifier;
         lock (_autoRunLock)
         {
-            if (_runtime.IsDisposed || !_runtime.IsRunning || _active || !_runtime.AdvancedModeEnabled
-                || !profile.IsEnabled || !settings.IsEnabled || !_runtime.ProfileInputGenerationIsCurrent()
-                || configurationGeneration != Volatile.Read(ref _configurationGeneration))
-            {
-                return false;
-            }
-
-            if (_backgroundThread?.IsAlive == true)
-            {
-                return false;
-            }
-
-            // An Anti-AFK background tap step is in flight (a ~150 ms-per-step window): activating
-            // now would interleave this run's W/sprint work with the tap's per-step latch. Fail
-            // closed once — the chord passes through to the game and the user re-presses — a
-            // lesser evil than a stray tap-side release cancelling an active run later. The
-            // tick-level _autoRun.IsActive gate already blocks new ripples while a run is active.
-            if (_antiAfkTapInFlight)
-            {
-                return false;
-            }
-
-            var snapshot = _runtime.ForegroundIdentity;
+            if (!CanActivate(profile, configurationGeneration) || _active || _activationPending
+                || _backgroundThread is not null || _antiAfkTapInFlight) return false;
+            generation = Interlocked.Increment(ref _injectionGeneration);
+            _activationPending = true;
+            _ownerProfile = profile;
+            snapshot = _runtime.ForegroundIdentity;
+            background = settings.SendMode == AutoRunSendMode.Background;
+            sprintKey = settings.SprintKey;
+            sprintEnabled = settings.SprintEnabled;
+            sprintToggleable = sprintEnabled && settings.SprintMode == SprintActivation.Hold;
+            triggerVk = KeyInteropUtilities.ToVirtualKey(settings.TriggerKey);
+            triggerModifier = settings.TriggerModifier;
+        }
+        try
+        {
             var executable = profile.NormalizedExecutable;
             var foreground = _transport.GetForegroundWindow();
             _transport.GetWindowThreadProcessId(foreground, out var foregroundPid);
-            if (snapshot is null || snapshot.Generation != _runtime.ActiveProfileGeneration
-                || snapshot.Generation != _runtime.PublishedForegroundGeneration
-                || foreground == IntPtr.Zero || foreground != snapshot.WindowHandle
+            if (snapshot is null || foreground == IntPtr.Zero || foreground != snapshot.WindowHandle
                 || foregroundPid == 0 || foregroundPid != snapshot.ProcessId
                 || string.IsNullOrEmpty(executable)
                 || !string.Equals(snapshot.Executable, executable, StringComparison.OrdinalIgnoreCase))
@@ -509,72 +509,79 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 Log("AutoRun: foreground not confirmed as the profile game; activation aborted");
                 return false;
             }
-
-            var background = settings.SendMode == AutoRunSendMode.Background;
-            if (background)
+            var sprintVk = KeyInteropUtilities.ToVirtualKey(sprintKey);
+            var sprintPhysicallyDown = sprintVk != 0 && IsDown(sprintVk);
+            lock (_autoRunLock)
             {
-                _targetHwnd = snapshot.WindowHandle;
-                _targetPid = snapshot.ProcessId;
-                _backgroundTargetResolved = false;
-            }
-            else
-            {
-                _foregroundGuard = snapshot;
-                _bypassForegroundGuardForTesting = false;
-            }
-
-            _isBackground = background;
-            _backgroundTargetFocused = background;
-            _sprintKey = settings.SprintKey;
-            _sprintToggleable = settings.SprintEnabled && settings.SprintMode == SprintActivation.Hold;
-            _sprintIntendedHeld = _sprintToggleable;
-            _sprintInjected = false;
-            _snapshotTriggerVk = KeyInteropUtilities.ToVirtualKey(settings.TriggerKey);
-            _snapshotModifier = settings.TriggerModifier;
-            _physicalWHandoff = _wPhysicallyDown;
-            _suppressedPhysicalWUp = false;
-            _stopOnPhysicalWUp = false;
-            var sprintVk = KeyInteropUtilities.ToVirtualKey(_sprintKey);
-            _sprintPhysicallyDown = sprintVk != 0 && IsDown(sprintVk);
-
-            long generation = 0;
-            if (!background)
-            {
-                generation = Interlocked.Increment(ref _injectionGeneration);
+                if (!_activationPending || generation != Volatile.Read(ref _injectionGeneration)
+                    || !ReferenceEquals(_ownerProfile, profile) || !CanActivate(profile, configurationGeneration)
+                    || !ReferenceEquals(snapshot, _runtime.ForegroundIdentity)
+                    || snapshot.Generation != _runtime.ActiveProfileGeneration
+                    || snapshot.Generation != _runtime.PublishedForegroundGeneration) return false;
+                if (background)
+                {
+                    _backgroundTarget = new BackgroundRun(profile, generation, snapshot.WindowHandle, snapshot.ProcessId);
+                    _targetPid = snapshot.ProcessId;
+                }
+                else
+                {
+                    _foregroundGuard = snapshot;
+                    _bypassForegroundGuardForTesting = false;
+                }
+                _isBackground = background;
+                _sprintKey = sprintKey;
+                _sprintToggleable = sprintToggleable;
+                _sprintIntendedHeld = sprintToggleable;
+                _sprintInjected = false;
+                _snapshotTriggerVk = triggerVk;
+                _snapshotModifier = triggerModifier;
+                _physicalWHandoff = _wPhysicallyDown;
+                _suppressedPhysicalWUp = false;
+                _stopOnPhysicalWUp = false;
+                _sprintPhysicallyDown = sprintPhysicallyDown;
                 _activeInjectionGeneration = generation;
+                _moveInjected = false;
+                if (!_physicalWHandoff && !background && !EnqueueForegroundDown(Key.W, generation, snapshot))
+                {
+                    ResetAbortedActivation();
+                    return false;
+                }
+                if (!_physicalWHandoff && !background) _moveInjected = true;
+                _sprintPending = sprintEnabled;
+                if (sprintEnabled && !background && !_physicalWHandoff)
+                    QueueForegroundSprintLocked(generation, snapshot);
+                _active = true;
+                _activationPending = false;
+                if (background)
+                {
+                    _backgroundRun = true;
+                    var thread = new Thread(BackgroundInputLoop) { IsBackground = true, Name = "sWinBgInput" };
+                    _backgroundThread = thread;
+                    thread.Start();
+                }
+                if (_logger.IsEnabled)
+                    _logger.Log($"AutoRun activated ({(background ? "background" : "foreground")}) for profile: {profile.Name}");
+                return true;
             }
-
-            _moveInjected = false;
-            if (!_physicalWHandoff && !background &&
-                !EnqueueForegroundDown(Key.W, generation, snapshot))
+        }
+        finally
+        {
+            lock (_autoRunLock)
             {
-                ResetAbortedActivation();
-                return false;
+                if (_activationPending && generation == Volatile.Read(ref _injectionGeneration))
+                {
+                    _activationPending = false;
+                    _ownerProfile = null;
+                }
             }
-            if (!_physicalWHandoff && !background) _moveInjected = true;
-
-            _sprintPending = settings.SprintEnabled;
-            if (settings.SprintEnabled && !background && !_physicalWHandoff)
-            {
-                QueueForegroundSprintLocked(generation, snapshot);
-            }
-
-            _ownerProfile = profile;
-            _active = true;
-            if (background)
-            {
-                _backgroundRun = true;
-                var thread = new Thread(BackgroundInputLoop) { IsBackground = true, Name = "sWinBgInput" };
-                _backgroundThread = thread;
-                thread.Start();
-            }
-            if (_logger.IsEnabled)
-            {
-                _logger.Log($"AutoRun activated ({(background ? "background" : "foreground")}) for profile: {profile.Name}");
-            }
-            return true;
         }
     }
+
+    private bool CanActivate(Profile profile, long configurationGeneration) =>
+        !_runtime.IsDisposed && _runtime.IsRunning && _runtime.AdvancedModeEnabled
+        && profile.IsEnabled && profile.AutoRun.IsEnabled
+        && ReferenceEquals(_runtime.ActiveProfile, profile) && _runtime.ProfileInputGenerationIsCurrent()
+        && configurationGeneration == Volatile.Read(ref _configurationGeneration);
 
     private bool EnqueueForegroundDown(Key key, long generation, ForegroundIdentitySnapshot snapshot) =>
         _queue.Enqueue(new InputCommand(
@@ -639,10 +646,16 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
 
     private void ReleaseLocked(bool includeBackground, string? reason = null)
     {
+        if (_activationPending)
+        {
+            Interlocked.Increment(ref _injectionGeneration);
+            _activationPending = false;
+            _ownerProfile = null;
+        }
         if (!_active || (_isBackground && !includeBackground)) return;
         // Requested, not completed: the foreground path only queues the UP commands to the executor
         // and the background path only signals the worker via release flags flushed later in
-        // FlushBackgroundReleasesLocked. Emitted before ResetRunState, while _isBackground is still
+        // FlushBackgroundReleases. Emitted before ResetRunState, while _isBackground is still
         // valid, and only for real releases — the gate above keeps no-ops silent.
         if (_logger.IsEnabled)
         {
@@ -651,7 +664,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 : $"AutoRun release requested ({reason})");
         }
         Interlocked.Increment(ref _injectionGeneration);
-        bool releaseSprint = _sprintInjected || (_sprintIntendedHeld && !_sprintPending);
+        bool releaseSprint = _sprintInjected || (!_isBackground && _sprintIntendedHeld && !_sprintPending);
         var sprintUpKey = _sprintInjected ? _sprintInjectedKey : _sprintKey;
         bool releaseW = _moveInjected || _suppressedPhysicalWUp;
 
@@ -672,12 +685,10 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     private void ResetAbortedActivation()
     {
         _isBackground = false;
-        _targetHwnd = IntPtr.Zero;
+        _backgroundTarget = default;
         _targetPid = 0;
         _physicalWHandoff = false;
         _suppressedPhysicalWUp = false;
-        _backgroundTargetFocused = false;
-        _backgroundTargetResolved = false;
         _sprintIntendedHeld = false;
         _sprintInjected = false;
         _foregroundGuard = null;
@@ -697,16 +708,14 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         _sprintKey = Key.None;
         _sprintInjectedKey = Key.None;
         _isBackground = false;
-        _backgroundTargetFocused = false;
         _foregroundGuard = null;
         _bypassForegroundGuardForTesting = false;
         _ownerProfile = null;
         _active = false;
         if (!preserveBackgroundTarget)
         {
-            _targetHwnd = IntPtr.Zero;
+            _backgroundTarget = default;
             _targetPid = 0;
-            _backgroundTargetResolved = false;
         }
     }
 
@@ -715,30 +724,14 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         lock (_autoRunLock)
         {
             if (!_active) return;
-            if (_sprintPending)
+            _sprintIntendedHeld = !_sprintIntendedHeld;
+            if (_sprintPending || _isBackground) return;
+            if (!_sprintIntendedHeld)
             {
-                _sprintIntendedHeld = !_sprintIntendedHeld;
-                return;
-            }
-
-            if (_sprintInjected)
-            {
-                _sprintIntendedHeld = false;
-                if (_isBackground)
-                {
-                    return;
-                }
-                _queue.Enqueue(new InputCommand(_sprintInjectedKey, IsDown: false));
+                if (_sprintInjected) _queue.Enqueue(new InputCommand(_sprintInjectedKey, IsDown: false));
                 _sprintInjected = false;
-                return;
             }
-
-            _sprintIntendedHeld = true;
-            if (_isBackground)
-            {
-                return;
-            }
-            if (_foregroundGuard is { } snapshot
+            else if (_foregroundGuard is { } snapshot
                 && EnqueueForegroundDown(_sprintKey, _activeInjectionGeneration, snapshot))
             {
                 _sprintInjected = true;
@@ -747,34 +740,40 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         }
     }
 
-    private bool PostAutoRunKey(Key key, bool isDown, bool repeat = false, bool forceAttach = false)
+    private bool BackgroundRunIsCurrent(in BackgroundRun run) =>
+        run.Generation == Volatile.Read(ref _injectionGeneration)
+        && _active && _backgroundRun && _isBackground && ReferenceEquals(_ownerProfile, run.Owner)
+        && !_runtime.IsDisposed && _runtime.IsRunning && _runtime.AdvancedModeEnabled
+        && run.Owner.IsEnabled && run.Owner.AutoRun.IsEnabled;
+
+    private bool PostAutoRunKey(in BackgroundRun run, Key key, bool isDown,
+        bool repeat = false, bool forceAttach = false, bool sprint = false, bool sprintHold = false)
     {
-        if (isDown && _runtime.IsDisposed) return false;
-        if (!BackgroundTargetValid(_targetHwnd)) return false;
-        return PostKeyToWindow(_targetHwnd, key, isDown, repeat, forceAttach);
+        var posted = PostKeyToWindow(run, key, isDown, repeat, forceAttach, sprint, sprintHold);
+        if (posted && isDown && sprintHold && (!BackgroundRunIsCurrent(run) || !_sprintIntendedHeld))
+            PostKeyToWindow(run, key, isDown: false, repeat: false, sprint: sprint);
+        return posted;
     }
 
-    private bool PostKeyToWindow(IntPtr hwnd, Key key, bool isDown, bool repeat, bool forceAttach = false)
+    private bool PostKeyToWindow(in BackgroundRun run, Key key, bool isDown, bool repeat,
+        bool forceAttach = false, bool sprint = false, bool sprintHold = false)
     {
-        if (isDown && _runtime.IsDisposed) return false;
+        if (isDown && !BackgroundRunIsCurrent(run)) return false;
         var vk = KeyInteropUtilities.ToVirtualKey(key);
-        if (vk == 0) return true;
+        if (vk == 0) return false;
         var scan = _transport.MapVirtualKey((uint)vk, 0);
         var systemKey = vk is 0x12 or 0xA4 or 0xA5 or 0x79;
         var message = (uint)(isDown
             ? (systemKey ? NativeMethods.WM_SYSKEYDOWN : NativeMethods.WM_KEYDOWN)
             : (systemKey ? NativeMethods.WM_SYSKEYUP : NativeMethods.WM_KEYUP));
         var lParam = BuildKeyLParam(scan, isDown, IsExtendedKey(key), repeat);
-        var targetThread = _transport.GetWindowThreadProcessId(hwnd, out _);
+        var targetThread = _transport.GetWindowThreadProcessId(run.Window, out var actualPid);
+        if (run.ProcessId == 0 || actualPid != run.ProcessId) return false;
         var currentThread = _transport.GetCurrentThreadId();
-        var onBackgroundThread = ReferenceEquals(Thread.CurrentThread, _backgroundThread);
-        var foreground = onBackgroundThread && ForegroundIsTargetProcess();
-        var candidate = onBackgroundThread && (forceAttach || !foreground)
-            && targetThread != 0 && targetThread != currentThread;
-        var targetHung = candidate && _transport.IsHungAppWindow(hwnd);
-        var willAttach = ShouldAttachBackgroundInput(
-            onBackgroundThread, foreground, targetThread, currentThread, targetHung, forceAttach);
-
+        var foreground = ForegroundIsTargetProcess(run.ProcessId);
+        var candidate = (forceAttach || !foreground) && targetThread != 0 && targetThread != currentThread;
+        var targetHung = candidate && _transport.IsHungAppWindow(run.Window);
+        var willAttach = ShouldAttachBackgroundInput(true, foreground, targetThread, currentThread, targetHung, forceAttach);
         byte[]? savedState = null;
         if (willAttach)
         {
@@ -785,18 +784,64 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 willAttach = false;
             }
         }
-
         bool attached = false;
         try
         {
             attached = willAttach && _transport.AttachThreadInput(currentThread, targetThread, true);
-            if (isDown && _runtime.IsDisposed) return false;
-            return _transport.PostMessage(hwnd, message, (IntPtr)vk, lParam);
+            if (!BackgroundTargetValid(run.Window, run.ProcessId)) return false;
+            // Native preparation may block; no state lock is held and these are the last DOWN guards.
+            if (isDown && (!BackgroundRunIsCurrent(run) || (sprintHold && !_sprintIntendedHeld))) return false;
+            var posted = _transport.PostMessage(run.Window, message, (IntPtr)vk, lParam);
+            if (posted) RecordBackgroundPost(run, key, isDown, sprint);
+            return posted;
         }
         finally
         {
-            if (attached) _transport.AttachThreadInput(currentThread, targetThread, false);
-            if (savedState is not null) _transport.SetKeyboardState(savedState);
+            try
+            {
+                if (attached) _transport.AttachThreadInput(currentThread, targetThread, false);
+            }
+            finally
+            {
+                if (savedState is not null) _transport.SetKeyboardState(savedState);
+            }
+        }
+    }
+
+    private void RecordBackgroundPost(in BackgroundRun run, Key key, bool isDown, bool sprint)
+    {
+        // Sprint may also use W; account for the operation's role rather than its virtual key.
+        lock (_autoRunLock)
+        {
+            if (_backgroundThread != Thread.CurrentThread) return;
+            if (isDown)
+            {
+                if (BackgroundRunIsCurrent(run))
+                {
+                    if (!sprint) _moveInjected = true;
+                    else
+                    {
+                        _sprintInjected = true;
+                        _sprintInjectedKey = key;
+                    }
+                }
+                else if (!sprint) _backgroundReleaseW = true;
+                else
+                {
+                    _backgroundReleaseSprint = true;
+                    _backgroundReleaseSprintKey = key;
+                }
+            }
+            else if (!sprint)
+            {
+                _moveInjected = false;
+                _backgroundReleaseW = false;
+            }
+            else
+            {
+                if (_sprintInjectedKey == key) _sprintInjected = false;
+                if (_backgroundReleaseSprintKey == key) _backgroundReleaseSprint = false;
+            }
         }
     }
 
@@ -814,86 +859,84 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
 
     private void BackgroundInputLoop()
     {
+        BackgroundRun run = default;
         try
         {
-            if (!ResolveBackgroundTarget()) return;
-            if (!EnsureBackgroundMovementStarted()) return;
-            DoDelayedBackgroundSprintActivation();
-            bool wasForeground = _backgroundTargetFocused;
+            lock (_autoRunLock)
+            {
+                if (_backgroundThread != Thread.CurrentThread) return;
+                // Activation captures this before publishing the worker; cancellation may already have reset its live owner.
+                run = _backgroundTarget;
+            }
+            if (!ResolveBackgroundTarget(ref run)) return;
+            if (!EnsureBackgroundMovementStarted(run)) return;
+            DoDelayedBackgroundSprintActivation(run);
+            bool wasForeground = true;
             bool sprintPending = false;
             int sprintDueTick = 0;
-            while (true)
+            while (BackgroundRunIsCurrent(run))
             {
-                bool stop = false;
+                if (!BackgroundTargetValid(run.Window, run.ProcessId))
+                {
+                    StopBackgroundRun(run, "background target validation failed");
+                    break;
+                }
+                bool foreground = ForegroundIsTargetProcess(run.ProcessId);
+                bool reengageW = false;
+                bool repeatW = false;
+                Key sprintKey = Key.None;
+                bool sprintDown = false;
                 lock (_autoRunLock)
                 {
-                    if (!_backgroundRun || _backgroundThread != Thread.CurrentThread || !_active
-                        || !_isBackground || !_runtime.IsRunning || _runtime.IsDisposed)
+                    if (!BackgroundRunIsCurrent(run)) break;
+                    if (wasForeground && !foreground)
                     {
-                        if (_backgroundThread == Thread.CurrentThread && _active && _isBackground)
-                        {
-                            ReleaseLocked(includeBackground: true);
-                        }
-                        stop = true;
+                        if (_sprintInjected) sprintKey = _sprintInjectedKey;
+                        sprintPending = false;
                     }
-                    else if (!BackgroundTargetValid(_targetHwnd))
+                    else if (!wasForeground && foreground)
                     {
-                        ReleaseLocked(includeBackground: true, reason: "background target validation failed");
-                        stop = true;
+                        reengageW = true;
+                        if (_sprintToggleable && _sprintIntendedHeld && !_sprintInjected)
+                        {
+                            sprintPending = true;
+                            sprintDueTick = unchecked(Environment.TickCount + BG_SPRINT_REENGAGE_QUIET_MS);
+                        }
                     }
-                    else
-                    {
-                        bool foreground = ForegroundIsTargetProcess();
-                        _backgroundTargetFocused = foreground;
-                        if (wasForeground && !foreground)
-                        {
-                            if (_sprintInjected) _sprintInjected = false;
-                            sprintPending = false;
-                        }
-                        else if (!wasForeground && foreground)
-                        {
-                            if (_sprintToggleable && _sprintIntendedHeld && !_sprintInjected)
-                            {
-                                if (PostAutoRunKey(Key.W, true, forceAttach: true)) _moveInjected = true;
-                                sprintPending = true;
-                                sprintDueTick = unchecked(Environment.TickCount + BG_SPRINT_REENGAGE_QUIET_MS);
-                            }
-                            else if (PostAutoRunKey(Key.W, true, forceAttach: true))
-                            {
-                                _moveInjected = true;
-                            }
-                        }
-                        wasForeground = foreground;
+                    wasForeground = foreground;
 
+                    if (sprintKey == Key.None)
+                    {
                         if (!sprintPending && foreground && _sprintToggleable && !_sprintIntendedHeld && _sprintInjected)
                         {
-                            if (PostAutoRunKey(_sprintInjectedKey, false)) _sprintInjected = false;
+                            sprintKey = _sprintInjectedKey;
                         }
                         else if (!sprintPending && foreground && _sprintToggleable && _sprintIntendedHeld && !_sprintInjected)
                         {
-                            if (PostAutoRunKey(_sprintKey, true))
-                            {
-                                _sprintInjected = true;
-                                _sprintInjectedKey = _sprintKey;
-                            }
+                            sprintKey = _sprintKey;
+                            sprintDown = true;
                         }
                         else if (sprintPending && unchecked(Environment.TickCount - sprintDueTick) >= 0)
                         {
                             sprintPending = false;
-                            if (_sprintToggleable && _sprintIntendedHeld && !_sprintInjected && foreground
-                                && PostAutoRunKey(_sprintKey, true))
+                            if (_sprintToggleable && _sprintIntendedHeld && !_sprintInjected && foreground)
                             {
-                                _sprintInjected = true;
-                                _sprintInjectedKey = _sprintKey;
+                                sprintKey = _sprintKey;
+                                sprintDown = true;
                             }
                         }
                         else if (!sprintPending && _moveInjected)
                         {
-                            PostKeyToWindow(_targetHwnd, Key.W, true, repeat: true);
+                            repeatW = true;
                         }
                     }
                 }
-                if (stop) break;
+                if (reengageW) PostAutoRunKey(run, Key.W, isDown: true, forceAttach: true);
+                if (sprintKey != Key.None)
+                    PostAutoRunKey(run, sprintKey, sprintDown, sprint: true, sprintHold: sprintDown);
+                else if (repeatW && !reengageW)
+                    PostAutoRunKey(run, Key.W, isDown: true, repeat: true);
+
                 int sleep = AUTO_RUN_REPEAT_MS;
                 if (sprintPending)
                 {
@@ -906,77 +949,70 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         catch (Exception ex)
         {
             Log($"BackgroundInputLoop exception: {ex}");
-            lock (_autoRunLock)
-            {
-                if (_backgroundThread == Thread.CurrentThread && _active && _isBackground)
-                {
-                    var hwnd = _targetHwnd;
-                    bool releaseW = _moveInjected || _suppressedPhysicalWUp;
-                    bool releaseSprint = _sprintInjected || (_sprintIntendedHeld && !_sprintPending);
-                    var sprintKey = _sprintInjected ? _sprintInjectedKey : _sprintKey;
-                    Interlocked.Increment(ref _injectionGeneration);
-                    ResetRunState();
-                    try
-                    {
-                        if (hwnd != IntPtr.Zero && releaseW) PostKeyToWindow(hwnd, Key.W, false, false);
-                        if (hwnd != IntPtr.Zero && releaseSprint) PostKeyToWindow(hwnd, sprintKey, false, false);
-                    }
-                    catch { }
-                }
-            }
         }
         finally
         {
-            lock (_autoRunLock)
-            {
-                if (_backgroundThread == Thread.CurrentThread)
-                {
-                    FlushBackgroundReleasesLocked();
-                    _backgroundThread = null;
-                }
-            }
+            StopBackgroundRun(run);
+            FlushBackgroundReleases(run);
         }
     }
 
-    private bool ResolveBackgroundTarget()
+    private bool ResolveBackgroundTarget(ref BackgroundRun run)
     {
+        if (!BackgroundRunIsCurrent(run)) return false;
+        var foreground = _transport.GetForegroundWindow();
+        _transport.GetWindowThreadProcessId(foreground, out var foregroundPid);
+        if (run.Window == IntPtr.Zero || foreground != run.Window || foregroundPid == 0 || foregroundPid != run.ProcessId)
+        {
+            StopBackgroundRun(run, "background target validation failed");
+            return false;
+        }
+        var child = _transport.GetChildWindow(run.Window);
+        if (child != IntPtr.Zero)
+        {
+            _transport.GetWindowThreadProcessId(child, out var childPid);
+            if (childPid == run.ProcessId) run = run with { Window = child };
+        }
         lock (_autoRunLock)
         {
-            if (!_backgroundRun || _backgroundThread != Thread.CurrentThread || !_active || !_isBackground
-                || !_runtime.IsRunning || _runtime.IsDisposed)
-            {
-                return false;
-            }
-
-            var frame = _targetHwnd;
-            var foreground = _transport.GetForegroundWindow();
-            _transport.GetWindowThreadProcessId(foreground, out var foregroundPid);
-            if (frame == IntPtr.Zero || foreground != frame || foregroundPid == 0 || foregroundPid != _targetPid)
-            {
-                ReleaseLocked(includeBackground: true, reason: "background target validation failed");
-                return false;
-            }
-
-            var child = _transport.GetChildWindow(frame);
-            if (child != IntPtr.Zero)
-            {
-                _transport.GetWindowThreadProcessId(child, out var childPid);
-                if (childPid == _targetPid) _targetHwnd = child;
-            }
-            _backgroundTargetFocused = true;
-            _backgroundTargetResolved = true;
+            if (!BackgroundRunIsCurrent(run)) return false;
+            _backgroundTarget = run;
             return true;
         }
     }
 
-    private void FlushBackgroundReleasesLocked()
+    private void StopBackgroundRun(in BackgroundRun run, string? reason = null)
     {
+        lock (_autoRunLock)
+        {
+            if (_backgroundThread == Thread.CurrentThread && _activeInjectionGeneration == run.Generation)
+                ReleaseLocked(includeBackground: true, reason);
+        }
+    }
+
+    private void FlushBackgroundReleases(in BackgroundRun run)
+    {
+        bool releaseW;
+        bool releaseSprint;
+        Key sprintKey;
+        lock (_autoRunLock)
+        {
+            if (_backgroundThread != Thread.CurrentThread) return;
+            releaseW = _backgroundReleaseW;
+            releaseSprint = _backgroundReleaseSprint;
+            sprintKey = _backgroundReleaseSprintKey;
+            _backgroundReleaseW = false;
+            _backgroundReleaseSprint = false;
+        }
         try
         {
-            if (_backgroundTargetResolved)
+            try
             {
-                if (_backgroundReleaseW) PostAutoRunKey(Key.W, isDown: false);
-                if (_backgroundReleaseSprint) PostAutoRunKey(_backgroundReleaseSprintKey, isDown: false);
+                if (releaseW) PostKeyToWindow(run, Key.W, isDown: false, repeat: false);
+            }
+            finally
+            {
+                if (releaseSprint) PostKeyToWindow(run, sprintKey, isDown: false, repeat: false, sprint: true);
             }
         }
         catch (Exception ex)
@@ -985,95 +1021,102 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         }
         finally
         {
-            _backgroundReleaseW = false;
-            _backgroundReleaseSprint = false;
-            _backgroundReleaseSprintKey = Key.None;
-            _targetHwnd = IntPtr.Zero;
-            _targetPid = 0;
-            _backgroundTargetResolved = false;
+            lock (_autoRunLock)
+            {
+                if (_backgroundThread == Thread.CurrentThread)
+                {
+                    _backgroundReleaseSprintKey = Key.None;
+                    _backgroundTarget = default;
+                    _targetPid = 0;
+                    // This slot also blocks a new run and Anti-AFK until native cleanup has returned.
+                    _backgroundThread = null;
+                }
+            }
         }
     }
 
-    private bool EnsureBackgroundMovementStarted()
+    private bool EnsureBackgroundMovementStarted(in BackgroundRun run)
     {
-        while (true)
+        while (BackgroundRunIsCurrent(run))
         {
+            bool handoff;
+            bool repeat;
             lock (_autoRunLock)
             {
-                if (!_backgroundRun || _backgroundThread != Thread.CurrentThread || !_active
-                    || !_isBackground || !_runtime.IsRunning || _runtime.IsDisposed)
+                if (!BackgroundRunIsCurrent(run)) return false;
+                handoff = _physicalWHandoff;
+                repeat = _suppressedPhysicalWUp;
+            }
+            if (!handoff)
+            {
+                if (!PostAutoRunKey(run, Key.W, isDown: true, repeat, forceAttach: true))
                 {
+                    StopBackgroundRun(run, "background movement injection failed");
                     return false;
                 }
-                if (!_physicalWHandoff)
+                lock (_autoRunLock)
                 {
-                    if (!PostAutoRunKey(Key.W, true, _suppressedPhysicalWUp, forceAttach: true))
-                    {
-                        ReleaseLocked(includeBackground: true, reason: "background movement injection failed");
-                        return false;
-                    }
-                    _moveInjected = true;
+                    if (!BackgroundRunIsCurrent(run)) return false;
                     _suppressedPhysicalWUp = false;
-                    return true;
                 }
+                return true;
             }
             Thread.Sleep(1);
         }
+        return false;
     }
 
-    private void DoDelayedBackgroundSprintActivation()
+    private void DoDelayedBackgroundSprintActivation(in BackgroundRun run)
     {
         bool hold;
         Key sprintKey;
         lock (_autoRunLock)
         {
-            if (!_backgroundRun || _backgroundThread != Thread.CurrentThread || !_active || !_sprintPending) return;
+            if (!BackgroundRunIsCurrent(run) || !_sprintPending) return;
             hold = _sprintToggleable;
             sprintKey = _sprintKey;
         }
         Thread.Sleep(RandomDelay(BG_SPRINT_PREDELAY_MIN_MS, BG_SPRINT_PREDELAY_MAX_MS));
         lock (_autoRunLock)
         {
-            if (!_backgroundRun || _backgroundThread != Thread.CurrentThread || !_active || _runtime.IsDisposed
-                || !BackgroundTargetValid(_targetHwnd) || !_sprintPending)
-            {
-                return;
-            }
+            if (!BackgroundRunIsCurrent(run) || !_sprintPending) return;
             _sprintPending = false;
-            if (hold)
-            {
-                if (!_sprintIntendedHeld || _sprintInjected || !ForegroundIsTargetProcess()
-                    || !PostAutoRunKey(sprintKey, true)) return;
-                _sprintInjected = true;
-                _sprintInjectedKey = sprintKey;
-                return;
-            }
-            if (!PostAutoRunKey(sprintKey, true)) return;
+            if (hold && (!_sprintIntendedHeld || _sprintInjected)) return;
         }
-        Thread.Sleep(RandomDelay(BG_SPRINT_TAP_MIN_MS, BG_SPRINT_TAP_MAX_MS));
-        lock (_autoRunLock)
+        if (hold)
         {
-            if (_backgroundRun && _backgroundThread == Thread.CurrentThread && _active && _isBackground
-                && BackgroundTargetValid(_targetHwnd))
-            {
-                PostAutoRunKey(sprintKey, false);
-            }
+            if (ForegroundIsTargetProcess(run.ProcessId))
+                PostAutoRunKey(run, sprintKey, isDown: true, sprint: true, sprintHold: true);
+            return;
+        }
+        bool downPosted = false;
+        try
+        {
+            downPosted = PostAutoRunKey(run, sprintKey, isDown: true, sprint: true);
+            if (downPosted) Thread.Sleep(RandomDelay(BG_SPRINT_TAP_MIN_MS, BG_SPRINT_TAP_MAX_MS));
+        }
+        finally
+        {
+            // A successful transient DOWN stays owned even if cancellation resets the live run.
+            if (downPosted) PostKeyToWindow(run, sprintKey, isDown: false, repeat: false, sprint: true);
         }
     }
 
-    private bool ForegroundIsTargetProcess()
+    private bool ForegroundIsTargetProcess() => ForegroundIsTargetProcess(_targetPid);
+
+    private bool ForegroundIsTargetProcess(uint targetPid)
     {
         var foreground = _transport.GetForegroundWindow();
-        if (foreground == IntPtr.Zero || _targetPid == 0) return false;
+        if (foreground == IntPtr.Zero || targetPid == 0) return false;
         _transport.GetWindowThreadProcessId(foreground, out var processId);
-        return processId == _targetPid;
+        return processId == targetPid;
     }
 
-    private bool BackgroundTargetValid(IntPtr window)
+    private bool BackgroundTargetValid(IntPtr window, uint targetPid)
     {
-        if (window == IntPtr.Zero || _targetPid == 0) return false;
+        if (window == IntPtr.Zero || targetPid == 0) return false;
         _transport.GetWindowThreadProcessId(window, out var processId);
-        return processId != 0 && processId == _targetPid;
+        return processId != 0 && processId == targetPid;
     }
 
     // Internal so AntiAfkStateMachine's posted ripple reuses the byte-identical lParam/extended-key
