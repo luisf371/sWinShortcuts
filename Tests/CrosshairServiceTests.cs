@@ -8,6 +8,69 @@ namespace Tests;
 
 public sealed class CrosshairServiceTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hide_NeverCreatedWindow_DoesNotWaitForBlockedDispatcher(bool previouslyHidden)
+    {
+        var result = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            using var started = new ManualResetEventSlim();
+            using var completed = new ManualResetEventSlim();
+            using var service = new CrosshairService(new NullLoggerService(), new FakeInputHookService());
+            typeof(CrosshairService).GetField("_dispatcher",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .SetValue(service, dispatcher);
+            Task hide = Task.CompletedTask;
+            Exception? failure = null;
+            try
+            {
+                if (previouslyHidden)
+                {
+                    service.ApplyProfile(null, IntPtr.Zero);
+                    var frame = new System.Windows.Threading.DispatcherFrame();
+                    dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                        new Action(() => frame.Continue = false));
+                    System.Windows.Threading.Dispatcher.PushFrame(frame);
+                }
+                hide = Task.Run(() =>
+                {
+                    started.Set();
+                    service.ApplyProfile(null, IntPtr.Zero);
+                    completed.Set();
+                });
+                Assert.True(started.Wait(TimeSpan.FromSeconds(5)));
+                // Match Application.Exit: the owner waits while HasShutdownStarted is still false.
+                Assert.False(dispatcher.HasShutdownStarted);
+                Assert.True(completed.Wait(TimeSpan.FromSeconds(1)), "Hide waited for the blocked dispatcher.");
+                Assert.Null(typeof(CrosshairService).GetField("_window",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(service));
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+            finally
+            {
+                dispatcher.InvokeShutdown();
+                hide.GetAwaiter().GetResult(); // abort any blocked Invoke before disposing its signals
+            }
+            if (failure is null)
+            {
+                result.SetResult();
+            }
+            else
+            {
+                result.SetException(failure);
+            }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        await result.Task.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     [Fact]
     public void OldRightDownCallback_AfterUngatedProfile_DoesNotHideCrosshair()
     {

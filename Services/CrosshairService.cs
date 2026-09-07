@@ -81,7 +81,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
         if (!skipApply)
         {
-            RunOnDispatcher(ApplyOnDispatcher, synchronous: _window is null);
+            RunOnDispatcher(ApplyOnDispatcher, synchronous: shouldShow && _window is null);
         }
     }
 

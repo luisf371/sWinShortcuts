@@ -6,6 +6,8 @@ namespace sWinShortcuts.Utilities;
 
 public static class AppSettings
 {
+    private static readonly object StorageGate = new();
+    private static Task _pendingStorage = Task.CompletedTask;
     public const string ColorToggleKeyName = "ColorToggleKey";
     public const string RapidFireToggleKeyName = "RapidFireToggleKey";
     public const string CheckForUpdatesKeyName = "CheckForUpdates";
@@ -18,6 +20,43 @@ public static class AppSettings
 
     public static string GetSettingsPath()
         => Path.Combine(GetRootDirectory(), "sWinShortcuts.ini");
+
+    public static Task<IniDocument> LoadAsync(string settingsPath)
+        => RunStorageAsync(() => IniDocument.Load(settingsPath));
+
+    public static Task UpdateAsync(string settingsPath, Action<IniDocument> update)
+        => RunStorageAsync(() =>
+        {
+            var document = IniDocument.Load(settingsPath);
+            update(document);
+            document.Save(settingsPath);
+            return true;
+        });
+
+    public static Task FlushAsync()
+    {
+        lock (StorageGate)
+        {
+            return _pendingStorage;
+        }
+    }
+
+    private static Task<T> RunStorageAsync<T>(Func<T> operation)
+    {
+        // One app-settings file: preserve enqueue order across complete read/modify/write operations.
+        lock (StorageGate)
+        {
+            var previous = _pendingStorage;
+            var pending = Task.Run(async () =>
+            {
+                try { await previous.ConfigureAwait(false); }
+                catch { /* Each caller receives its own failure; later operations can retry. */ }
+                return operation();
+            });
+            _pendingStorage = pending;
+            return pending;
+        }
+    }
 
     public static Key? LoadColorToggleKey(string settingsPath)
         => IniDocument.Load(settingsPath).GetKey("App", ColorToggleKeyName);

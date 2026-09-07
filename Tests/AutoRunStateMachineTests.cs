@@ -1,6 +1,7 @@
 using System.Windows.Input;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
+using sWinShortcuts.Services;
 using sWinShortcuts.Services.Input;
 using Tests.Fakes;
 using Xunit;
@@ -556,6 +557,115 @@ public sealed class AutoRunStateMachineTests
         {
             machine.Release(includeBackground: true);
             machine.JoinBackgroundInputThread();
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 0)]
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    public async Task ForegroundSprintUsesMovementKey_PreservesHoldUnlessCancelled(
+        bool physicalHandoff, int cancellation)
+    {
+        var profile = new Profile
+        {
+            Name = "Game",
+            Executable = "game.exe",
+            AutoRun =
+            {
+                IsEnabled = true, TriggerKey = Key.R, TriggerModifier = ModifierKeys.None,
+                SendMode = AutoRunSendMode.Foreground, SprintEnabled = true,
+                SprintMode = SprintActivation.Press, SprintKey = Key.W
+            }
+        };
+        var runtime = new InputRuntimeState();
+        runtime.SetAdvancedMode(true);
+        runtime.SetActiveProfile(profile, 1);
+        runtime.SetForegroundIdentity((IntPtr)100, 7, profile.NormalizedExecutable, 1);
+        runtime.SetRunning(true);
+        var transport = new FakeAutoRunTransport();
+        transport.ProcessIds[(IntPtr)100] = 7;
+        using var sender = new PausedSprintUpSender();
+        using var executor = new InputExecutor(runtime, sender, new NullLoggerService());
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var machine = new AutoRunStateMachine(runtime, executor, random, new NullLoggerService(), transport);
+        executor.Start();
+
+        try
+        {
+            if (physicalHandoff)
+                machine.ObservePhysicalEvent(0x57, isKeyDown: true, isKeyUp: false);
+            Assert.True(Activate(machine, profile));
+            if (physicalHandoff)
+            {
+                Assert.Empty(sender.Recording.Transitions);
+                var physical = machine.ObservePhysicalEvent(0x57, isKeyDown: false, isKeyUp: true);
+                Assert.True(machine.Handle(0x57, isKeyDown: false, isKeyUp: true, physical));
+            }
+            Assert.True(sender.SprintUpEntered.Wait(TimeSpan.FromSeconds(2)));
+            Assert.True(machine.IsActive);
+            if (cancellation == 1) machine.Release(includeBackground: true);
+            if (cancellation == 2)
+            {
+                transport.ForegroundWindow = (IntPtr)200;
+                transport.ProcessIds[(IntPtr)200] = 9;
+            }
+            sender.ReleaseSprintUp.Set();
+            await Fence();
+
+            var transitions = sender.Recording.Transitions.Select(item => (item.Key, item.IsDown)).ToArray();
+            Assert.Equal((Key.W, cancellation == 0), transitions[^1]);
+            Assert.Equal(cancellation == 0 ? 3 : 2, transitions.Count(item => item.IsDown));
+
+            machine.Release(includeBackground: true);
+            await Fence();
+            Assert.False(sender.Recording.Transitions.Last().IsDown);
+        }
+        finally
+        {
+            sender.ReleaseSprintUp.Set();
+            machine.Release(includeBackground: true);
+            runtime.SetRunning(false);
+            executor.StopAndDrain();
+        }
+
+        async Task Fence()
+        {
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Assert.True(executor.Enqueue(new InputCommand(
+                Key.None, IsDown: false, Kind: InputCommandKind.DummyKey, Completion: completion)));
+            Assert.True(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+    }
+
+    private sealed class PausedSprintUpSender : IInputSender, IDisposable
+    {
+        internal RecordingInputSender Recording { get; } = new();
+        internal ManualResetEventSlim SprintUpEntered { get; } = new(false);
+        internal ManualResetEventSlim ReleaseSprintUp { get; } = new(false);
+
+        public bool SendKey(Key key, bool isKeyDown)
+        {
+            var sent = Recording.SendKey(key, isKeyDown);
+            if (key == Key.W && !isKeyDown)
+            {
+                SprintUpEntered.Set();
+                ReleaseSprintUp.Wait(TimeSpan.FromSeconds(2));
+            }
+            return sent;
+        }
+
+        public bool SendVirtualKeyTap(int virtualKey) => Recording.SendVirtualKeyTap(virtualKey);
+        public bool SendLeftClick(int holdMilliseconds) => Recording.SendLeftClick(holdMilliseconds);
+        public bool SendDummyKey() => Recording.SendDummyKey();
+
+        public void Dispose()
+        {
+            SprintUpEntered.Dispose();
+            ReleaseSprintUp.Dispose();
         }
     }
 

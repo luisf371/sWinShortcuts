@@ -48,16 +48,6 @@ public partial class SettingsWindow : Window
 
         _settingsPath = AppSettings.GetSettingsPath();
 
-        if (_vm.TryLoadIniState(_settingsPath, out _))
-        {
-            // Only successfully hydrated settings can supply the Cancel rollback baseline.
-            _baselineColorToggleKey = _vm.ColorToggleKey;
-            _baselineRapidFireToggleKey = _vm.RapidFireToggleKey;
-            _baselineDebugLogging = _vm.EnableDebugLogging;
-            _baselineWatchdog = _vm.HookWatchdogEnabled;
-            _baselineAdvancedMode = _vm.AdvancedModeEnabled;
-        }
-
         // F-016: the startup checkbox state comes from schtasks (GetState), which can take seconds — load it
         // OFF the dispatcher after the window shows, so opening Settings can't stall the LL-hook thread.
         Loaded += OnLoadedAsync;
@@ -66,6 +56,25 @@ public partial class SettingsWindow : Window
     private async void OnLoadedAsync(object sender, RoutedEventArgs e)
     {
         Loaded -= OnLoadedAsync;
+        try
+        {
+            var document = await AppSettings.LoadAsync(_settingsPath);
+            if (_closed) return;
+            if (_vm.TryLoadIniState(document, out _))
+            {
+                _baselineColorToggleKey = _vm.ColorToggleKey;
+                _baselineRapidFireToggleKey = _vm.RapidFireToggleKey;
+                _baselineDebugLogging = _vm.EnableDebugLogging;
+                _baselineWatchdog = _vm.HookWatchdogEnabled;
+                _baselineAdvancedMode = _vm.AdvancedModeEnabled;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"[Settings] Failed to load app settings: {ex.Message}");
+        }
+        if (_closed) return;
+
         if (!_vm.IsIniLoaded)
         {
             System.Windows.MessageBox.Show(this,
@@ -117,34 +126,60 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private bool SaveIni(SettingsViewModel vm, out string? error)
+    private static IniDocument CaptureIniState(SettingsViewModel vm)
     {
-        error = null;
+        var ini = new IniDocument();
+        ini.SetValue("App", "StartWithWindows", vm.StartWithWindows ? "true" : "false");
+        ini.SetValue("App", "StartAsAdmin", vm.StartAsAdmin ? "true" : "false");
+        ini.SetValue("App", "StartMinimized", vm.StartMinimized ? "true" : "false");
+        ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
+        ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
+        ini.SetValue("App", "AdvancedMode", vm.AdvancedModeEnabled ? "true" : "false");
+        // Always a literal true/false: a null/whitespace value would REMOVE the key (IniDocument
+        // SetValue treats it as a delete), resurrecting the absent-key default on reload.
+        ini.SetValue("App", "CheckForUpdates", vm.CheckForUpdates ? "true" : "false");
+        AppSettings.SetColorToggleKey(ini, vm.ColorToggleKey);
+        AppSettings.SetRapidFireToggleKey(ini, vm.RapidFireToggleKey);
+        return ini;
+    }
+
+    internal static async Task<string?> SaveIniAsync(string settingsPath, IniDocument snapshot,
+        IStartupService startupService, bool restoreStartup, bool baselineStartup, bool baselineAdmin)
+    {
         try
         {
-            var ini = IniDocument.Load(_settingsPath);
-            ini.SetValue("App", "StartWithWindows", vm.StartWithWindows ? "true" : "false");
-            ini.SetValue("App", "StartAsAdmin", vm.StartAsAdmin ? "true" : "false");
-            ini.SetValue("App", "StartMinimized", vm.StartMinimized ? "true" : "false");
-            ini.SetValue("App", "EnableDebugLogging", vm.EnableDebugLogging ? "true" : "false");
-            ini.SetValue("App", "HookWatchdog", vm.HookWatchdogEnabled ? "true" : "false");
-            ini.SetValue("App", "AdvancedMode", vm.AdvancedModeEnabled ? "true" : "false");
-            // Always a literal true/false: a null/whitespace value would REMOVE the key (IniDocument
-            // SetValue treats it as a delete), resurrecting the absent-key default on reload.
-            ini.SetValue("App", "CheckForUpdates", vm.CheckForUpdates ? "true" : "false");
-            AppSettings.SetColorToggleKey(ini, vm.ColorToggleKey);
-            AppSettings.SetRapidFireToggleKey(ini, vm.RapidFireToggleKey);
-            ini.Save(_settingsPath);
-            return true;
+            await AppSettings.UpdateAsync(settingsPath, document =>
+            {
+                foreach (var entry in snapshot.GetSection("App"))
+                {
+                    document.SetValue("App", entry.Key, entry.Value);
+                }
+            }).ConfigureAwait(false);
+            return null;
         }
         catch (Exception ex)
         {
-            // F-016: no longer swallowed. The caller keeps the dialog open and shows this, so a
-            // read-only/locked INI can't report "saved" and then silently revert on restart. The
-            // debug entry records the same failure the MessageBox surfaces.
-            _logger.Log($"[Settings] Failed to save app settings: {ex.Message}");
-            error = ex.Message;
-            return false;
+            var error = ex.Message;
+            if (restoreStartup)
+            {
+                try
+                {
+                    var restoration = await Task.Run(() =>
+                    {
+                        var restored = startupService.Apply(baselineStartup, baselineAdmin, out var restoreError);
+                        return (restored, restoreError);
+                    }).ConfigureAwait(false);
+                    if (!restoration.restored)
+                    {
+                        error += $"\n\nStartup restoration failed: {restoration.restoreError ?? "Unable to restore previous startup settings."}";
+                    }
+                }
+                catch (Exception restoreError)
+                {
+                    error += $"\n\nStartup restoration failed: {restoreError.Message}";
+                }
+            }
+            return error;
         }
     }
 
@@ -171,7 +206,7 @@ public partial class SettingsWindow : Window
         }
 
         // Both INI settings and the OS startup state are known before anything can be persisted.
-        _vm.IsSaving = true; // disables the startup controls + Save while the apply runs (codex #2)
+        _vm.IsSaving = true; // Keep the captured settings stable throughout startup apply and INI save.
         try
         {
             // Snapshot the startup values on the dispatcher BEFORE going off-thread (codex #2); the controls
@@ -179,6 +214,7 @@ public partial class SettingsWindow : Window
             // dispatcher so a multi-second scheduled-task operation can't stall the LL-hook thread.
             var startWithWindows = _vm.StartWithWindows;
             var startAsAdmin = _vm.StartAsAdmin;
+            var snapshot = CaptureIniState(_vm);
 
             // Run the schtasks apply only when a startup option actually changed from what the dialog
             // loaded (post-coercion baseline); an untouched save skips the multi-second schtasks
@@ -211,15 +247,12 @@ public partial class SettingsWindow : Window
                 ? applyError ?? "Unable to apply startup settings."
                 : null;
 
-            if (!SaveIni(_vm, out var saveError))
+            var saveError = await SaveIniAsync(_settingsPath, snapshot, _startupService,
+                startupApplyRan && applied && (startWithWindows != _baselineStartWithWindows || startAsAdmin != _baselineStartAsAdmin),
+                _baselineStartWithWindows, _baselineStartAsAdmin);
+            if (saveError is not null)
             {
-                // F-016 (codex #3): the startup Apply above committed to the OS but the INI didn't persist.
-                // Revert the OS startup task to the baseline OFF the dispatcher so the OS and the (unsaved)
-                // settings can't disagree — otherwise Cancel would leave startup changed. Only if it changed.
-                if (startupApplyRan && applied && (startWithWindows != _baselineStartWithWindows || startAsAdmin != _baselineStartAsAdmin))
-                {
-                    await Task.Run(() => _startupService.Apply(_baselineStartWithWindows, _baselineStartAsAdmin, out _));
-                }
+                _logger.Log($"[Settings] Failed to save app settings: {saveError}");
 
                 if (_closed)
                 {
@@ -227,7 +260,7 @@ public partial class SettingsWindow : Window
                 }
 
                 System.Windows.MessageBox.Show(this,
-                    saveError ?? "Unable to save settings.",
+                    saveError,
                     "Settings",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error);

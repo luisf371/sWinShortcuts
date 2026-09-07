@@ -104,6 +104,11 @@ public sealed class IniDocument
             throw new ArgumentException("Key cannot be null or empty.", nameof(key));
         }
 
+        if (!string.IsNullOrWhiteSpace(value) && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
+        {
+            throw new ArgumentException("INI values must not contain line breaks.", nameof(value));
+        }
+
         EnsureSection(section);
 
         var bucket = _sections[section];

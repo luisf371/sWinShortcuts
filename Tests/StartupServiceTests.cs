@@ -87,7 +87,6 @@ public sealed class StartupServiceTests
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
-    [InlineData(true, true)]
     public void Apply_DeleteFails_DoesNotProceedToRegistryOrCreate(bool enabled, bool admin)
     {
         var host = new FakeStartupHost { QueryExit = 0, DeleteExit = 5 };
@@ -128,6 +127,104 @@ public sealed class StartupServiceTests
         var host = new FakeStartupHost { QueryExit = Missing, WriteThrows = true };
         Assert.False(host.Create().Apply(enabled, false, out var error));
         Assert.Contains("registry unavailable", error);
+    }
+
+    [Fact]
+    public void Apply_AdminReplacementFails_PreservesExistingTask()
+    {
+        var host = new MutableStartupHost { TaskPresent = true, FailCreate = true };
+        Assert.False(host.Create().Apply(true, true, out var error));
+        Assert.True(host.TaskPresent);
+        Assert.False(host.RunEnabled);
+        Assert.DoesNotContain(host.Commands, command => command.StartsWith("/Delete "));
+        Assert.Contains("create failed", error);
+    }
+
+    [Fact]
+    public void Apply_NormalStartupWriteFails_RestoresPreviousTask()
+    {
+        var host = new MutableStartupHost { TaskPresent = true, FailNextWrite = true };
+        Assert.False(host.Create().Apply(true, false, out var error));
+        Assert.True(host.TaskPresent);
+        Assert.False(host.RunEnabled);
+        Assert.Contains("restored", error);
+    }
+
+    [Fact]
+    public void Apply_CompensationFails_ReportsFailureAndActualState()
+    {
+        var host = new MutableStartupHost { TaskPresent = true, FailNextWrite = true, FailCreate = true };
+        Assert.False(host.Create().Apply(true, false, out var error));
+        Assert.False(host.TaskPresent);
+        Assert.False(host.RunEnabled);
+        Assert.Contains("restoration failed", error);
+        Assert.Contains("disabled", error);
+    }
+
+    [Fact]
+    public void Apply_AdminRunKeyRemovalFails_RestoresNormalStartup()
+    {
+        var host = new MutableStartupHost { RunEnabled = true, FailNextWrite = true };
+        Assert.False(host.Create().Apply(true, true, out var error));
+        Assert.False(host.TaskPresent);
+        Assert.True(host.RunEnabled);
+        Assert.Contains("restored", error);
+    }
+
+    [Fact]
+    public void Apply_RegistryWriteMutatesThenThrows_RestoresPreviousState()
+    {
+        var host = new MutableStartupHost { FailNextWrite = true, MutateBeforeFailure = true };
+        Assert.False(host.Create().Apply(true, false, out var error));
+        Assert.False(host.TaskPresent);
+        Assert.False(host.RunEnabled);
+        Assert.Contains("restored", error);
+    }
+
+    [Fact]
+    public void Apply_RegistryStateUnknown_DoesNotMutateTask()
+    {
+        var host = new FakeStartupHost { QueryExit = 0, ReadThrows = true };
+        Assert.False(host.Create().Apply(true, false, out _));
+        Assert.All(host.Commands, command => Assert.StartsWith("/Query ", command));
+        Assert.Empty(host.Writes);
+    }
+
+    private sealed class MutableStartupHost
+    {
+        internal bool TaskPresent { get; set; }
+        internal bool RunEnabled { get; set; }
+        internal bool FailCreate { get; init; }
+        internal bool FailNextWrite { get; set; }
+        internal bool MutateBeforeFailure { get; init; }
+        internal List<string> Commands { get; } = [];
+
+        internal StartupService Create() => new(Run, () => RunEnabled, enabled =>
+        {
+            if (FailNextWrite)
+            {
+                FailNextWrite = false;
+                if (MutateBeforeFailure) RunEnabled = enabled;
+                throw new UnauthorizedAccessException("registry unavailable");
+            }
+            RunEnabled = enabled;
+        });
+
+        private bool Run(string arguments, int timeoutMs, out int exitCode, out string stdout, out string stderr)
+        {
+            Commands.Add(arguments);
+            stdout = stderr = "";
+            exitCode = 0;
+            if (arguments.StartsWith("/Query ")) exitCode = TaskPresent ? 0 : Missing;
+            else if (arguments.StartsWith("/Delete ")) TaskPresent = false;
+            else if (FailCreate)
+            {
+                exitCode = Denied;
+                stderr = "create failed";
+            }
+            else TaskPresent = true;
+            return true;
+        }
     }
 
     private sealed class FakeStartupHost

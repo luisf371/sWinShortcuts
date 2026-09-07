@@ -9,6 +9,27 @@ namespace Tests;
 
 public class ColorSettingsTests
 {
+    [Theory]
+    [InlineData(double.NaN, DisplayColorProfile.DefaultGamma)]
+    [InlineData(double.PositiveInfinity, DisplayColorProfile.DefaultGamma)]
+    [InlineData(double.NegativeInfinity, DisplayColorProfile.DefaultGamma)]
+    [InlineData(0.1, 0.5)]
+    [InlineData(4.0, 3.0)]
+    public void Gamma_InvalidEditorValue_NormalizesModelAndEditor(double gamma, double expected)
+    {
+        var display = new DisplayInfo { Id = "DISPLAY1", Name = "Monitor", DeviceName = "DISPLAY1" };
+        var settings = new ColorSettings();
+        var profile = settings.GetOrCreateProfile(display.Id);
+        using var vm = new DisplayColorSettingsViewModel(
+            display, profile, settings, new RecordingColorControlService(), () => true);
+
+        vm.Gamma = 1.5;
+        vm.Gamma = gamma;
+
+        Assert.Equal(expected, vm.Gamma);
+        Assert.Equal(expected, settings.SnapshotProfiles()[display.Id].Gamma);
+    }
+
     [Fact]
     public void UpdateProfile_MutatesUnderSync_AndSnapshotReflectsIt()
     {

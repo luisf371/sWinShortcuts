@@ -124,25 +124,26 @@ public partial class App : System.Windows.Application
         {
             if (_host is not null)
             {
-                // Flush pending profile edits BEFORE stopping services so no debounced edit is lost (M1).
+                // Flush pending profile edits and queued app settings before stopping services.
                 try
                 {
                     var mainViewModel = _host.Services.GetService<MainViewModel>();
-                    if (mainViewModel is not null)
+                    var flushTask = Task.Run(async () =>
                     {
-                        var flushTask = Task.Run(() => mainViewModel.FlushPendingSavesAsync());
-                        if (!flushTask.Wait(TimeSpan.FromSeconds(3)))
-                        {
-                            exitClean = false;
-                            CrashReporter.Write("OnExit.Flush", new TimeoutException("FlushPendingSavesAsync did not complete within 3s; some edits may be unsaved."));
-                        }
-                        else if (flushTask.Result > 0)
-                        {
-                            // F-014: the flush completed but could not persist every edit (e.g. a locked
-                            // file). Report it rather than exiting as if everything saved.
-                            exitClean = false;
-                            CrashReporter.Write("OnExit.Flush", new InvalidOperationException($"{flushTask.Result} profile edit(s) could not be saved before exit."));
-                        }
+                        var profiles = mainViewModel?.FlushPendingSavesAsync() ?? Task.FromResult(0);
+                        await Task.WhenAll(profiles, AppSettings.FlushAsync()).ConfigureAwait(false);
+                        return await profiles.ConfigureAwait(false);
+                    });
+                    if (!flushTask.Wait(TimeSpan.FromSeconds(3)))
+                    {
+                        exitClean = false;
+                        CrashReporter.Write("OnExit.Flush", new TimeoutException("Pending settings saves did not complete within 3s; some edits may be unsaved."));
+                    }
+                    else if (flushTask.Result > 0)
+                    {
+                        // The flush completed but could not persist every edit (e.g. a locked file).
+                        exitClean = false;
+                        CrashReporter.Write("OnExit.Flush", new InvalidOperationException($"{flushTask.Result} profile edit(s) could not be saved before exit."));
                     }
                 }
                 catch (Exception ex)

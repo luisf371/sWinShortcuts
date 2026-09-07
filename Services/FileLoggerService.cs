@@ -10,7 +10,7 @@ namespace sWinShortcuts.Services;
 public sealed class FileLoggerService : ILoggerService, IDisposable
 {
     private const int MaxQueuedEntries = 20_000;      // bound memory during high-frequency hook logging
-    private const long MaxLogBytes = 2 * 1024 * 1024; // keep the newest 2 MiB in the active log
+    private const long MaxLogBytes = 2 * 1024 * 1024; // trim threshold for the active log
 
     private readonly string _logPath;
     private readonly BlockingCollection<string> _logQueue;
@@ -145,7 +145,8 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
             var info = new FileInfo(logPath);
             if (info.Exists && info.Length > maxLogBytes)
             {
-                var bytesToKeep = (int)Math.Min(info.Length, maxLogBytes);
+                // Leave room for subsequent batches instead of rewriting the retained log on each append.
+                var bytesToKeep = (int)Math.Min(info.Length, maxLogBytes - maxLogBytes / 4);
                 var buffer = new byte[bytesToKeep];
 
                 using (var source = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))

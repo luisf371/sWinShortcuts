@@ -443,8 +443,7 @@ public sealed partial class MainViewModel : ViewModelBase
                 }
             }
 
-            // Rename goes through the manager so file identity (SourcePath) is preserved and the same
-            // Profile instance is kept (no clobber, no lost selection). Executable edits keep normal autosave.
+            // Persist the proposed pair together, including repairs of a loaded invalid executable.
             var nameChanged = !string.IsNullOrWhiteSpace(newName) &&
                 !string.Equals(newName, selected.Name, StringComparison.Ordinal);
 
@@ -452,7 +451,8 @@ public sealed partial class MainViewModel : ViewModelBase
             {
                 try
                 {
-                    await _profileManager.RenameProfileAsync(selected.Model, newName);
+                    await _profileManager.UpdateProfileIdentityAsync(selected.Model, newName,
+                        string.IsNullOrWhiteSpace(newExecutable) ? selected.Model.Executable : newExecutable);
                     selected.RefreshNameFromModel();
                 }
                 catch (Exception ex)

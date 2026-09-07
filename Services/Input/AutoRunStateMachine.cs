@@ -641,7 +641,11 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             ForegroundGeneration: snapshot.Generation,
             ExpectedExecutable: snapshot.Executable);
         var up = new InputCommand(_sprintKey, IsDown: false, DelayBeforeMs: rng.Next(TAP_DURATION_MIN_MS, TAP_DURATION_MAX_MS + 1));
-        _queue.EnqueuePair(down, up);
+        if (_queue.EnqueuePair(down, up) && _sprintKey == Key.W)
+        {
+            // The sprint tap releases the shared movement key; restore its hold only for this run.
+            EnqueueForegroundDown(Key.W, generation, snapshot);
+        }
     }
 
     private void ReleaseLocked(bool includeBackground, string? reason = null)

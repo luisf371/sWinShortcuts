@@ -9,6 +9,34 @@ namespace Tests;
 public sealed class FileLoggerServiceTests
 {
     [Fact]
+    public void TrimLogFile_LeavesRoomForSeveralSmallAppends()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sWinShortcutsTests_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "debug.log");
+        try
+        {
+            File.WriteAllLines(path, Enumerable.Repeat(new string('x', 30), 100));
+            FileLoggerService.TrimLogFile(path, 2048);
+            var retained = File.ReadAllText(path);
+
+            for (var i = 0; i < 8; i++)
+            {
+                var entry = $"new-{i:D2}-012345678901234567890123" + Environment.NewLine;
+                File.AppendAllText(path, entry);
+                retained += entry;
+                FileLoggerService.TrimLogFile(path, 2048);
+                Assert.Equal(retained, File.ReadAllText(path));
+                Assert.True(new FileInfo(path).Length <= 2048);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void TrimLogFile_KeepsNewestEntriesWithinLimit()
     {
         var root = Path.Combine(Path.GetTempPath(), "sWinShortcutsTests_" + Guid.NewGuid().ToString("N"));

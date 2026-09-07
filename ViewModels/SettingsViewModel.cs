@@ -228,13 +228,19 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     }
 
     internal bool TryLoadIniState(string settingsPath, out string? error)
+        => TryLoadIniState(() => IniDocument.Load(settingsPath), out error);
+
+    internal bool TryLoadIniState(IniDocument document, out string? error)
+        => TryLoadIniState(() => document, out error);
+
+    private bool TryLoadIniState(Func<IniDocument> load, out string? error)
     {
         error = null;
         IsIniLoaded = false;
         try
         {
             // Read and parse one snapshot before any setter can change a live service.
-            var ini = IniDocument.Load(settingsPath);
+            var ini = load();
             var enableDebugLogging = ini.GetValue("App", "EnableDebugLogging") == "true";
             var hookWatchdogEnabled = ini.GetValue("App", "HookWatchdog") != "false";
             // A missing upgrade preference keeps the value MainWindow already resolved.
@@ -275,6 +281,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
                 _isIniLoaded = value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(CanSave));
+                OnPropertyChanged(nameof(CanEditSettings));
             }
         }
     }
@@ -310,11 +317,14 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
                 OnPropertyChanged(nameof(CanEditStartup));
                 OnPropertyChanged(nameof(CanChooseAdmin));
                 OnPropertyChanged(nameof(CanSave));
+                OnPropertyChanged(nameof(CanEditSettings));
             }
         }
     }
 
     public bool CanEditStartup => IsStartupLoaded && !IsSaving;
+
+    public bool CanEditSettings => IsIniLoaded && !IsSaving;
 
     public bool CanSave => IsIniLoaded && IsStartupLoaded && !IsSaving;
 

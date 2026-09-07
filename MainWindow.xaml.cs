@@ -90,6 +90,10 @@ public partial class MainWindow : Window
         try
         {
             await _viewModel.InitializeAsync();
+            if (_isClosed)
+            {
+                return;
+            }
 
             if (!string.IsNullOrWhiteSpace(_startupProfileName))
             {
@@ -130,7 +134,11 @@ public partial class MainWindow : Window
         }
 
         // Resolve Advanced Mode only now — the upgrade default (§4.4) needs the loaded profiles.
-        ResolveAndApplyAdvancedMode();
+        await ResolveAndApplyAdvancedModeAsync();
+        if (_isClosed)
+        {
+            return;
+        }
 
         if (_startMinimized)
         {
@@ -143,17 +151,22 @@ public partial class MainWindow : Window
     // capability (Hold-Breath enabled, or an un-suppressed 1→2 mapping) so a returning user's feature
     // doesn't silently go inert. The resolved value is pushed to BOTH the service (gating) and the
     // view-model (gray-out) so they agree, then persisted so the next launch takes the present branch.
-    private void ResolveAndApplyAdvancedMode()
+    private async Task ResolveAndApplyAdvancedModeAsync()
     {
         string? persisted = null;
         try
         {
-            persisted = IniDocument.Load(_settingsPath).GetValue("App", "AdvancedMode");
+            persisted = (await AppSettings.LoadAsync(_settingsPath)).GetValue("App", "AdvancedMode");
         }
         catch (Exception ex)
         {
             // Treat a load failure as "absent" and re-resolve from the profiles below.
             _logger.Log($"[Settings] Failed to read AdvancedMode; re-resolving from profiles: {ex.Message}");
+        }
+
+        if (_isClosed)
+        {
+            return;
         }
 
         bool advanced = persisted is not null
@@ -236,31 +249,18 @@ public partial class MainWindow : Window
         // An immediate save supersedes any pending debounced one.
         _windowStateSaveTimer?.Stop();
 
+        // WPF values belong to this dispatcher; the worker receives only captured scalars.
+        var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
+        var state = WindowState.ToString();
+        var currentName = _viewModel.SelectedProfile?.Name ?? _lastProfileName;
         UpdateSettings(ini =>
         {
-            // Save normal bounds even when maximized
-            double width, height, left, top;
-            if (WindowState == WindowState.Normal)
-            {
-                width = Width;
-                height = Height;
-                left = Left;
-                top = Top;
-            }
-            else
-            {
-                width = RestoreBounds.Width;
-                height = RestoreBounds.Height;
-                left = RestoreBounds.Left;
-                top = RestoreBounds.Top;
-            }
-
-            ini.SetValue("Window", "Width", width.ToString("F0"));
-            ini.SetValue("Window", "Height", height.ToString("F0"));
-            ini.SetValue("Window", "Left", left.ToString("F0"));
-            ini.SetValue("Window", "Top", top.ToString("F0"));
-            ini.SetValue("Window", "State", WindowState.ToString());
-            ApplySharedSettings(ini);
+            ini.SetValue("Window", "Width", bounds.Width.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+            ini.SetValue("Window", "Height", bounds.Height.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+            ini.SetValue("Window", "Left", bounds.Left.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+            ini.SetValue("Window", "Top", bounds.Top.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+            ini.SetValue("Window", "State", state);
+            ini.SetValue("App", "LastProfile", currentName);
         });
     }
 
@@ -269,7 +269,7 @@ public partial class MainWindow : Window
         MinimizeToTray();
     }
 
-    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
         var wnd = new Views.SettingsWindow(_startupService, _logger, _inputHook)
         {
@@ -280,16 +280,19 @@ public partial class MainWindow : Window
         // The dialog live-applies AdvancedMode to the service (incl. a mid-dialog toggle); mirror the
         // live value back into the view-model so the gray-out agrees after the modal closes.
         _viewModel.AdvancedModeEnabled = _inputHook.AdvancedModeEnabled;
-        RefreshToggleKeys();
-        RefreshUpdateCheckSetting();
+        await RefreshSettingsAsync();
     }
 
     // Post-dialog sync for the persist-on-save update toggle (RefreshToggleKeys pattern).
-    private void RefreshUpdateCheckSetting()
+    private async Task RefreshSettingsAsync()
     {
         try
         {
-            var enabled = AppSettings.LoadCheckForUpdatesEnabled(_settingsPath);
+            var document = await AppSettings.LoadAsync(_settingsPath);
+            if (_isClosed) return;
+            _viewModel.ColorToggleKey = document.GetKey("App", AppSettings.ColorToggleKeyName) ?? System.Windows.Input.Key.None;
+            _viewModel.RapidFireToggleKey = document.GetKey("App", AppSettings.RapidFireToggleKeyName) ?? System.Windows.Input.Key.None;
+            var enabled = document.GetValue("App", AppSettings.CheckForUpdatesKeyName) == "true";
             var wasEnabled = _updateCheck.Enabled;
             _updateCheck.Enabled = enabled;
             if (enabled && !wasEnabled)
@@ -332,9 +335,9 @@ public partial class MainWindow : Window
         _alwaysOnTopDesired = !_alwaysOnTopDesired;
         ApplyAlwaysOnTop();
 
-        // Single mutation point: AlwaysOnTop is written ONLY on an explicit toggle here — NOT in
-        // ApplySharedSettings, which runs on every profile switch and would add write churn.
-        UpdateSettings(ini => ini.SetValue("App", "AlwaysOnTop", _alwaysOnTopDesired ? "true" : "false"));
+        // Persist the pin preference when toggled; window/profile-state saves preserve this key.
+        var alwaysOnTop = _alwaysOnTopDesired;
+        UpdateSettings(ini => ini.SetValue("App", "AlwaysOnTop", alwaysOnTop ? "true" : "false"));
     }
 
     private void ApplyAlwaysOnTop()
@@ -591,16 +594,15 @@ public partial class MainWindow : Window
             return;
         }
 
-        UpdateSettings(ApplySharedSettings);
+        var currentName = _viewModel.SelectedProfile?.Name ?? _lastProfileName;
+        UpdateSettings(ini => ini.SetValue("App", "LastProfile", currentName));
     }
 
-    private void UpdateSettings(Action<IniDocument> updater)
+    private async void UpdateSettings(Action<IniDocument> updater)
     {
         try
         {
-            var document = IniDocument.Load(_settingsPath);
-            updater(document);
-            document.Save(_settingsPath);
+            await AppSettings.UpdateAsync(_settingsPath, updater).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -608,14 +610,4 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ApplySharedSettings(IniDocument ini)
-    {
-        // Prefer the live selected-profile name so a rename (same instance, no selection change) is not
-        // persisted stale (§7/M2); fall back to the cached name when nothing is selected.
-        var currentName = _viewModel.SelectedProfile?.Name ?? _lastProfileName;
-        ini.SetValue("App", "LastProfile", string.IsNullOrWhiteSpace(currentName) ? null : currentName);
-        // NOTE: [App] StartMinimized is owned exclusively by the Settings dialog (the user-facing toggle).
-        // MainWindow only READS it at launch, so do not write it here — a stale in-memory value would
-        // otherwise clobber a preference the user just changed in Settings.
-    }
 }

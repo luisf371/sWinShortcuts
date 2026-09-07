@@ -55,6 +55,28 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(_root, "Atomic.ini.*.tmp"));
     }
 
+    [Theory]
+    [InlineData("NaN", DisplayColorProfile.DefaultGamma)]
+    [InlineData("Infinity", DisplayColorProfile.DefaultGamma)]
+    [InlineData("-Infinity", DisplayColorProfile.DefaultGamma)]
+    [InlineData("0.1", 0.5)]
+    [InlineData("4.0", 3.0)]
+    public async Task ColorGamma_InvalidValue_NormalizesOnLoadAndSave(string gamma, double expected)
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "Win.ini");
+        File.WriteAllText(path, $"[ColorDisplays]\nDISPLAY1=1|50|50|{gamma}|50\n");
+
+        var windows = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.IsWindowsProfile);
+        Assert.Equal(expected, windows.ColorSettings.SnapshotProfiles()["DISPLAY1"].Gamma);
+
+        windows.ColorSettings.UpdateProfile("DISPLAY1", p => p.Gamma = double.Parse(gamma,
+            System.Globalization.CultureInfo.InvariantCulture));
+        await _store.SaveProfileAsync(windows, CancellationToken.None);
+        var saved = IniDocument.Load(path).GetSection("ColorDisplays")["DISPLAY1"];
+        Assert.Equal(expected, double.Parse(saved.Split('|')[3], System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     [Fact]
     public async Task ReservedNameCustomFile_StaysCustom_AndCannotClobberWindowsIni()
     {

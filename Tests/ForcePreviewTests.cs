@@ -214,6 +214,39 @@ public sealed class ForcePreviewTests
         }
     }
 
+    [Theory]
+    [InlineData(ColorVariant.Primary, ColorVariant.Secondary, 90, 40)]
+    [InlineData(ColorVariant.Secondary, ColorVariant.Primary, 40, 90)]
+    public async Task ColorVariantToggleDuringPreview_RuntimeDiffers_TogglesVisibleVariant(
+        ColorVariant runtime, ColorVariant preview, int beforeBrightness, int afterBrightness)
+    {
+        var harness = await CreateServiceHarness(CreateGameProfile(
+            hasSecondary: true, primaryBrightness: 40, secondaryBrightness: 90));
+        harness.GameProfile.ColorSettings.SetActiveVariant(runtime);
+        await harness.Service.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitForAsync(() => harness.LastBrightness == 60);
+            harness.Service.SetForcedColorPreview(harness.GameProfile.ColorSettings, preview);
+            await WaitForAsync(() => harness.LastBrightness == beforeBrightness);
+            await WaitForAsync(() => ReferenceEquals(
+                typeof(ProfileActivationService).GetField("_activeColorSettings",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .GetValue(harness.Service), harness.GameProfile.ColorSettings));
+            Assert.Equal(runtime, harness.GameProfile.ColorSettings.ActiveVariant);
+
+            harness.Input.RaiseColorVariantToggle();
+
+            Assert.Equal(runtime, harness.Toast.AppliedVariant);
+            Assert.Equal(1, harness.Toast.ShownCount);
+            await WaitForAsync(() => harness.LastBrightness == afterBrightness);
+        }
+        finally
+        {
+            await StopAsync(harness);
+        }
+    }
+
     [Fact]
     public async Task ForcedPreview_SetAndClearWhileStopping_AreSideEffectFree()
     {
@@ -338,6 +371,20 @@ public sealed class ForcePreviewTests
 
         viewModel.ColorSettings.IsForcePreviewEnabled = true;
         viewModel.Dispose(); // e.g. profile removed mid-preview
+
+        Assert.False(viewModel.ColorSettings.IsForcePreviewEnabled);
+        Assert.Equal(1, runtime.ClearedPreviews);
+    }
+
+    [Fact]
+    public void ForcePreview_ProfileMasterDisabled_ClearsImmediatelyOnce()
+    {
+        var runtime = new RecordingPreviewRuntimeService();
+        using var viewModel = CreateGameViewModel(ProfileFactory.CreateCustomProfile("Game", "game.exe"), runtime);
+        viewModel.ColorSettings.IsForcePreviewEnabled = true;
+
+        viewModel.IsEnabled = false;
+        viewModel.IsEnabled = false;
 
         Assert.False(viewModel.ColorSettings.IsForcePreviewEnabled);
         Assert.Equal(1, runtime.ClearedPreviews);

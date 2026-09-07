@@ -122,7 +122,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
 
             ValidateCustomProfile(profile);
 
-            await _store.SaveProfileAsync(profile, cancellationToken).ConfigureAwait(false);
+            await Task.Run(() => _store.SaveProfileAsync(profile, cancellationToken), cancellationToken).ConfigureAwait(false);
             _profiles.Add(profile);
             RebuildSnapshot();
         }
@@ -138,6 +138,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
     public async Task RemoveProfileAsync(Profile profile, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        var snapshot = ProfilePersistenceSnapshot.Create(profile);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -157,7 +158,9 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
             // surfaces the error, and a restart can't resurrect a profile the UI was told is gone. Only
             // after the file is actually gone do we mutate in-memory state and raise ProfileRemoved
             // (which is what cancels the pending autosave, so that too happens only on success).
-            await _store.DeleteProfileAsync(profile, cancellationToken).ConfigureAwait(false);
+            snapshot.Name = profile.Name;
+            snapshot.SourcePath = profile.SourcePath;
+            await Task.Run(() => _store.DeleteProfileAsync(snapshot, cancellationToken), cancellationToken).ConfigureAwait(false);
             _profiles.Remove(profile);
             _removedProfiles.Add(profile);
             RebuildSnapshot();
@@ -170,12 +173,24 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
         ProfileRemoved?.Invoke(this, profile);
     }
 
-    public async Task RenameProfileAsync(Profile profile, string newName, CancellationToken cancellationToken = default)
+    public Task RenameProfileAsync(Profile profile, string newName, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        return UpdateProfileIdentityAsync(profile, newName, profile.Executable, cancellationToken);
+    }
+
+    public async Task UpdateProfileIdentityAsync(
+        Profile profile, string newName, string executable, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentException.ThrowIfNullOrWhiteSpace(newName);
+        ArgumentNullException.ThrowIfNull(executable);
 
         var trimmed = newName.Trim();
+        // Capture mutable feature collections before yielding away from the caller's dispatcher.
+        var snapshot = ProfilePersistenceSnapshot.Create(profile);
+        snapshot.Name = trimmed;
+        snapshot.Executable = executable.Trim();
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -201,24 +216,13 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException($"A profile named '{trimmed}' already exists.");
             }
 
-            // F-017: a rename persists the WHOLE profile; validate the executable too so a legacy/invalid
-            // exe can't be re-persisted through the rename path (codex #9). Runs before the name mutation.
-            ValidateCustomProfile(profile);
-
-            // Keep the SAME Profile instance (preserves selection + autosave keying) and write back to
-            // its existing SourcePath, so the rename can never clobber another profile's file. Roll the
-            // name back if the save fails so a reported failure doesn't leave a half-renamed model.
-            var oldName = profile.Name;
-            profile.Name = trimmed;
-            try
-            {
-                await _store.SaveProfileAsync(profile, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                profile.Name = oldName;
-                throw;
-            }
+            ValidateCustomProfile(snapshot, profile);
+            snapshot.SourcePath = profile.SourcePath;
+            await Task.Run(() => _store.SaveProfileAsync(snapshot, cancellationToken), cancellationToken).ConfigureAwait(false);
+            // Publish identity only after the durable write. A failed repair leaves both values intact.
+            profile.Name = snapshot.Name;
+            profile.Executable = snapshot.Executable;
+            profile.SourcePath = snapshot.SourcePath;
         }
         finally
         {
@@ -298,8 +302,9 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
                 throw new InvalidOperationException("Profile is not managed by this manager.");
             }
 
-            // A queued snapshot keeps its captured settings, but a completed rename owns the name.
+            // A queued snapshot keeps captured features; a completed identity edit owns its name/exe.
             persistenceSnapshot.Name = managedProfile.Name;
+            persistenceSnapshot.Executable = managedProfile.Executable;
 
             // Check for duplicate profile name (excluding the current profile)
             if (_profiles.Any(p => !ReferenceEquals(p, managedProfile) &&
@@ -316,7 +321,7 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
             // dialog, Add, programmatic) is protected, not just the Modify dialog.
             ValidateCustomProfile(persistenceSnapshot, managedProfile);
 
-            await _store.SaveProfileAsync(persistenceSnapshot, cancellationToken).ConfigureAwait(false);
+            await Task.Run(() => _store.SaveProfileAsync(persistenceSnapshot, cancellationToken), cancellationToken).ConfigureAwait(false);
             managedProfile.SourcePath = persistenceSnapshot.SourcePath;
         }
         finally
@@ -325,11 +330,10 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
         }
     }
 
-    // F-017: single executable-validation used by every custom-profile persistence entry point (Add +
-    // Save). Built-ins carry no executable and are exempt. A custom profile must target a non-empty, .exe,
+    // Single executable validation used by every custom-profile persistence entry point (Add, Save,
+    // and identity updates). Built-ins carry no executable and are exempt. A custom profile must target a non-empty, .exe,
     // and unique-by-normalized-name executable — empty never activates, non-.exe is rejected by policy,
-    // and a newly-saved duplicate would make activation ambiguous. (Rename is name-only and does not
-    // touch the executable.)
+    // and a newly-saved duplicate would make activation ambiguous.
     private void ValidateCustomProfile(Profile profile, Profile? managedProfile = null)
     {
         if (profile.Kind != ProfileKind.Custom)
