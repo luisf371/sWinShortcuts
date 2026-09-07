@@ -30,6 +30,7 @@ public sealed class AmdColorControlService : IDisposable
     private bool _availabilityChecked;
     private bool _available;
     private int _disposeRequested;
+    private int _topologyRefreshPending;
 
     public AmdColorControlService(ILoggerService logger)
         : this(logger, new AmdAdlApi())
@@ -55,7 +56,17 @@ public sealed class AmdColorControlService : IDisposable
 
         lock (_sync)
         {
-            if (Volatile.Read(ref _disposeRequested) != 0 || !EnsureAvailable())
+            if (Volatile.Read(ref _disposeRequested) != 0)
+            {
+                return ColorApplyOutcome.Skipped;
+            }
+
+            if (Interlocked.Exchange(ref _topologyRefreshPending, 0) != 0)
+            {
+                RefreshTopologyCore();
+            }
+
+            if (!EnsureAvailable())
             {
                 _logger.Log("[Color][ADL] ADL2 is not available; skipping digital vibrance.");
                 return ColorApplyOutcome.Skipped;
@@ -251,45 +262,41 @@ public sealed class AmdColorControlService : IDisposable
 
     internal void RefreshTopology()
     {
-        if (Volatile.Read(ref _disposeRequested) != 0)
+        if (Volatile.Read(ref _disposeRequested) == 0)
         {
-            return;
+            // SystemEvents can run on the UI thread; defer refresh behind worker-side native serialization.
+            Interlocked.Exchange(ref _topologyRefreshPending, 1);
         }
+    }
 
-        lock (_sync)
+    private void RefreshTopologyCore()
+    {
+        if (_availabilityChecked && _available)
         {
-            if (Volatile.Read(ref _disposeRequested) != 0)
+            var refreshed = false;
+            try
             {
-                return;
+                refreshed = _api.TryRefresh();
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"[Color][ADL] Adapter refresh failed: {ex}");
             }
 
-            if (_availabilityChecked && _available)
-            {
-                var refreshed = false;
-                try
-                {
-                    refreshed = _api.TryRefresh();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Log($"[Color][ADL] Adapter refresh failed: {ex}");
-                }
-
-                if (!refreshed)
-                {
-                    _availabilityChecked = false;
-                    _available = false;
-                    _logger.Log("[Color][ADL] Adapter refresh failed; ADL2 will be reinitialized on the next apply.");
-                }
-            }
-            else if (_availabilityChecked)
+            if (!refreshed)
             {
                 _availabilityChecked = false;
+                _available = false;
+                _logger.Log("[Color][ADL] Adapter refresh failed; ADL2 will be reinitialized on the next apply.");
             }
-
-            _targetCache.Clear();
-            _rangeCache.Clear();
         }
+        else if (_availabilityChecked)
+        {
+            _availabilityChecked = false;
+        }
+
+        _targetCache.Clear();
+        _rangeCache.Clear();
     }
 
     public void Dispose()

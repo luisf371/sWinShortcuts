@@ -33,6 +33,47 @@ public sealed class NvidiaColorControlServiceTests
         Assert.Equal(expected, NvidiaColorControlService.CanUseUnmatchedDisplay(vendor, count));
     }
     [Fact]
+    public async Task DisplayChange_WhenNativeApplyBlocked_ReturnsAndInvalidatesBeforeNextApply()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var calls = 0;
+        using var service = new NvidiaColorControlService(new NullLoggerService(), (_, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                entered.Set();
+                Assert.True(release.Wait(TimeSpan.FromSeconds(5)));
+            }
+            return ColorApplyOutcome.Applied;
+        }, () => { });
+        var cache = (Dictionary<string, IntPtr>)typeof(NvidiaColorControlService)
+            .GetField("_handleCache", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(service)!;
+        cache["DISPLAY1"] = new IntPtr(1);
+        var apply = Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()));
+        Task? notification = null;
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+            notification = Task.Run(() => RefreshTopology(service));
+            await notification.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(apply.IsCompleted);
+            Assert.Single(cache);
+        }
+        finally
+        {
+            release.Set();
+            await apply;
+            if (notification is not null) await notification;
+        }
+
+        Assert.Equal(ColorApplyOutcome.Applied,
+            service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()));
+        Assert.Empty(cache);
+    }
+
+    [Fact]
     public async Task Dispose_WhenNativeApplyBlocked_ReturnsBeforeNativeCleanup()
     {
         using var entered = new ManualResetEventSlim(false);

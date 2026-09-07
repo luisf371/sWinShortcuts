@@ -21,6 +21,7 @@ public sealed class NvidiaColorControlService : IDisposable
     private bool _nvapiInitialized;
     private bool _nvapiAvailableChecked;
     private int _disposeRequested;
+    private int _topologyRefreshPending;
 
     public NvidiaColorControlService(ILoggerService logger)
         : this(logger, applyNative: null, cleanupNative: null)
@@ -52,6 +53,11 @@ public sealed class NvidiaColorControlService : IDisposable
             if (Volatile.Read(ref _disposeRequested) != 0)
             {
                 return ColorApplyOutcome.Skipped;
+            }
+
+            if (Interlocked.Exchange(ref _topologyRefreshPending, 0) != 0)
+            {
+                _handleCache.Clear();
             }
 
             return _applyNative(display, profile);
@@ -282,19 +288,10 @@ public sealed class NvidiaColorControlService : IDisposable
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
-        if (Volatile.Read(ref _disposeRequested) != 0)
+        if (Volatile.Read(ref _disposeRequested) == 0)
         {
-            return;
-        }
-
-        lock (_sync)
-        {
-            if (Volatile.Read(ref _disposeRequested) != 0)
-            {
-                return;
-            }
-
-            _handleCache.Clear();
+            // SystemEvents can run on the UI thread; never wait for in-flight native work here.
+            Interlocked.Exchange(ref _topologyRefreshPending, 1);
         }
     }
 

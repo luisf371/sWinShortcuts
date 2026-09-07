@@ -17,13 +17,17 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
     private readonly ColorSettings _model;
     private readonly IColorControlService _colorService;
     private readonly IDisplayService _displayService;
+    private readonly SynchronizationContext? _ownerContext;
+    private IReadOnlyList<DisplayInfo> _displaySnapshot = [];
+    private int _displayRefreshVersion;
+    private int _displayRefreshScheduled;
     private readonly bool _allowLiveUpdates;
     private readonly Func<bool>? _parentEnabledCheck;
     // Owns the preview UI state (checkbox + countdown); ProfileActivationService owns the forced
     // runtime state (what the worker applies). Null (tests / no runtime) hides the feature.
     private readonly IProfileRuntimeService? _runtimeService;
     private bool _isEnabled;
-    private bool _disposed;
+    private volatile bool _disposed;
     private ColorVariant _editingVariant = ColorVariant.Primary;
 
     // Force-preview UI state. The DispatcherTimer is created ONLY when a dispatcher exists —
@@ -44,6 +48,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
+        _ownerContext = SynchronizationContext.Current;
         _colorService = colorService ?? throw new ArgumentNullException(nameof(colorService));
         _allowLiveUpdates = allowLiveUpdates;
         _parentEnabledCheck = parentEnabledCheck;
@@ -51,11 +56,10 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
 
         _isEnabled = model.IsEnabled;
 
-        BuildDisplayViewModels();
-
         // Rebuild when monitors are hot-plugged/removed. DisplayService is a singleton that outlives
         // this (transient) VM, so we MUST unsubscribe in Dispose or the handler leaks.
         _displayService.DisplaysChanged += OnDisplaysChanged;
+        ScheduleDisplayRefresh();
     }
 
     private void BuildDisplayViewModels()
@@ -67,7 +71,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
             _model.EnsureSecondaryInitialized();
         }
 
-        foreach (var display in _displayService.GetDisplays())
+        foreach (var display in _displaySnapshot)
         {
             var profile = _model.GetOrCreateProfile(display.Id, _editingVariant);
             var displayVm = new DisplayColorSettingsViewModel(
@@ -86,14 +90,60 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
 
     private void OnDisplaysChanged(object? sender, EventArgs e)
     {
-        var dispatcher = System.Windows.Application.Current?.Dispatcher;
-        if (dispatcher is not null && !dispatcher.CheckAccess())
+        Interlocked.Increment(ref _displayRefreshVersion);
+        ScheduleDisplayRefresh();
+    }
+
+    private void ScheduleDisplayRefresh()
+    {
+        if (_disposed || Interlocked.CompareExchange(ref _displayRefreshScheduled, 1, 0) != 0)
         {
-            dispatcher.InvokeAsync(RebuildDisplayViewModels);
             return;
         }
 
-        RebuildDisplayViewModels();
+        if (_ownerContext is not null && !ReferenceEquals(SynchronizationContext.Current, _ownerContext))
+        {
+            _ownerContext.Post(_ => StartDisplayRefresh(), null);
+            return;
+        }
+
+        StartDisplayRefresh();
+    }
+
+    internal Task DisplayRefreshTask { get; private set; } = Task.CompletedTask;
+
+    private void StartDisplayRefresh() => DisplayRefreshTask = RefreshDisplaySnapshotAsync();
+
+    private async Task RefreshDisplaySnapshotAsync()
+    {
+        var version = Volatile.Read(ref _displayRefreshVersion);
+        try
+        {
+            while (!_disposed)
+            {
+                version = Volatile.Read(ref _displayRefreshVersion);
+                var displays = await _displayService.GetDisplaysAsync();
+                if (_disposed) return;
+                if (version != Volatile.Read(ref _displayRefreshVersion)) continue;
+
+                _displaySnapshot = displays;
+                RebuildDisplayViewModels();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Keep the last completed rows; another topology notification can retry the snapshot.
+            System.Diagnostics.Debug.WriteLine($"[Color] Failed to refresh display rows: {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _displayRefreshScheduled, 0);
+            if (!_disposed && version != Volatile.Read(ref _displayRefreshVersion))
+            {
+                ScheduleDisplayRefresh();
+            }
+        }
     }
 
     private void RebuildDisplayViewModels()

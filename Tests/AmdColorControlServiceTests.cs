@@ -171,6 +171,68 @@ public sealed class AmdColorControlServiceTests
     }
 
     [Fact]
+    public async Task RefreshTopology_WhenNativeWorkBlocked_DefersAndRetainsPendingInvalidation()
+    {
+        using var applyEntered = new ManualResetEventSlim();
+        using var releaseApply = new ManualResetEventSlim();
+        using var refreshEntered = new ManualResetEventSlim();
+        using var releaseRefresh = new ManualResetEventSlim();
+        var api = new FakeAmdAdlApi
+        {
+            Displays = [new AmdDisplayTarget(@"\\.\DISPLAY1", 1, 0)],
+            BeforeSet = () =>
+            {
+                applyEntered.Set();
+                Assert.True(releaseApply.Wait(TimeSpan.FromSeconds(5)));
+            },
+            BeforeRefresh = () =>
+            {
+                refreshEntered.Set();
+                Assert.True(releaseRefresh.Wait(TimeSpan.FromSeconds(5)));
+            }
+        };
+        using var service = CreateService(api);
+        var apply = Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(75)));
+        Task? notification = null;
+        Task? nextApply = null;
+        try
+        {
+            Assert.True(applyEntered.Wait(TimeSpan.FromSeconds(2)));
+            notification = Task.Run(service.RefreshTopology);
+            await notification.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(apply.IsCompleted);
+            Assert.Equal(0, api.RefreshCalls);
+            releaseApply.Set();
+            await apply;
+
+            api.Displays = [new AmdDisplayTarget(@"\\.\DISPLAY1", 2, 0)];
+            api.Range = new AmdSaturationRange(100, 0, 400, 1);
+            nextApply = Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(75)));
+            Assert.True(refreshEntered.Wait(TimeSpan.FromSeconds(2)));
+            notification = Task.Run(service.RefreshTopology);
+            await notification.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(nextApply.IsCompleted);
+            releaseRefresh.Set();
+            await nextApply;
+
+            Assert.Equal(2, api.SetCalls[^1].Target.AdapterIndex);
+            Assert.Equal(250, api.SetCalls[^1].Value);
+            Assert.Equal(ColorApplyOutcome.Applied,
+                service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(75)));
+            Assert.Equal(2, api.RefreshCalls);
+            Assert.Equal(3, api.EnumerateCalls);
+        }
+        finally
+        {
+            releaseApply.Set();
+            releaseRefresh.Set();
+            await apply;
+            if (notification is not null) await notification;
+            if (nextApply is not null) await nextApply;
+        }
+    }
+
+    [Fact]
     public void RefreshTopology_AvailableApi_RefreshesAndClearsTargetCache()
     {
         var api = new FakeAmdAdlApi
@@ -381,11 +443,12 @@ public sealed class AmdColorControlServiceTests
     {
         private int _disposeCalls;
         public Action? BeforeSet { get; init; }
+        public Action? BeforeRefresh { get; init; }
         public Action? BeforeDispose { get; init; }
         public int DisposeCalls => Volatile.Read(ref _disposeCalls);
         public bool InitializeResult { get; set; } = true;
-        public IReadOnlyList<AmdDisplayTarget> Displays { get; init; } = [];
-        public AmdSaturationRange Range { get; init; } = new(100, 0, 200, 1);
+        public IReadOnlyList<AmdDisplayTarget> Displays { get; set; } = [];
+        public AmdSaturationRange Range { get; set; } = new(100, 0, 200, 1);
         public bool TryGetRangeResult { get; init; } = true;
         public bool SetResult { get; init; } = true;
         public bool FlushResult { get; init; } = true;
@@ -405,6 +468,7 @@ public sealed class AmdColorControlServiceTests
         public bool TryRefresh()
         {
             RefreshCalls++;
+            BeforeRefresh?.Invoke();
             return RefreshResult;
         }
 

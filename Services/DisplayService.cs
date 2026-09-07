@@ -17,8 +17,10 @@ public sealed class DisplayService : IDisplayService, IDisposable
     private const int DXGI_ERROR_NOT_FOUND = unchecked((int)0x887A0002);
 
     private readonly object _lock = new();
+    private readonly Func<List<DisplayInfo>> _enumerateDisplays;
     private List<DisplayInfo>? _cachedDisplays;
-    private bool _disposed;
+    private int _pendingInvalidation;
+    private int _disposed;
 
     // Known manufacturer codes from EDID PNP database
     private static readonly Dictionary<string, string> ManufacturerCodes = new(StringComparer.OrdinalIgnoreCase)
@@ -49,24 +51,54 @@ public sealed class DisplayService : IDisplayService, IDisposable
         { "IVM", "Iiyama" },
     };
 
-    public DisplayService()
+    public DisplayService() : this(RefreshDisplays, subscribeToSystemEvents: true)
     {
-        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+    }
+
+    internal DisplayService(Func<List<DisplayInfo>> enumerateDisplays, bool subscribeToSystemEvents = false)
+    {
+        _enumerateDisplays = enumerateDisplays;
+        if (subscribeToSystemEvents)
+        {
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        }
     }
 
     public IReadOnlyList<DisplayInfo> GetDisplays()
     {
         lock (_lock)
         {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return [];
+            }
+
+            if (Interlocked.Exchange(ref _pendingInvalidation, 0) != 0)
+            {
+                _cachedDisplays = null;
+            }
+
             if (_cachedDisplays is not null)
             {
                 return _cachedDisplays;
             }
 
-            _cachedDisplays = RefreshDisplays();
+            List<DisplayInfo> displays;
+            do
+            {
+                displays = _enumerateDisplays();
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    return [];
+                }
+                // A topology event during enumeration requires another snapshot before publication.
+            } while (Interlocked.Exchange(ref _pendingInvalidation, 0) != 0);
+            _cachedDisplays = displays;
             return _cachedDisplays;
         }
     }
+
+    public Task<IReadOnlyList<DisplayInfo>> GetDisplaysAsync() => Task.Run(GetDisplays);
 
     internal static GpuVendor ParseGpuVendor(uint vendorId)
     {
@@ -514,22 +546,23 @@ public sealed class DisplayService : IDisplayService, IDisposable
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
-        lock (_lock)
+        if (Volatile.Read(ref _disposed) != 0)
         {
-            _cachedDisplays = null;
+            return;
         }
 
+        // SystemEvents may deliver on the hook-owning dispatcher; never wait for native enumeration.
+        Interlocked.Exchange(ref _pendingInvalidation, 1);
         DisplaysChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
         
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
-        _disposed = true;
     }
 }
