@@ -1,4 +1,7 @@
 using System.IO;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using sWinShortcuts;
 using sWinShortcuts.Configuration;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
@@ -12,6 +15,72 @@ namespace Tests;
 
 public sealed class PersistenceReviewTests
 {
+    [Theory]
+    [InlineData(false, "false", true, false)]
+    [InlineData(false, "true", false, true)]
+    [InlineData(false, null, true, true)]
+    [InlineData(false, null, false, false)]
+    [InlineData(true, "false", true, false)]
+    public async Task AdvancedModeStartup_ReadResult_PreservesExplicitPreferenceOrInfersMissingKey(
+        bool failRead, string? persisted, bool hasAdvancedFeature, bool expected)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sWinShortcuts-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        FileStream? fileLock = null;
+        try
+        {
+            var path = Path.Combine(root, "settings.ini");
+            File.WriteAllText(path, "[App]\n" + (persisted is null ? "" : $"AdvancedMode={persisted}\n"));
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            profile.RightClickHoldBreath.IsEnabled = hasAdvancedFeature;
+            var store = new InMemoryProfileStore();
+            store.Profiles.Add(profile);
+            var vm = new MainViewModel(new ProfileManager(store), new FakeDialogService(),
+                new FakeDisplayService(), new RecordingColorControlService());
+            await vm.InitializeAsync();
+            var hook = new FakeInputHookService();
+            var logger = new CallbackLogger(() => fileLock?.Dispose());
+
+            // Exercise only the code-behind resolver; do not construct a WPF window or install hooks.
+            var window = (MainWindow)RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
+            const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(MainWindow).GetField("_settingsPath", fields)!.SetValue(window, path);
+            typeof(MainWindow).GetField("_viewModel", fields)!.SetValue(window, vm);
+            typeof(MainWindow).GetField("_inputHook", fields)!.SetValue(window, hook);
+            typeof(MainWindow).GetField("_logger", fields)!.SetValue(window, logger);
+            if (failRead)
+            {
+                // The error log releases the lock before any fallback could enqueue a successful write.
+                fileLock = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            }
+
+            await ((Task)typeof(MainWindow).GetMethod("ResolveAndApplyAdvancedModeAsync", fields)!
+                .Invoke(window, null)!).WaitAsync(TimeSpan.FromSeconds(5));
+            var saved = await AppSettings.LoadAsync(path);
+
+            Assert.Equal(failRead ? 1 : 0, logger.Calls);
+            Assert.Equal(expected, hook.AdvancedModeEnabled);
+            Assert.Equal(expected, vm.AdvancedModeEnabled);
+            Assert.Equal(expected ? "true" : "false", saved.GetValue("App", "AdvancedMode"));
+        }
+        finally
+        {
+            fileLock?.Dispose();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class CallbackLogger(Action onLog) : ILoggerService
+    {
+        public bool IsEnabled { get; set; } = true;
+        public int Calls { get; private set; }
+        public void Log(string message)
+        {
+            Calls++;
+            onLog();
+        }
+    }
+
     [Fact]
     public async Task AppSettings_QueuedTransactionsAndFlush_PreserveBothUpdates()
     {

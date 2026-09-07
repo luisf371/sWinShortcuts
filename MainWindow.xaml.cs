@@ -160,8 +160,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            // Treat a load failure as "absent" and re-resolve from the profiles below.
-            _logger.Log($"[Settings] Failed to read AdvancedMode; re-resolving from profiles: {ex.Message}");
+            _logger.Log($"[Settings] Failed to read AdvancedMode; preserving current state: {ex.Message}");
+            return;
         }
 
         if (_isClosed)
