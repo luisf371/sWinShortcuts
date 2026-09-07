@@ -260,6 +260,11 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
             CheckForUpdates = checkForUpdates;
             ColorToggleKey = colorToggleKey;
             RapidFireToggleKey = rapidFireToggleKey;
+            // A fresh VM's default values may already match the file while the live services differ.
+            _inputHookService.HookWatchdogEnabled = hookWatchdogEnabled;
+            _inputHookService.AdvancedModeEnabled = advancedModeEnabled;
+            _inputHookService.SetColorToggleKey(colorToggleKey == Key.None ? null : colorToggleKey);
+            _inputHookService.SetRapidFireToggleKey(rapidFireToggleKey == Key.None ? null : rapidFireToggleKey);
             IsIniLoaded = true;
             return true;
         }

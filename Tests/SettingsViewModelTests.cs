@@ -255,6 +255,32 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void TryLoadIniState_DefaultValues_ReplaceDifferentLiveSettings()
+    {
+        var hook = new FakeInputHookService { HookWatchdogEnabled = true, AdvancedModeEnabled = true };
+        hook.SetColorToggleKey(Key.F8);
+        hook.SetRapidFireToggleKey(Key.F9);
+        var vm = new SettingsViewModel(new NullLoggerService(), hook);
+        var ini = new sWinShortcuts.Utilities.IniDocument();
+        ini.SetValue("App", "HookWatchdog", "false");
+        ini.SetValue("App", "AdvancedMode", "false");
+        ini.SetValue("App", "ColorToggleKey", "None");
+        ini.SetValue("App", "RapidFireToggleKey", "None");
+
+        Assert.True(vm.TryLoadIniState(ini, out var error));
+
+        Assert.Null(error);
+        Assert.False(hook.HookWatchdogEnabled);
+        Assert.False(vm.HookWatchdogEnabled);
+        Assert.False(hook.AdvancedModeEnabled);
+        Assert.False(vm.AdvancedModeEnabled);
+        Assert.Null(hook.LastColorToggleKey);
+        Assert.Equal(Key.None, vm.ColorToggleKey);
+        Assert.Null(hook.LastRapidFireToggleKey);
+        Assert.Equal(Key.None, vm.RapidFireToggleKey);
+    }
+
+    [Fact]
     public void TryLoadIniState_ReadSucceeds_AppliesCapturedSettingsWithoutUserToggleLog()
     {
         var path = Path.GetTempFileName();
