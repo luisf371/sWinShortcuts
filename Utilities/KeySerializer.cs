@@ -34,7 +34,8 @@ public static class KeySerializer
             }
         }
 
-        if (Enum.TryParse<Key>(trimmed, true, out var parsed))
+        if (Enum.TryParse<Key>(trimmed, true, out var parsed) &&
+            Enum.IsDefined(parsed) && KeyInteropUtilities.ToVirtualKey(parsed) != 0)
         {
             return parsed;
         }

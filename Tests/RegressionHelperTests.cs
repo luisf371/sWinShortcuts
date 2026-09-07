@@ -61,6 +61,20 @@ public class StartupServiceArgumentTests
 public class KeySerializerDigitTests
 {
     [Fact]
+    public void Deserialize_CommonKeysAliasesAndDefinedNumericValue_RemainSupported()
+    {
+        foreach (var key in KeyCatalog.GetCommonKeys())
+        {
+            Assert.Equal(key, KeySerializer.Deserialize(KeySerializer.Serialize(key)));
+        }
+        Assert.Equal(System.Windows.Input.Key.Enter, KeySerializer.Deserialize("return"));
+        Assert.Equal(System.Windows.Input.Key.Oem1, KeySerializer.Deserialize("OemSemicolon"));
+        Assert.Equal(System.Windows.Input.Key.F13, KeySerializer.Deserialize("f13"));
+        Assert.Equal(System.Windows.Input.Key.A, KeySerializer.Deserialize(
+            ((int)System.Windows.Input.Key.A).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+    }
+
+    [Fact]
     public void Deserialize_BareDigit_MapsToDigitRowKey_NotNumericEnum()
     {
         // P6: "5" must become D5, not the numeric enum member 5 (Key.Clear).

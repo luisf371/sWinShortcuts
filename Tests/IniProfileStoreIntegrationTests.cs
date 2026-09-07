@@ -56,6 +56,37 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Theory]
+    [InlineData("999")]
+    [InlineData("-1")]
+    [InlineData("00")]
+    [InlineData("System")]
+    [InlineData("DeadCharProcessed")]
+    public async Task CombinedMapping_UnmappableTarget_DoesNotConsumeSource(string target)
+    {
+        var path = Path.Combine(_root, "Profiles", "Game.ini");
+        File.WriteAllText(path,
+            $"[Profile]\nName=Game\nExecutable=game.exe\n[KeyMappings]\nEnabled=true\n[KeyMappingsOverrides]\nA={target}|true|false\nB=F|true|false\n");
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+        var runtime = new sWinShortcuts.Services.Input.InputRuntimeState();
+        runtime.SetRunning(true);
+        runtime.SetAdvancedMode(true);
+        runtime.SetActiveProfile(profile, foregroundGeneration: 1);
+        runtime.SetForegroundIdentity(IntPtr.Zero, 0, profile.NormalizedExecutable, foregroundGeneration: 1);
+        var queue = new Tests.Fakes.RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new sWinShortcuts.Services.Input.RemapStateMachine(runtime, queue, random,
+            new Tests.Fakes.NullLoggerService());
+
+        Assert.False(remaps.HandleKeyboardEvent(0x41, isKeyDown: true, isKeyUp: false, rightButtonPressed: false));
+        Assert.False(remaps.HandleKeyboardEvent(0x41, isKeyDown: false, isKeyUp: true, rightButtonPressed: false));
+        Assert.Empty(queue.Commands);
+        var valid = Assert.Single(profile.CombinedMappings.Mappings);
+        Assert.Equal(Key.B, valid.SourceKey);
+        Assert.Equal(Key.F, valid.TargetKey);
+        Assert.Null(KeySerializer.Deserialize(target));
+    }
+
+    [Theory]
     [InlineData("NaN", DisplayColorProfile.DefaultGamma)]
     [InlineData("Infinity", DisplayColorProfile.DefaultGamma)]
     [InlineData("-Infinity", DisplayColorProfile.DefaultGamma)]
