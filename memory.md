@@ -52,6 +52,27 @@
 - Hot-path diagnostic helpers must take raw values, not pre-built interpolated descriptions — an argument string is built on every call, including successes with logging disabled. `WindowsInputSender.SendInputLogged` takes the key/direction or virtual key plus a `SendInputKind` and constructs the description only after a short count, inside the `IsEnabled` branch.
 - State-machine `Log(string)` helpers cannot defer interpolation: callback-reachable Auto-Run/Rapid Fire diagnostics must check `ILoggerService.IsEnabled` before constructing the message. The disabled Rapid Fire release regression uses `GC.GetAllocatedBytesForCurrentThread` to keep that path allocation-free.
 
+# 2026-09-05 (Codebase review)
+
+- `AGENTS.md` still describes the former monolithic input service. Review current input behavior in `Services/Input/` and use the lock ordering documented above; do not infer current ownership or timer behavior from the old code-map counts.
+- Review regressions reproduced two unresolved boundaries: Background Auto-Run `SprintActivation.Press` can lose its UP on cancellation, and a pre-rename autosave snapshot can persist its old `Name` after rename succeeds. Fixes must preserve paired releases and reconcile queued snapshot identity, respectively.
+- Additional fake-driven review probes confirmed: inactive Auto-Run owners survive master-disable, Anti-AFK can post after disable during its third PID lookup, and the default color editor writes an inactive preset directly to hardware. Recheck owner invalidation, place DOWN guards after all native preparation, and keep hardware writes coordinated with the activation plan.
+- Native review constraints: obtain the desktop shell through `FindWindowSW(SWC_DESKTOP)` rather than ordinary ShellWindows enumeration; normalize display identifiers and compare them exactly; restrict system driver DLL searches as the AMD loader already does.
+- NVAPI DLLs are driver-installed runtime dependencies, not bundled assets. .NET 10 single-file publishing still searches beside the executable for default P/Invokes; explicit `DefaultDllImportSearchPaths(DllImportSearchPath.System32)` excludes that directory (Microsoft: `dotnet/core/compatibility/interop/10.0/native-library-search`).
+
+# 2026-09-05 (Review fix planning)
+
+- Requested implementation-plan scope is review findings 1–9 and 11–14 only; elevated-startup location protection (#10), unrelated dead-code removal, and CI cleanup are excluded. The Auto-Run lock/native-work change (#13) follows the input correctness fixes (#1–3) so their release/ownership regressions protect the refactor.
+- The staged fix plan is `docs/superpowers/plans/2026-09-05-review-fixes.md` (locally saved; existing `Docs/` ignore rule applies). Native cleanup must be bounded inside the AMD/NVIDIA services, not by moving the whole host disposal off the UI thread; the tray has creating-thread affinity.
+- Planning checks: `schtasks /Query /TN <fresh-nonexistent-name> /HRESULT` returned `0x80070002` without startup mutation. `IniDocument.Load` currently uses `File.Exists`, which can conflate absence with unreadable/directory paths; the settings-load fix must distinguish those before treating defaults as a valid baseline.
+
+# 2026-09-05 (Cleanup planning)
+
+- Cleanup is a separate, behavior-preserving plan from the review fixes. Count WPF bindings/resources, generated MVVM members, native ABI declarations, and reflection-based test helpers as consumers; no-C#-caller results alone do not justify deletion. Keep current-format persistence safety tests and useful fake/service boundaries.
+
+# 2026-09-06 (Cleanup plan)
+
+- Closed cleanup list C1–C8 is saved in `docs/superpowers/plans/2026-09-05-code-cleanup.md`; start with orphaned UI artifacts. No package, native ABI, artwork, or local-directory purge is planned. Retiring the unused `SuppressOriginalWhileAltIsHeld` projections also retires exactly eight tests of those projections, not runtime suppression coverage.
 
 # 2026-09-06 (Review fixes)
 
@@ -82,3 +103,10 @@
 - DisplayService invalidation must not take the enumeration lock. GetDisplays consumes pending changes on its worker and publishes a cache only after an uninterrupted successful enumeration. Color editors use coalesced async snapshots on their owning context, discard stale/disposed results, retain rows after failures, and reuse the snapshot when switching presets; gated tests cover responsiveness without native displays.
 - Successful Settings hydration must synchronize live watchdog/Advanced Mode/toggle-key services even when INI values equal fresh VM defaults. Keep normal UI notification deduplication and parse the whole snapshot before applying anything; repeated service assignments are idempotent, including an unchanged Rapid Fire toggle key.
 - Optional logger construction performs no directory I/O. Create storage only inside caught nonempty worker/final-drain writes, trim after successful appends, and leave idle shutdown storage untouched; this lets profile-store inaccessible-storage recovery run and permits later writes when the directory becomes available.
+
+# 2026-09-08 (PR 23 merge CI diagnosis)
+
+- PR 23 head, its green synthetic merge, and main squash 6c96fba have identical trees. CI run 34299207336 failed only NvidiaColorControlServiceTests.Dispose_WhenNativeApplyBlocked_ReturnsBeforeNativeCleanup at the post-dispose Task.Run/500 ms WaitAsync (line 103); local full Release/RID suite passed 775/775. Setting DOTNET_PROCESSOR_COUNT=2 for the AMD/NVIDIA test classes reproduced that exact NVIDIA failure plus AMD's matching disposal timeout (45/47 passed). Their intentionally blocked pool work makes short queue-inclusive deadlines scheduling-sensitive; isolate blocking test work/probes on dedicated threads and retain release-order assertions instead of changing production disposal or merely increasing deadlines.
+- CI setup-dotnet resolves channel 10.0 and global.json allows latestFeature: the green run used SDK 10.0.400/runtime 10.0.11, red used SDK 10.0.401/runtime 10.0.12 despite the same runner image. This drift is observed, not established as the failure cause.
+- Local CI-test fix: both vendor test classes use a standard LongRunning TaskFactory with TaskScheduler.Default for synchronous blocked native calls and timed probes, including topology tests with the same scheduling dependency. Keep the 500 ms deadlines and cleanup/rejection assertions; production scheduling and disposal are unchanged.
+- Verification: original AMD/NVIDIA constrained run failed 2/47 before the test-only change; afterward 5 consecutive constrained runs passed 47/47. Final Release/RID full suite passed 775/775 both normally and with DOTNET_PROCESSOR_COUNT=2; build had 0 warnings/errors and git diff --check passed.

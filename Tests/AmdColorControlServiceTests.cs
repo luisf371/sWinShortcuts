@@ -7,6 +7,11 @@ namespace Tests;
 
 public sealed class AmdColorControlServiceTests
 {
+    // Blocking native fakes and timed probes need dedicated threads, not thread-pool queue time.
+    private static readonly TaskFactory _nativeCalls = new(
+        CancellationToken.None, TaskCreationOptions.LongRunning,
+        TaskContinuationOptions.None, TaskScheduler.Default);
+
     [Theory]
     [InlineData(0, 0, 200, 100, 1, 100)]
     [InlineData(50, 0, 200, 100, 1, 100)]
@@ -192,13 +197,13 @@ public sealed class AmdColorControlServiceTests
             }
         };
         using var service = CreateService(api);
-        var apply = Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(75)));
+        var apply = _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(75)));
         Task? notification = null;
         Task? nextApply = null;
         try
         {
             Assert.True(applyEntered.Wait(TimeSpan.FromSeconds(2)));
-            notification = Task.Run(service.RefreshTopology);
+            notification = _nativeCalls.StartNew(service.RefreshTopology);
             await notification.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.False(apply.IsCompleted);
             Assert.Equal(0, api.RefreshCalls);
@@ -207,9 +212,9 @@ public sealed class AmdColorControlServiceTests
 
             api.Displays = [new AmdDisplayTarget(@"\\.\DISPLAY1", 2, 0)];
             api.Range = new AmdSaturationRange(100, 0, 400, 1);
-            nextApply = Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(75)));
+            nextApply = _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(75)));
             Assert.True(refreshEntered.Wait(TimeSpan.FromSeconds(2)));
-            notification = Task.Run(service.RefreshTopology);
+            notification = _nativeCalls.StartNew(service.RefreshTopology);
             await notification.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.False(nextApply.IsCompleted);
             releaseRefresh.Set();
@@ -313,19 +318,19 @@ public sealed class AmdColorControlServiceTests
             BeforeDispose = () => cleanup.Set()
         };
         var service = CreateService(api);
-        var apply = Task.Run(() =>
+        var apply = _nativeCalls.StartNew(() =>
             service.ApplyDigitalVibrance(CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(80)));
         Task? dispose = null;
         try
         {
             Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
-            dispose = Task.Run(service.Dispose);
+            dispose = _nativeCalls.StartNew(service.Dispose);
             await dispose.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.False(cleanup.IsSet);
             Assert.Equal(ColorApplyOutcome.Skipped,
-                await Task.Run(() => service.ApplyDigitalVibrance(
+                await _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(
                     CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(90))).WaitAsync(TimeSpan.FromMilliseconds(500)));
-            await Task.Run(service.RefreshTopology).WaitAsync(TimeSpan.FromMilliseconds(500));
+            await _nativeCalls.StartNew(service.RefreshTopology).WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.False(cleanup.IsSet);
         }
         finally
@@ -359,17 +364,17 @@ public sealed class AmdColorControlServiceTests
             }
         };
         var service = CreateService(api);
-        var dispose = Task.Run(service.Dispose);
+        var dispose = _nativeCalls.StartNew(service.Dispose);
         try
         {
             Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
             await dispose.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.False(finished.IsSet);
-            await Task.Run(service.Dispose).WaitAsync(TimeSpan.FromMilliseconds(500));
+            await _nativeCalls.StartNew(service.Dispose).WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.Equal(ColorApplyOutcome.Skipped,
-                await Task.Run(() => service.ApplyDigitalVibrance(
+                await _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(
                     CreateDisplay(@"\\.\DISPLAY1"), CreateProfile(80))).WaitAsync(TimeSpan.FromMilliseconds(500)));
-            await Task.Run(service.RefreshTopology).WaitAsync(TimeSpan.FromMilliseconds(500));
+            await _nativeCalls.StartNew(service.RefreshTopology).WaitAsync(TimeSpan.FromMilliseconds(500));
         }
         finally
         {

@@ -4,6 +4,39 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## September 8 – 9, 2026 (Build 109)
+
+### Fixed & Improved
+- **Input State & Key Remapping Reliability**:
+  - **Auto-Run Sprint & Movement Preservation**: Fixed an issue where releasing a sprint key could prematurely release active forward movement when sharing keys (such as holding `W` to sprint), ensuring movement keys stay held until deliberately released.
+  - **Key Release Ownership Cleanup**: Auto-Run key releases now properly restore previous Caps Lock, combined-remap, and Windows Launcher ownership, ensuring held keys are never left stuck down after auto-running.
+  - **Invalid & Sentinel Key Protection**: Key deserialization now strictly accepts only valid keys with recognized Windows virtual-key mappings, rejecting undefined numeric values and WPF sentinel keys so malformed bindings cannot swallow keystrokes.
+  - **Anti-AFK Target Revalidation**: Revalidated the target game window handle and process ID immediately before posting movement keys, preventing unintended keystrokes from being sent to closed or swapped windows.
+  - **Paired Input Release**: Background input releases remain strictly paired with their original target window across worker retirement, profile switches, and feature cancellations.
+- **Display Topology & Color Controls**:
+  - **Non-Blocking Display Enumeration**: Offloaded monitor topology scans and display list refreshes from the UI thread to a dedicated background worker, eliminating interface freezing when connecting, disconnecting, or waking displays.
+  - **Coalesced Display Change Notifications**: Grouped rapid display change events together and discarded stale enumeration results, keeping monitor lists responsive without flickering or redundant reloads.
+  - **Fail-Safe Color Restoration**: If a color profile update fails midway, partial writes invalidate the cached color plan and retain display restore obligations so monitors cleanly return to their baseline color state.
+  - **Color Preset Precedence**: Guaranteed active game profile and forced-preview precedence in color settings, ensuring switching presets or disabling previews updates the physical display correctly.
+  - **Driver Isolation & Bounded Cleanup**: Added strict DLL search path restrictions for NVIDIA NVAPI and AMD ADL2 libraries (System32 only), and bounded hardware cleanup to prevent hanging during application shutdown.
+- **Settings & Persistence Hardening**:
+  - **Ordered Configuration Queue**: Reorganized application settings reads, writes, and modifications into a single serialized worker queue to eliminate file-locking race conditions during rapid adjustments.
+  - **Protected Advanced Mode Preference**: Prevented temporary settings read errors from disabling or altering the user's Advanced Mode setting; live preferences are preserved on read failures.
+  - **Save-Time UI Protection**: Temporarily disabled settings editing while saving to ensure active values and live preview settings never diverge.
+  - **Guaranteed Shutdown Storage Flush**: Application exit now reliably waits for queued settings and profile edits to finish writing to disk before terminating.
+  - **Deferred Log Directory Creation**: Log folder creation is now deferred until log messages are actually written, keeping clean portable folders untouched when logging is disabled.
+- **Profile Management & Identity Renaming**:
+  - **Atomic Profile Renaming**: Validated and saved proposed profile names and executable associations together to prevent corrupted or half-applied profile identity changes.
+  - **Autosave Snapshot Consistency**: Reconciled queued profile autosaves with recent renames so pending background saves cannot overwrite newly changed profile names.
+- **Startup & Windows Integration**:
+  - **Robust Startup State Recovery**: Windows startup registration now queries both Task Scheduler and the Run registry key before making changes, replacing tasks cleanly and compensating automatically if a transition fails.
+  - **Desktop-User De-Elevation**: Improved the desktop COM shell resolution used to launch programs at normal desktop user privileges from an elevated session.
+- **Crosshair & System Stability**:
+  - **Asynchronous Crosshair Exit**: Hiding a crosshair overlay window that was never shown now completes asynchronously, preventing application shutdown deadlocks on exit.
+  - **Dedicated Test Threads for Hardware Probes**: Isolated simulated hardware delays and color driver tests on dedicated background threads to prevent thread-pool starvation and ensure reliable CI test execution.
+
+---
+
 ## August 31, 2026 (Build 93)
 
 ### Changed & Improved

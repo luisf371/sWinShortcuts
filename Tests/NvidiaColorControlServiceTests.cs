@@ -7,6 +7,11 @@ namespace Tests;
 
 public sealed class NvidiaColorControlServiceTests
 {
+    // Blocking native fakes and timed probes need dedicated threads, not thread-pool queue time.
+    private static readonly TaskFactory _nativeCalls = new(
+        CancellationToken.None, TaskCreationOptions.LongRunning,
+        TaskContinuationOptions.None, TaskScheduler.Default);
+
     [Theory]
     [InlineData(@"\\.\DISPLAY1", "DISPLAY1", true)]
     [InlineData("display1", @"\\.\DISPLAY1", true)]
@@ -51,12 +56,12 @@ public sealed class NvidiaColorControlServiceTests
             .GetField("_handleCache", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(service)!;
         cache["DISPLAY1"] = new IntPtr(1);
-        var apply = Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()));
+        var apply = _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()));
         Task? notification = null;
         try
         {
             Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
-            notification = Task.Run(() => RefreshTopology(service));
+            notification = _nativeCalls.StartNew(() => RefreshTopology(service));
             await notification.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.False(apply.IsCompleted);
             Assert.Single(cache);
@@ -92,18 +97,18 @@ public sealed class NvidiaColorControlServiceTests
             Interlocked.Increment(ref disposeCalls);
             cleanup.Set();
         });
-        var apply = Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()));
+        var apply = _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()));
         Task? dispose = null;
         try
         {
             Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
-            dispose = Task.Run(service.Dispose);
+            dispose = _nativeCalls.StartNew(service.Dispose);
             await dispose.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.False(cleanup.IsSet);
             Assert.Equal(ColorApplyOutcome.Skipped,
-                await Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()))
+                await _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()))
                     .WaitAsync(TimeSpan.FromMilliseconds(500)));
-            await Task.Run(() => RefreshTopology(service)).WaitAsync(TimeSpan.FromMilliseconds(500));
+            await _nativeCalls.StartNew(() => RefreshTopology(service)).WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.False(cleanup.IsSet);
         }
         finally
@@ -140,17 +145,17 @@ public sealed class NvidiaColorControlServiceTests
             release.Wait(TimeSpan.FromSeconds(5));
             finished.Set();
         });
-        var dispose = Task.Run(service.Dispose);
+        var dispose = _nativeCalls.StartNew(service.Dispose);
         try
         {
             Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
             await dispose.WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.False(finished.IsSet);
-            await Task.Run(service.Dispose).WaitAsync(TimeSpan.FromMilliseconds(500));
+            await _nativeCalls.StartNew(service.Dispose).WaitAsync(TimeSpan.FromMilliseconds(500));
             Assert.Equal(ColorApplyOutcome.Skipped,
-                await Task.Run(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()))
+                await _nativeCalls.StartNew(() => service.ApplyDigitalVibrance(CreateDisplay(), CreateProfile()))
                     .WaitAsync(TimeSpan.FromMilliseconds(500)));
-            await Task.Run(() => RefreshTopology(service)).WaitAsync(TimeSpan.FromMilliseconds(500));
+            await _nativeCalls.StartNew(() => RefreshTopology(service)).WaitAsync(TimeSpan.FromMilliseconds(500));
         }
         finally
         {
