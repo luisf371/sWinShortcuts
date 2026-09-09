@@ -59,7 +59,7 @@ public static class AppSettings
     }
 
     public static Key? LoadColorToggleKey(string settingsPath)
-        => IniDocument.Load(settingsPath).GetKey("App", ColorToggleKeyName);
+        => KeyInteropUtilities.NormalizeAppToggleKey(IniDocument.Load(settingsPath).GetKey("App", ColorToggleKeyName));
 
     public static void SetColorToggleKey(IniDocument document, Key? key)
     {
@@ -68,7 +68,7 @@ public static class AppSettings
 
     public static Key? LoadRapidFireToggleKey(string settingsPath)
     {
-        return IniDocument.Load(settingsPath).GetKey("App", RapidFireToggleKeyName);
+        return KeyInteropUtilities.NormalizeAppToggleKey(IniDocument.Load(settingsPath).GetKey("App", RapidFireToggleKeyName));
     }
 
     /// <summary>[App] CheckForUpdates — default OFF: only the literal "true" enables the GitHub update check.</summary>
@@ -83,6 +83,7 @@ public static class AppSettings
     private static void SetToggleKey(IniDocument document, string name, Key? key)
     {
         ArgumentNullException.ThrowIfNull(document);
+        key = KeyInteropUtilities.NormalizeAppToggleKey(key);
 
         // Persist an explicit unassigned value instead of removing the current setting.
         var serialized = !key.HasValue || key.Value == Key.None

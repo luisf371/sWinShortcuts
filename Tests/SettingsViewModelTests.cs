@@ -1,5 +1,8 @@
 using System.IO;
+using System.Reflection;
 using System.Windows.Input;
+using sWinShortcuts.Services;
+using sWinShortcuts.Utilities;
 using sWinShortcuts.ViewModels;
 using Tests.Fakes;
 using Xunit;
@@ -32,6 +35,127 @@ public sealed class SettingsViewModelTests
 
         viewModel.RapidFireToggleKey = Key.None;
         Assert.Null(inputHook.LastRapidFireToggleKey);
+    }
+
+    [Fact]
+    public void ToggleKeyOptions_ContainOnlyKeysAcceptedByBothRuntimes()
+    {
+        using var hook = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        var vm = new SettingsViewModel(new NullLoggerService(), hook);
+        Assert.Contains(Key.None, vm.ColorToggleKeyOptions);
+        Assert.Contains(Key.F8, vm.ColorToggleKeyOptions);
+        foreach (var modifier in new[]
+        {
+            Key.LeftShift, Key.RightShift, Key.LeftCtrl, Key.RightCtrl, Key.LeftAlt, Key.RightAlt
+        })
+        {
+            Assert.Contains(modifier, KeyCatalog.GetCommonKeys());
+            Assert.DoesNotContain(modifier, vm.ColorToggleKeyOptions);
+        }
+        foreach (var key in vm.ColorToggleKeyOptions)
+        {
+            hook.SetColorToggleKey(key);
+            hook.SetRapidFireToggleKey(key);
+            AssertRuntimeToggleKeys(hook, key);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ToggleKeys_AssignmentAndHydration_NormalizeUnsupportedKeys(bool hydrate)
+    {
+        using var hook = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        foreach (var (key, expected) in new[]
+        {
+            (Key.LeftShift, Key.None), (Key.RightShift, Key.None),
+            (Key.LeftCtrl, Key.None), (Key.RightCtrl, Key.None),
+            (Key.LeftAlt, Key.None), (Key.RightAlt, Key.None),
+            (Key.LWin, Key.None), (Key.RWin, Key.None),
+            (Key.System, Key.None), (Key.DeadCharProcessed, Key.None),
+            ((Key)9999, Key.None), (Key.None, Key.None),
+            (Key.F8, Key.F8), (Key.F13, Key.F13), (Key.ImeProcessed, Key.ImeProcessed)
+        })
+        {
+            hook.SetColorToggleKey(Key.F9);
+            hook.SetRapidFireToggleKey(Key.F9);
+            var vm = new SettingsViewModel(new NullLoggerService(), hook);
+            if (hydrate)
+            {
+                var ini = new IniDocument();
+                ini.SetValue("App", AppSettings.ColorToggleKeyName, key.ToString());
+                ini.SetValue("App", AppSettings.RapidFireToggleKeyName, key.ToString());
+                Assert.True(vm.TryLoadIniState(ini, out var error));
+                Assert.Null(error);
+            }
+            else
+            {
+                vm.ColorToggleKey = Key.F9;
+                vm.RapidFireToggleKey = Key.F9;
+                vm.ColorToggleKey = key;
+                vm.RapidFireToggleKey = key;
+            }
+
+            Assert.Equal(expected, vm.ColorToggleKey);
+            Assert.Equal(expected, vm.RapidFireToggleKey);
+            AssertRuntimeToggleKeys(hook, expected);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ToggleKeys_OffListAssignments_PublishOptionsBeforeSelections(bool hydrate)
+    {
+        var vm = new SettingsViewModel(new NullLoggerService(), new FakeInputHookService());
+        var notifications = new List<string>();
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(vm.ColorToggleKeyOptions) or nameof(vm.ColorToggleKey) or nameof(vm.RapidFireToggleKey))
+                notifications.Add(e.PropertyName);
+            if (e.PropertyName == nameof(vm.ColorToggleKey)) Assert.Contains(vm.ColorToggleKey, vm.ColorToggleKeyOptions);
+            if (e.PropertyName == nameof(vm.RapidFireToggleKey)) Assert.Contains(vm.RapidFireToggleKey, vm.ColorToggleKeyOptions);
+        };
+
+        if (hydrate)
+        {
+            var ini = new IniDocument();
+            ini.SetValue("App", AppSettings.ColorToggleKeyName, "F13");
+            ini.SetValue("App", AppSettings.RapidFireToggleKeyName, "ImeProcessed");
+            Assert.True(vm.TryLoadIniState(ini, out var error));
+            Assert.Null(error);
+        }
+        else
+        {
+            vm.ColorToggleKey = Key.F13;
+            vm.RapidFireToggleKey = Key.ImeProcessed;
+        }
+
+        Assert.Equal(new[]
+        {
+            nameof(vm.ColorToggleKeyOptions), nameof(vm.ColorToggleKey),
+            nameof(vm.ColorToggleKeyOptions), nameof(vm.RapidFireToggleKey)
+        }, notifications);
+        Assert.Contains(Key.F13, vm.ColorToggleKeyOptions);
+        Assert.Contains(Key.ImeProcessed, vm.ColorToggleKeyOptions);
+        Assert.DoesNotContain(Key.F14, vm.ColorToggleKeyOptions);
+
+        notifications.Clear();
+        vm.ColorToggleKey = Key.LeftCtrl;
+        vm.RapidFireToggleKey = Key.System;
+        Assert.DoesNotContain(nameof(vm.ColorToggleKeyOptions), notifications);
+        Assert.DoesNotContain(Key.LeftCtrl, vm.ColorToggleKeyOptions);
+        Assert.DoesNotContain(Key.System, vm.ColorToggleKeyOptions);
+    }
+
+    private static void AssertRuntimeToggleKeys(InputHookService hook, Key expected)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var rapidFire = typeof(InputHookService).GetField("_rapidFire", flags)!.GetValue(hook)!;
+        Assert.Equal(KeyInterop.VirtualKeyFromKey(expected),
+            typeof(InputHookService).GetField("_colorToggleVk", flags)!.GetValue(hook));
+        Assert.Equal(KeyInterop.VirtualKeyFromKey(expected),
+            rapidFire.GetType().GetField("_toggleVk", flags)!.GetValue(rapidFire));
     }
 
     [Fact]

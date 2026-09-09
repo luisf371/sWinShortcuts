@@ -1232,15 +1232,8 @@ public sealed class InputHookService : IInputHookService
 
     public void SetColorToggleKey(Key? key)
     {
+        key = KeyInteropUtilities.NormalizeAppToggleKey(key);
         var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
-
-        // Modifiers can't be the toggle key: their physical-state reconstruction (the dual-Alt sibling check)
-        // can't distinguish a "reserved" modifier from a real one, and firing a color toggle off Shift/Ctrl/
-        // Alt/Win would be surprising. Treat a modifier assignment as unassigned.
-        if (IsModifierVirtualKey(vk))
-        {
-            vk = 0;
-        }
 
         // Publish ONLY the volatile VK from this (worker/UI) thread; the fire-once latch is owned by the hook
         // thread. Because the key is never suppressed, a stale latch across this change costs at most one
@@ -1276,13 +1269,6 @@ public sealed class InputHookService : IInputHookService
         }
 
     }
-
-    private static bool IsModifierVirtualKey(int vk) =>
-        vk is 0x10 or 0x11 or 0x12   // VK_SHIFT / VK_CONTROL / VK_MENU
-           or 0xA0 or 0xA1           // VK_LSHIFT / VK_RSHIFT
-           or 0xA2 or 0xA3           // VK_LCONTROL / VK_RCONTROL
-           or 0xA4 or 0xA5           // VK_LMENU / VK_RMENU (Alt)
-           or 0x5B or 0x5C;          // VK_LWIN / VK_RWIN
 
     public void Dispose()
     {

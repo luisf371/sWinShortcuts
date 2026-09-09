@@ -8,6 +8,48 @@ namespace Tests;
 
 public sealed class AppSettingsTests
 {
+    [Theory]
+    [InlineData(Key.LeftShift, null)]
+    [InlineData(Key.RightShift, null)]
+    [InlineData(Key.LeftCtrl, null)]
+    [InlineData(Key.RightCtrl, null)]
+    [InlineData(Key.LeftAlt, null)]
+    [InlineData(Key.RightAlt, null)]
+    [InlineData(Key.LWin, null)]
+    [InlineData(Key.RWin, null)]
+    [InlineData(Key.System, null)]
+    [InlineData(Key.DeadCharProcessed, null)]
+    [InlineData((Key)9999, null)]
+    [InlineData(Key.None, null)]
+    [InlineData(Key.F8, Key.F8)]
+    [InlineData(Key.F13, Key.F13)]
+    [InlineData(Key.ImeProcessed, Key.ImeProcessed)]
+    public void ToggleKeys_LoadAndSave_NormalizeUnsupportedKeys(Key key, Key? expected)
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var ini = new IniDocument();
+            ini.SetValue("App", AppSettings.ColorToggleKeyName, key.ToString());
+            ini.SetValue("App", AppSettings.RapidFireToggleKeyName, key.ToString());
+            ini.Save(path);
+            Assert.Equal(expected, AppSettings.LoadColorToggleKey(path));
+            Assert.Equal(expected, AppSettings.LoadRapidFireToggleKey(path));
+
+            AppSettings.SetColorToggleKey(ini, key);
+            AppSettings.SetRapidFireToggleKey(ini, key);
+            Assert.Equal(expected?.ToString() ?? "None", ini.GetValue("App", AppSettings.ColorToggleKeyName));
+            Assert.Equal(expected?.ToString() ?? "None", ini.GetValue("App", AppSettings.RapidFireToggleKeyName));
+            ini.Save(path);
+            Assert.Equal(expected, AppSettings.LoadColorToggleKey(path));
+            Assert.Equal(expected, AppSettings.LoadRapidFireToggleKey(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void SetColorToggleKey_UsesExplicitNoneMarker()
     {

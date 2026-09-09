@@ -290,8 +290,10 @@ public partial class MainWindow : Window
         {
             var document = await AppSettings.LoadAsync(_settingsPath);
             if (_isClosed) return;
-            _viewModel.ColorToggleKey = document.GetKey("App", AppSettings.ColorToggleKeyName) ?? System.Windows.Input.Key.None;
-            _viewModel.RapidFireToggleKey = document.GetKey("App", AppSettings.RapidFireToggleKeyName) ?? System.Windows.Input.Key.None;
+            _viewModel.ColorToggleKey = KeyInteropUtilities.NormalizeAppToggleKey(
+                document.GetKey("App", AppSettings.ColorToggleKeyName)) ?? System.Windows.Input.Key.None;
+            _viewModel.RapidFireToggleKey = KeyInteropUtilities.NormalizeAppToggleKey(
+                document.GetKey("App", AppSettings.RapidFireToggleKeyName)) ?? System.Windows.Input.Key.None;
             var enabled = document.GetValue("App", AppSettings.CheckForUpdatesKeyName) == "true";
             var wasEnabled = _updateCheck.Enabled;
             _updateCheck.Enabled = enabled;

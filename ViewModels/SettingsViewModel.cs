@@ -11,8 +11,9 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
 {
     private readonly ILoggerService _loggerService = loggerService;
     private readonly IInputHookService _inputHookService = inputHookService;
-    private readonly IReadOnlyList<Key> _colorToggleKeyOptions =
-        KeyCatalog.SortKeys(new[] { Key.None }.Concat(KeyCatalog.GetCommonKeys())).ToArray();
+    private IReadOnlyList<Key> _colorToggleKeyOptions =
+        KeyCatalog.SortKeys(new[] { Key.None }.Concat(KeyCatalog.GetCommonKeys()
+            .Where(key => KeyInteropUtilities.NormalizeAppToggleKey(key).HasValue))).ToArray();
     private bool _startWithWindows;
     private bool _startAsAdmin;
     private bool _startMinimized;
@@ -168,11 +169,13 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         get => _colorToggleKey;
         set
         {
+            value = KeyInteropUtilities.NormalizeAppToggleKey(value) ?? Key.None;
             if (_colorToggleKey == value)
             {
                 return;
             }
 
+            EnsureToggleKeyOption(value);
             _colorToggleKey = value;
             _inputHookService.SetColorToggleKey(value == Key.None ? null : value);
             OnPropertyChanged();
@@ -184,15 +187,24 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         get => _rapidFireToggleKey;
         set
         {
+            value = KeyInteropUtilities.NormalizeAppToggleKey(value) ?? Key.None;
             if (_rapidFireToggleKey == value)
             {
                 return;
             }
 
+            EnsureToggleKeyOption(value);
             _rapidFireToggleKey = value;
             _inputHookService.SetRapidFireToggleKey(value == Key.None ? null : value);
             OnPropertyChanged();
         }
+    }
+
+    private void EnsureToggleKeyOption(Key key)
+    {
+        if (_colorToggleKeyOptions.Contains(key)) return;
+        _colorToggleKeyOptions = KeyCatalog.SortKeys(_colorToggleKeyOptions.Append(key)).ToArray();
+        OnPropertyChanged(nameof(ColorToggleKeyOptions));
     }
 
     // Applies live, same pattern as EnableDebugLogging (the service reacts on its next watchdog
@@ -250,8 +262,8 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
                 : advancedRaw == "true";
             var startMinimized = ini.GetValue("App", "StartMinimized") == "true";
             var checkForUpdates = ini.GetValue("App", "CheckForUpdates") == "true";
-            var colorToggleKey = ini.GetKey("App", "ColorToggleKey") ?? Key.None;
-            var rapidFireToggleKey = ini.GetKey("App", "RapidFireToggleKey") ?? Key.None;
+            var colorToggleKey = KeyInteropUtilities.NormalizeAppToggleKey(ini.GetKey("App", "ColorToggleKey")) ?? Key.None;
+            var rapidFireToggleKey = KeyInteropUtilities.NormalizeAppToggleKey(ini.GetKey("App", "RapidFireToggleKey")) ?? Key.None;
 
             SetEnableDebugLoggingProgrammatically(enableDebugLogging);
             HookWatchdogEnabled = hookWatchdogEnabled;
