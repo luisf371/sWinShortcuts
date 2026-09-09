@@ -5,6 +5,80 @@ namespace sWinShortcuts.Interop;
 
 internal static class NativeMethods
 {
+    internal static readonly Guid CLSID_ShellWindows = new("9BA05972-F6A8-11CF-A442-00A0C90A8F39");
+    internal static readonly Guid SID_STopLevelBrowser = new("4C96BE40-915C-11CF-99D3-00AA004AE837");
+    internal static readonly Guid IID_IDispatch = new("00020400-0000-0000-C000-000000000046");
+    internal const int CSIDL_DESKTOP = 0;
+    internal const int SWC_DESKTOP = 8;
+    internal const int SWFO_NEEDDISPATCH = 1;
+    internal const uint SVGIO_BACKGROUND = 0;
+
+    // Complete SDK vtable layouts (ExDisp.h / ShObjIdl_core.h). IShellBrowser and
+    // IShellView include the inherited IOleWindow slots after IUnknown.
+    [ComImport, Guid("85CB6900-4D95-11CF-960C-0080C7F4EE85")]
+    [InterfaceType(ComInterfaceType.InterfaceIsDual)]
+    internal interface IShellWindows
+    {
+        [PreserveSig] int GetCount(out int count);
+        [PreserveSig] int Item([MarshalAs(UnmanagedType.Struct)] object index, [MarshalAs(UnmanagedType.IDispatch)] out object? folder);
+        [PreserveSig] int NewEnum([MarshalAs(UnmanagedType.IUnknown)] out object? enumerator);
+        [PreserveSig] int Register([MarshalAs(UnmanagedType.IDispatch)] object dispatch, int hwnd, int windowClass, out int cookie);
+        [PreserveSig] int RegisterPending(int threadId, [In, MarshalAs(UnmanagedType.Struct)] ref object location, [In, MarshalAs(UnmanagedType.Struct)] ref object root, int windowClass, out int cookie);
+        [PreserveSig] int Revoke(int cookie);
+        [PreserveSig] int OnNavigate(int cookie, [In, MarshalAs(UnmanagedType.Struct)] ref object location);
+        [PreserveSig] int OnActivated(int cookie, [MarshalAs(UnmanagedType.VariantBool)] bool active);
+        [PreserveSig] int FindWindowSW([In, MarshalAs(UnmanagedType.Struct)] ref object location, [In, MarshalAs(UnmanagedType.Struct)] ref object? root, int windowClass, out int hwnd, int options, [MarshalAs(UnmanagedType.IDispatch)] out object? dispatch);
+        [PreserveSig] int OnCreated(int cookie, [MarshalAs(UnmanagedType.IUnknown)] object unknown);
+        [PreserveSig] int ProcessAttachDetach([MarshalAs(UnmanagedType.VariantBool)] bool attach);
+    }
+
+    [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IServiceProvider
+    {
+        [PreserveSig] int QueryService(in Guid service, in Guid iid, [MarshalAs(UnmanagedType.Interface)] out object? result);
+    }
+
+    [ComImport, Guid("000214E2-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellBrowser
+    {
+        [PreserveSig] int GetWindow(out IntPtr hwnd);
+        [PreserveSig] int ContextSensitiveHelp([MarshalAs(UnmanagedType.Bool)] bool enterMode);
+        [PreserveSig] int InsertMenusSB(IntPtr menu, IntPtr widths);
+        [PreserveSig] int SetMenuSB(IntPtr menu, IntPtr oleMenu, IntPtr activeWindow);
+        [PreserveSig] int RemoveMenusSB(IntPtr menu);
+        [PreserveSig] int SetStatusTextSB([MarshalAs(UnmanagedType.LPWStr)] string? text);
+        [PreserveSig] int EnableModelessSB([MarshalAs(UnmanagedType.Bool)] bool enable);
+        [PreserveSig] int TranslateAcceleratorSB(IntPtr message, ushort id);
+        [PreserveSig] int BrowseObject(IntPtr pidl, uint flags);
+        [PreserveSig] int GetViewStateStream(uint mode, out System.Runtime.InteropServices.ComTypes.IStream? stream);
+        [PreserveSig] int GetControlWindow(uint id, out IntPtr hwnd);
+        [PreserveSig] int SendControlMsg(uint id, uint message, UIntPtr wParam, IntPtr lParam, out IntPtr result);
+        [PreserveSig] int QueryActiveShellView(out IShellView? view);
+        [PreserveSig] int OnViewWindowActive(IShellView view);
+        [PreserveSig] int SetToolbarItems(IntPtr buttons, uint count, uint flags);
+    }
+
+    [ComImport, Guid("000214E3-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellView
+    {
+        [PreserveSig] int GetWindow(out IntPtr hwnd);
+        [PreserveSig] int ContextSensitiveHelp([MarshalAs(UnmanagedType.Bool)] bool enterMode);
+        [PreserveSig] int TranslateAccelerator(IntPtr message);
+        [PreserveSig] int EnableModeless([MarshalAs(UnmanagedType.Bool)] bool enable);
+        [PreserveSig] int UIActivate(uint state);
+        [PreserveSig] int Refresh();
+        [PreserveSig] int CreateViewWindow(IShellView? previous, IntPtr settings, IShellBrowser browser, ref RECT bounds, out IntPtr hwnd);
+        [PreserveSig] int DestroyViewWindow();
+        [PreserveSig] int GetCurrentInfo(IntPtr settings);
+        [PreserveSig] int AddPropertySheetPages(uint reserved, IntPtr callback, IntPtr lParam);
+        [PreserveSig] int SaveViewState();
+        [PreserveSig] int SelectItem(IntPtr pidl, uint flags);
+        [PreserveSig] int GetItemObject(uint item, in Guid iid, [MarshalAs(UnmanagedType.Interface)] out object? result);
+    }
+
     internal const int WH_KEYBOARD_LL = 13;
     internal const int WH_MOUSE_LL = 14;
 

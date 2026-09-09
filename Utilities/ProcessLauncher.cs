@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Reflection;
 using sWinShortcuts.Services;
 using sWinShortcuts.Interop;
@@ -82,63 +83,73 @@ public static class ProcessLauncher
             }
         }
 
-        // CLSID for ShellWindows
-        var shellWindowsType = Type.GetTypeFromCLSID(new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39"));
-        if (shellWindowsType == null) throw new InvalidOperationException("Could not find ShellWindows type.");
-
-        dynamic? shellWindows = Activator.CreateInstance(shellWindowsType);
-        if (shellWindows == null) throw new InvalidOperationException("Could not create ShellWindows instance.");
-
-        // Get the desktop window handle
-        IntPtr desktopHwnd = NativeMethods.GetShellWindow();
-        if (desktopHwnd == IntPtr.Zero)
+        WithDesktopShell(shell =>
         {
-            throw new InvalidOperationException("Could not obtain Shell Window handle (GetShellWindow returned 0).");
-        }
-        
-        dynamic? desktopDispatch = null;
+            dynamic desktopDispatch = shell;
+            object? args = string.IsNullOrEmpty(arguments) ? null : arguments;
+            var directory = Path.GetDirectoryName(resolvedPath);
+            object? workingDirectory = string.IsNullOrEmpty(directory) ? null : directory;
+            desktopDispatch.ShellExecute(resolvedPath, args, workingDirectory, "open", 1);
+        });
+    }
 
-        // Find the window that matches the desktop
-        foreach (dynamic item in shellWindows)
+    internal static void WithDesktopShell(Action<object> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        object? shellWindows = null;
+        object? desktop = null;
+        object? browserObject = null;
+        NativeMethods.IShellView? view = null;
+        object? folderView = null;
+        object? shell = null;
+        try
         {
-            try
-            {
-                // item is IWebBrowser2, has HWND property
-                // HWND in COM is often a long, so cast to long first to be safe
-                if ((IntPtr)(long)item.HWND == desktopHwnd)
-                {
-                    desktopDispatch = item.Document.Application;
-                    break;
-                }
-            }
-            catch
-            {
-                // Ignore errors accessing individual items
-            }
-        }
+            var shellWindowsType = Type.GetTypeFromCLSID(NativeMethods.CLSID_ShellWindows)
+                ?? throw new InvalidOperationException("Could not find ShellWindows type.");
+            shellWindows = Activator.CreateInstance(shellWindowsType)
+                ?? throw new InvalidOperationException("Could not create ShellWindows instance.");
+            object location = NativeMethods.CSIDL_DESKTOP;
+            object? root = null; // VT_EMPTY, as required by FindWindowSW.
+            Marshal.ThrowExceptionForHR(((NativeMethods.IShellWindows)shellWindows).FindWindowSW(
+                ref location, ref root, NativeMethods.SWC_DESKTOP, out _,
+                NativeMethods.SWFO_NEEDDISPATCH, out desktop));
+            if (desktop is null)
+                throw new InvalidOperationException("Could not find the desktop Shell window.");
 
-        if (desktopDispatch != null)
+            var browserId = typeof(NativeMethods.IShellBrowser).GUID;
+            Marshal.ThrowExceptionForHR(((NativeMethods.IServiceProvider)desktop).QueryService(
+                NativeMethods.SID_STopLevelBrowser, browserId, out browserObject));
+            if (browserObject is not NativeMethods.IShellBrowser browser)
+                throw new InvalidOperationException("Could not obtain the desktop Shell browser.");
+            Marshal.ThrowExceptionForHR(browser.QueryActiveShellView(out view));
+            if (view is null)
+                throw new InvalidOperationException("Could not obtain the desktop Shell view.");
+            Marshal.ThrowExceptionForHR(view.GetItemObject(
+                NativeMethods.SVGIO_BACKGROUND, NativeMethods.IID_IDispatch, out folderView));
+            if (folderView is null)
+                throw new InvalidOperationException("Could not obtain the desktop folder automation object.");
+            shell = ((dynamic)folderView).Application;
+            if (shell is null)
+                throw new InvalidOperationException("Could not obtain the desktop Shell application.");
+            action(shell);
+        }
+        finally
         {
-            // ShellExecute signature:
-            // void ShellExecute(string File, [optional] object vArgs, [optional] object vDir, [optional] object vOperation, [optional] object vShow);
-            // vOperation: "open"
-            // vShow: 1 (SW_SHOWNORMAL)
-            
-            object file = resolvedPath;
-            // Pass null for optional arguments if they are empty.
-            // This avoids passing empty strings ("") which some COM implementations might mishandle
-            // or pass as an actual empty argument to the process (argv[1]="").
-            object? vArgs = string.IsNullOrEmpty(arguments) ? null : arguments;
-            object? vDir = string.IsNullOrEmpty(Path.GetDirectoryName(resolvedPath)) ? null : Path.GetDirectoryName(resolvedPath);
-            object vOp = "open";
-            object vShow = 1;
+            // Release each acquired reference once; interface casts above are aliases,
+            // not additional owned references. Never final-release a potentially shared RCW.
+            ReleaseComReference(shell);
+            ReleaseComReference(folderView);
+            ReleaseComReference(view);
+            ReleaseComReference(browserObject);
+            ReleaseComReference(desktop);
+            ReleaseComReference(shellWindows);
+        }
+    }
 
-            desktopDispatch.ShellExecute(file, vArgs, vDir, vOp, vShow);
-        }
-        else
-        {
-             throw new InvalidOperationException("Could not find Desktop Shell view to perform de-elevation.");
-        }
+    private static void ReleaseComReference(object? value)
+    {
+        if (value is not null && Marshal.IsComObject(value))
+            Marshal.ReleaseComObject(value);
     }
 
     private static string ResolvePath(string fileName)

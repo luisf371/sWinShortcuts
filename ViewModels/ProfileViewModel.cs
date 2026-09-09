@@ -168,6 +168,10 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             if (SetProperty(ref _isEnabled, value))
             {
                 Model.IsEnabled = value;
+                if (!value)
+                {
+                    ColorSettings.EndForcePreview();
+                }
                 OnPropertyChanged(nameof(CanEditContent));
                 OnProfileChanged(ProfileChangeKind.Master);
 

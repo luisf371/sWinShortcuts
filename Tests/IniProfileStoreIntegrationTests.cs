@@ -55,6 +55,59 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(_root, "Atomic.ini.*.tmp"));
     }
 
+    [Theory]
+    [InlineData("999")]
+    [InlineData("-1")]
+    [InlineData("00")]
+    [InlineData("System")]
+    [InlineData("DeadCharProcessed")]
+    public async Task CombinedMapping_UnmappableTarget_DoesNotConsumeSource(string target)
+    {
+        var path = Path.Combine(_root, "Profiles", "Game.ini");
+        File.WriteAllText(path,
+            $"[Profile]\nName=Game\nExecutable=game.exe\n[KeyMappings]\nEnabled=true\n[KeyMappingsOverrides]\nA={target}|true|false\nB=F|true|false\n");
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+        var runtime = new sWinShortcuts.Services.Input.InputRuntimeState();
+        runtime.SetRunning(true);
+        runtime.SetAdvancedMode(true);
+        runtime.SetActiveProfile(profile, foregroundGeneration: 1);
+        runtime.SetForegroundIdentity(IntPtr.Zero, 0, profile.NormalizedExecutable, foregroundGeneration: 1);
+        var queue = new Tests.Fakes.RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new sWinShortcuts.Services.Input.RemapStateMachine(runtime, queue, random,
+            new Tests.Fakes.NullLoggerService());
+
+        Assert.False(remaps.HandleKeyboardEvent(0x41, isKeyDown: true, isKeyUp: false, rightButtonPressed: false));
+        Assert.False(remaps.HandleKeyboardEvent(0x41, isKeyDown: false, isKeyUp: true, rightButtonPressed: false));
+        Assert.Empty(queue.Commands);
+        var valid = Assert.Single(profile.CombinedMappings.Mappings);
+        Assert.Equal(Key.B, valid.SourceKey);
+        Assert.Equal(Key.F, valid.TargetKey);
+        Assert.Null(KeySerializer.Deserialize(target));
+    }
+
+    [Theory]
+    [InlineData("NaN", DisplayColorProfile.DefaultGamma)]
+    [InlineData("Infinity", DisplayColorProfile.DefaultGamma)]
+    [InlineData("-Infinity", DisplayColorProfile.DefaultGamma)]
+    [InlineData("0.1", 0.5)]
+    [InlineData("4.0", 3.0)]
+    public async Task ColorGamma_InvalidValue_NormalizesOnLoadAndSave(string gamma, double expected)
+    {
+        Directory.CreateDirectory(_root);
+        var path = Path.Combine(_root, "Win.ini");
+        File.WriteAllText(path, $"[ColorDisplays]\nDISPLAY1=1|50|50|{gamma}|50\n");
+
+        var windows = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.IsWindowsProfile);
+        Assert.Equal(expected, windows.ColorSettings.SnapshotProfiles()["DISPLAY1"].Gamma);
+
+        windows.ColorSettings.UpdateProfile("DISPLAY1", p => p.Gamma = double.Parse(gamma,
+            System.Globalization.CultureInfo.InvariantCulture));
+        await _store.SaveProfileAsync(windows, CancellationToken.None);
+        var saved = IniDocument.Load(path).GetSection("ColorDisplays")["DISPLAY1"];
+        Assert.Equal(expected, double.Parse(saved.Split('|')[3], System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     [Fact]
     public async Task ReservedNameCustomFile_StaysCustom_AndCannotClobberWindowsIni()
     {

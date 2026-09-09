@@ -10,8 +10,9 @@ namespace sWinShortcuts.Services;
 public sealed class FileLoggerService : ILoggerService, IDisposable
 {
     private const int MaxQueuedEntries = 20_000;      // bound memory during high-frequency hook logging
-    private const long MaxLogBytes = 2 * 1024 * 1024; // keep the newest 2 MiB in the active log
+    private const long MaxLogBytes = 2 * 1024 * 1024; // trim threshold for the active log
 
+    private readonly string _rootDirectory;
     private readonly string _logPath;
     private readonly BlockingCollection<string> _logQueue;
     private readonly CancellationTokenSource _cancellation;
@@ -19,11 +20,14 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
     private volatile bool _isEnabled;
     private static readonly int ProcessId = Environment.ProcessId;
 
-    public FileLoggerService()
+    public FileLoggerService() : this(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "sWinShortcuts"))
     {
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var rootDirectory = Path.Combine(appData, "sWinShortcuts");
-        Directory.CreateDirectory(rootDirectory);
+    }
+
+    internal FileLoggerService(string rootDirectory)
+    {
+        _rootDirectory = rootDirectory;
         _logPath = Path.Combine(rootDirectory, "debug.log");
 
         // Bounded: Log() uses TryAdd, so once full it drops newest entries instead of growing unbounded.
@@ -89,8 +93,9 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
 
                 if (buffer.Count > 0)
                 {
-                    TrimToNewest();
+                    Directory.CreateDirectory(_rootDirectory);
                     await File.AppendAllLinesAsync(_logPath, buffer, token).ConfigureAwait(false);
+                    TrimToNewest();
                     buffer.Clear();
                 }
             }
@@ -119,10 +124,16 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
         // Flush remaining
         try
         {
-            if (buffer.Count > 0)
+            if (buffer.Count == 0 && _logQueue.TryTake(out var first))
             {
-                await File.AppendAllLinesAsync(_logPath, buffer).ConfigureAwait(false);
+                buffer.Add(first);
             }
+
+            // Disabled/idle logging must not touch storage, including during shutdown.
+            if (buffer.Count == 0) return;
+
+            Directory.CreateDirectory(_rootDirectory);
+            await File.AppendAllLinesAsync(_logPath, buffer).ConfigureAwait(false);
             
             while (_logQueue.TryTake(out var item))
             {
@@ -145,7 +156,8 @@ public sealed class FileLoggerService : ILoggerService, IDisposable
             var info = new FileInfo(logPath);
             if (info.Exists && info.Length > maxLogBytes)
             {
-                var bytesToKeep = (int)Math.Min(info.Length, maxLogBytes);
+                // Leave room for subsequent batches instead of rewriting the retained log on each append.
+                var bytesToKeep = (int)Math.Min(info.Length, maxLogBytes - maxLogBytes / 4);
                 var buffer = new byte[bytesToKeep];
 
                 using (var source = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))

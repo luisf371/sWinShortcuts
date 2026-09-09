@@ -626,7 +626,7 @@ public sealed class IniProfileStore : IProfileStore
 
     private static int ClampDigitalVibrance(int value) => Math.Clamp(value, DisplayColorProfile.DefaultDigitalVibrance, 100);
 
-    private static double ClampGamma(double value) => Math.Clamp(value, 0.5, 3.0);
+    private static double ClampGamma(double value) => double.IsFinite(value) ? Math.Clamp(value, 0.5, 3.0) : DisplayColorProfile.DefaultGamma;
 
     private string DetermineProfilePath(Profile profile)
     {

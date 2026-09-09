@@ -8,6 +8,8 @@ public interface IDisplayService
 {
     IReadOnlyList<DisplayInfo> GetDisplays();
 
+    Task<IReadOnlyList<DisplayInfo>> GetDisplaysAsync();
+
     /// <summary>Raised after the connected-display set changes (hot-plug, resolution/topology change).</summary>
     event EventHandler? DisplaysChanged;
 }

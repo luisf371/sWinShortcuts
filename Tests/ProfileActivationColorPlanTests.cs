@@ -180,13 +180,76 @@ public class ProfileActivationColorPlanTests
     private static ColorPlan SingleDisplayPlan(string displayId) => new(
         [new DisplayColorPlan(displayId, IsEnabled: true, Brightness: 60, Contrast: 50, Gamma: 1.0, DigitalVibrance: 50)]);
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProcessColorChange_PartialWrite_ReturnToPreviousPlanRepairsOnlyTouchedDisplay(bool initiallyEnabled)
+    {
+        var manager = await CreateManagerAsync();
+        var original = ProfileFactory.CreateCustomProfile("Original", "original.exe");
+        var partial = ProfileFactory.CreateCustomProfile("Partial", "partial.exe");
+        if (initiallyEnabled)
+        {
+            EnableDisplayColor(original, "DISPLAY1", 60);
+        }
+        EnableDisplayColor(partial, "DISPLAY1", 75);
+        var writes = new List<(string DisplayId, int Brightness)>();
+        var color = new CompositeColorControlService(
+            (display, profile) => { writes.Add((display.Id, profile.Brightness)); return ColorApplyOutcome.Applied; },
+            (_, profile) => profile.Brightness == 75 ? ColorApplyOutcome.Failed : ColorApplyOutcome.Applied,
+            (_, _) => ColorApplyOutcome.Skipped);
+        var service = new ProfileActivationService(manager, new FakeForegroundWatcher(), new FakeInputHookService(),
+            new FakeSystemTrayService(), color,
+            new FakeDisplayService { Displays = [CreateDisplay("DISPLAY1"), CreateDisplay("DISPLAY2")] },
+            new FakeCrosshairService(), new NullLoggerService());
+
+        ProcessColorChange(service, original);
+        ProcessColorChange(service, partial);
+        ProcessColorChange(service, original);
+
+        var expected = initiallyEnabled ? new[] { 60, 75, 60 } : new[] { 75, 50 };
+        Assert.Equal(expected, writes.Select(write => write.Brightness));
+        Assert.All(writes, write => Assert.Equal("DISPLAY1", write.DisplayId));
+        ProcessColorChange(service, original);
+        Assert.Equal(expected.Length, writes.Count); // successful repair restores dedup
+    }
+
+    [Fact]
+    public async Task ProcessColorChange_FailedRestore_RetainsObligationUntilSuccessful()
+    {
+        var manager = await CreateManagerAsync();
+        var enabled = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        EnableDisplayColor(enabled, "DISPLAY1", 75);
+        var color = new RecordingColorControlService { Outcome = ColorApplyOutcome.Failed };
+        var service = new ProfileActivationService(manager, new FakeForegroundWatcher(), new FakeInputHookService(),
+            new FakeSystemTrayService(), color, new FakeDisplayService { Displays = [CreateDisplay("DISPLAY1")] },
+            new FakeCrosshairService(), new NullLoggerService());
+
+        ProcessColorChange(service, enabled);
+        ProcessColorChange(service, null); // restoration fails too
+        color.Outcome = ColorApplyOutcome.Applied;
+        ProcessColorChange(service, null);
+        ProcessColorChange(service, null);
+
+        Assert.Equal(new[] { 75, 50, 50 }, color.AppliedProfiles.Select(item => item.Profile.Brightness));
+    }
+
+    private static void ProcessColorChange(ProfileActivationService service, Profile? profile)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var snapshotType = typeof(ProfileActivationService).GetNestedType("ForegroundSnapshot", BindingFlags.NonPublic)!;
+        var snapshot = Activator.CreateInstance(snapshotType, [1L, IntPtr.Zero, 0u, null, null, profile]);
+        typeof(ProfileActivationService).GetField("_latestForeground", flags)!.SetValue(service, snapshot);
+        typeof(ProfileActivationService).GetMethod("ProcessColorChange", flags)!.Invoke(service, [snapshot]);
+    }
+
     private static bool ApplyColorPlan(
         ProfileActivationService service,
         ColorPlan plan,
         IReadOnlyList<DisplayInfo> displays) =>
         (bool)typeof(ProfileActivationService)
             .GetMethod("ApplyColorPlan", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .Invoke(service, [plan, ColorPlan.Empty, displays])!;
+            .Invoke(service, [plan, displays])!;
 
     private static async Task<ProfileManager> CreateManagerAsync()
     {

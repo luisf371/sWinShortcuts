@@ -87,6 +87,81 @@ public sealed class InputHookDispatcherTests
     }
 
     [Fact]
+    public async Task AutoRunOwnedSprintUp_ReleasesOlderCombinedAndLauncherOwnership()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureCombinedOverrideForTesting(Key.LeftShift, Key.F, suppressOriginal: true);
+            service.ConfigureLauncherLatchForTesting(new Profile { Name = "Windows" }, Key.LeftShift);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            service.ConfigureForegroundAutoRunHandoffForTesting(
+                new Profile { Name = "Game", Executable = "game.exe" }, sprintEnabled: true);
+            Assert.True(service.DispatchDecodedKeyboardEvent(0x57, isKeyDown: false, isKeyUp: true));
+
+            Assert.True(service.DispatchDecodedKeyboardEvent(
+                KeyInterop.VirtualKeyFromKey(Key.LeftShift), isKeyDown: false, isKeyUp: true));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.Equal(new[] { true, false },
+                sender.Transitions.Where(item => item.Key == Key.F).Select(item => item.IsDown));
+            Assert.False(service.HandleLauncherForTesting(Key.LeftShift, isDown: false));
+        }
+        finally
+        {
+            service.ReleaseForegroundAutoRun();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Theory]
+    [InlineData(CapsLockMode.Normal)]
+    [InlineData(CapsLockMode.DoubleNormal)]
+    public async Task AutoRunOwnedCapsSprintUp_CompletesOlderCapsRemap(CapsLockMode mode)
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputHookService(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+        var profile = new Profile
+        {
+            Name = "Game",
+            Executable = "game.exe",
+            CapsLock = { IsEnabled = true, Mode = mode, IsRemapEnabled = true, RemapTarget = Key.F }
+        };
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+            var caps = KeyInterop.VirtualKeyFromKey(Key.CapsLock);
+            Assert.True(service.DispatchDecodedKeyboardEvent(caps, isKeyDown: true, isKeyUp: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            service.ConfigureForegroundAutoRunHandoffForTesting(
+                profile, sprintEnabled: true, sprintKey: Key.CapsLock);
+            Assert.True(service.DispatchDecodedKeyboardEvent(0x57, isKeyDown: false, isKeyUp: true));
+
+            Assert.True(service.DispatchDecodedKeyboardEvent(caps, isKeyDown: false, isKeyUp: true));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.Equal(mode == CapsLockMode.Normal ? [true, false] : new[] { true, false, true, false },
+                sender.Transitions.Where(item => item.Key == Key.F).Select(item => item.IsDown));
+            service.ReleaseForegroundAutoRun();
+            Assert.True(service.DispatchDecodedKeyboardEvent(caps, isKeyDown: true, isKeyUp: false));
+            Assert.True(service.DispatchDecodedKeyboardEvent(caps, isKeyDown: false, isKeyUp: true));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(mode == CapsLockMode.Normal ? 4 : 8,
+                sender.Transitions.Count(item => item.Key == Key.F));
+        }
+        finally
+        {
+            service.ReleaseForegroundAutoRun();
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
     public async Task PanicWinsAltKeyboardAndOwnsMatchingUp()
     {
         var sender = new RecordingInputSender();

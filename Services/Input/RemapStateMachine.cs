@@ -125,18 +125,18 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     }
 
     /// <summary>
-    /// Runs cleanup for a key-up consumed by an earlier dispatcher feature. Both handlers must run:
-    /// one source can own a combined target and a launcher latch at the same time.
+    /// Runs every owned release for a key-up consumed by an earlier dispatcher feature.
     /// </summary>
     internal bool ReleaseOwnedKeyUp(int virtualKey)
     {
+        var caps = HandleCapsLock(virtualKey, isKeyDown: false, isKeyUp: true);
         var combined = HandleCombinedMapping(
             virtualKey,
             isKeyDown: false,
             isKeyUp: true,
             rightButtonPressed: false);
         var launcher = HandleWindowsLauncher(virtualKey, isKeyDown: false, isKeyUp: true);
-        return combined || launcher;
+        return caps || combined || launcher;
     }
 
     internal void OnRightButtonReleased() => ReleaseCombinedOverrides(static state => state.RightClickOnly);

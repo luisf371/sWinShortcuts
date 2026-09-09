@@ -175,9 +175,9 @@ public sealed class ColorSettings
 
     /// <summary>
     /// Flips the active variant Primary&lt;-&gt;Secondary (only meaningful when <see cref="HasSecondary"/>).
-    /// Called from the activation worker when the global toggle key fires. Returns the new active variant.
+    /// The hotkey may supply the visible preview variant as its origin. Returns the new active variant.
     /// </summary>
-    public ColorVariant ToggleVariant()
+    public ColorVariant ToggleVariant(ColorVariant? origin = null)
     {
         lock (_sync)
         {
@@ -188,7 +188,7 @@ public sealed class ColorSettings
                 return _activeVariant;
             }
 
-            _activeVariant = _activeVariant == ColorVariant.Primary ? ColorVariant.Secondary : ColorVariant.Primary;
+            _activeVariant = (origin ?? _activeVariant) == ColorVariant.Primary ? ColorVariant.Secondary : ColorVariant.Primary;
             return _activeVariant;
         }
     }

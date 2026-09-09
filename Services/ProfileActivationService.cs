@@ -45,7 +45,9 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     // F-010: set at the START of StopAsync; the worker checks it before every side effect so a late-returning
     // (uncancelable) native color call can't activate input / touch the tray after shutdown has begun.
     private volatile bool _stopping;
-    private ColorPlan _lastAppliedColorPlan = ColorPlan.Empty;
+    private ColorPlan? _lastAppliedColorPlan = ColorPlan.Empty;
+    // Color-worker-owned obligations survive failed/partial native writes and disconnected displays.
+    private readonly HashSet<string> _touchedColorDisplays = new(StringComparer.OrdinalIgnoreCase);
     // Volatile: written by the ForegroundChanged handler, read in StartAsync. Today the initial event
     // fires synchronously on the starting thread, but the handler also runs from the WinEvent pump.
     private volatile bool _initialEventFired;
@@ -536,8 +538,11 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         var settings = _activeColorSettings;
         if (settings is not null)
         {
-            var before = settings.ActiveVariant;
-            var after = settings.ToggleVariant();
+            var forced = _forcedColorPreview;
+            var before = forced is not null && ReferenceEquals(forced.Settings, settings)
+                ? forced.Variant
+                : settings.ActiveVariant;
+            var after = settings.ToggleVariant(before);
             if (before != after)
             {
                 // Force preview active on exactly these settings -> RETARGET it to the flipped
@@ -546,7 +551,6 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 // forced.Settings.IsEnabled == false, ProcessColorChange's publication left
                 // _activeColorSettings at the GLOBAL settings, so this branch simply doesn't
                 // fire — the plan and its publication never disagree.)
-                var forced = _forcedColorPreview;
                 if (forced is not null && ReferenceEquals(forced.Settings, settings))
                 {
                     _forcedColorPreview = new ForcedColorPreview(settings, after);
@@ -687,23 +691,24 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
         var force = Interlocked.Exchange(ref _forceReapply, 0) == 1;
         var planOnScreen = true;
-        if (!_stopping && (force || !_lastAppliedColorPlan.Equals(plan))) // F-010: skip color once stopping
+        if (!_stopping && (force || _lastAppliedColorPlan is null || !_lastAppliedColorPlan.Equals(plan))) // F-010: skip color once stopping
         {
-            // Advance the dedup baseline ONLY when every enabled display actually applied (§14.1):
-            // a failed enabled apply stays un-deduped and retries on the next foreground/resume event.
-            if (ApplyColorPlan(plan, _lastAppliedColorPlan, displays))
+            // Gamma may succeed before vibrance fails or throws. Retire the old dedup assertion
+            // before any native write; returning to that old plan must repair partial changes too.
+            _lastAppliedColorPlan = null;
+            if (ApplyColorPlan(plan, displays))
             {
                 _lastAppliedColorPlan = plan;
             }
             else
             {
-                planOnScreen = false; // apply failed -> this plan is NOT on screen; keep the old toggle target
+                planOnScreen = false; // retain the last successful toggle target while retrying
             }
         }
 
         // Publish AFTER a SUCCESSFUL/current apply so the color-toggle hook event only ever flips the
         // ColorSettings whose plan is actually on screen — not a profile whose color failed to apply or hasn't
-        // been applied yet (codex). On failure _activeColorSettings keeps the old (still-visible) target.
+        // been applied yet. A failed plan may be partially visible; retain the last successful target.
         latest = _latestForeground;
         if (planOnScreen && latest is not null && latest.Generation == snapshot.Generation)
         {
@@ -828,18 +833,15 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             DisplayColorProfile.DefaultDigitalVibrance);
     }
 
-    private bool ApplyColorPlan(ColorPlan plan, ColorPlan previous, IReadOnlyList<DisplayInfo> displays)
+    private bool ApplyColorPlan(ColorPlan plan, IReadOnlyList<DisplayInfo> displays)
     {
         var allApplied = true;
 
         foreach (var displayPlan in plan.Displays)
         {
-            var prior = FindDisplayPlan(previous, displayPlan.DisplayId);
-
-            // C1: a display that is disabled now AND was disabled/absent before was never applied, so
-            // leave its hardware (ICC/Night Light/NVCP vibrance) untouched. Enabled-now and the
-            // enabled->disabled restore transition both fall through and DO apply.
-            if (!displayPlan.IsEnabled && (prior is null || !prior.IsEnabled))
+            // Preserve external calibration on untouched disabled displays. An attempted enabled
+            // write needs restoration even when its plan never became the successful baseline.
+            if (!displayPlan.IsEnabled && !_touchedColorDisplays.Contains(displayPlan.DisplayId))
             {
                 continue;
             }
@@ -851,6 +853,17 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 _logger.Log($"[Color] Display '{displayPlan.DisplayId}' is in the plan but absent from hardware; will retry on the next event.");
                 allApplied = false;
                 continue;
+            }
+
+            // A native call cannot be canceled; do not start the next display after stop.
+            if (_stopping)
+            {
+                return false;
+            }
+
+            if (displayPlan.IsEnabled)
+            {
+                _touchedColorDisplays.Add(displayPlan.DisplayId);
             }
 
             var outcome = _colorControlService.Apply(display, new DisplayColorProfile
@@ -870,22 +883,13 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 _logger.Log($"[Color] Apply failed for display '{displayPlan.DisplayId}'; will retry on the next event.");
                 allApplied = false;
             }
-        }
-
-        return allApplied;
-    }
-
-    private static DisplayColorPlan? FindDisplayPlan(ColorPlan plan, string displayId)
-    {
-        foreach (var displayPlan in plan.Displays)
-        {
-            if (string.Equals(displayPlan.DisplayId, displayId, StringComparison.OrdinalIgnoreCase))
+            else if (!displayPlan.IsEnabled && outcome == ColorApplyOutcome.Applied)
             {
-                return displayPlan;
+                _touchedColorDisplays.Remove(displayPlan.DisplayId);
             }
         }
 
-        return null;
+        return allApplied;
     }
 
     private static DisplayInfo? FindDisplay(string displayId, IReadOnlyList<DisplayInfo> displays)

@@ -24,6 +24,8 @@ public interface IProfileManager
 
     Task RenameProfileAsync(Profile profile, string newName, CancellationToken cancellationToken = default);
 
+    Task UpdateProfileIdentityAsync(Profile profile, string newName, string executable, CancellationToken cancellationToken = default);
+
     Profile? FindByExecutable(string executableName);
 
     Task SaveProfileAsync(Profile profile, CancellationToken cancellationToken = default);

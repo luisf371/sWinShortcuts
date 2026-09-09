@@ -464,10 +464,11 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                     }
                     if (!CanPostBackgroundStep(target, owner, mode, generation, requireStarted)) break;
 
-                    downPosted = PostTapToWindow(target, step.Key, isDown: true);
+                    downPosted = PostTapToWindow(target, step.Key, isDown: true,
+                        mode, generation, requireStarted, out var attempted);
                     if (!downPosted)
                     {
-                        if (!ReferenceEquals(_reportedPostFailureTarget, target))
+                        if (attempted && !ReferenceEquals(_reportedPostFailureTarget, target))
                         {
                             _reportedPostFailureTarget = target;
                             Log(_lastPostError == 5
@@ -484,7 +485,8 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
                     // Every started DOWN is paired by an UP, mirroring InputExecutor.ExecuteSequence.
                     try
                     {
-                        if (downPosted) PostTapToWindow(target, step.Key, isDown: false);
+                        if (downPosted) PostTapToWindow(target, step.Key, isDown: false,
+                            mode, generation, requireStarted, out _);
                     }
                     catch (Exception ex)
                     {
@@ -581,8 +583,10 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
     // restored after detach (CapsLock-safe), and the PostMessage result. NEVER called from the
     // hook/dispatcher thread — the Anti-AFK tick is a System.Threading.Timer pool callback, so this
     // always runs onBackgroundThread semantics.
-    private bool PostTapToWindow(AntiAfkTarget target, Key key, bool isDown)
+    private bool PostTapToWindow(AntiAfkTarget target, Key key, bool isDown,
+        AntiAfkSendMode mode, long generation, bool requireStarted, out bool attempted)
     {
+        attempted = false;
         if (isDown && _runtime.IsDisposed) return false;
         var vk = KeyInteropUtilities.ToVirtualKey(key);
         if (vk == 0) return true;
@@ -593,7 +597,8 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
             : (systemKey ? NativeMethods.WM_SYSKEYUP : NativeMethods.WM_KEYUP));
         var lParam = AutoRunStateMachine.BuildKeyLParam(scan, isDown, AutoRunStateMachine.IsExtendedKey(key), repeat: false);
         var hwnd = target.WindowHandle;
-        var targetThread = _transport.GetWindowThreadProcessId(hwnd, out _);
+        var targetThread = _transport.GetWindowThreadProcessId(hwnd, out var actualPid);
+        if (target.ProcessId == 0 || actualPid != target.ProcessId) return false;
         var currentThread = _transport.GetCurrentThreadId();
         var foreground = ForegroundIsProcess(target.ProcessId);
         var candidate = !foreground && targetThread != 0 && targetThread != currentThread;
@@ -620,7 +625,11 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         try
         {
             attached = willAttach && _transport.AttachThreadInput(currentThread, targetThread, true);
-            if (isDown && _runtime.IsDisposed) return false;
+            _transport.GetWindowThreadProcessId(hwnd, out actualPid);
+            if (actualPid != target.ProcessId) return false;
+            if (isDown && !CanPostBackgroundStep(target, target.Profile, mode, generation, requireStarted))
+                return false;
+            attempted = true;
             var posted = _transport.PostMessage(hwnd, message, (IntPtr)vk, lParam);
             _lastPostError = posted ? 0 : _transport.GetLastWin32Error();
             return posted;

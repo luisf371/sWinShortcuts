@@ -403,7 +403,7 @@ public sealed class AntiAfkStateMachineTests
     }
 
     [Fact]
-    public async Task Tick_BackgroundTargetInvalidatedMidSequence_PairsStartedKeyAndAbortsRest()
+    public async Task Tick_BackgroundTargetReusedMidSequence_DoesNotReleaseIntoAnotherProcess()
     {
         long timestamp = 0;
         uint tick = 0;
@@ -421,13 +421,12 @@ public sealed class AntiAfkStateMachineTests
                 transport,
                 () => transport.ProcessIds[(IntPtr)100] = 9);
 
-            Assert.Equal(2, posts.Length);
+            Assert.Single(posts);
             Assert.Equal((IntPtr)100, posts[0].Window);
             Assert.Equal((uint)NativeMethods.WM_KEYDOWN, posts[0].Message);
             Assert.Equal(KeyInterop.VirtualKeyFromKey(Key.W), posts[0].VirtualKey);
-            // The started key still gets its UP; W/A/S/D's remaining steps abort.
-            Assert.Equal((uint)NativeMethods.WM_KEYUP, posts[1].Message);
-            Assert.Equal(posts[0].VirtualKey, posts[1].VirtualKey);
+            // The original process no longer owns this HWND, so neither UP nor later DOWNs
+            // may be delivered to its replacement. Feature cancellation alone still pairs UP.
         }
     }
 
@@ -549,6 +548,136 @@ public sealed class AntiAfkStateMachineTests
 
             await ripple.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Empty(transport.Posts);
+        }
+    }
+
+    [Theory]
+    [InlineData("disabled", false)]
+    [InlineData("stopped", false)]
+    [InlineData("disposed", false)]
+    [InlineData("owner", false)]
+    [InlineData("pid", false)]
+    [InlineData("advanced", false)]
+    [InlineData("superseded", false)]
+    [InlineData("disabled", true)]
+    [InlineData("pid", true)]
+    public async Task Tick_InvalidatedDuringNativePreparation_DoesNotPostOrReportDeliveryFailure(
+        string invalidation, bool blockAttachment)
+    {
+        uint tick = 0;
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, transport, autoRun, profile, runtime) =
+            CreateMachine(() => Stopwatch.Frequency * 60, () => tick, logger);
+        using (machine)
+        using (var attached = new ManualResetEventSlim(false))
+        using (var releaseAttach = new ManualResetEventSlim(false))
+        {
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
+            machine.CaptureForegroundTarget(profile);
+            DeactivateAndUnfocus(runtime, transport);
+            tick = 60_000;
+            if (blockAttachment)
+            {
+                transport.OnAttach = attach =>
+                {
+                    if (!attach) return;
+                    attached.Set();
+                    releaseAttach.Wait(TimeSpan.FromSeconds(2));
+                };
+            }
+            else transport.BlockProcessReadNumber = 3;
+            var pendingTick = Task.Run(machine.Tick);
+            try
+            {
+                Assert.True((blockAttachment ? attached : transport.ProcessReadEntered).Wait(TimeSpan.FromSeconds(2)));
+                InvalidatePostingContext(invalidation, machine, runtime, profile, transport);
+            }
+            finally
+            {
+                transport.ReleaseProcessRead.Set();
+                releaseAttach.Set();
+            }
+            await pendingTick.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Empty(transport.Posts);
+            Assert.DoesNotContain(logger.Messages, m => m.Contains("post failed"));
+            Assert.True(autoRun.TryBeginAntiAfkTap());
+            autoRun.EndAntiAfkTap();
+        }
+    }
+
+    [Fact]
+    public void Tick_TargetReusedDuringReleaseAttachment_DoesNotReleaseIntoReplacement()
+    {
+        uint tick = 0;
+        var (machine, _, transport, _, profile, runtime) =
+            CreateMachine(() => Stopwatch.Frequency * 60, () => tick);
+        using (machine)
+        {
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
+            machine.CaptureForegroundTarget(profile);
+            DeactivateAndUnfocus(runtime, transport);
+            tick = 60_000;
+            var attachments = 0;
+            transport.OnAttach = attach =>
+            {
+                if (attach && ++attachments == 2) transport.ProcessIds[(IntPtr)100] = 9;
+            };
+
+            machine.Tick();
+
+            var post = Assert.Single(transport.Posts);
+            Assert.Equal(((IntPtr)100, (uint)NativeMethods.WM_KEYDOWN), (post.Window, post.Message));
+        }
+    }
+
+    [Theory]
+    [InlineData("disabled")]
+    [InlineData("stopped")]
+    [InlineData("disposed")]
+    [InlineData("owner")]
+    public void Tick_InvalidatedInsideSuccessfulDown_StillReleasesWithoutDeliveryFailure(string invalidation)
+    {
+        uint tick = 0;
+        var logger = new NullLoggerService { IsEnabled = true };
+        var (machine, _, transport, _, profile, runtime) =
+            CreateMachine(() => Stopwatch.Frequency * 60, () => tick, logger);
+        using (machine)
+        {
+            profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
+            machine.CaptureForegroundTarget(profile);
+            DeactivateAndUnfocus(runtime, transport);
+            tick = 60_000;
+            transport.OnPost = (_, message, _, _) =>
+            {
+                if (message == NativeMethods.WM_KEYDOWN)
+                    InvalidatePostingContext(invalidation, machine, runtime, profile, transport);
+            };
+
+            machine.Tick();
+
+            var posts = transport.Posts.ToArray();
+            Assert.Equal(2, posts.Length);
+            Assert.Equal((uint)NativeMethods.WM_KEYDOWN, posts[0].Message);
+            Assert.Equal((uint)NativeMethods.WM_KEYUP, posts[1].Message);
+            Assert.Equal(posts[0].VirtualKey, posts[1].VirtualKey);
+            Assert.Equal(posts[0].Window, posts[1].Window);
+            Assert.DoesNotContain(logger.Messages, m => m.Contains("post failed"));
+        }
+    }
+
+    private static void InvalidatePostingContext(string invalidation, AntiAfkStateMachine machine,
+        InputRuntimeState runtime, Profile profile, FakeAutoRunTransport transport)
+    {
+        switch (invalidation)
+        {
+            case "disabled": profile.AntiAfk.IsEnabled = false; break;
+            case "stopped": machine.Stop(); break;
+            case "disposed": machine.Dispose(); break;
+            case "owner": machine.ReleaseOwnedBy(profile); break;
+            case "pid": transport.ProcessIds[(IntPtr)100] = 9; break;
+            case "advanced": runtime.SetAdvancedMode(false); break;
+            case "superseded": runtime.SetActiveProfile(CreateOtherProfile(), 1); break;
+            default: throw new ArgumentOutOfRangeException(nameof(invalidation));
         }
     }
 

@@ -15,5 +15,7 @@ public sealed class FakeDisplayService : IDisplayService
         return Displays;
     }
 
+    public Task<IReadOnlyList<DisplayInfo>> GetDisplaysAsync() => Task.FromResult(Displays);
+
     public void RaiseDisplaysChanged() => DisplaysChanged?.Invoke(this, EventArgs.Empty);
 }

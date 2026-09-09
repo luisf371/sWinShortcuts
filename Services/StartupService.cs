@@ -12,10 +12,31 @@ public sealed class StartupService : IStartupService
     private const string RunValueName = "sWinShortcuts";
     private const string TaskName = "sWinShortcuts_AutoStart";
 
+    internal delegate bool SchtasksRunner(string arguments, int timeoutMs,
+        out int exitCode, out string stdout, out string stderr);
+
+    private readonly SchtasksRunner _runSchtasks;
+    private readonly Func<bool> _readRunKey;
+    private readonly Action<bool> _writeRunKey;
+
+    public StartupService() : this(RunSchtasks, IsRunKeyEnabled, enabled =>
+    {
+        if (enabled) EnableRunKey();
+        else DisableRunKey();
+    }) { }
+
+    internal StartupService(SchtasksRunner runSchtasks, Func<bool> readRunKey, Action<bool> writeRunKey)
+    {
+        _runSchtasks = runSchtasks;
+        _readRunKey = readRunKey;
+        _writeRunKey = writeRunKey;
+    }
+
     public StartupState GetState()
     {
-        var task = IsScheduledTaskEnabled();
-        var run = IsRunKeyEnabled();
+        if (!TryGetScheduledTaskState(out var task, out var error))
+            throw new InvalidOperationException(error);
+        var run = _readRunKey();
         return new StartupState(StartWithWindows: run || task, StartAsAdmin: task);
     }
 
@@ -25,60 +46,81 @@ public sealed class StartupService : IStartupService
 
         try
         {
-            if (!startWithWindows)
-            {
-                // Disable both methods. Surface a scheduled-task delete failure (e.g. an unelevated
-                // attempt to remove a HIGHEST task returns Access Denied) instead of silently leaving
-                // the elevated autostart running.
-                var okTask = TryDisableScheduledTask(out var taskErr);
-                DisableRunKey();
-                if (!okTask)
-                {
-                    errorMessage = string.IsNullOrWhiteSpace(taskErr)
-                        ? "Failed to remove the elevated startup task. Administrator rights are required to change it."
-                        : taskErr;
-                    return false;
-                }
+            // Read both mechanisms before changing either so a failed transition can be compensated.
+            if (!TryGetScheduledTaskState(out var previousTask, out errorMessage))
+                return false;
+            var previousRun = _readRunKey();
 
+            try
+            {
+                var useTask = startWithWindows && startAsAdmin;
+                var taskSucceeded = useTask
+                    ? TryEnableScheduledTask(out errorMessage)
+                    : TryDisableScheduledTask(previousTask, out errorMessage);
+                if (!taskSucceeded)
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(errorMessage)
+                        ? "Failed to change the elevated startup task. Administrator rights may be required."
+                        : errorMessage);
+
+                // Remove the elevated task before normal startup is enabled; never silently leave
+                // elevated startup selected after the user requested a normal launch.
+                _writeRunKey(startWithWindows && !startAsAdmin);
                 return true;
             }
-
-            if (startAsAdmin)
+            catch (Exception ex)
             {
-                // Use scheduled task set to Highest privileges
-                if (!TryEnableScheduledTask(out var err))
-                {
-                    errorMessage = string.IsNullOrWhiteSpace(err)
-                        ? "Failed to create scheduled task for admin startup."
-                        : err;
-                    return false;
-                }
-
-                // Ensure Run key is removed to avoid duplicate launches
-                DisableRunKey();
-                return true;
-            }
-            else
-            {
-                // Remove any leftover elevated task BEFORE enabling the Run key: with both
-                // mechanisms active the app launches twice, one still elevated against the user's
-                // new choice. Failing here leaves the previous state untouched and surfaces it.
-                if (!TryDisableScheduledTask(out var taskErr))
-                {
-                    errorMessage = string.IsNullOrWhiteSpace(taskErr)
-                        ? "Failed to remove the elevated startup task. Administrator rights are required to change it."
-                        : taskErr;
-                    return false;
-                }
-
-                EnableRunKey();
-                return true;
+                errorMessage = TryRestoreState(previousTask, previousRun, out var restoreError)
+                    ? $"{ex.Message} Previous startup methods were restored."
+                    : $"{ex.Message} Startup restoration failed: {restoreError} {DescribeCurrentState()}";
+                return false;
             }
         }
         catch (Exception ex)
         {
             errorMessage = ex.Message;
             return false;
+        }
+    }
+
+    private bool TryRestoreState(bool previousTask, bool previousRun, out string? error)
+    {
+        error = null;
+        try
+        {
+            // A timed-out operation may already have changed the OS; query before compensating.
+            if (!TryGetScheduledTaskState(out var currentTask, out error))
+                return false;
+            if (currentTask != previousTask)
+            {
+                var restored = previousTask
+                    ? TryEnableScheduledTask(out error)
+                    : TryDisableScheduledTask(currentTask, out error);
+                if (!restored)
+                    return false;
+            }
+            if (_readRunKey() != previousRun)
+                _writeRunKey(previousRun);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private string DescribeCurrentState()
+    {
+        try
+        {
+            if (!TryGetScheduledTaskState(out var task, out var error))
+                return $"Current startup state is unknown: {error}";
+            var run = _readRunKey();
+            return $"Current startup state: elevated task {(task ? "enabled" : "disabled")}, normal startup {(run ? "enabled" : "disabled")}.";
+        }
+        catch (Exception ex)
+        {
+            return $"Current startup state is unknown: {ex.Message}";
         }
     }
 
@@ -94,16 +136,9 @@ public sealed class StartupService : IStartupService
 
     private static bool IsRunKeyEnabled()
     {
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            var value = key?.GetValue(RunValueName) as string;
-            return !string.IsNullOrWhiteSpace(value);
-        }
-        catch
-        {
-            return false;
-        }
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+        var value = key?.GetValue(RunValueName) as string;
+        return !string.IsNullOrWhiteSpace(value);
     }
 
     private static void EnableRunKey()
@@ -115,41 +150,51 @@ public sealed class StartupService : IStartupService
 
     private static void DisableRunKey()
     {
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-            key?.DeleteValue(RunValueName, throwOnMissingValue: false);
-        }
-        catch
-        {
-            // ignore
-        }
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+        key?.DeleteValue(RunValueName, throwOnMissingValue: false);
     }
 
-    private static bool IsScheduledTaskEnabled()
+    private bool TryGetScheduledTaskState(out bool present, out string? error)
     {
+        present = false;
+        error = null;
         try
         {
-            return RunSchtasks($"/Query /TN \"{TaskName}\"", 3000, out var exitCode, out _, out _)
-                && exitCode == 0;
+            var completed = _runSchtasks($"/Query /TN \"{TaskName}\" /HRESULT", 3000,
+                out var exitCode, out _, out var stderr);
+            if (!completed)
+            {
+                error = "Timed out reading the startup task.";
+                return false;
+            }
+            if (exitCode == 0)
+            {
+                present = true;
+                return true;
+            }
+            if (exitCode == unchecked((int)0x80070002))
+                return true;
+            error = string.IsNullOrWhiteSpace(stderr)
+                ? $"Could not read the startup task (HRESULT 0x{exitCode:X8})."
+                : stderr;
+            return false;
         }
-        catch
+        catch (Exception ex)
         {
+            error = ex.Message;
             return false;
         }
     }
 
-    private static bool TryEnableScheduledTask(out string? error)
+    private bool TryEnableScheduledTask(out string? error)
     {
         error = null;
         try
         {
-            // Make sure any old task is replaced
-            TryDisableScheduledTask(out _);
-
+            // /Create /F replaces an existing task without a destructive delete-first interval.
             var exe = GetExecutablePath();
 
-            if (!RunSchtasks(BuildCreateArguments(TaskName, exe), 8000, out var exitCode, out var stdOut, out var stdErr))
+            if (!_runSchtasks(BuildCreateArguments(TaskName, exe), 8000, out var exitCode, out var stdOut, out var stdErr))
             {
                 error = "Timed out creating the startup task.";
                 return false;
@@ -170,18 +215,18 @@ public sealed class StartupService : IStartupService
         }
     }
 
-    private static bool TryDisableScheduledTask(out string? error)
+    private bool TryDisableScheduledTask(bool present, out string? error)
     {
         error = null;
         try
         {
             // Absent → idempotent success. Only if it exists do we care whether the delete truly worked.
-            if (!IsScheduledTaskEnabled())
+            if (!present)
             {
                 return true;
             }
 
-            if (!RunSchtasks($"/Delete /F /TN \"{TaskName}\"", 5000, out var exitCode, out var stdOut, out var stdErr))
+            if (!_runSchtasks($"/Delete /F /TN \"{TaskName}\"", 5000, out var exitCode, out var stdOut, out var stdErr))
             {
                 error = "Timed out removing the startup task.";
                 return false;

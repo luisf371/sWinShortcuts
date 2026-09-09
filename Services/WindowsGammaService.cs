@@ -30,7 +30,7 @@ public sealed class WindowsGammaService
         // Normalize values: 50 is neutral brightness/contrast, gamma is direct.
         var brightnessOffset = (profile.Brightness - 50) / 50.0; // -1..1
         var contrastFactor = Math.Max(0.1, profile.Contrast / 50.0); // avoid divide-by-zero
-        var gamma = Math.Clamp(profile.Gamma, 0.5, 3.0);
+        var gamma = double.IsFinite(profile.Gamma) ? Math.Clamp(profile.Gamma, 0.5, 3.0) : DisplayColorProfile.DefaultGamma;
 
         var ramp = new NativeMethods.GammaRamp();
         for (int i = 0; i < 256; i++)

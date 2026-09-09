@@ -211,7 +211,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
     /// </summary>
     private void ApplyToHardwareOrRevert()
     {
-        if (!_allowLiveUpdates)
+        if (!_allowLiveUpdates || _variant != _colorSettings.ActiveVariant)
         {
             return;
         }
@@ -246,7 +246,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 
     private void ApplyToHardware()
     {
-        if (!_allowLiveUpdates || !_isMasterEnabled() || !_isEnabled)
+        if (!_allowLiveUpdates || _variant != _colorSettings.ActiveVariant || !_isMasterEnabled() || !_isEnabled)
         {
             return;
         }
@@ -281,7 +281,7 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 
     private void ApplyToHardwareNow()
     {
-        if (!_allowLiveUpdates || !_isMasterEnabled() || !_isEnabled)
+        if (!_allowLiveUpdates || _variant != _colorSettings.ActiveVariant || !_isMasterEnabled() || !_isEnabled)
         {
             return;
         }
@@ -305,5 +305,5 @@ public sealed class DisplayColorSettingsViewModel : ViewModelBase, IDisposable
 
     private static int ClampPercent(int value) => Math.Clamp(value, 0, 100);
     private static int ClampDigitalVibrance(int value) => Math.Clamp(value, DisplayColorProfile.DefaultDigitalVibrance, 100);
-    private static double ClampGamma(double value) => Math.Clamp(value, 0.5, 3.0);
+    private static double ClampGamma(double value) => double.IsFinite(value) ? Math.Clamp(value, 0.5, 3.0) : DisplayColorProfile.DefaultGamma;
 }

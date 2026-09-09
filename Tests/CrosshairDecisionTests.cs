@@ -19,6 +19,7 @@ public sealed class CrosshairDecisionTests
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         profile.Crosshair.IsEnabled = true;
+        profile.Crosshair.HideWhileRightButtonHeld = true;
         profile.IsEnabled = false;
 
         Assert.False(CrosshairDecision.ShouldShow(profile));

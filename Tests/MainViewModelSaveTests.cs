@@ -159,4 +159,33 @@ public class MainViewModelSaveTests
 
         Assert.Equal(1, unsaved); // dirty restored despite the fault; NOT silently reported as 0
     }
+
+    [Fact]
+    public async Task Flush_SnapshotQueuedBehindRename_PreservesRenamedProfileAndCapturedEdit()
+    {
+        var (vm, store, manager, dialog, profileVm) = await BuildWithProfileAsync();
+        var other = await manager.AddProfileAsync("Other", "other.exe");
+        store.SaveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        store.SaveGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockingSave = manager.SaveProfileAsync(other);
+        await store.SaveEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var rename = manager.RenameProfileAsync(profileVm.Model, "Beta");
+        Assert.False(rename.IsCompleted);
+        profileVm.IsEnabled = false;
+        var flush = vm.FlushPendingSavesAsync();
+
+        store.SaveGate.SetResult();
+        await blockingSave.WaitAsync(TimeSpan.FromSeconds(5));
+        await rename.WaitAsync(TimeSpan.FromSeconds(5));
+        profileVm.RefreshNameFromModel();
+
+        Assert.Equal(0, await flush.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("Beta", profileVm.Name);
+        Assert.Equal("Beta", profileVm.Model.Name);
+        Assert.Equal("Beta", store.SavedProfiles[^1].Name);
+        Assert.False(store.SavedProfiles[^1].IsEnabled);
+        Assert.Equal(0, dialog.ErrorCount);
+    }
+
 }

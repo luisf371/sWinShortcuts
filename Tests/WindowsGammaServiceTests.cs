@@ -6,6 +6,22 @@ namespace Tests;
 
 public sealed class WindowsGammaServiceTests
 {
+    [Theory]
+    [InlineData(double.NaN, DisplayColorProfile.DefaultGamma)]
+    [InlineData(double.PositiveInfinity, DisplayColorProfile.DefaultGamma)]
+    [InlineData(double.NegativeInfinity, DisplayColorProfile.DefaultGamma)]
+    [InlineData(0.1, 0.5)]
+    [InlineData(4.0, 3.0)]
+    public void BuildGammaRamp_InvalidGamma_NormalizesBeforeGeneratingRamp(double gamma, double expected)
+    {
+        var ramp = WindowsGammaService.BuildGammaRamp(new DisplayColorProfile { Gamma = gamma });
+        var normalized = WindowsGammaService.BuildGammaRamp(new DisplayColorProfile { Gamma = expected });
+
+        Assert.Equal(normalized.Red, ramp.Red);
+        Assert.Equal(normalized.Green, ramp.Green);
+        Assert.Equal(normalized.Blue, ramp.Blue);
+    }
+
     [Fact]
     public void BuildGammaRamp_NeutralProfile_ProducesLinearRgbRamp()
     {

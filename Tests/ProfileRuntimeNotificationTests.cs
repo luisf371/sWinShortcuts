@@ -106,6 +106,36 @@ public sealed class ProfileRuntimeNotificationTests
         Assert.Equal(new[] { "runtime", "save" }, order.ToArray());
     }
 
+    [Fact]
+    public async Task DefaultDisplayEdit_NotifiesColorOnce_WithoutDirectHardwareWrite()
+    {
+        var manager = new ProfileManager(new InMemoryProfileStore());
+        await manager.InitializeAsync();
+        var profile = manager.WindowsProfile;
+        profile.ColorSettings.IsEnabled = true;
+        profile.ColorSettings.SetProfile(new DisplayColorProfile
+        {
+            DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 30
+        });
+        var runtime = new RecordingProfileRuntimeService(() => { });
+        var color = new RecordingColorControlService();
+        var viewModel = new MainViewModel(manager, new FakeDialogService(),
+            new FakeDisplayService
+            {
+                Displays = [new DisplayInfo { Id = "DISPLAY1", Name = "Monitor", DeviceName = "DISPLAY1" }]
+            }, color, runtime);
+        await viewModel.InitializeAsync();
+        var editor = Assert.Single(viewModel.Profiles, vm => ReferenceEquals(vm.Model, profile));
+
+        editor.ColorSettings.DisplayViewModels.Single().Brightness = 80;
+
+        var change = Assert.Single(runtime.Changes);
+        Assert.Same(profile, change.Profile);
+        Assert.Equal(ProfileChangeKind.Color, change.Kind);
+        Assert.Empty(color.AppliedProfiles);
+        Assert.Equal(0, await viewModel.FlushPendingSavesAsync());
+    }
+
     private static void ApplyEdit(
         ProfileViewModel profile,
         ProfileChangeKind changeKind)

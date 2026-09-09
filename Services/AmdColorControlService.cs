@@ -29,7 +29,8 @@ public sealed class AmdColorControlService : IDisposable
     private readonly Dictionary<AmdDisplayTarget, AmdSaturationRange> _rangeCache = [];
     private bool _availabilityChecked;
     private bool _available;
-    private bool _disposed;
+    private int _disposeRequested;
+    private int _topologyRefreshPending;
 
     public AmdColorControlService(ILoggerService logger)
         : this(logger, new AmdAdlApi())
@@ -48,9 +49,24 @@ public sealed class AmdColorControlService : IDisposable
         ArgumentNullException.ThrowIfNull(display);
         ArgumentNullException.ThrowIfNull(profile);
 
+        if (Volatile.Read(ref _disposeRequested) != 0)
+        {
+            return ColorApplyOutcome.Skipped;
+        }
+
         lock (_sync)
         {
-            if (_disposed || !EnsureAvailable())
+            if (Volatile.Read(ref _disposeRequested) != 0)
+            {
+                return ColorApplyOutcome.Skipped;
+            }
+
+            if (Interlocked.Exchange(ref _topologyRefreshPending, 0) != 0)
+            {
+                RefreshTopologyCore();
+            }
+
+            if (!EnsureAvailable())
             {
                 _logger.Log("[Color][ADL] ADL2 is not available; skipping digital vibrance.");
                 return ColorApplyOutcome.Skipped;
@@ -246,57 +262,86 @@ public sealed class AmdColorControlService : IDisposable
 
     internal void RefreshTopology()
     {
-        lock (_sync)
+        if (Volatile.Read(ref _disposeRequested) == 0)
         {
-            if (_disposed)
+            // SystemEvents can run on the UI thread; defer refresh behind worker-side native serialization.
+            Interlocked.Exchange(ref _topologyRefreshPending, 1);
+        }
+    }
+
+    private void RefreshTopologyCore()
+    {
+        if (_availabilityChecked && _available)
+        {
+            var refreshed = false;
+            try
             {
-                return;
+                refreshed = _api.TryRefresh();
+            }
+            catch (Exception ex)
+            {
+                _logger.Log($"[Color][ADL] Adapter refresh failed: {ex}");
             }
 
-            if (_availabilityChecked && _available)
-            {
-                var refreshed = false;
-                try
-                {
-                    refreshed = _api.TryRefresh();
-                }
-                catch (Exception ex)
-                {
-                    _logger.Log($"[Color][ADL] Adapter refresh failed: {ex}");
-                }
-
-                if (!refreshed)
-                {
-                    _availabilityChecked = false;
-                    _available = false;
-                    _logger.Log("[Color][ADL] Adapter refresh failed; ADL2 will be reinitialized on the next apply.");
-                }
-            }
-            else if (_availabilityChecked)
+            if (!refreshed)
             {
                 _availabilityChecked = false;
+                _available = false;
+                _logger.Log("[Color][ADL] Adapter refresh failed; ADL2 will be reinitialized on the next apply.");
             }
-
-            _targetCache.Clear();
-            _rangeCache.Clear();
         }
+        else if (_availabilityChecked)
+        {
+            _availabilityChecked = false;
+        }
+
+        _targetCache.Clear();
+        _rangeCache.Clear();
     }
 
     public void Dispose()
     {
-        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        if (Interlocked.Exchange(ref _disposeRequested, 1) != 0)
+        {
+            return;
+        }
 
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        try
+        {
+            // The queued instance method roots the API/context until in-flight native work exits.
+            // A finite wait cannot inline this task. Timeout must never trigger synchronous cleanup.
+            var cleanup = Task.Run(CleanupOnWorker);
+            if (!cleanup.Wait(100))
+            {
+                _logger.Log("[Color][ADL] Native cleanup deferred beyond the 100 ms disposal wait.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"[Color][ADL] Could not schedule or wait for native cleanup; no synchronous retry: {ex}");
+        }
+    }
+
+    private void CleanupOnWorker()
+    {
         lock (_sync)
         {
-            if (_disposed)
+            try
             {
-                return;
+                _targetCache.Clear();
+                _rangeCache.Clear();
+                _api.Dispose();
             }
-
-            _disposed = true;
-            _targetCache.Clear();
-            _rangeCache.Clear();
-            _api.Dispose();
+            catch (Exception ex)
+            {
+                _logger.Log($"[Color][ADL] Native cleanup failed: {ex}");
+            }
+            finally
+            {
+                _availabilityChecked = false;
+                _available = false;
+            }
         }
     }
 }

@@ -1146,7 +1146,8 @@ public sealed class InputHookService : IInputHookService
             _autoRun.ConfigurationChanged(profile);
         }
 
-        if ((changeKind & (ProfileChangeKind.AutoRun | ProfileChangeKind.Removed)) != 0)
+        if ((changeKind & (ProfileChangeKind.AutoRun | ProfileChangeKind.Identity | ProfileChangeKind.Removed)) != 0
+            || ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
         {
             _autoRun.ReleaseOwnedBy(profile);
         }
@@ -1405,9 +1406,13 @@ public sealed class InputHookService : IInputHookService
         // Auto-Run runs BEFORE the handled-chain: a cancel key (W/S) may ALSO be a combined-mapping
         // source, so it must be seen for cancel detection even when another feature would consume it.
         // Returns true for the trigger chord and for the one physical W-UP transferred into an active
-        // Auto-Run handoff; ordinary W/S/sprint input passes through.
+        // Auto-Run handoff; active Hold-mode sprint edges are also consumed.
         if (_autoRun.Handle(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent))
         {
+            if (isKeyUp && !autoRunPhysicalEvent.SuppressPhysicalWHandoffUp)
+            {
+                _remaps.ReleaseOwnedKeyUp(vkCode);
+            }
             return true;
         }
 
