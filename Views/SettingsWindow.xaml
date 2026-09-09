@@ -165,7 +165,7 @@
 
             <CheckBox Content="Enable Advanced Mode"
                       IsChecked="{Binding AdvancedModeEnabled, Mode=TwoWay}"
-                      ToolTip="Enables advance features (Auto-Run, Anti-AFK, Auto Hold-Breath, etc). Off = only game-safe 1:1 remaps."
+                      ToolTip="Enables Auto-Run, Rapid Fire, Anti-AFK, and Hold-Breath.&#10;Also allows Key Mapping without suppressing the original key.&#10;Caps Lock modes remain available when Advanced Mode is off."
                       ToolTipService.InitialShowDelay="0"
                       Foreground="{DynamicResource ForegroundPrimaryBrush}"
                       Margin="0,0,0,8"/>

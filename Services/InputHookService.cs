@@ -125,8 +125,8 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    // Advanced Mode: global [App] gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and
-    // un-suppressed key mappings). Mirrors HookWatchdogEnabled end-to-end; live-togglable from Settings.
+    // Advanced Mode gates Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and original-key passthrough in
+    // Key Mapping. Caps Lock modes remain available. Mirrors HookWatchdogEnabled; live-togglable from Settings.
     // volatile for the lock-free gating reads on the hook thread (and the injector thread).
     public bool AdvancedModeEnabled
     {
