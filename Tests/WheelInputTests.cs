@@ -116,7 +116,7 @@ public sealed class WheelInputTests
             case "source": mapping.Source = InputTrigger.FromKey(Key.E); break;
             case "target": mapping.TargetKey = (Key)int.MaxValue; break;
             case "sentinel": mapping.TargetKey = Key.System; break;
-            case "foreground": fixture.Service.SetForegroundIdentity(IntPtr.Zero, 0, "game.exe", 2); break;
+            case "foreground": fixture.Service.SetForegroundIdentity((IntPtr)100, 42, "game.exe", 2); break;
         }
         Assert.False(fixture.Wheel(120));
         fixture.Profile.IsEnabled = true;
@@ -430,7 +430,8 @@ public sealed class WheelInputTests
         internal ServiceFixture(bool blockWorker = false, bool blockFirstDown = false, Func<int, bool>? keyState = null)
         {
             Sender = new RecordingInputSender(blockDummy: blockWorker, blockFirstDown: blockFirstDown);
-            Service = new InputHookService(new NullLoggerService(), Sender, () => Volatile.Read(ref NowTicks), keyState ?? (_ => false));
+            Service = new InputHookService(new NullLoggerService(), Sender, () => Volatile.Read(ref NowTicks), keyState ?? (_ => false),
+                FakeAutoRunTransport.MatchingForeground());
             Service.StartInputExecutorForTesting();
             Service.ConfigureActiveProfileForTesting(Profile, 1, altPressed: false);
         }
@@ -466,7 +467,7 @@ public sealed class WheelInputTests
                     Service.ActivateProfile(Profile, 1);
                     break;
                 case "foreground":
-                    Service.SetForegroundIdentity(IntPtr.Zero, 0, "game.exe", 2);
+                    Service.SetForegroundIdentity((IntPtr)100, 42, "game.exe", 2);
                     Service.ActivateProfile(Profile, 2);
                     break;
                 case "profile":

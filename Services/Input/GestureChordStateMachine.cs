@@ -1012,7 +1012,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
                 Generation: generation,
                 ForegroundGeneration: _holdBreathArmedForegroundGeneration,
                 ExpectedProfile: profile,
-                Token: token));
+                Token: token,
+                HoldOwner: InputHoldOwner.HoldBreath));
         }
         else
         {
@@ -1035,7 +1036,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         if (_holdBreathInjectedKey is { } key)
         {
             _holdBreathInjectedKey = null;
-            _inputQueue.Enqueue(new InputCommand(key, false));
+            _inputQueue.Enqueue(new InputCommand(key, false, HoldOwner: InputHoldOwner.HoldBreath));
         }
     }
 

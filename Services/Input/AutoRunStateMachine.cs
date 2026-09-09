@@ -583,14 +583,16 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         && ReferenceEquals(_runtime.ActiveProfile, profile) && _runtime.ProfileInputGenerationIsCurrent()
         && configurationGeneration == Volatile.Read(ref _configurationGeneration);
 
-    private bool EnqueueForegroundDown(Key key, long generation, ForegroundIdentitySnapshot snapshot) =>
+    private bool EnqueueForegroundDown(Key key, long generation, ForegroundIdentitySnapshot snapshot,
+        InputHoldOwner owner = InputHoldOwner.AutoRunMovement) =>
         _queue.Enqueue(new InputCommand(
             key,
             IsDown: true,
             Guard: this,
             Generation: generation,
             ForegroundGeneration: snapshot.Generation,
-            ExpectedExecutable: snapshot.Executable));
+            ExpectedExecutable: snapshot.Executable,
+            HoldOwner: owner));
 
     private void BeginAfterPhysicalWRelease()
     {
@@ -622,7 +624,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         if (_sprintToggleable)
         {
             if (!_sprintIntendedHeld) return;
-            if (EnqueueForegroundDown(_sprintKey, generation, snapshot))
+            if (EnqueueForegroundDown(_sprintKey, generation, snapshot, InputHoldOwner.AutoRunSprint))
             {
                 _sprintInjected = true;
                 _sprintInjectedKey = _sprintKey;
@@ -633,14 +635,17 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         var rng = _random.Value!;
         int warmup = rng.Next(RNG_WARMUP_MIN_CALLS, RNG_WARMUP_MAX_CALLS + 1);
         for (int i = 0; i < warmup; i++) rng.Next();
+        var owner = _sprintKey == Key.W ? InputHoldOwner.AutoRunMovement : InputHoldOwner.None;
         var down = new InputCommand(
             _sprintKey,
             IsDown: true,
             Guard: this,
             Generation: generation,
             ForegroundGeneration: snapshot.Generation,
-            ExpectedExecutable: snapshot.Executable);
-        var up = new InputCommand(_sprintKey, IsDown: false, DelayBeforeMs: rng.Next(TAP_DURATION_MIN_MS, TAP_DURATION_MAX_MS + 1));
+            ExpectedExecutable: snapshot.Executable,
+            HoldOwner: owner);
+        var up = new InputCommand(_sprintKey, IsDown: false,
+            DelayBeforeMs: rng.Next(TAP_DURATION_MIN_MS, TAP_DURATION_MAX_MS + 1), HoldOwner: owner);
         if (_queue.EnqueuePair(down, up) && _sprintKey == Key.W)
         {
             // The sprint tap releases the shared movement key; restore its hold only for this run.
@@ -681,8 +686,8 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             ResetRunState(preserveBackgroundTarget: true);
             return;
         }
-        if (releaseW) _queue.Enqueue(new InputCommand(Key.W, IsDown: false));
-        if (releaseSprint) _queue.Enqueue(new InputCommand(sprintUpKey, IsDown: false));
+        if (releaseW) _queue.Enqueue(new InputCommand(Key.W, IsDown: false, HoldOwner: InputHoldOwner.AutoRunMovement));
+        if (releaseSprint) _queue.Enqueue(new InputCommand(sprintUpKey, IsDown: false, HoldOwner: InputHoldOwner.AutoRunSprint));
         ResetRunState();
     }
 
@@ -732,11 +737,11 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             if (_sprintPending || _isBackground) return;
             if (!_sprintIntendedHeld)
             {
-                if (_sprintInjected) _queue.Enqueue(new InputCommand(_sprintInjectedKey, IsDown: false));
+                if (_sprintInjected) _queue.Enqueue(new InputCommand(_sprintInjectedKey, IsDown: false, HoldOwner: InputHoldOwner.AutoRunSprint));
                 _sprintInjected = false;
             }
             else if (_foregroundGuard is { } snapshot
-                && EnqueueForegroundDown(_sprintKey, _activeInjectionGeneration, snapshot))
+                && EnqueueForegroundDown(_sprintKey, _activeInjectionGeneration, snapshot, InputHoldOwner.AutoRunSprint))
             {
                 _sprintInjected = true;
                 _sprintInjectedKey = _sprintKey;

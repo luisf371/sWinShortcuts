@@ -10,6 +10,101 @@ namespace Tests;
 
 public sealed class WheelInputExecutorTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task WheelTap_FailedRelease_RetriesWithoutUnrelatedSyntheticUp(bool restart, bool throws)
+    {
+        var upAttempts = 0;
+        var sender = new ScriptedSender((_, down) => down || ++upAttempts > 1 ||
+            (throws ? throw new InvalidOperationException("Release failed") : false));
+        using var executor = new InputExecutor(RunningRuntime(), sender, new NullLoggerService(),
+            clock: () => 0, keyState: _ => false);
+        executor.Start();
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(executor.Enqueue(Wheel() with { Completion = completion }));
+        Assert.False(await completion.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        if (restart)
+        {
+            Assert.True(executor.StopAndDrain());
+            executor.Start();
+        }
+        Assert.True(executor.Enqueue(Wheel()));
+        await Fence(executor);
+        Assert.Equal(new[] { (Key.A, true), (Key.A, false), (Key.A, false), (Key.A, true), (Key.A, false) },
+            sender.Transitions);
+        Assert.True(executor.StopAndDrain());
+    }
+
+    [Fact]
+    public async Task WheelTap_PersistentReleaseFailure_RetryIsBoundedAndTargetStaysBusy()
+    {
+        var sender = new ScriptedSender((_, down) => down);
+        using var executor = new InputExecutor(RunningRuntime(), sender, new NullLoggerService(),
+            clock: () => 0, keyState: _ => false);
+        executor.Start();
+        Assert.True(executor.Enqueue(Wheel()));
+        Assert.True(executor.Enqueue(Wheel()));
+        await Fence(executor);
+        Assert.True(executor.StopAndDrain());
+        Assert.Single(sender.Transitions, item => item.IsDown);
+        Assert.InRange(sender.Transitions.Count(item => !item.IsDown), 2, 5);
+    }
+
+    [Fact]
+    public async Task FailedRelease_NewHolderWaitsForRecovery_ThenRetriesCannotReleaseIt()
+    {
+        var rejectUp = true;
+        var sender = new ScriptedSender((_, down) => down || !rejectUp);
+        using var executor = new InputExecutor(RunningRuntime(), sender, new NullLoggerService(),
+            clock: () => 0, keyState: _ => false);
+        executor.Start();
+        Assert.True(executor.Enqueue(Wheel()));
+        var hold = new InputCommand(Key.A, true, HoldOwner: InputHoldOwner.HoldBreath);
+        Assert.True(executor.Enqueue(hold));
+        await Fence(executor);
+        Assert.Single(sender.Transitions, item => item.IsDown);
+        rejectUp = false;
+        Assert.True(executor.Enqueue(hold));
+        await Fence(executor);
+        var acceptedCount = sender.Transitions.Count;
+        Assert.True(sender.Transitions.Last().IsDown);
+        Assert.True(executor.Enqueue(Wheel()));
+        await Fence(executor);
+        Assert.Equal(acceptedCount, sender.Transitions.Count);
+        Assert.True(executor.Enqueue(hold with { IsDown = false }));
+        await Fence(executor);
+        Assert.False(sender.Transitions.Last().IsDown);
+        Assert.True(executor.StopAndDrain());
+    }
+
+    [Theory]
+    [InlineData((int)InputCommandKind.KeyTap)]
+    [InlineData((int)InputCommandKind.Sequence)]
+    [InlineData((int)InputCommandKind.KeyTransition)]
+    public async Task Tap_SharedHeldTarget_SkipsWithoutReleasingHolder(int kind)
+    {
+        var sender = new RecordingInputSender();
+        using var executor = new InputExecutor(RunningRuntime(), sender, new NullLoggerService());
+        executor.Start();
+        var held = new InputCommand(Key.A, true, HoldOwner: InputHoldOwner.Caps);
+        Assert.True(executor.Enqueue(held));
+        var tap = new InputCommand(Key.A, true, Kind: (InputCommandKind)kind,
+            Sequence: [new TapStep(Key.A, 0, 0)], Guard: new CompletionGuard());
+        if (kind == (int)InputCommandKind.KeyTransition)
+            Assert.True(executor.EnqueuePair(tap, new InputCommand(Key.A, false)));
+        else Assert.True(executor.Enqueue(tap));
+        await Fence(executor);
+        Assert.Single(sender.Transitions, item => item.IsDown);
+        Assert.DoesNotContain(sender.Transitions, item => !item.IsDown);
+        Assert.True(executor.Enqueue(held with { IsDown = false }));
+        await Fence(executor);
+        Assert.Single(sender.Transitions, item => !item.IsDown);
+        Assert.True(executor.StopAndDrain());
+    }
+
     [Fact]
     public async Task Drain_RejectedAndSuccessfulCommands_CompleteEachGuardOnce()
     {
@@ -120,14 +215,15 @@ public sealed class WheelInputExecutorTests
         }
         Assert.True(executor.Enqueue(Wheel()));
         await Fence(executor);
-        Assert.Equal(new[] { (Key.A, true), (Key.A, false) }, sender.Transitions);
+        Assert.Single(sender.Transitions, item => item.IsDown);
+        Assert.InRange(sender.Transitions.Count(item => !item.IsDown), 1, 3);
 
         rejectUp = false;
         Assert.True(executor.Enqueue(new InputCommand(Key.A, IsDown: false)));
         Assert.True(executor.Enqueue(Wheel()));
         await Fence(executor);
-        Assert.Equal(new[] { (Key.A, true), (Key.A, false), (Key.A, false), (Key.A, true), (Key.A, false) },
-            sender.Transitions);
+        Assert.Equal(2, sender.Transitions.Count(item => item.IsDown));
+        Assert.Equal(new[] { (Key.A, true), (Key.A, false) }, sender.Transitions.TakeLast(2));
         Assert.True(executor.StopAndDrain());
     }
 

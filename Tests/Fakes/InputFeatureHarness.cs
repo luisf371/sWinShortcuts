@@ -12,6 +12,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
     private readonly object _profileLock = new();
     private readonly ThreadLocal<Random> _random = new(() => new Random(1));
     private readonly InputRuntimeState _runtime;
+    private readonly FakeAutoRunTransport _foregroundTransport = FakeAutoRunTransport.MatchingForeground();
     private readonly InputExecutor _executor;
     private readonly GestureChordStateMachine _gestures;
     private readonly RapidFireStateMachine _rapidFire;
@@ -24,7 +25,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
 
     internal InputFeatureHarness(ILoggerService logger, IInputSender inputSender)
     {
-        _runtime = new InputRuntimeState();
+        _runtime = new InputRuntimeState(_foregroundTransport);
         _executor = new InputExecutor(_runtime, inputSender, logger);
         var transport = new NativeAutoRunTransport();
         _autoRun = new AutoRunStateMachine(_runtime, _executor, _random, logger, transport);
@@ -142,8 +143,8 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
     {
         _runtime.SetActiveProfile(_runtime.ActiveProfile, active);
         _runtime.SetForegroundIdentity(
-            IntPtr.Zero,
-            0,
+            (IntPtr)100,
+            42,
             _runtime.ActiveProfile?.NormalizedExecutable,
             published);
     }
@@ -154,9 +155,11 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
         bool altPressed)
     {
         _runtime.SetActiveProfile(profile, foregroundGeneration);
+        _foregroundTransport.ForegroundWindow = (IntPtr)100;
+        _foregroundTransport.ProcessIds[(IntPtr)100] = 42;
         _runtime.SetForegroundIdentity(
-            IntPtr.Zero,
-            0,
+            (IntPtr)100,
+            42,
             profile.NormalizedExecutable,
             foregroundGeneration);
         _gestures.SeedAltPressed(altPressed);
@@ -356,6 +359,8 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
         long foregroundGeneration)
     {
         var changed = _runtime.PublishedForegroundGeneration != foregroundGeneration;
+        _foregroundTransport.ForegroundWindow = windowHandle;
+        _foregroundTransport.ProcessIds[windowHandle] = processId;
         _runtime.SetForegroundIdentity(
             windowHandle,
             processId,

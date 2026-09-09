@@ -34,6 +34,17 @@ internal enum InputCommandKind
     WheelTap
 }
 
+[Flags]
+internal enum InputHoldOwner : byte
+{
+    None = 0,
+    Combined = 1,
+    Caps = 2,
+    HoldBreath = 4,
+    AutoRunMovement = 8,
+    AutoRunSprint = 16
+}
+
 internal readonly record struct TapStep(Key Key, int DownMs, int GapMs);
 
 internal class InputCommandAcknowledgement
@@ -68,7 +79,8 @@ internal readonly record struct InputCommand(
     bool RequirePreviousCommandSuccess = false,
     long TapPairToken = 0,
     bool RequireTapPairToken = false,
-    long CreatedTick = 0);
+    long CreatedTick = 0,
+    InputHoldOwner HoldOwner = InputHoldOwner.None);
 
 /// <summary>
 /// Single-consumer FIFO for synthetic key input. Producers may hold a feature lock while enqueueing;
@@ -86,6 +98,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     private readonly Func<long> _clock;
     private readonly Func<int, bool> _keyState;
     private readonly bool[] _keysDown = new bool[256];
+    private readonly Key[] _pendingReleases = new Key[256];
+    private readonly InputHoldOwner[] _holdOwners = new InputHoldOwner[256];
     private readonly object _enqueueLock = new();
     private BlockingCollection<InputCommand>? _queue;
     private Thread? _worker;
@@ -290,6 +304,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             {
                 try
                 {
+                    RetryPendingReleases();
                     previousCommandSucceeded = Execute(
                         queue,
                         in command,
@@ -321,6 +336,10 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         catch (ObjectDisposedException)
         {
             // The queue is disposed only after the worker exits; retained for defensive shutdown races.
+        }
+        finally
+        {
+            RetryPendingReleases();
         }
     }
 
@@ -359,6 +378,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         }
 
         var sentAny = false;
+        var releasesSucceeded = true;
 
         foreach (var step in steps)
         {
@@ -367,20 +387,25 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
                 break;
             }
 
+            if (IsBusyForTap(step.Key)) continue;
+
+            var downSent = false;
             try
             {
-                sentAny |= SendKey(step.Key, true);
+                downSent = SendKey(step.Key, true);
+                sentAny |= downSent;
                 Thread.Sleep(step.DownMs);
             }
             finally
             {
-                SendKey(step.Key, false);
+                releasesSucceeded &= SendKey(step.Key, false);
             }
 
             Thread.Sleep(step.GapMs);
         }
 
-        return sentAny;
+        command.Completion?.TrySetResult(sentAny && releasesSucceeded);
+        return sentAny && releasesSucceeded;
     }
 
     private bool ExecuteDummy(BlockingCollection<InputCommand> queue, in InputCommand command)
@@ -409,20 +434,21 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         if (((queue.IsAddingCompleted || _runtime.IsDisposed) &&
              !acknowledgedCompensation) || !GuardAllows(in command) ||
             (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true) ||
-            !tapPairAcknowledged)
+            !tapPairAcknowledged || IsBusyForTap(command.Key))
         {
             command.Completion?.TrySetResult(false);
             return false;
         }
 
         var downSent = SendKey(command.Key, true);
+        var upSent = false;
         try
         {
             Thread.Sleep(command.DelayBeforeMs);
         }
         finally
         {
-            SendKey(command.Key, false);
+            upSent = SendKey(command.Key, false);
         }
 
         if (downSent)
@@ -435,8 +461,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
                 ? 0
                 : downSent ? command.TapPairToken : 0;
         }
-        command.Completion?.TrySetResult(downSent);
-        return downSent;
+        command.Completion?.TrySetResult(downSent && upSent);
+        return downSent && upSent;
     }
 
     private bool ExecuteWheelTap(BlockingCollection<InputCommand> queue, in InputCommand command)
@@ -452,6 +478,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             return false;
         }
 
+        var upSent = false;
         try
         {
             Thread.Sleep(command.DelayBeforeMs);
@@ -461,7 +488,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             // Successful DOWN owns its UP even if the profile, guard or queue changed meanwhile.
             try
             {
-                SendKey(command.Key, false);
+                upSent = SendKey(command.Key, false);
             }
             finally
             {
@@ -469,8 +496,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             }
         }
 
-        command.Completion?.TrySetResult(true);
-        return true;
+        command.Completion?.TrySetResult(upSent);
+        return upSent;
     }
 
     private bool CanStartWheelTap(BlockingCollection<InputCommand> queue, in InputCommand command) =>
@@ -480,15 +507,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
 
     private bool ExecuteTransition(BlockingCollection<InputCommand> queue, in InputCommand command)
     {
-        if (command.IsDown)
-        {
-            if (queue.IsAddingCompleted || _runtime.IsDisposed || !GuardAllows(in command))
-            {
-                command.Completion?.TrySetResult(false);
-                return false;
-            }
-        }
-        else if (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true)
+        if (!command.IsDown && command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true)
         {
             command.Completion?.TrySetResult(false);
             return false;
@@ -499,7 +518,14 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             Thread.Sleep(command.DelayBeforeMs);
         }
 
-        var sent = SendKey(command.Key, command.IsDown);
+        if (command.IsDown &&
+            (queue.IsAddingCompleted || _runtime.IsDisposed || !GuardAllows(in command)))
+        {
+            command.Completion?.TrySetResult(false);
+            return false;
+        }
+
+        var sent = SendTransition(command.Key, command.IsDown, command.HoldOwner);
         if (command.IsDown && sent)
         {
             command.Acknowledgement?.MarkDownSent();
@@ -508,29 +534,95 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         return sent;
     }
 
-    private static bool GuardAllows(in InputCommand command) =>
-        command.Guard?.CanExecute(in command) != false;
+    private bool GuardAllows(in InputCommand command) =>
+        command.Guard?.CanExecute(in command) != false &&
+        (command.ExpectedProfile is not { } profile ||
+         (_runtime.LiveForegroundMatches(profile, command.ForegroundGeneration) &&
+          command.Guard?.CanExecute(in command) != false &&
+          _runtime.ProfileInputGenerationIsCurrent(profile, command.ForegroundGeneration)));
 
     private static bool IsCompensatingTapCandidate(in InputCommand command) =>
         command.Kind == InputCommandKind.KeyTap &&
         command.RequireTapPairToken &&
         command.TapPairToken != 0;
 
+    private bool IsBusyForTap(Key key)
+    {
+        var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
+        return virtualKey > 0 && virtualKey < _keysDown.Length &&
+            (_keysDown[virtualKey] || _pendingReleases[virtualKey] != Key.None);
+    }
+
+    private bool SendTransition(Key key, bool isDown, InputHoldOwner owner)
+    {
+        var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
+        if (virtualKey <= 0 || virtualKey >= _holdOwners.Length) return SendKey(key, isDown);
+
+        var owners = _holdOwners[virtualKey];
+        if (isDown)
+        {
+            if (_pendingReleases[virtualKey] != Key.None ||
+                (owner == InputHoldOwner.None && owners != InputHoldOwner.None)) return false;
+            if (owners != InputHoldOwner.None && (owners & owner) == 0)
+            {
+                _holdOwners[virtualKey] = owners | owner;
+                return true;
+            }
+            var sent = SendKey(key, true);
+            if (sent) _holdOwners[virtualKey] = owners | owner;
+            return sent;
+        }
+
+        _holdOwners[virtualKey] = owners & ~owner;
+        return _holdOwners[virtualKey] != InputHoldOwner.None || SendKey(key, false);
+    }
+
     private bool SendKey(Key key, bool isKeyDown)
     {
+        var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
+        var tracked = virtualKey > 0 && virtualKey < _keysDown.Length;
+        if (tracked)
+        {
+            if (isKeyDown && _pendingReleases[virtualKey] != Key.None)
+            {
+                return false;
+            }
+            if (!isKeyDown)
+            {
+                // Retain the obligation even if the sender throws or the OS key-state query says UP.
+                _pendingReleases[virtualKey] = key;
+            }
+        }
         // IInputSender exposes a bare bool: a false can be a vk-mapping skip that never reached
         // SendInput, and any last-error read here would be stale. The failure facts exist only at
         // the sender boundary (WindowsInputSender), which logs them.
         var sent = _inputSender.SendKey(key, isKeyDown);
         if (sent)
         {
-            var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
-            if (virtualKey > 0 && virtualKey < _keysDown.Length)
+            if (tracked)
             {
                 _keysDown[virtualKey] = isKeyDown;
+                if (!isKeyDown) _pendingReleases[virtualKey] = Key.None;
             }
         }
 
         return sent;
+    }
+
+    private void RetryPendingReleases()
+    {
+        // One attempt per pending key at each worker/lifecycle opportunity; no retry loop or timer.
+        foreach (var key in _pendingReleases)
+        {
+            if (key == Key.None) continue;
+            try
+            {
+                SendKey(key, false);
+            }
+            catch (Exception ex)
+            {
+                if (_logger.IsEnabled) _logger.Log($"Input release retry error: {ex.Message}");
+            }
+        }
     }
 }

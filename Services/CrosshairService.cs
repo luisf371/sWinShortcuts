@@ -1,5 +1,6 @@
 using System;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using sWinShortcuts.Models;
 using sWinShortcuts.Views;
 
@@ -42,6 +43,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         _enqueue = enqueue;
         _dispatcher = System.Windows.Application.Current?.Dispatcher;
         _inputHookService.RightButtonStateChanged += OnRightButtonStateChanged;
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
 
     public void ApplyProfile(Profile? profile, IntPtr foregroundHwnd)
@@ -217,6 +219,19 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
     private void OnRightButtonStateChanged(object? sender, bool isDown) => SetRightButtonHeld(isDown);
 
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+        }
+
+        RunOnDispatcher(ApplyOnDispatcher, synchronous: false);
+    }
+
     public void Dispose()
     {
         CrosshairWindow? window;
@@ -244,6 +259,8 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
                 _logger.Log($"[Crosshair] Failed to clear right-button observation: {ex}");
             }
         }
+
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
 
         if (window is not null)
         {

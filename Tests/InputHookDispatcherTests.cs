@@ -15,7 +15,7 @@ public sealed class InputHookDispatcherTests
     [Fact]
     public void DecodedEvents_NoActiveProfile_PassThrough()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
 
         Assert.False(service.DispatchDecodedKeyboardEvent(
@@ -30,7 +30,7 @@ public sealed class InputHookDispatcherTests
     [Fact]
     public void DecodedMouseEvent_AltBindingConsumesDown()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = new Profile
         {
@@ -57,7 +57,7 @@ public sealed class InputHookDispatcherTests
     public async Task AutoRunOwnedWUp_ReleasesCombinedAndLauncherBeforeReturning()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -90,7 +90,7 @@ public sealed class InputHookDispatcherTests
     public async Task AutoRunOwnedSprintUp_ReleasesOlderCombinedAndLauncherOwnership()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -123,7 +123,7 @@ public sealed class InputHookDispatcherTests
     public async Task AutoRunOwnedCapsSprintUp_CompletesOlderCapsRemap(CapsLockMode mode)
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
         var profile = new Profile
         {
@@ -165,7 +165,7 @@ public sealed class InputHookDispatcherTests
     public async Task PanicWinsAltKeyboardAndOwnsMatchingUp()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -212,7 +212,7 @@ public sealed class InputHookDispatcherTests
     public void ConsumedAltLeftPreventsRapidFireUntilFreshUnconsumedPress()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -245,11 +245,94 @@ public sealed class InputHookDispatcherTests
         }
     }
 
+    [Theory]
+    [InlineData("remap")]
+    [InlineData("breath")]
+    [InlineData("teardown")]
+    public async Task SharedTarget_RemappingAndHoldBreath_ReleaseOnlyAfterFinalHolder(string firstRelease)
+    {
+        var sender = new RecordingInputSender();
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+        try
+        {
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            profile.CombinedMappings.IsEnabled = true;
+            profile.CombinedMappings.Mappings = [new CombinedMappingEntry
+            {
+                Source = InputTrigger.FromKey(Key.E), TargetKey = Key.LeftShift, SuppressOriginalKey = true
+            }];
+            profile.RightClickHoldBreath.IsEnabled = true;
+            profile.RightClickHoldBreath.DelayMilliseconds = 0;
+            profile.RightClickHoldBreath.HoldBreathKey = Key.LeftShift;
+            profile.RightClickHoldBreath.Mode = HoldBreathMode.Hold;
+            service.ConfigureActiveProfileForTesting(profile, 1, altPressed: false);
+            service.AdvancedModeEnabled = true;
+            service.DispatchDecodedMouseEvent(NativeMethods.WM_RBUTTONDOWN, 0);
+            service.DispatchDecodedKeyboardEvent(KeyInterop.VirtualKeyFromKey(Key.E), true, false);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            if (firstRelease == "teardown") service.ReleaseForegroundState();
+            else
+            {
+                if (firstRelease == "remap")
+                    service.DispatchDecodedKeyboardEvent(KeyInterop.VirtualKeyFromKey(Key.E), false, true);
+                else service.DispatchDecodedMouseEvent(NativeMethods.WM_RBUTTONUP, 0);
+                Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+                Assert.DoesNotContain(sender.Transitions, item => !item.IsDown);
+                if (firstRelease == "remap") service.DispatchDecodedMouseEvent(NativeMethods.WM_RBUTTONUP, 0);
+                else service.DispatchDecodedKeyboardEvent(KeyInterop.VirtualKeyFromKey(Key.E), false, true);
+            }
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Single(sender.Transitions, item => !item.IsDown);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsTypematic_SharedRemapTarget_OneCapsUpReleasesItsSingleHold()
+    {
+        var sender = new RecordingInputSender();
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+        try
+        {
+            var profile = new Profile { Name = "Game", Executable = "game.exe" };
+            profile.CapsLock.IsEnabled = true;
+            profile.CapsLock.Mode = CapsLockMode.Normal;
+            profile.CapsLock.IsRemapEnabled = true;
+            profile.CapsLock.RemapTarget = Key.LeftShift;
+            profile.CombinedMappings.IsEnabled = true;
+            profile.CombinedMappings.Mappings = [new CombinedMappingEntry
+            {
+                Source = InputTrigger.FromKey(Key.E), TargetKey = Key.LeftShift, SuppressOriginalKey = true
+            }];
+            service.ConfigureActiveProfileForTesting(profile, 1, altPressed: false);
+            for (var i = 0; i < 3; i++)
+                service.DispatchDecodedKeyboardEvent(NativeMethods.VK_CAPITAL, true, false);
+            service.DispatchDecodedKeyboardEvent(KeyInterop.VirtualKeyFromKey(Key.E), true, false);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            service.DispatchDecodedKeyboardEvent(NativeMethods.VK_CAPITAL, false, true);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.DoesNotContain(sender.Transitions, item => !item.IsDown);
+            service.DispatchDecodedKeyboardEvent(KeyInterop.VirtualKeyFromKey(Key.E), false, true);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Single(sender.Transitions, item => !item.IsDown);
+            Assert.True(sender.Transitions.Count(item => item.IsDown) >= 3);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
     [Fact]
     public async Task RightButtonUp_ReleasesRightClickRemapBeforeHoldBreath()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -313,7 +396,7 @@ public sealed class InputHookDispatcherTests
     public void ReleaseForegroundState_PreservesRapidFireArmAndBackgroundAutoRun()
     {
         var sender = new RecordingInputSender();
-        using var service = new InputHookService(new NullLoggerService(), sender);
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
         service.StartInputExecutorForTesting();
 
         try
@@ -345,7 +428,7 @@ public sealed class InputHookDispatcherTests
     [Fact]
     public void RapidFireEvents_UseServiceSenderAndObserveSynchronousPublicationOrder()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
 
         try
@@ -393,7 +476,7 @@ public sealed class InputHookDispatcherTests
     [Fact]
     public void SessionUnlock_ActiveProfileStillPublished_RecapturesAntiAfkTarget()
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), new RecordingInputSender());
         service.StartInputExecutorForTesting();
         var profile = new Profile
         {
@@ -428,7 +511,7 @@ public sealed class InputHookDispatcherTests
     public void ReleaseForegroundState_LogsArmPreservedReleaseRequest()
     {
         var logger = new NullLoggerService { IsEnabled = true };
-        using var service = new InputHookService(logger, new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(logger, new RecordingInputSender());
         service.StartInputExecutorForTesting();
 
         try
@@ -448,7 +531,7 @@ public sealed class InputHookDispatcherTests
     public void StopInputExecutorForTesting_LogsArmReleasedReleaseRequest()
     {
         var logger = new NullLoggerService { IsEnabled = true };
-        using var service = new InputHookService(logger, new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(logger, new RecordingInputSender());
         service.StartInputExecutorForTesting();
 
         // Drives the private ReleaseAllState through the reflection extension (its three-argument
@@ -461,7 +544,7 @@ public sealed class InputHookDispatcherTests
     public void ReconcileProfileSettings_HardDeactivation_IsLogged()
     {
         var logger = new NullLoggerService { IsEnabled = true };
-        using var service = new InputHookService(logger, new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(logger, new RecordingInputSender());
         service.StartInputExecutorForTesting();
 
         try
@@ -481,7 +564,7 @@ public sealed class InputHookDispatcherTests
     public void SessionSwitchAway_RequestsReleaseOfAllInjectedState()
     {
         var logger = new NullLoggerService { IsEnabled = true };
-        using var service = new InputHookService(logger, new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(logger, new RecordingInputSender());
         service.StartInputExecutorForTesting();
 
         try

@@ -273,7 +273,9 @@ internal sealed class RapidFireStateMachine : IDisposable
     internal void ConfigureForTesting(Profile profile, long foregroundGeneration, bool armed = true)
     {
         _runtime.SetActiveProfile(profile, foregroundGeneration);
-        _runtime.SetForegroundIdentity(IntPtr.Zero, 0, profile.Executable, foregroundGeneration);
+        var foreground = _runtime.ForegroundIdentity;
+        _runtime.SetForegroundIdentity(foreground?.WindowHandle ?? IntPtr.Zero,
+            foreground?.ProcessId ?? 0, profile.Executable, foregroundGeneration);
         Release(preservePhysicalPairing: false);
         _ownerProfile = armed ? profile : null;
         Volatile.Write(ref _armedEpoch, Volatile.Read(ref _armEpoch));
@@ -367,7 +369,8 @@ internal sealed class RapidFireStateMachine : IDisposable
         try
         {
             var holdMilliseconds = _random.Value!.Next(HOLD_MIN_MS, HOLD_MAX_MS + 1);
-            if (_runtime.IsDisposed || !IsCurrent(generation, profile, foregroundGeneration))
+            if (!_runtime.LiveForegroundMatches(profile, foregroundGeneration) ||
+                !IsCurrent(generation, profile, foregroundGeneration))
             {
                 return;
             }

@@ -352,7 +352,7 @@ public sealed class InputExecutorTests
 
     private static InputRuntimeState RunningRuntime()
     {
-        var runtime = new InputRuntimeState();
+        var runtime = new InputRuntimeState(FakeAutoRunTransport.MatchingForeground());
         runtime.SetRunning(true);
         return runtime;
     }
@@ -361,7 +361,7 @@ public sealed class InputExecutorTests
     {
         var runtime = RunningRuntime();
         runtime.SetActiveProfile(profile, 1);
-        runtime.SetForegroundIdentity(IntPtr.Zero, 0, profile.NormalizedExecutable, 1);
+        runtime.SetForegroundIdentity((IntPtr)100, 42, profile.NormalizedExecutable, 1);
         return runtime;
     }
 

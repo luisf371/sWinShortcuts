@@ -641,6 +641,39 @@ public sealed class AutoRunStateMachineTests
         }
     }
 
+    [Fact]
+    public async Task ForegroundHeldSprintUsesMovementKey_ReleasesOnceAfterBothHoldsEnd()
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerKey = Key.R;
+        profile.AutoRun.TriggerModifier = ModifierKeys.None;
+        profile.AutoRun.SendMode = AutoRunSendMode.Foreground;
+        profile.AutoRun.SprintEnabled = true;
+        profile.AutoRun.SprintMode = SprintActivation.Hold;
+        profile.AutoRun.SprintKey = Key.W;
+        var transport = FakeAutoRunTransport.MatchingForeground();
+        var runtime = new InputRuntimeState(transport);
+        runtime.SetAdvancedMode(true);
+        runtime.SetActiveProfile(profile, 1);
+        runtime.SetForegroundIdentity((IntPtr)100, 42, profile.NormalizedExecutable, 1);
+        runtime.SetRunning(true);
+        var sender = new RecordingInputSender();
+        using var executor = new InputExecutor(runtime, sender, new NullLoggerService());
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var machine = new AutoRunStateMachine(runtime, executor, random, new NullLoggerService(), transport);
+        executor.Start();
+        Assert.True(Activate(machine, profile));
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(executor.Enqueue(new InputCommand(Key.None, false,
+            Kind: InputCommandKind.DummyKey, Completion: completion)));
+        Assert.True(await completion.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        machine.Release(includeBackground: true);
+        Assert.True(executor.StopAndDrain());
+        Assert.Equal(new[] { (Key.W, true), (Key.W, false) },
+            sender.Transitions.Select(item => (item.Key, item.IsDown)));
+    }
+
     private sealed class PausedSprintUpSender : IInputSender, IDisposable
     {
         internal RecordingInputSender Recording { get; } = new();

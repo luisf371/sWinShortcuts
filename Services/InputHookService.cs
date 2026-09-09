@@ -184,13 +184,14 @@ public sealed class InputHookService : IInputHookService
     }
 
     internal InputHookService(
-        ILoggerService logger, IInputSender inputSender, Func<long> clock, Func<int, bool> keyState)
+        ILoggerService logger, IInputSender inputSender, Func<long> clock, Func<int, bool> keyState,
+        IAutoRunTransport? foregroundTransport = null)
     {
         _logger = logger;
         _isPhysicalKeyDown = keyState;
-        _runtime = new InputRuntimeState();
+        var transport = foregroundTransport ?? new NativeAutoRunTransport();
+        _runtime = new InputRuntimeState(transport);
         _inputExecutor = new InputExecutor(_runtime, inputSender, logger, clock, keyState);
-        var transport = new NativeAutoRunTransport();
         _autoRun = new AutoRunStateMachine(_runtime, _inputExecutor, _random, logger, transport);
         _antiAfk = new AntiAfkStateMachine(_runtime, _autoRun, _random, logger, transport);
         _gestures = new GestureChordStateMachine(

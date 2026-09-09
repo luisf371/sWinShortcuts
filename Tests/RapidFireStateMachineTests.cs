@@ -280,7 +280,7 @@ public sealed class RapidFireStateMachineTests
 
     private static InputRuntimeState RunningRuntime(Profile profile)
     {
-        var runtime = new InputRuntimeState();
+        var runtime = new InputRuntimeState(FakeAutoRunTransport.MatchingForeground());
         runtime.SetRunning(true);
         runtime.SetAdvancedMode(true);
         Publish(runtime, profile, foregroundGeneration: 1);
@@ -294,8 +294,8 @@ public sealed class RapidFireStateMachineTests
     {
         runtime.SetActiveProfile(profile, foregroundGeneration);
         runtime.SetForegroundIdentity(
-            IntPtr.Zero,
-            0,
+            (IntPtr)100,
+            42,
             profile?.NormalizedExecutable,
             foregroundGeneration);
     }

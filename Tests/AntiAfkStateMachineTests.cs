@@ -150,9 +150,9 @@ public sealed class AntiAfkStateMachineTests
     {
         long timestamp = 0;
         uint tick = 0;
-        var runtime = new InputRuntimeState();
         var profile = CreateProfile();
         var transport = CreateTransport();
+        var runtime = new InputRuntimeState(transport);
         ConfigureRuntime(runtime, profile);
         var sender = new RecordingInputSender(blockFirstDown: true);
         var random = new ThreadLocal<Random>(() => new Random(1));
@@ -1025,9 +1025,9 @@ public sealed class AntiAfkStateMachineTests
         Func<uint> tickCount,
         ILoggerService? logger = null)
     {
-        var runtime = new InputRuntimeState();
         var profile = CreateProfile();
         var transport = CreateTransport();
+        var runtime = new InputRuntimeState(transport);
         ConfigureRuntime(runtime, profile);
         var queue = new RecordingInputQueue();
         var random = new ThreadLocal<Random>(() => new Random(1));
