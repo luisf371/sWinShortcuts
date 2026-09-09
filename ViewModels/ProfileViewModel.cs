@@ -41,10 +41,11 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         AltMouse = new AltMouseViewModel(Model.AltMouse);
         AltMouse.Changed += (_, _) =>
         {
-            OnPropertyChanged(nameof(AvailableMouseButtons));
+            UpdateSelectableAltMouseSources();
+            OnPropertyChanged(nameof(AvailableAltMouseSources));
             OnProfileChanged(ProfileChangeKind.AltMouse);
         };
-        AltMouse.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableMouseButtons));
+        UpdateSelectableAltMouseSources();
 
         AltKeyboard = new AltKeyboardViewModel(Model.AltKeyboard);
         AltKeyboard.Changed += (_, _) =>
@@ -218,13 +219,15 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public IReadOnlyList<Models.MouseButton> AvailableMouseButtons
+    public IReadOnlyList<InputTrigger> AvailableAltMouseSources
     {
         get
         {
-            var allButtons = new[] { Models.MouseButton.Left, Models.MouseButton.Right, Models.MouseButton.Middle, Models.MouseButton.XButton1, Models.MouseButton.XButton2 };
-            var usedButtons = AltMouse.Bindings.Select(b => b.Button).ToHashSet();
-            return allButtons.Where(b => !usedButtons.Contains(b)).ToList();
+            var used = AltMouse.Bindings.Select(row => row.Source).ToHashSet();
+            return Enum.GetValues<Models.MouseButton>()
+                .Select(InputTrigger.FromMouseButton)
+                .Concat([InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down)])
+                .Where(source => !used.Contains(source)).ToList();
         }
     }
 
@@ -738,24 +741,13 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public void AddAltMouseBinding()
     {
-        var availableButtons = AvailableMouseButtons;
-        if (availableButtons.Count == 0)
+        var availableSources = AvailableAltMouseSources;
+        if (availableSources.Count == 0)
         {
             return;
         }
 
-        var entry = new AltMouseBindingEntryViewModel(availableButtons[0], null, null);
-
-        entry.PropertyChanged += (s, e) =>
-        {
-            if (e.PropertyName == nameof(AltMouseBindingEntryViewModel.Button))
-            {
-                OnPropertyChanged(nameof(AvailableMouseButtons));
-            }
-        };
-
-        AltMouse.Bindings.Add(entry);
-        OnPropertyChanged(nameof(AvailableMouseButtons));
+        AltMouse.Bindings.Add(new AltMouseBindingEntryViewModel(availableSources[0], null, null));
     }
 
     public void RemoveAltMouseBinding(AltMouseBindingEntryViewModel? entry)
@@ -765,10 +757,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        if (AltMouse.Bindings.Remove(entry))
-        {
-            OnPropertyChanged(nameof(AvailableMouseButtons));
-        }
+        AltMouse.Bindings.Remove(entry);
     }
 
     public void RemoveAllAltMouseBindings()
@@ -776,6 +765,15 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         while (AltMouse.Bindings.Count > 0)
         {
             RemoveAltMouseBinding(AltMouse.Bindings[0]);
+        }
+    }
+
+    private void UpdateSelectableAltMouseSources()
+    {
+        var available = AvailableAltMouseSources;
+        foreach (var row in AltMouse.Bindings)
+        {
+            row.SelectableSources = available.Prepend(row.Source).ToArray();
         }
     }
 

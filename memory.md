@@ -143,3 +143,7 @@
 - App color/Rapid Fire toggles intentionally reject modifiers, but the general key catalog must retain them for remaps and holds. Filter only app-toggle choices and normalize assignment/hydration/load/save to the same runtime rule; preserve valid manually configured keys outside the common picker list, such as F13.
 - WPF maps `ImeProcessed` to `VK_PROCESSKEY`, so preserve it under the runtime's existing acceptance rule. Valid saved keys outside the picker list must enter its ItemsSource before selection notification; retain existing options so the other hotkey selection stays available. Settings regressions passed 53/53 and full Release passed 935 with 2 existing Explorer skips, without warnings.
 - Advanced Mode off stops the gated assists and forces original-input suppression for Key Mapping; it does not disable Caps `2x Normal` or guarantee universal 1:1 output/game safety. Keep the Settings tooltip and service contract specific to the features actually gated.
+
+# 2026-09-09 (Alt + Mouse wheel editor)
+
+- Alt + Mouse rows use `InputTrigger` so wheels share the trigger dropdown without entering the physical `MouseButton` enum. Wheel rows route Tap to the existing `WheelUpKey`/`WheelDownKey` fields; Hold is cleared and disabled, and removal clears the saved wheel target. Keep per-row source availability notifications presentation-only so one edit publishes one runtime/autosave change.

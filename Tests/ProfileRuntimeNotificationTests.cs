@@ -13,6 +13,90 @@ namespace Tests;
 public sealed class ProfileRuntimeNotificationTests
 {
     [Fact]
+    public void AltMouseSources_ExhaustionDoesNotDuplicate_RowsRetainOwnSource()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
+
+        for (var i = 0; i < 8; i++) viewModel.AddAltMouseBinding();
+
+        Assert.Equal(7, viewModel.AltMouseBindings.Count);
+        Assert.Empty(viewModel.AvailableAltMouseSources);
+        Assert.All(viewModel.AltMouseBindings, row => Assert.Equal(row.Source, Assert.Single(row.SelectableSources)));
+        var removed = viewModel.AltMouseBindings[5];
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), removed.Source);
+        removed.TapKey = Key.E;
+        viewModel.RemoveAltMouseBinding(removed);
+        Assert.Null(profile.AltMouse.WheelUpKey);
+        Assert.Equal(removed.Source, Assert.Single(viewModel.AvailableAltMouseSources));
+        Assert.All(viewModel.AltMouseBindings, row => Assert.Contains(removed.Source, row.SelectableSources));
+    }
+
+    [Fact]
+    public void AltMouse_SavedWheelTargets_LoadAsTapOnlyRows()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.AltMouse.Bindings[AppMouseButton.Left] = new() { TapKey = Key.A, HoldKey = Key.B };
+        profile.AltMouse.WheelUpKey = Key.E;
+        profile.AltMouse.WheelDownKey = Key.Q;
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
+
+        Assert.Equal(3, viewModel.AltMouseBindings.Count);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), Assert.Single(viewModel.AltMouseBindings, row => row.TapKey == Key.E).Source);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Down), Assert.Single(viewModel.AltMouseBindings, row => row.TapKey == Key.Q).Source);
+        Assert.Equal(Key.B, Assert.Single(viewModel.AltMouseBindings, row => row.TapKey == Key.A).HoldKey);
+        Assert.All(viewModel.AltMouseBindings, row => Assert.Contains(row.Source, row.SelectableSources));
+        Assert.All(viewModel.AltMouseBindings.Where(row => row.Source.Kind == InputTriggerKind.MouseWheel),
+            row => { Assert.False(row.CanHold); Assert.Equal(Key.None, row.HoldKey); });
+    }
+
+    [Theory]
+    [InlineData(MouseWheelDirection.Up)]
+    [InlineData(MouseWheelDirection.Down)]
+    public void AltMouse_ChangingBetweenButtonAndWheel_MovesTapAndClearsHold(MouseWheelDirection direction)
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.AltMouse.Bindings[AppMouseButton.Left] = new() { TapKey = Key.E, HoldKey = Key.F };
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
+        var row = Assert.Single(viewModel.AltMouseBindings);
+        var changes = new List<ProfileChangeKind>();
+        viewModel.ProfileChanged += (_, e) => changes.Add(e.Kind);
+        var otherDirection = direction == MouseWheelDirection.Up ? MouseWheelDirection.Down : MouseWheelDirection.Up;
+
+        row.Source = InputTrigger.FromWheel(direction);
+
+        Assert.Equal(ProfileChangeKind.AltMouse, Assert.Single(changes));
+        Assert.False(row.CanHold);
+        Assert.Equal(Key.None, row.HoldKey);
+        Assert.Empty(profile.AltMouse.Bindings);
+        Assert.Equal(Key.E, direction == MouseWheelDirection.Up ? profile.AltMouse.WheelUpKey : profile.AltMouse.WheelDownKey);
+        Assert.Contains(row.Source, row.SelectableSources);
+        Assert.Contains(InputTrigger.FromMouseButton(AppMouseButton.Left), viewModel.AvailableAltMouseSources);
+        row.HoldKey = Key.F;
+        Assert.Equal(Key.None, row.HoldKey);
+        Assert.Single(changes);
+
+        row.Source = InputTrigger.FromWheel(otherDirection);
+        Assert.Null(direction == MouseWheelDirection.Up ? profile.AltMouse.WheelUpKey : profile.AltMouse.WheelDownKey);
+        Assert.Equal(Key.E, otherDirection == MouseWheelDirection.Up ? profile.AltMouse.WheelUpKey : profile.AltMouse.WheelDownKey);
+        row.TapKey = Key.None;
+        Assert.Null(profile.AltMouse.WheelUpKey);
+        Assert.Null(profile.AltMouse.WheelDownKey);
+        Assert.Single(viewModel.AltMouseBindings);
+        row.TapKey = Key.Q;
+
+        row.Source = InputTrigger.FromMouseButton(AppMouseButton.Right);
+        Assert.True(row.CanHold);
+        Assert.Equal(Key.None, row.HoldKey);
+        Assert.Null(profile.AltMouse.WheelUpKey);
+        Assert.Null(profile.AltMouse.WheelDownKey);
+        Assert.Equal(Key.Q, profile.AltMouse.Bindings[AppMouseButton.Right].TapKey);
+        Assert.Null(profile.AltMouse.Bindings[AppMouseButton.Right].HoldKey);
+        row.HoldKey = Key.G;
+        Assert.Equal(Key.G, profile.AltMouse.Bindings[AppMouseButton.Right].HoldKey);
+    }
+
+    [Fact]
     public void CombinedSources_ExhaustionDoesNotDuplicate_RowsRetainOwnSource()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -78,12 +162,14 @@ public sealed class ProfileRuntimeNotificationTests
             new FakeDisplayService(), new RecordingColorControlService(), runtime);
         await viewModel.InitializeAsync();
         var game = Assert.Single(viewModel.Profiles, vm => ReferenceEquals(vm.Model, profile));
-        Assert.Equal(Key.R, game.AltMouse.WheelUpKey);
-        Assert.Null(game.AltMouse.WheelDownKey);
+        var upRow = Assert.Single(game.AltMouseBindings);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), upRow.Source);
+        Assert.Equal(Key.R, upRow.TapKey);
         Assert.Empty(runtime.Changes);
 
-        game.AltMouse.WheelUpKey = Key.E;
-        game.AltMouse.WheelDownKey = Key.Q;
+        upRow.TapKey = Key.E;
+        var downRow = new AltMouseBindingEntryViewModel(InputTrigger.FromWheel(MouseWheelDirection.Down), Key.Q, null);
+        game.AltMouseBindings.Add(downRow);
         game.AddCombinedMapping();
         var row = Assert.Single(game.CombinedMappings);
         row.Source = InputTrigger.FromWheel(MouseWheelDirection.Down);
@@ -98,8 +184,7 @@ public sealed class ProfileRuntimeNotificationTests
         Assert.Equal(Key.Q, saved.AltMouse.WheelDownKey);
         Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Down), Assert.Single(saved.CombinedMappings.Mappings).Source);
 
-        game.AltMouse.WheelDownKey = Key.None;
-        Assert.Null(game.AltMouse.WheelDownKey);
+        downRow.TapKey = Key.None;
         Assert.Null(profile.AltMouse.WheelDownKey);
         Assert.Equal(0, await viewModel.FlushPendingSavesAsync());
     }
@@ -379,6 +464,8 @@ public sealed class ProfileRuntimeNotificationTests
             [AppMouseButton.Left] = new() { TapKey = Key.E },
             [AppMouseButton.Right] = new() { HoldKey = Key.F }
         };
+        profile.AltMouse.WheelUpKey = Key.K;
+        profile.AltMouse.WheelDownKey = Key.L;
         profile.AltKeyboard.Bindings = new Dictionary<Key, AltKeyboardBinding>
         {
             [Key.G] = new() { TapKey = Key.H },
@@ -407,15 +494,20 @@ public sealed class ProfileRuntimeNotificationTests
 
         Assert.Empty(profile.CombinedMappings.Mappings);
         Assert.Empty(profile.AltMouse.Bindings);
+        Assert.Null(profile.AltMouse.WheelUpKey);
+        Assert.Null(profile.AltMouse.WheelDownKey);
         Assert.Empty(profile.AltKeyboard.Bindings);
 
         changes.Clear();
         removedCombined[0].TargetKey = Key.Z;
         removedAltMouse[0].TapKey = Key.Z;
+        removedAltMouse[^1].TapKey = Key.Z;
         removedAltKeyboard[0].HoldKey = Key.Z;
 
         Assert.Empty(profile.CombinedMappings.Mappings);
         Assert.Empty(profile.AltMouse.Bindings);
+        Assert.Null(profile.AltMouse.WheelUpKey);
+        Assert.Null(profile.AltMouse.WheelDownKey);
         Assert.Empty(profile.AltKeyboard.Bindings);
         Assert.Empty(changes);
     }

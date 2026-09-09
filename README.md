@@ -58,7 +58,7 @@ moment that program comes to the foreground.
     still does its normal interact.*
 - **Mouse wheel shortcuts** — select **Wheel Up** or **Wheel Down** as a Key Mapping
   source to tap a key, optionally with **Right Click Only** checked. Alt + Mouse also
-  provides separate Wheel Up/Down tap targets.
+  includes Wheel Up/Down in its shortcut dropdown; wheel rows use **Tap**, with **Hold** disabled.
 - **Caps Lock repurposing** — **Normal** mirrors Caps Lock down/up; **2x Normal** sends
   one full key tap on press and another on release; **Disabled** suppresses the key.
   **Remap Key** substitutes your chosen output key for Caps Lock.
@@ -165,8 +165,10 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
 In a custom profile, enable **Key Mapping**, add a row, and choose **Wheel Up** or
 **Wheel Down** as its source. Choose a keyboard target and check **Right Click Only**
 if it should work only while the right mouse button is held. For an Alt gesture,
-enable **Alt + Mouse** and assign its Wheel Up/Down targets. An assigned Alt gesture
-takes priority while Alt is held; otherwise an eligible Key Mapping can run.
+enable **Alt + Mouse**, add a binding, choose **Wheel Up** or **Wheel Down** in its
+shortcut dropdown, and set **Tap** to the target key. **Hold** is disabled for wheel
+rows. An assigned Alt gesture takes priority while Alt is held; otherwise an eligible
+Key Mapping can run.
 
 Each wheel increment taps the target once. Small scroll movements accumulate until
 they reach one increment; changing direction or gesture context clears the partial
