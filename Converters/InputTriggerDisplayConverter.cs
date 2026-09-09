@@ -22,6 +22,8 @@ public sealed class InputTriggerDisplayConverter : IValueConverter
             InputTriggerKind.None => "None",
             InputTriggerKind.KeyboardKey => KeyConverter.Convert(trigger.Key, targetType, parameter ?? string.Empty, culture) ?? "None",
             InputTriggerKind.MouseButton => MouseButtonConverter.Convert(trigger.MouseButton, targetType, parameter, culture) ?? "None",
+            InputTriggerKind.MouseWheel when trigger.Wheel == MouseWheelDirection.Up => "Wheel Up",
+            InputTriggerKind.MouseWheel when trigger.Wheel == MouseWheelDirection.Down => "Wheel Down",
             _ => "None"
         };
     }

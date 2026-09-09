@@ -14,6 +14,8 @@ public sealed class AltMouseViewModel : ViewModelBase
     private readonly AltMouseSettings _model;
     private bool _isEnabled;
     private int _holdThresholdMilliseconds;
+    private Key? _wheelUpKey;
+    private Key? _wheelDownKey;
 
     public event EventHandler? Changed;
 
@@ -31,12 +33,42 @@ public sealed class AltMouseViewModel : ViewModelBase
 
         _isEnabled = _model.IsEnabled;
         _holdThresholdMilliseconds = _model.HoldThresholdMilliseconds;
+        _wheelUpKey = _model.WheelUpKey;
+        _wheelDownKey = _model.WheelDownKey;
 
         ResetHoldThresholdCommand = new RelayCommand(
             () => HoldThresholdMilliseconds = AltMouseSettings.DefaultHoldThresholdMilliseconds);
     }
 
     public ICommand ResetHoldThresholdCommand { get; }
+
+    public Key? WheelUpKey
+    {
+        get => _wheelUpKey;
+        set
+        {
+            var normalized = value == Key.None ? null : value;
+            if (SetProperty(ref _wheelUpKey, normalized))
+            {
+                _model.WheelUpKey = normalized;
+                Changed?.Invoke(this, EventArgs.Empty);
+            }
+        }
+    }
+
+    public Key? WheelDownKey
+    {
+        get => _wheelDownKey;
+        set
+        {
+            var normalized = value == Key.None ? null : value;
+            if (SetProperty(ref _wheelDownKey, normalized))
+            {
+                _model.WheelDownKey = normalized;
+                Changed?.Invoke(this, EventArgs.Empty);
+            }
+        }
+    }
 
     public bool IsEnabled
     {

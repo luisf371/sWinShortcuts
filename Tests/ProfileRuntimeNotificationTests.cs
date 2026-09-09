@@ -13,6 +13,109 @@ namespace Tests;
 public sealed class ProfileRuntimeNotificationTests
 {
     [Fact]
+    public void CombinedSources_ExhaustionDoesNotDuplicate_RowsRetainOwnSource()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(),
+            new RecordingColorControlService(), keyOptions: [Key.B, Key.A]);
+        Assert.Equal(new[]
+        {
+            InputTrigger.FromKey(Key.A), InputTrigger.FromKey(Key.B),
+            InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down)
+        }, viewModel.AvailableCombinedSources);
+
+        for (var i = 0; i < 5; i++) viewModel.AddCombinedMapping();
+
+        Assert.Equal(4, viewModel.CombinedMappings.Count);
+        Assert.Empty(viewModel.AvailableCombinedSources);
+        Assert.All(viewModel.CombinedMappings, row => Assert.Equal(row.Source, Assert.Single(row.SelectableSources)));
+        var removed = viewModel.CombinedMappings[2];
+        viewModel.RemoveCombinedMapping(removed);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), Assert.Single(viewModel.AvailableCombinedSources));
+        Assert.All(viewModel.CombinedMappings, row => Assert.Contains(removed.Source, row.SelectableSources));
+    }
+
+    [Fact]
+    public async Task AddCombinedCommand_ExhaustionAndRemoval_NotifyAvailability()
+    {
+        var store = new InMemoryProfileStore();
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        store.Profiles.Add(profile);
+        var viewModel = new MainViewModel(new ProfileManager(store), new FakeDialogService(),
+            new FakeDisplayService(), new RecordingColorControlService());
+        await viewModel.InitializeAsync();
+        var game = Assert.Single(viewModel.Profiles, vm => ReferenceEquals(vm.Model, profile));
+        viewModel.SelectedProfile = game;
+        var notifiedAvailability = new List<bool>();
+        viewModel.AddCombinedMappingCommand.CanExecuteChanged += (_, _) =>
+            notifiedAvailability.Add(viewModel.AddCombinedMappingCommand.CanExecute(null));
+
+        var sourceCount = game.AvailableCombinedSources.Count;
+        for (var i = 0; i < sourceCount; i++) viewModel.AddCombinedMappingCommand.Execute(null);
+
+        Assert.False(viewModel.AddCombinedMappingCommand.CanExecute(null));
+        Assert.False(notifiedAvailability[^1]);
+        game.AddCombinedMapping();
+        Assert.Equal(sourceCount, game.CombinedMappings.Count);
+        game.RemoveCombinedMapping(game.CombinedMappings[^1]);
+        Assert.True(viewModel.AddCombinedMappingCommand.CanExecute(null));
+        Assert.True(notifiedAvailability[^1]);
+
+        viewModel.SelectedProfile = Assert.Single(viewModel.Profiles, vm => vm.IsWindowsProfile);
+        Assert.False(viewModel.AddCombinedMappingCommand.CanExecute(null));
+        Assert.Equal(0, await viewModel.FlushPendingSavesAsync());
+    }
+
+    [Fact]
+    public async Task WheelEdits_PublishSpecificRuntimeChangesAndDetachedAutosave()
+    {
+        var store = new InMemoryProfileStore();
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.AltMouse.WheelUpKey = Key.R;
+        store.Profiles.Add(profile);
+        var runtime = new RecordingProfileRuntimeService(() => { });
+        var viewModel = new MainViewModel(new ProfileManager(store), new FakeDialogService(),
+            new FakeDisplayService(), new RecordingColorControlService(), runtime);
+        await viewModel.InitializeAsync();
+        var game = Assert.Single(viewModel.Profiles, vm => ReferenceEquals(vm.Model, profile));
+        Assert.Equal(Key.R, game.AltMouse.WheelUpKey);
+        Assert.Null(game.AltMouse.WheelDownKey);
+        Assert.Empty(runtime.Changes);
+
+        game.AltMouse.WheelUpKey = Key.E;
+        game.AltMouse.WheelDownKey = Key.Q;
+        game.AddCombinedMapping();
+        var row = Assert.Single(game.CombinedMappings);
+        row.Source = InputTrigger.FromWheel(MouseWheelDirection.Down);
+        Assert.Equal(new[] { ProfileChangeKind.AltMouse, ProfileChangeKind.AltMouse,
+            ProfileChangeKind.CombinedMappings, ProfileChangeKind.CombinedMappings },
+            runtime.Changes.Select(change => change.Kind));
+
+        profile.AltMouse.WheelUpKey = Key.Z;
+        Assert.Equal(0, await viewModel.FlushPendingSavesAsync());
+        var saved = store.SavedProfiles.Last();
+        Assert.Equal(Key.E, saved.AltMouse.WheelUpKey);
+        Assert.Equal(Key.Q, saved.AltMouse.WheelDownKey);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Down), Assert.Single(saved.CombinedMappings.Mappings).Source);
+
+        game.AltMouse.WheelDownKey = Key.None;
+        Assert.Null(game.AltMouse.WheelDownKey);
+        Assert.Null(profile.AltMouse.WheelDownKey);
+        Assert.Equal(0, await viewModel.FlushPendingSavesAsync());
+    }
+
+    [Fact]
+    public void HoldBreathPanicEditor_RejectsWheelAndKeepsKeyboardInput()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
+        viewModel.RightClickHoldBreathPanicTrigger = InputTrigger.FromKey(Key.E);
+        Assert.Equal(InputTrigger.FromKey(Key.E), profile.RightClickHoldBreath.PanicTrigger);
+        viewModel.RightClickHoldBreathPanicTrigger = InputTrigger.FromWheel(MouseWheelDirection.Up);
+        Assert.Equal(InputTrigger.None, profile.RightClickHoldBreath.PanicTrigger);
+    }
+
+    [Fact]
     public void CapsLockRemapAvailability_FollowsModeAndToggle()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -268,8 +371,8 @@ public sealed class ProfileRuntimeNotificationTests
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         profile.CombinedMappings.Mappings =
         [
-            new() { SourceKey = Key.A, TargetKey = Key.B },
-            new() { SourceKey = Key.C, TargetKey = Key.D }
+            new() { Source = InputTrigger.FromKey(Key.A), TargetKey = Key.B },
+            new() { Source = InputTrigger.FromKey(Key.C), TargetKey = Key.D }
         ];
         profile.AltMouse.Bindings = new Dictionary<AppMouseButton, MouseButtonBinding>
         {

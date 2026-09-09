@@ -1,8 +1,11 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
+using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.Services.Input;
 
@@ -16,6 +19,10 @@ internal interface IInputQueue
 internal interface IInputCommandGuard
 {
     bool CanExecute(in InputCommand command);
+
+    void OnCompleted(in InputCommand command)
+    {
+    }
 }
 
 internal enum InputCommandKind
@@ -23,7 +30,8 @@ internal enum InputCommandKind
     KeyTransition,
     KeyTap,
     DummyKey,
-    Sequence
+    Sequence,
+    WheelTap
 }
 
 internal readonly record struct TapStep(Key Key, int DownMs, int GapMs);
@@ -59,7 +67,8 @@ internal readonly record struct InputCommand(
     long Token = 0,
     bool RequirePreviousCommandSuccess = false,
     long TapPairToken = 0,
-    bool RequireTapPairToken = false);
+    bool RequireTapPairToken = false,
+    long CreatedTick = 0);
 
 /// <summary>
 /// Single-consumer FIFO for synthetic key input. Producers may hold a feature lock while enqueueing;
@@ -68,10 +77,15 @@ internal readonly record struct InputCommand(
 internal sealed class InputExecutor : IInputQueue, IDisposable
 {
     private const int DEFAULT_DRAIN_TIMEOUT_MS = 2000;
+    private const int MAX_WHEEL_TAP_AGE_MS = 250;
+    private const int WHEEL_KEY_UP_GAP_MS = 10;
 
     private readonly InputRuntimeState _runtime;
     private readonly IInputSender _inputSender;
     private readonly ILoggerService _logger;
+    private readonly Func<long> _clock;
+    private readonly Func<int, bool> _keyState;
+    private readonly bool[] _keysDown = new bool[256];
     private readonly object _enqueueLock = new();
     private BlockingCollection<InputCommand>? _queue;
     private Thread? _worker;
@@ -80,11 +94,15 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     internal InputExecutor(
         InputRuntimeState runtime,
         IInputSender inputSender,
-        ILoggerService logger)
+        ILoggerService logger,
+        Func<long>? clock = null,
+        Func<int, bool>? keyState = null)
     {
         _runtime = runtime;
         _inputSender = inputSender;
         _logger = logger;
+        _clock = clock ?? Stopwatch.GetTimestamp;
+        _keyState = keyState ?? (static virtualKey => (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0);
     }
 
     internal bool IsWorkerAlive => _worker?.IsAlive == true;
@@ -234,7 +252,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     {
         var queue = _queue;
         var startsInput = command.IsDown || command.Kind is
-            InputCommandKind.KeyTap or InputCommandKind.DummyKey or InputCommandKind.Sequence;
+            InputCommandKind.KeyTap or InputCommandKind.DummyKey or InputCommandKind.Sequence or
+            InputCommandKind.WheelTap;
         if (_disposed || queue is null || queue.IsAddingCompleted ||
             (_runtime.IsDisposed && startsInput && !IsCompensatingTapCandidate(in command)))
         {
@@ -283,6 +302,20 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
                     command.Completion?.TrySetResult(false);
                     _logger.Log($"Input executor error: {ex.Message}");
                 }
+                finally
+                {
+                    try
+                    {
+                        command.Guard?.OnCompleted(in command);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (_logger.IsEnabled)
+                        {
+                            _logger.Log($"Input executor completion error: {ex.Message}");
+                        }
+                    }
+                }
             }
         }
         catch (ObjectDisposedException)
@@ -311,6 +344,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
                 return ExecuteDummy(queue, in command);
             case InputCommandKind.KeyTap:
                 return ExecuteTap(queue, in command, ref acknowledgedTapPairToken);
+            case InputCommandKind.WheelTap:
+                return ExecuteWheelTap(queue, in command);
         }
 
         return ExecuteTransition(queue, in command);
@@ -404,6 +439,45 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         return downSent;
     }
 
+    private bool ExecuteWheelTap(BlockingCollection<InputCommand> queue, in InputCommand command)
+    {
+        var virtualKey = KeyInteropUtilities.ToVirtualKey(command.Key);
+        if (!CanStartWheelTap(queue, in command) ||
+            virtualKey == 0 || virtualKey >= _keysDown.Length ||
+            _keysDown[virtualKey] || _keyState(virtualKey) ||
+            !CanStartWheelTap(queue, in command) ||
+            !SendKey(command.Key, true))
+        {
+            command.Completion?.TrySetResult(false);
+            return false;
+        }
+
+        try
+        {
+            Thread.Sleep(command.DelayBeforeMs);
+        }
+        finally
+        {
+            // Successful DOWN owns its UP even if the profile, guard or queue changed meanwhile.
+            try
+            {
+                SendKey(command.Key, false);
+            }
+            finally
+            {
+                Thread.Sleep(WHEEL_KEY_UP_GAP_MS);
+            }
+        }
+
+        command.Completion?.TrySetResult(true);
+        return true;
+    }
+
+    private bool CanStartWheelTap(BlockingCollection<InputCommand> queue, in InputCommand command) =>
+        !queue.IsAddingCompleted && !_runtime.IsDisposed && _runtime.IsRunning &&
+        Stopwatch.GetElapsedTime(command.CreatedTick, _clock()).TotalMilliseconds <= MAX_WHEEL_TAP_AGE_MS &&
+        GuardAllows(in command);
+
     private bool ExecuteTransition(BlockingCollection<InputCommand> queue, in InputCommand command)
     {
         if (command.IsDown)
@@ -447,6 +521,16 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         // IInputSender exposes a bare bool: a false can be a vk-mapping skip that never reached
         // SendInput, and any last-error read here would be stale. The failure facts exist only at
         // the sender boundary (WindowsInputSender), which logs them.
-        return _inputSender.SendKey(key, isKeyDown);
+        var sent = _inputSender.SendKey(key, isKeyDown);
+        if (sent)
+        {
+            var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
+            if (virtualKey > 0 && virtualKey < _keysDown.Length)
+            {
+                _keysDown[virtualKey] = isKeyDown;
+            }
+        }
+
+        return sent;
     }
 }

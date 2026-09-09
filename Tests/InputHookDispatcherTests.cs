@@ -265,7 +265,7 @@ public sealed class InputHookDispatcherTests
                     [
                         new CombinedMappingEntry
                         {
-                            SourceKey = Key.E,
+                            Source = InputTrigger.FromKey(Key.E),
                             TargetKey = Key.F,
                             SuppressOriginalKey = true,
                             RightClickOnly = true

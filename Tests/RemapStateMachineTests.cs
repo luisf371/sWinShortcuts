@@ -10,11 +10,28 @@ namespace Tests;
 public sealed class RemapStateMachineTests
 {
     [Fact]
+    public void Combined_WheelSource_DoesNotMatchKeyboardEvents()
+    {
+        var profile = CombinedProfile(new CombinedMappingEntry
+        {
+            Source = InputTrigger.FromWheel(MouseWheelDirection.Up), TargetKey = Key.F
+        });
+        var runtime = RunningRuntime(profile);
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new RemapStateMachine(runtime, queue, random, new NullLoggerService());
+
+        Assert.False(Handle(remaps, Key.E, isDown: true));
+        Assert.False(Handle(remaps, Key.E, isDown: false));
+        Assert.Empty(queue.Commands);
+    }
+
+    [Fact]
     public void Combined_TwoSourcesShareTarget_ReleasesOnlyAfterFinalUp()
     {
         var profile = CombinedProfile(
-            new() { SourceKey = Key.E, TargetKey = Key.F },
-            new() { SourceKey = Key.G, TargetKey = Key.F });
+            new() { Source = InputTrigger.FromKey(Key.E), TargetKey = Key.F },
+            new() { Source = InputTrigger.FromKey(Key.G), TargetKey = Key.F });
         var runtime = RunningRuntime(profile);
         var queue = new RecordingInputQueue();
         using var random = new ThreadLocal<Random>(() => new Random(1));
@@ -36,7 +53,7 @@ public sealed class RemapStateMachineTests
     [Fact]
     public void Combined_ForcedRelease_PreservesSuppressionThroughMatchingUp()
     {
-        var profile = CombinedProfile(new CombinedMappingEntry { SourceKey = Key.E, TargetKey = Key.F });
+        var profile = CombinedProfile(new CombinedMappingEntry { Source = InputTrigger.FromKey(Key.E), TargetKey = Key.F });
         var runtime = RunningRuntime(profile);
         var queue = new RecordingInputQueue();
         using var random = new ThreadLocal<Random>(() => new Random(1));

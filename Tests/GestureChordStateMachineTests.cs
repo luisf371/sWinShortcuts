@@ -10,6 +10,109 @@ namespace Tests;
 public sealed class GestureChordStateMachineTests
 {
     [Fact]
+    public void Wheel_MinimumSignedDelta_BoundsAdmissionAndRetainsFraction()
+    {
+        var profile = CreateProfile();
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.WheelDownKey = Key.Q;
+        var runtime = ConfigureRuntime(profile);
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        long clock = 100;
+        using var machine = new GestureChordStateMachine(runtime, queue, random,
+            new NullLoggerService(), () => false, () => ++clock);
+        machine.SeedAltPressed(true);
+
+        Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(short.MinValue)));
+        Assert.Equal(4, queue.Commands.Count);
+        Assert.All(queue.Commands, command =>
+        {
+            Assert.Equal(Key.Q, command.Key);
+            Assert.Equal(InputCommandKind.WheelTap, command.Kind);
+            Assert.Equal(101, command.CreatedTick);
+            Assert.InRange(command.DelayBeforeMs, 31, 53);
+        });
+        while (queue.Commands.TryDequeue(out var command)) machine.OnCompleted(command);
+
+        // 32768 % 120 == 8. Excess whole notches were dropped, only eight units remain.
+        Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(-112)));
+        Assert.Single(queue.Commands);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    [InlineData(1, true)]
+    public void Wheel_RejectedAdmission_RefundsAndClearsRemainder(int acceptedBeforeFailure, bool throws)
+    {
+        var profile = CreateProfile();
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.WheelUpKey = Key.E;
+        var queue = new WheelAdmissionQueue { AcceptLimit = acceptedBeforeFailure, ThrowOnRejection = throws };
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random,
+            new NullLoggerService(), () => false);
+        machine.SeedAltPressed(true);
+
+        Assert.Equal(acceptedBeforeFailure != 0, machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(270)));
+        Assert.Equal(acceptedBeforeFailure, queue.Commands.Count);
+        foreach (var command in queue.Commands) machine.OnCompleted(command);
+        queue.Commands.Clear();
+        queue.AcceptLimit = int.MaxValue;
+        Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(90)));
+        Assert.Empty(queue.Commands);
+        Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(390)));
+        Assert.Equal(4, queue.Commands.Count);
+    }
+
+    [Fact]
+    public void Wheel_CompletionDuringEnqueue_RefundsExactlyOnce()
+    {
+        var profile = CreateProfile();
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.WheelUpKey = Key.E;
+        var queue = new WheelAdmissionQueue { CompleteInline = true };
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random,
+            new NullLoggerService(), () => false);
+        machine.SeedAltPressed(true);
+        for (var i = 0; i < 10; i++)
+            Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(240)));
+        Assert.Equal(20, queue.Commands.Count);
+
+        queue.Commands.Clear();
+        queue.CompleteInline = false;
+        Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(960)));
+        Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(960)));
+        Assert.Equal(4, queue.Commands.Count);
+    }
+
+    private static uint WheelData(int delta) => unchecked((uint)(ushort)(short)delta << 16);
+
+    private sealed class WheelAdmissionQueue : IInputQueue
+    {
+        internal List<InputCommand> Commands { get; } = [];
+        internal int AcceptLimit = int.MaxValue;
+        internal bool ThrowOnRejection;
+        internal bool CompleteInline;
+
+        public bool Enqueue(in InputCommand command)
+        {
+            if (Commands.Count >= AcceptLimit)
+            {
+                if (ThrowOnRejection) throw new InvalidOperationException("Admission rejected");
+                return false;
+            }
+            Commands.Add(command);
+            if (CompleteInline) command.Guard?.OnCompleted(command);
+            return true;
+        }
+
+        public bool EnqueuePair(in InputCommand down, in InputCommand up) => throw new NotSupportedException();
+    }
+
+    [Fact]
     public void AltGestures_AdvancedModeDisabled_GuardedCommandsRemainExecutable()
     {
         var profile = CreateProfile();

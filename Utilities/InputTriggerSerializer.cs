@@ -15,6 +15,8 @@ public static class InputTriggerSerializer
                 => $"Key:{KeySerializer.Serialize(trigger.Key)}",
             InputTriggerKind.MouseButton when Enum.IsDefined(trigger.MouseButton)
                 => $"Mouse:{trigger.MouseButton}",
+            InputTriggerKind.MouseWheel when Enum.IsDefined(trigger.Wheel)
+                => $"Wheel:{trigger.Wheel}",
             _ => "None"
         };
     }
@@ -34,6 +36,15 @@ public static class InputTriggerSerializer
 
         var kind = value[..separator].Trim();
         var payload = value[(separator + 1)..].Trim();
+
+        if (kind.Equals("Wheel", StringComparison.OrdinalIgnoreCase))
+        {
+            if (payload.Equals("Up", StringComparison.OrdinalIgnoreCase))
+                return InputTrigger.FromWheel(MouseWheelDirection.Up);
+            if (payload.Equals("Down", StringComparison.OrdinalIgnoreCase))
+                return InputTrigger.FromWheel(MouseWheelDirection.Down);
+            return InputTrigger.None;
+        }
 
         if (kind.Equals("Key", StringComparison.OrdinalIgnoreCase) &&
             KeySerializer.Deserialize(payload) is { } key)

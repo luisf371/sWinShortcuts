@@ -39,6 +39,15 @@ internal static class InputHookServiceTestExtensions
         }
     }
 
+    internal static GestureChordStateMachine GetGesturesForTesting(this InputHookService service) =>
+        Get<GestureChordStateMachine>(service, GesturesField);
+
+    internal static bool IsInputRunningForTesting(this InputHookService service) =>
+        Get<InputRuntimeState>(service, RuntimeField).IsRunning;
+
+    internal static void ResetInputStateForTesting(this InputHookService service) =>
+        ReleaseAllStateMethod.Invoke(service, [true, true, null]);
+
     internal static void StopInputExecutorForTesting(this InputHookService service)
     {
         var runtime = Get<InputRuntimeState>(service, RuntimeField);

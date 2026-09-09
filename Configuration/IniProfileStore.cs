@@ -279,6 +279,8 @@ public sealed class IniProfileStore : IProfileStore
     private static void DeserializeAltMouse(IniDocument document, AltMouseSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("AltMouse", "Enabled", settings.IsEnabled);
+        settings.WheelUpKey = document.GetKey("AltMouse", "WheelUp");
+        settings.WheelDownKey = document.GetKey("AltMouse", "WheelDown");
         settings.HoldThresholdMilliseconds = Math.Max(10, document.GetInt32("AltMouse", "HoldThreshold", settings.HoldThresholdMilliseconds));
 
         settings.Bindings.Clear();
@@ -331,22 +333,23 @@ public sealed class IniProfileStore : IProfileStore
         settings.Mappings.Clear();
 
         settings.IsEnabled = document.GetBoolean("KeyMappings", "Enabled", settings.IsEnabled);
+        var sources = new HashSet<InputTrigger>();
 
         foreach (var pair in document.GetSection("KeyMappingsOverrides"))
         {
-            var source = KeySerializer.Deserialize(pair.Key);
-            if (source is null) continue;
+            var source = ParseCombinedSource(pair.Key);
+            if (source == InputTrigger.None) continue;
 
             var parts = pair.Value.Split('|');
             var target = parts.Length > 0 ? KeySerializer.Deserialize(parts[0]) : null;
-            if (target is null) continue;
+            if (target is null || !sources.Add(source)) continue;
 
             var suppress = parts.Length > 1 && bool.TryParse(parts[1], out var sVal) ? sVal : true;
             var rightClick = parts.Length > 2 && bool.TryParse(parts[2], out var rVal) ? rVal : false;
 
             settings.Mappings.Add(new CombinedMappingEntry
             {
-                SourceKey = source.Value,
+                Source = source,
                 TargetKey = target.Value,
                 SuppressOriginalKey = suppress,
                 RightClickOnly = rightClick
@@ -354,11 +357,38 @@ public sealed class IniProfileStore : IProfileStore
         }
     }
 
+    private static InputTrigger ParseCombinedSource(string value)
+    {
+        if (value.Contains(':'))
+        {
+            var trigger = InputTriggerSerializer.Deserialize(value);
+            return trigger.Kind == InputTriggerKind.MouseWheel ? trigger : InputTrigger.None;
+        }
+
+        return KeySerializer.Deserialize(value) is { } key ? InputTrigger.FromKey(key) : InputTrigger.None;
+    }
+
+    private static string? FormatCombinedSource(InputTrigger source)
+    {
+        return source.Kind switch
+        {
+            InputTriggerKind.KeyboardKey when KeyInteropUtilities.ToVirtualKey(source.Key) != 0
+                => KeySerializer.Serialize(source.Key),
+            InputTriggerKind.MouseWheel when Enum.IsDefined(source.Wheel)
+                => InputTriggerSerializer.Serialize(source),
+            _ => null
+        };
+    }
+
     private static void DeserializeRightClickHoldBreath(IniDocument document, RightClickHoldBreathSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("RightClickHoldBreath", "Enabled", settings.IsEnabled);
         settings.HoldBreathKey = document.GetKey("RightClickHoldBreath", "Key") ?? settings.HoldBreathKey;
         settings.PanicTrigger = document.GetInputTrigger("RightClickHoldBreath", "Panic", settings.PanicTrigger);
+        if (settings.PanicTrigger.Kind == InputTriggerKind.MouseWheel)
+        {
+            settings.PanicTrigger = InputTrigger.None;
+        }
         settings.SuppressEarlyCancelInput = document.GetBoolean("RightClickHoldBreath", "SuppressEarlyCancel", settings.SuppressEarlyCancelInput);
         settings.Mode = document.GetEnum("RightClickHoldBreath", "Mode", settings.Mode);
         // 0 is a designed value (fully synchronous, jitter-free activation) selectable in the UI —
@@ -485,6 +515,8 @@ public sealed class IniProfileStore : IProfileStore
 
         var altMouse = profile.AltMouse;
         document.SetBoolean("AltMouse", "Enabled", altMouse.IsEnabled);
+        document.SetKey("AltMouse", "WheelUp", altMouse.WheelUpKey);
+        document.SetKey("AltMouse", "WheelDown", altMouse.WheelDownKey);
         document.SetInt32("AltMouse", "HoldThreshold", altMouse.HoldThresholdMilliseconds);
         
         foreach (var binding in altMouse.Bindings)
@@ -511,7 +543,8 @@ public sealed class IniProfileStore : IProfileStore
         document.SetBoolean("KeyMappings", "Enabled", mappings.IsEnabled);
         foreach (var entry in mappings.Mappings)
         {
-            var key = KeySerializer.Serialize(entry.SourceKey);
+            var key = FormatCombinedSource(entry.Source);
+            if (key is null) continue;
             var value = $"{KeySerializer.Serialize(entry.TargetKey)}|{entry.SuppressOriginalKey}|{entry.RightClickOnly}";
             document.SetString("KeyMappingsOverrides", key, value);
         }
@@ -519,7 +552,9 @@ public sealed class IniProfileStore : IProfileStore
         var rightClickHoldBreath = profile.RightClickHoldBreath;
         document.SetBoolean("RightClickHoldBreath", "Enabled", rightClickHoldBreath.IsEnabled);
         document.SetKey("RightClickHoldBreath", "Key", rightClickHoldBreath.HoldBreathKey);
-        document.SetInputTrigger("RightClickHoldBreath", "Panic", rightClickHoldBreath.PanicTrigger);
+        document.SetInputTrigger("RightClickHoldBreath", "Panic",
+            rightClickHoldBreath.PanicTrigger.Kind == InputTriggerKind.MouseWheel
+                ? InputTrigger.None : rightClickHoldBreath.PanicTrigger);
         document.SetBoolean("RightClickHoldBreath", "SuppressEarlyCancel", rightClickHoldBreath.SuppressEarlyCancelInput);
         document.SetEnum("RightClickHoldBreath", "Mode", rightClickHoldBreath.Mode);
         document.SetInt32("RightClickHoldBreath", "Delay", rightClickHoldBreath.DelayMilliseconds);

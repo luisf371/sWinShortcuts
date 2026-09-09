@@ -56,6 +56,9 @@ moment that program comes to the foreground.
   keyboard stays completely untouched until you aim.
   - *FPS example: while aiming, `E` → `4` to pull out equipment — the rest of the time `E`
     still does its normal interact.*
+- **Mouse wheel shortcuts** — select **Wheel Up** or **Wheel Down** as a Key Mapping
+  source to tap a key, optionally with **Right Click Only** checked. Alt + Mouse also
+  provides separate Wheel Up/Down tap targets.
 - **Caps Lock repurposing** — disable Caps Lock entirely, or remap it to fire on hold or on
   double-tap.
   - *FPS example: double-tap CapsLock → go prone · hold CapsLock → melee.*
@@ -153,6 +156,25 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
 > **Tip:** launch sWinShortcuts as Administrator if you want remaps to work inside
 > programs that are themselves running elevated (Task Manager, some game launchers, admin
 > consoles).
+
+### Mouse Wheel Mappings
+
+In a custom profile, enable **Key Mapping**, add a row, and choose **Wheel Up** or
+**Wheel Down** as its source. Choose a keyboard target and check **Right Click Only**
+if it should work only while the right mouse button is held. For an Alt gesture,
+enable **Alt + Mouse** and assign its Wheel Up/Down targets. An assigned Alt gesture
+takes priority while Alt is held; otherwise an eligible Key Mapping can run.
+
+Each wheel increment taps the target once. Small scroll movements accumulate until
+they reach one increment; changing direction or gesture context clears the partial
+movement. Unbound scroll works normally. Key Mapping suppresses mapped scroll by
+default; Advanced Mode lets you turn suppression off and keep scrolling as well.
+
+Held modifiers stay held, so **Alt + Wheel Up → E may be received as Alt + E**.
+Wheel shortcuts skip targets already detected as held and discard excess or stale
+taps during fast scrolling. They support vertical scrolling and keyboard tap targets.
+When using **Background Auto Run**, choose wheel targets different from its movement
+and sprint keys: wheel output can interrupt those background holds.
 
 ### Default Quick Reference
 

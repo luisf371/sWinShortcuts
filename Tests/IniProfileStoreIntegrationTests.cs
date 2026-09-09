@@ -55,6 +55,80 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Empty(Directory.EnumerateFiles(_root, "Atomic.ini.*.tmp"));
     }
 
+    [Fact]
+    public async Task SaveAndLoad_MixedWheelMappings_PreservesKeyboardFormatAndWheelRows()
+    {
+        var path = Path.Combine(_root, "Profiles", "Wheels.ini");
+        File.WriteAllText(path,
+            "[Profile]\nName=Wheels\nExecutable=wheels.exe\n[KeyMappings]\nEnabled=true\n" +
+            "[KeyMappingsOverrides]\nA=B|True|False\nWheel:Up=E|True|True\nWheel:Down=Q|False|True\n" +
+            "[AltMouse]\nEnabled=true\nWheelUp=F\nWheelDown=None\n");
+
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+
+        Assert.Equal(3, profile.CombinedMappings.Mappings.Count);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), profile.CombinedMappings.Mappings[1].Source);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Down), profile.CombinedMappings.Mappings[2].Source);
+        Assert.Equal(Key.F, profile.AltMouse.WheelUpKey);
+        Assert.Null(profile.AltMouse.WheelDownKey);
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var saved = IniDocument.Load(path);
+        Assert.Equal("B|True|False", saved.GetString("KeyMappingsOverrides", "A", "missing"));
+        Assert.Equal("E|True|True", saved.GetString("KeyMappingsOverrides", "Wheel:Up", "missing"));
+        Assert.Equal("Q|False|True", saved.GetString("KeyMappingsOverrides", "Wheel:Down", "missing"));
+        Assert.Equal("F", saved.GetString("AltMouse", "WheelUp", "missing"));
+        Assert.Null(saved.GetKey("AltMouse", "WheelDown"));
+    }
+
+    [Fact]
+    public async Task LoadMappings_InvalidRowsAndAliases_KeepFirstValidSourceAndRawDuplicateLastValue()
+    {
+        var path = Path.Combine(_root, "Profiles", "Aliases.ini");
+        File.WriteAllText(path,
+            "[Profile]\nName=Aliases\nExecutable=aliases.exe\n[KeyMappingsOverrides]\n" +
+            "A=Invalid\n44=E\nB=F\n45=G\nC=H\nC=J\n" +
+            "Wheel:Up=R|false|true\nWheel:Down=Invalid\n" +
+            "Wheel:0=Q\nWheel:1=Q\nWheel:Up:Down=Q\nMouse:Left=Q\nNone=Q\nKey:D=Q\n");
+
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+
+        Assert.Equal(4, profile.CombinedMappings.Mappings.Count);
+        Assert.Collection(profile.CombinedMappings.Mappings,
+            row => { Assert.Equal(InputTrigger.FromKey(Key.A), row.Source); Assert.Equal(Key.E, row.TargetKey); },
+            row => { Assert.Equal(InputTrigger.FromKey(Key.B), row.Source); Assert.Equal(Key.F, row.TargetKey); },
+            row => { Assert.Equal(InputTrigger.FromKey(Key.C), row.Source); Assert.Equal(Key.J, row.TargetKey); },
+            row => { Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), row.Source); Assert.False(row.SuppressOriginalKey); Assert.True(row.RightClickOnly); });
+    }
+
+    [Theory]
+    [InlineData("None")]
+    [InlineData("NotAKey")]
+    [InlineData("System")]
+    public async Task LoadAltWheel_UnassignedOrInvalidTargets_AreNull(string value)
+    {
+        var path = Path.Combine(_root, "Profiles", "Unassigned.ini");
+        File.WriteAllText(path,
+            $"[Profile]\nName=Unassigned\nExecutable=unassigned.exe\n[AltMouse]\nWheelUp={value}\n");
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+        Assert.Null(profile.AltMouse.WheelUpKey);
+        Assert.Null(profile.AltMouse.WheelDownKey);
+    }
+
+    [Fact]
+    public async Task HoldBreath_WheelPanic_IsRejectedOnLoadAndProgrammaticSave()
+    {
+        var path = Path.Combine(_root, "Profiles", "Panic.ini");
+        File.WriteAllText(path,
+            "[Profile]\nName=Panic\nExecutable=panic.exe\n[RightClickHoldBreath]\nPanic=Wheel:Up\n");
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+        Assert.Equal(InputTrigger.None, profile.RightClickHoldBreath.PanicTrigger);
+
+        profile.RightClickHoldBreath.PanicTrigger = InputTrigger.FromWheel(MouseWheelDirection.Down);
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+
+        Assert.Equal("None", IniDocument.Load(path).GetString("RightClickHoldBreath", "Panic", "missing"));
+    }
+
     [Theory]
     [InlineData("999")]
     [InlineData("-1")]
@@ -81,7 +155,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.False(remaps.HandleKeyboardEvent(0x41, isKeyDown: false, isKeyUp: true, rightButtonPressed: false));
         Assert.Empty(queue.Commands);
         var valid = Assert.Single(profile.CombinedMappings.Mappings);
-        Assert.Equal(Key.B, valid.SourceKey);
+        Assert.Equal(InputTrigger.FromKey(Key.B), valid.Source);
         Assert.Equal(Key.F, valid.TargetKey);
         Assert.Null(KeySerializer.Deserialize(target));
     }
@@ -398,14 +472,14 @@ public class IniProfileStoreIntegrationTests : IDisposable
         profile.CombinedMappings.IsEnabled = true;
         profile.CombinedMappings.Mappings.Add(new CombinedMappingEntry
         {
-            SourceKey = Key.A,
+            Source = InputTrigger.FromKey(Key.A),
             TargetKey = Key.B,
             SuppressOriginalKey = true,
             RightClickOnly = false
         });
         profile.CombinedMappings.Mappings.Add(new CombinedMappingEntry
         {
-            SourceKey = Key.C,
+            Source = InputTrigger.FromKey(Key.C),
             TargetKey = Key.D,
             SuppressOriginalKey = false,
             RightClickOnly = true
@@ -421,13 +495,13 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Equal(2, loaded.CombinedMappings.Mappings.Count);
 
         var entry1 = loaded.CombinedMappings.Mappings[0];
-        Assert.Equal(Key.A, entry1.SourceKey);
+        Assert.Equal(InputTrigger.FromKey(Key.A), entry1.Source);
         Assert.Equal(Key.B, entry1.TargetKey);
         Assert.True(entry1.SuppressOriginalKey);
         Assert.False(entry1.RightClickOnly);
 
         var entry2 = loaded.CombinedMappings.Mappings[1];
-        Assert.Equal(Key.C, entry2.SourceKey);
+        Assert.Equal(InputTrigger.FromKey(Key.C), entry2.Source);
         Assert.Equal(Key.D, entry2.TargetKey);
         Assert.False(entry2.SuppressOriginalKey);
         Assert.True(entry2.RightClickOnly);

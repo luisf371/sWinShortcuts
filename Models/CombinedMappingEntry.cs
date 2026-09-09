@@ -4,7 +4,7 @@ namespace sWinShortcuts.Models;
 
 public sealed class CombinedMappingEntry
 {
-    public Key SourceKey { get; set; }
+    public InputTrigger Source { get; set; }
     public Key TargetKey { get; set; }
     public bool SuppressOriginalKey { get; set; } = true;
     public bool RightClickOnly { get; set; } = false;

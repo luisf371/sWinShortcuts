@@ -110,3 +110,20 @@
 - CI setup-dotnet resolves channel 10.0 and global.json allows latestFeature: the green run used SDK 10.0.400/runtime 10.0.11, red used SDK 10.0.401/runtime 10.0.12 despite the same runner image. This drift is observed, not established as the failure cause.
 - Local CI-test fix: both vendor test classes use a standard LongRunning TaskFactory with TaskScheduler.Default for synchronous blocked native calls and timed probes, including topology tests with the same scheduling dependency. Keep the 500 ms deadlines and cleanup/rejection assertions; production scheduling and disposal are unchanged.
 - Verification: original AMD/NVIDIA constrained run failed 2/47 before the test-only change; afterward 5 consecutive constrained runs passed 47/47. Final Release/RID full suite passed 775/775 both normally and with DOTNET_PROCESSOR_COUNT=2; build had 0 warnings/errors and git diff --check passed.
+
+# 2026-09-08 (Wheel plan revision)
+
+- Wheel support is planned in `docs/superpowers/plans/2026-09-06-mouse-wheel-support.md`: existing Key Mapping sources/Right Click Only plus AltMouse tap targets, not a separate RMB feature. Preserve signed wheel distance, including fractional or multiple 120-unit increments.
+- General InputTrigger wheel support requires feature-specific validation: hold-breath panic currently supports only keyboard/mouse buttons. Existing executor enqueue takes a lock; old blanket lock-free callback documentation does not describe queued gesture delivery.
+- Plan review boundary: Background Auto-Run holds use PostMessage and are invisible to executor/OS key-state checks. Wheel busy-target protection covers executor-owned/OS-reported holds only; document posted-target overlap rather than claiming cross-transport ownership coordination.
+- Deterministic actual-service wheel tests need clock/key-state delegates forwarded through an internal InputHookService constructor; a fake IInputSender alone still leaves native keyboard-state reads. Lifecycle checks must use production transitions, with test extensions reserved for initial setup.
+- Native Start/reinstall/session resume cannot be proven by hook-free fixture worker restarts. Exercise shared production wheel resets and safe service transitions automatically; report actual hook/session integration separately as manual checks, including checks not run.
+- Clarification to the constructor-test note: test extensions may also invoke shared production reset/seeding routines and clean up fixtures; the restriction is against duplicated lifecycle logic or direct field replacement standing in for a production transition.
+
+# 2026-09-08 (Wheel implementation)
+
+- Implementation branch `feat/mouse-wheel-mappings` starts at `807d3b7`; baseline Release build passed with 0 warnings/errors and full tests passed 773 with 2 existing desktop-dependent skips (775 total). Keep the reviewed plan under ignored `docs/superpowers/plans/2026-09-06-mouse-wheel-support.md` local.
+- Wheel producer/executor share injected Stopwatch ticks; only worker-side native state checks gate busy targets. Preserve physical Alt during mapped output and keep Background Auto-Run posted holds outside executor ownership accounting.
+- Wheel settings keep existing INI conventions: SetKey writes unassigned nullable targets as empty values (None also reads unassigned). Source-choice list notifications are presentation-only; ignore SelectableSources in mapping-change handlers to prevent repeated model publication/autosave during picker refreshes.
+- InputExecutor tracks successful sends for held-target protection: a failed UP must retain its virtual-key hold bit. Guard completion belongs in the drain finally so cancellation, send failures and shutdown still refund accepted wheel reservations exactly once.
+- Never reset `_pendingWheelTaps` during wheel epoch invalidation or lifecycle reset. Accepted stale commands keep their reservations until executor completion; only rejected admission refunds synchronously.

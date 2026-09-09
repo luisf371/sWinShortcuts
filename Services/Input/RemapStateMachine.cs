@@ -322,7 +322,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         CombinedMappingEntry? entry = null;
         foreach (var candidate in profile.CombinedMappings.Mappings)
         {
-            if (candidate.SourceKey == sourceKey.Value)
+            if (candidate.Source == InputTrigger.FromKey(sourceKey.Value))
             {
                 entry = candidate;
                 break;

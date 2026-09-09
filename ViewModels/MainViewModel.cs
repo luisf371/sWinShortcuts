@@ -321,7 +321,10 @@ public sealed partial class MainViewModel : ViewModelBase
 
     // Combined mappings (global + right-click) commands
 
-    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
+    private bool CanAddCombinedMapping() =>
+        CanEditCustomProfileFeatures() && SelectedProfile!.AvailableCombinedSources.Count > 0;
+
+    [RelayCommand(CanExecute = nameof(CanAddCombinedMapping))]
     private void AddCombinedMapping()
     {
         SelectedProfile?.AddCombinedMapping();
@@ -657,6 +660,10 @@ public sealed partial class MainViewModel : ViewModelBase
     {
         if (ReferenceEquals(sender, SelectedProfile))
         {
+            if (e.PropertyName == nameof(ProfileViewModel.AvailableCombinedSources))
+            {
+                AddCombinedMappingCommand.NotifyCanExecuteChanged();
+            }
             RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
             RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
             RemoveAltKeyboardBindingCommand.NotifyCanExecuteChanged();
