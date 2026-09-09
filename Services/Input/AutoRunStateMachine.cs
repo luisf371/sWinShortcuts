@@ -411,10 +411,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     public bool CanExecute(in InputCommand command)
     {
         if (!command.IsDown || command.Generation == 0) return true;
-        if (_runtime.IsDisposed || !_runtime.IsRunning
-            || command.Generation != Volatile.Read(ref _injectionGeneration)
-            || command.ForegroundGeneration != _runtime.ActiveProfileGeneration
-            || command.ForegroundGeneration != _runtime.PublishedForegroundGeneration)
+        if (!ForegroundCommandIsCurrent(in command))
         {
             return false;
         }
@@ -431,8 +428,16 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         var foreground = _transport.GetForegroundWindow();
         _transport.GetWindowThreadProcessId(foreground, out var processId);
         return foreground != IntPtr.Zero && foreground == expected.WindowHandle
-            && processId != 0 && processId == expected.ProcessId;
+            && processId != 0 && processId == expected.ProcessId
+            && ReferenceEquals(expected, _foregroundGuard)
+            && ForegroundCommandIsCurrent(in command);
     }
+
+    private bool ForegroundCommandIsCurrent(in InputCommand command) =>
+        !_runtime.IsDisposed && _runtime.IsRunning
+        && command.Generation == Volatile.Read(ref _injectionGeneration)
+        && command.ForegroundGeneration == _runtime.ActiveProfileGeneration
+        && command.ForegroundGeneration == _runtime.PublishedForegroundGeneration;
 
     internal static bool ApplyPhysicalKeyEvent(ref bool physicallyDown, bool isKeyDown, bool isKeyUp)
     {
