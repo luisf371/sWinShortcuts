@@ -27,8 +27,7 @@ public sealed class InputHookService : IInputHookService
     private readonly AutoRunStateMachine _autoRun;
     private readonly AntiAfkStateMachine _antiAfk;
     private readonly RemapStateMachine _remaps;
-    private static readonly Func<int, bool> IsPhysicalKeyDown =
-        key => (NativeMethods.GetAsyncKeyState(key) & 0x8000) != 0;
+    private readonly Func<int, bool> _isPhysicalKeyDown;
 
     private readonly object _profileLock = new();
     private readonly ThreadLocal<Random> _random = new(() =>
@@ -126,8 +125,8 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    // Advanced Mode: global [App] gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and
-    // un-suppressed key mappings). Mirrors HookWatchdogEnabled end-to-end; live-togglable from Settings.
+    // Advanced Mode gates Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and original-key passthrough in
+    // Key Mapping. Caps Lock modes remain available. Mirrors HookWatchdogEnabled; live-togglable from Settings.
     // volatile for the lock-free gating reads on the hook thread (and the injector thread).
     public bool AdvancedModeEnabled
     {
@@ -139,6 +138,7 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
+            _gestures.InvalidateWheel();
             _runtime.SetAdvancedMode(value);
             LogDebug($"Advanced Mode {(value ? "enabled" : "disabled")} via settings");
 
@@ -178,11 +178,20 @@ public sealed class InputHookService : IInputHookService
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
 
     public InputHookService(ILoggerService logger, IInputSender inputSender)
+        : this(logger, inputSender, Stopwatch.GetTimestamp,
+            key => (NativeMethods.GetAsyncKeyState(key) & 0x8000) != 0)
+    {
+    }
+
+    internal InputHookService(
+        ILoggerService logger, IInputSender inputSender, Func<long> clock, Func<int, bool> keyState,
+        IAutoRunTransport? foregroundTransport = null)
     {
         _logger = logger;
-        _runtime = new InputRuntimeState();
-        _inputExecutor = new InputExecutor(_runtime, inputSender, logger);
-        var transport = new NativeAutoRunTransport();
+        _isPhysicalKeyDown = keyState;
+        var transport = foregroundTransport ?? new NativeAutoRunTransport();
+        _runtime = new InputRuntimeState(transport);
+        _inputExecutor = new InputExecutor(_runtime, inputSender, logger, clock, keyState);
         _autoRun = new AutoRunStateMachine(_runtime, _inputExecutor, _random, logger, transport);
         _antiAfk = new AntiAfkStateMachine(_runtime, _autoRun, _random, logger, transport);
         _gestures = new GestureChordStateMachine(
@@ -190,9 +199,10 @@ public sealed class InputHookService : IInputHookService
             _inputExecutor,
             _random,
             logger,
-            () => _rightButtonPressed);
+            () => _rightButtonPressed,
+            clock);
         _rapidFire = new RapidFireStateMachine(_runtime, inputSender, _random, logger, _profileLock);
-        _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, IsPhysicalKeyDown);
+        _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, _isPhysicalKeyDown);
     }
 
     public event EventHandler<Profile?>? ActiveProfileChanged;
@@ -403,8 +413,7 @@ public sealed class InputHookService : IInputHookService
             // suppressed — the carryover repeats + UP then PASS THROUGH and pair with Windows' DOWN instead
             // of a suppressed orphan UP (= stuck CapsLock). A not-held start seeds false -> next press is
             // fresh. Hooks are installed above but _runtime.IsRunning is still false, so no callback is honored yet.
-            _remaps.SeedCapsPhysicalState(
-                (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CAPITAL) & 0x8000) != 0);
+            _remaps.SeedCapsPhysicalState(_isPhysicalKeyDown(NativeMethods.VK_CAPITAL));
 
             // Fresh session: SEED the color-toggle fire-once latch from the ACTUAL physical key state (mirrors
             // the Caps seed above). If the toggle key is still held across Stop->Start its press already fired,
@@ -412,7 +421,7 @@ public sealed class InputHookService : IInputHookService
             // double-fire); its UP then clears it. Not held -> false -> the next press fires. Sync
             // _hookSeenToggleVk so HandleColorToggle's reconciliation doesn't immediately clear this seed.
             var colorToggleVk = _colorToggleVk;
-            _colorToggleDownLatched = colorToggleVk != 0 && (NativeMethods.GetAsyncKeyState(colorToggleVk) & 0x8000) != 0;
+            _colorToggleDownLatched = colorToggleVk != 0 && _isPhysicalKeyDown(colorToggleVk);
             _hookSeenToggleVk = colorToggleVk;
 
             // Seed the Alt+Keyboard typematic latches from the ACTUAL physical key state (same rationale
@@ -425,18 +434,17 @@ public sealed class InputHookService : IInputHookService
             // trigger's fresh-edge latch seeds the same way (keyboard triggers only), after resetting
             // the derivation epoch — a ticket left outstanding by the previous session must not keep
             // Early Cancel fenced on the new one.
-            _gestures.RederivePhysicalState(IsPhysicalKeyDown);
+            _gestures.RederivePhysicalState(_isPhysicalKeyDown);
 
             // Rapid Fire is runtime-only and always starts disarmed (Start never raises the arm
             // event — it is Off by definition). Seed the physical latches so a key or left button
             // held across restart cannot be mistaken for a fresh press.
             _rapidFire.Release(preservePhysicalPairing: false);
-            _rapidFire.SeedTogglePhysicalState(IsPhysicalKeyDown);
+            _rapidFire.SeedTogglePhysicalState(_isPhysicalKeyDown);
             var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
                 ? NativeMethods.VK_RBUTTON
                 : NativeMethods.VK_LBUTTON;
-            _rapidFire.SeedPhysicalLeftButton(
-                (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0);
+            _rapidFire.SeedPhysicalLeftButton(_isPhysicalKeyDown(physicalLeftVk));
 
             // Seed Auto-Run's movement-edge tracker at the hook-stream boundary. Callbacks are installed
             // but still gated by _runtime.IsRunning=false, so this baseline cannot overwrite a newer hook event.
@@ -1014,6 +1022,7 @@ public sealed class InputHookService : IInputHookService
                 // generation this profile had not caught up to yet. No early return here — the
                 // raise lives AFTER the lock.
                 generationChanged = _runtime.ActiveProfileGeneration != foregroundGeneration;
+                if (generationChanged) _gestures.InvalidateWheel();
                 _runtime.SetActiveProfile(profile, foregroundGeneration);
                 _antiAfk.CaptureForegroundTarget(profile);
             }
@@ -1094,6 +1103,11 @@ public sealed class InputHookService : IInputHookService
 
         var active = ReferenceEquals(_runtime.ActiveProfile, profile);
         var windows = ReferenceEquals(_windowsProfile, profile);
+        if (active && (changeKind & (ProfileChangeKind.AltMouse | ProfileChangeKind.CombinedMappings |
+                                    ProfileChangeKind.Identity | ProfileChangeKind.Master | ProfileChangeKind.Removed)) != 0)
+        {
+            _gestures.InvalidateWheel();
+        }
         var hardDeactivate = active &&
             ((changeKind & ProfileChangeKind.Removed) != 0 ||
              ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled));
@@ -1174,7 +1188,7 @@ public sealed class InputHookService : IInputHookService
                 // re-derive the fresh-edge latch for the live trigger so a held key is not
                 // misclassified as a fresh press for the new binding.
                 SchedulePanicDerivation(
-                    () => _gestures.RederivePanicTriggerPhysicalState(IsPhysicalKeyDown));
+                    () => _gestures.RederivePanicTriggerPhysicalState(_isPhysicalKeyDown));
             }
         }
 
@@ -1218,15 +1232,8 @@ public sealed class InputHookService : IInputHookService
 
     public void SetColorToggleKey(Key? key)
     {
+        key = KeyInteropUtilities.NormalizeAppToggleKey(key);
         var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
-
-        // Modifiers can't be the toggle key: their physical-state reconstruction (the dual-Alt sibling check)
-        // can't distinguish a "reserved" modifier from a real one, and firing a color toggle off Shift/Ctrl/
-        // Alt/Win would be surprising. Treat a modifier assignment as unassigned.
-        if (IsModifierVirtualKey(vk))
-        {
-            vk = 0;
-        }
 
         // Publish ONLY the volatile VK from this (worker/UI) thread; the fire-once latch is owned by the hook
         // thread. Because the key is never suppressed, a stale latch across this change costs at most one
@@ -1250,7 +1257,7 @@ public sealed class InputHookService : IInputHookService
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
-        var isDown = (NativeMethods.GetAsyncKeyState(physicalRightVk) & 0x8000) != 0;
+        var isDown = _isPhysicalKeyDown(physicalRightVk);
         RightButtonStateChanged?.Invoke(this, isDown);
     }
 
@@ -1262,13 +1269,6 @@ public sealed class InputHookService : IInputHookService
         }
 
     }
-
-    private static bool IsModifierVirtualKey(int vk) =>
-        vk is 0x10 or 0x11 or 0x12   // VK_SHIFT / VK_CONTROL / VK_MENU
-           or 0xA0 or 0xA1           // VK_LSHIFT / VK_RSHIFT
-           or 0xA2 or 0xA3           // VK_LCONTROL / VK_RCONTROL
-           or 0xA4 or 0xA5           // VK_LMENU / VK_RMENU (Alt)
-           or 0x5B or 0x5C;          // VK_LWIN / VK_RWIN
 
     public void Dispose()
     {
@@ -1381,7 +1381,7 @@ public sealed class InputHookService : IInputHookService
             vkCode,
             isKeyDown,
             isKeyUp,
-            IsPhysicalKeyDown);
+            _isPhysicalKeyDown);
 
         if (suppressEarlyCancelKey)
         {
@@ -1480,12 +1480,13 @@ public sealed class InputHookService : IInputHookService
 
         var message = (int)wParam;
 
-        // P5: moves (up to 8 kHz on gaming mice) and wheel exit here, BEFORE lParam is ever touched —
-        // only these 8 button messages matter to us, and Marshal.PtrToStructure<T> boxes on .NET 8.
+        // Moves (up to 8 kHz) and horizontal wheel exit before lParam is touched. Vertical wheel
+        // joins the button messages; preserve the allocation-free unsafe read below.
         if (message is not (NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_LBUTTONUP or
                              NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP or
                              NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP or
-                             NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP))
+                             NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP or
+                             NativeMethods.WM_MOUSEWHEEL))
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
@@ -1512,10 +1513,16 @@ public sealed class InputHookService : IInputHookService
     // Hook-thread-only dispatcher; see DispatchDecodedKeyboardEvent for callback ownership rules.
     internal bool DispatchDecodedMouseEvent(int message, uint mouseData)
     {
+        if (message == NativeMethods.WM_MOUSEWHEEL)
+        {
+            return _gestures.HandleWheel(message, mouseData);
+        }
+
         // Track right button state (lock-free). Keep _rightButtonPressed = true HERE — CombinedMappings'
         // RightClickOnly gate reads it — but decide hold-breath AFTER HandleAltMouse (H6).
         if (message == NativeMethods.WM_RBUTTONDOWN)
         {
+            if (!_rightButtonPressed) _gestures.InvalidateWheel();
             _rightButtonPressed = true;
 
             // Crosshair hide-while-RMB-held: observation only, gated so the disabled case costs one
@@ -1527,6 +1534,7 @@ public sealed class InputHookService : IInputHookService
         }
         else if (message == NativeMethods.WM_RBUTTONUP)
         {
+            if (_rightButtonPressed) _gestures.InvalidateWheel();
             _rightButtonPressed = false;
             if (_crosshairRightButtonWatch)
             {
@@ -1590,6 +1598,7 @@ public sealed class InputHookService : IInputHookService
         long foregroundGeneration)
     {
         var generationChanged = _runtime.PublishedForegroundGeneration != foregroundGeneration;
+        _gestures.InvalidateWheel();
         _runtime.SetForegroundIdentity(
             windowHandle,
             processId,
@@ -1606,6 +1615,7 @@ public sealed class InputHookService : IInputHookService
         bool preserveRapidFireArm = false,
         string? rapidFireDisarmReason = null)
     {
+        _gestures.InvalidateWheel();
         var rapidFireArmCleared = preserveRapidFireArm
             ? CancelRapidFirePressAndKeepArm()
             : _rapidFire.Release(preservePhysicalPairing, rapidFireDisarmReason);
@@ -1643,22 +1653,21 @@ public sealed class InputHookService : IInputHookService
         var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_RBUTTON
             : NativeMethods.VK_LBUTTON;
-        _rapidFire.SeedPhysicalLeftButton(
-            (NativeMethods.GetAsyncKeyState(physicalLeftVk) & 0x8000) != 0);
+        _rapidFire.SeedPhysicalLeftButton(_isPhysicalKeyDown(physicalLeftVk));
     }
 
     private void RederivePhysicalModifierState()
     {
-        _gestures.SeedAltPressed(IsPhysicalKeyDown(0xA4) || IsPhysicalKeyDown(0xA5));
+        _gestures.SeedAltPressed(_isPhysicalKeyDown(0xA4) || _isPhysicalKeyDown(0xA5));
         SchedulePanicDerivation(() =>
         {
-            _gestures.RederiveAltKeyboardPhysicalState(IsPhysicalKeyDown);
-            _gestures.RederivePanicTriggerPhysicalState(IsPhysicalKeyDown);
+            _gestures.RederiveAltKeyboardPhysicalState(_isPhysicalKeyDown);
+            _gestures.RederivePanicTriggerPhysicalState(_isPhysicalKeyDown);
         });
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
-        _rightButtonPressed = (NativeMethods.GetAsyncKeyState(physicalRightVk) & 0x8000) != 0;
+        _rightButtonPressed = _isPhysicalKeyDown(physicalRightVk);
         if (_crosshairRightButtonWatch)
         {
             RightButtonStateChanged?.Invoke(this, _rightButtonPressed);

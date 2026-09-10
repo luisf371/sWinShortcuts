@@ -35,6 +35,12 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private const long TOKEN_ALT_MOUSE = 0x1000000000000000;
     private const long TOKEN_ALT_KEYBOARD = 0x2000000000000000;
     private const long TOKEN_HOLD_BREATH = 0x3000000000000000;
+    private const long TOKEN_ALT_WHEEL = 0x4000000000000000;
+    private const long TOKEN_MAPPING_WHEEL = 0x5000000000000000;
+    private const long WHEEL_DOWN = 1;
+    private const long WHEEL_RIGHT_CLICK_ONLY = 2;
+    private const long WHEEL_SUPPRESS = 4;
+    private const int MAX_PENDING_WHEEL_TAPS = 4;
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
 
     private readonly InputRuntimeState _runtime;
@@ -42,6 +48,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private readonly ThreadLocal<Random> _random;
     private readonly ILoggerService _logger;
     private readonly Func<bool> _isRightButtonPressed;
+    private readonly Func<long> _clock;
     private readonly Dictionary<MouseButton, MouseState> _mouseStates;
     private readonly Dictionary<Key, KeyboardState> _keyboardStates;
     private readonly object _holdBreathLock = new();
@@ -51,6 +58,11 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private long _altMouseGeneration = 1;
     private long _altKeyboardGeneration = 1;
     private long _pressTokenSequence;
+    private long _wheelEpoch = 1;
+    private int _pendingWheelTaps;
+    // Only the hook thread changes the remainder/context; other threads invalidate the epoch.
+    private WheelContext _wheelContext;
+    private int _wheelRemainder;
 
     private bool _holdBreathPending;
     private Key? _holdBreathInjectedKey;
@@ -74,13 +86,15 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         IInputQueue inputQueue,
         ThreadLocal<Random> random,
         ILoggerService logger,
-        Func<bool> isRightButtonPressed)
+        Func<bool> isRightButtonPressed,
+        Func<long>? clock = null)
     {
         _runtime = runtime;
         _inputQueue = inputQueue;
         _random = random;
         _logger = logger;
         _isRightButtonPressed = isRightButtonPressed;
+        _clock = clock ?? Stopwatch.GetTimestamp;
         _holdBreathTimer = new Timer(_ => OnHoldBreathTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
 
         _mouseStates = new Dictionary<MouseButton, MouseState>
@@ -106,7 +120,13 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
     internal bool PanicDerivationPending => Volatile.Read(ref _panicDerivationEpoch) != 0;
 
-    internal void SeedAltPressed(bool isPressed) => _altPressed = isPressed;
+    internal void SeedAltPressed(bool isPressed)
+    {
+        InvalidateWheel();
+        _altPressed = isPressed;
+    }
+
+    internal void InvalidateWheel() => Interlocked.Increment(ref _wheelEpoch);
 
     internal void ObserveAlt(int vkCode, bool isKeyDown, bool isKeyUp, Func<int, bool> isPhysicallyDown)
     {
@@ -122,6 +142,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
         if (isKeyDown)
         {
+            if (!_altPressed) InvalidateWheel();
             _altPressed = true;
             return;
         }
@@ -131,18 +152,160 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             return;
         }
 
-        _altPressed = vkCode switch
+        var altPressed = vkCode switch
         {
             0xA4 => isPhysicallyDown(0xA5),
             0xA5 => isPhysicallyDown(0xA4),
             _ => false
         };
+        if (altPressed != _altPressed) InvalidateWheel();
+        _altPressed = altPressed;
         if (!_altPressed)
         {
             ResetMouseStates(preserveSuppressedUps: true);
             ResetKeyboardStates(preserveSuppressedUps: true);
         }
     }
+
+    internal bool HandleWheel(int message, uint mouseData)
+    {
+        if (message != NativeMethods.WM_MOUSEWHEEL)
+        {
+            return false;
+        }
+
+        // MSLLHOOKSTRUCT carries signed distance in its high word. Widen before Abs(-32768).
+        int delta = unchecked((short)(mouseData >> 16));
+        var direction = delta > 0 ? MouseWheelDirection.Up : MouseWheelDirection.Down;
+        if (delta == 0 || !TryResolveWheel(direction, out var context))
+        {
+            _wheelRemainder = 0;
+            _wheelContext = default;
+            return false;
+        }
+
+        var createdTick = _clock();
+        var command = new InputCommand(
+            context.Key, IsDown: true, Kind: InputCommandKind.WheelTap,
+            Guard: this, Generation: context.Epoch,
+            ForegroundGeneration: context.ForegroundGeneration, ExpectedProfile: context.Profile,
+            Token: context.Token, CreatedTick: createdTick);
+        if (!CanExecute(command))
+        {
+            _wheelRemainder = 0;
+            _wheelContext = default;
+            return false;
+        }
+
+        if (_wheelContext != context)
+        {
+            _wheelRemainder = 0;
+            _wheelContext = context;
+        }
+        var total = _wheelRemainder + Math.Abs(delta);
+        _wheelRemainder = total % NativeMethods.WHEEL_DELTA;
+        var increments = Math.Min(total / NativeMethods.WHEEL_DELTA, MAX_PENDING_WHEEL_TAPS);
+        var accepted = 0;
+        for (var i = 0; i < increments; i++)
+        {
+            if (!TryReserveWheel()) break;
+
+            var enqueued = false;
+            try
+            {
+                command = command with { DelayBeforeMs = WarmRandom().Next(KEY_PRESS_MIN_MS, KEY_PRESS_MAX_MS + 1) };
+                enqueued = _inputQueue.Enqueue(command);
+            }
+            catch (Exception ex)
+            {
+                if (_logger.IsEnabled) _logger.Log($"Wheel tap admission failed: {ex.Message}");
+            }
+            finally
+            {
+                // An accepted command owns its reservation even if completion races this return.
+                if (!enqueued) Interlocked.Decrement(ref _pendingWheelTaps);
+            }
+
+            if (!enqueued)
+            {
+                _wheelRemainder = 0;
+                _wheelContext = default;
+                return accepted != 0 && (context.Token & WHEEL_SUPPRESS) != 0;
+            }
+            accepted++;
+        }
+
+        // Fractions, overload and later worker rejection retain the route's packet policy.
+        return (context.Token & WHEEL_SUPPRESS) != 0;
+    }
+
+    private bool TryResolveWheel(MouseWheelDirection direction, out WheelContext context)
+    {
+        context = default;
+        var epoch = Volatile.Read(ref _wheelEpoch);
+        var foregroundGeneration = _runtime.ActiveProfileGeneration;
+        var profile = _runtime.ActiveProfile;
+        if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0 ||
+            profile is not { IsEnabled: true } ||
+            !_runtime.ProfileInputGenerationIsCurrent(profile, foregroundGeneration))
+        {
+            return false;
+        }
+
+        var directionToken = direction == MouseWheelDirection.Down ? WHEEL_DOWN : 0;
+        var altKey = direction == MouseWheelDirection.Up ? profile.AltMouse.WheelUpKey : profile.AltMouse.WheelDownKey;
+        if (_altPressed && profile.AltMouse.IsEnabled && altKey is { } key && IsWheelTarget(key))
+        {
+            context = new(profile, foregroundGeneration, epoch, key,
+                TOKEN_ALT_WHEEL | directionToken | WHEEL_SUPPRESS);
+        }
+        else if (profile.CombinedMappings.IsEnabled)
+        {
+            var source = InputTrigger.FromWheel(direction);
+            foreach (var mapping in profile.CombinedMappings.Mappings)
+            {
+                if (mapping.Source != source) continue;
+                if (!IsWheelTarget(mapping.TargetKey) || (mapping.RightClickOnly && !_isRightButtonPressed()))
+                {
+                    return false;
+                }
+                context = new(profile, foregroundGeneration, epoch, mapping.TargetKey,
+                    TOKEN_MAPPING_WHEEL | directionToken |
+                    (mapping.RightClickOnly ? WHEEL_RIGHT_CLICK_ONLY : 0) |
+                    (mapping.SuppressOriginalKey || !_runtime.AdvancedModeEnabled ? WHEEL_SUPPRESS : 0));
+                break;
+            }
+        }
+
+        return context.Profile is not null && epoch == Volatile.Read(ref _wheelEpoch) &&
+            _runtime.ProfileInputGenerationIsCurrent(profile, foregroundGeneration);
+    }
+
+    private static bool IsWheelTarget(Key key) =>
+        Enum.IsDefined(key) && KeyInteropUtilities.ToVirtualKey(key) != 0;
+
+    private bool TryReserveWheel()
+    {
+        var pending = Volatile.Read(ref _pendingWheelTaps);
+        while (pending < MAX_PENDING_WHEEL_TAPS)
+        {
+            var observed = Interlocked.CompareExchange(ref _pendingWheelTaps, pending + 1, pending);
+            if (observed == pending) return true;
+            pending = observed;
+        }
+        return false;
+    }
+
+    public void OnCompleted(in InputCommand command)
+    {
+        if ((command.Token & TOKEN_KIND_MASK) is TOKEN_ALT_WHEEL or TOKEN_MAPPING_WHEEL)
+        {
+            Interlocked.Decrement(ref _pendingWheelTaps);
+        }
+    }
+
+    private readonly record struct WheelContext(
+        Profile? Profile, long ForegroundGeneration, long Epoch, Key Key, long Token);
 
     internal bool HandleAltMouse(int message, uint mouseData)
     {
@@ -521,6 +684,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
     internal void ReleaseGestures(bool preserveSuppressedUps)
     {
+        InvalidateWheel();
         if (Volatile.Read(ref _disposed) != 0)
         {
             return;
@@ -536,6 +700,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
     internal void ReleaseAltMouse(bool preserveSuppressedUps = true)
     {
+        InvalidateWheel();
         if (Volatile.Read(ref _disposed) == 0)
         {
             ResetMouseStates(preserveSuppressedUps);
@@ -578,7 +743,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
     internal void RederivePhysicalState(Func<int, bool> isPhysicallyDown)
     {
-        _altPressed = isPhysicallyDown(0xA4) || isPhysicallyDown(0xA5);
+        SeedAltPressed(isPhysicallyDown(0xA4) || isPhysicallyDown(0xA5));
         RederiveAltKeyboardPhysicalState(isPhysicallyDown);
         RederivePanicTriggerPhysicalState(isPhysicallyDown);
     }
@@ -627,6 +792,12 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
         return (command.Token & TOKEN_KIND_MASK) switch
         {
+            TOKEN_ALT_WHEEL or TOKEN_MAPPING_WHEEL =>
+                command.Generation == Volatile.Read(ref _wheelEpoch) &&
+                TryResolveWheel((command.Token & WHEEL_DOWN) != 0 ? MouseWheelDirection.Down : MouseWheelDirection.Up, out var wheel) &&
+                wheel.Token == command.Token && wheel.Key == command.Key &&
+                wheel.Epoch == command.Generation && wheel.ForegroundGeneration == command.ForegroundGeneration &&
+                ReferenceEquals(wheel.Profile, command.ExpectedProfile),
             TOKEN_ALT_MOUSE => profile.AltMouse.IsEnabled &&
                 command.Generation == Volatile.Read(ref _altMouseGeneration),
             TOKEN_ALT_KEYBOARD => profile.AltKeyboard.IsEnabled &&
@@ -841,7 +1012,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
                 Generation: generation,
                 ForegroundGeneration: _holdBreathArmedForegroundGeneration,
                 ExpectedProfile: profile,
-                Token: token));
+                Token: token,
+                HoldOwner: InputHoldOwner.HoldBreath));
         }
         else
         {
@@ -864,7 +1036,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         if (_holdBreathInjectedKey is { } key)
         {
             _holdBreathInjectedKey = null;
-            _inputQueue.Enqueue(new InputCommand(key, false));
+            _inputQueue.Enqueue(new InputCommand(key, false, HoldOwner: InputHoldOwner.HoldBreath));
         }
     }
 
@@ -1007,6 +1179,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         {
             return;
         }
+
+        InvalidateWheel();
 
         Interlocked.Increment(ref _altMouseGeneration);
         Interlocked.Increment(ref _altKeyboardGeneration);

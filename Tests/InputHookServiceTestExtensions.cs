@@ -1,10 +1,12 @@
 using System.Reflection;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Services.Input;
 using sWinShortcuts.Utilities;
+using Tests.Fakes;
 
 namespace Tests;
 
@@ -23,6 +25,9 @@ internal static class InputHookServiceTestExtensions
         "ReleaseAllState",
         BindingFlags.Instance | BindingFlags.NonPublic)!;
 
+    internal static InputHookService CreateWithFakeForeground(ILoggerService logger, IInputSender sender) =>
+        new(logger, sender, Stopwatch.GetTimestamp, _ => false, FakeAutoRunTransport.MatchingForeground());
+
     internal static void StartInputExecutorForTesting(this InputHookService service)
     {
         var runtime = Get<InputRuntimeState>(service, RuntimeField);
@@ -38,6 +43,15 @@ internal static class InputHookServiceTestExtensions
             runtime.SetRunning(true);
         }
     }
+
+    internal static GestureChordStateMachine GetGesturesForTesting(this InputHookService service) =>
+        Get<GestureChordStateMachine>(service, GesturesField);
+
+    internal static bool IsInputRunningForTesting(this InputHookService service) =>
+        Get<InputRuntimeState>(service, RuntimeField).IsRunning;
+
+    internal static void ResetInputStateForTesting(this InputHookService service) =>
+        ReleaseAllStateMethod.Invoke(service, [true, true, null]);
 
     internal static void StopInputExecutorForTesting(this InputHookService service)
     {
@@ -60,8 +74,8 @@ internal static class InputHookServiceTestExtensions
         var runtime = Get<InputRuntimeState>(service, RuntimeField);
         runtime.SetActiveProfile(profile, foregroundGeneration);
         runtime.SetForegroundIdentity(
-            IntPtr.Zero,
-            0,
+            (IntPtr)100,
+            42,
             profile.NormalizedExecutable,
             foregroundGeneration);
         Get<GestureChordStateMachine>(service, GesturesField).SeedAltPressed(altPressed);

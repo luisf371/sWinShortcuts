@@ -7,10 +7,18 @@ public enum InputTriggerKind
 {
     None,
     KeyboardKey,
-    MouseButton
+    MouseButton,
+    MouseWheel
 }
 
-public readonly record struct InputTrigger(InputTriggerKind Kind, Key Key, MouseButton MouseButton)
+public enum MouseWheelDirection
+{
+    Up,
+    Down
+}
+
+public readonly record struct InputTrigger(
+    InputTriggerKind Kind, Key Key, MouseButton MouseButton, MouseWheelDirection Wheel = default)
 {
     public static InputTrigger None => new(InputTriggerKind.None, Key.None, default);
 
@@ -22,5 +30,10 @@ public readonly record struct InputTrigger(InputTriggerKind Kind, Key Key, Mouse
     public static InputTrigger FromMouseButton(MouseButton button) =>
         Enum.IsDefined(button)
             ? new(InputTriggerKind.MouseButton, Key.None, button)
+            : None;
+
+    public static InputTrigger FromWheel(MouseWheelDirection direction) =>
+        Enum.IsDefined(direction)
+            ? new(InputTriggerKind.MouseWheel, Key.None, default, direction)
             : None;
 }

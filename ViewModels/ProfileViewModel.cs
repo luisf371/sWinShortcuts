@@ -14,6 +14,7 @@ namespace sWinShortcuts.ViewModels;
 public sealed class ProfileViewModel : ViewModelBase, IDisposable
 {
     private readonly IReadOnlyList<Key> _keyOptions;
+    private readonly IReadOnlyList<InputTrigger> _combinedSourceOptions;
     private bool _isSyncing;
 
     // F-014/F-015: set by MainViewModel (under its _saveSync) when this VM is detached because its profile
@@ -32,14 +33,19 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         ArgumentNullException.ThrowIfNull(displayService);
         ArgumentNullException.ThrowIfNull(colorControlService);
         _keyOptions = keyOptions ?? KeyCatalog.GetCommonKeys();
+        _combinedSourceOptions = KeyCatalog.SortKeys(_keyOptions.Where(k => k != Key.None).Distinct())
+            .Select(InputTrigger.FromKey)
+            .Concat([InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down)])
+            .ToArray();
 
         AltMouse = new AltMouseViewModel(Model.AltMouse);
         AltMouse.Changed += (_, _) =>
         {
-            OnPropertyChanged(nameof(AvailableMouseButtons));
+            UpdateSelectableAltMouseSources();
+            OnPropertyChanged(nameof(AvailableAltMouseSources));
             OnProfileChanged(ProfileChangeKind.AltMouse);
         };
-        AltMouse.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableMouseButtons));
+        UpdateSelectableAltMouseSources();
 
         AltKeyboard = new AltKeyboardViewModel(Model.AltKeyboard);
         AltKeyboard.Changed += (_, _) =>
@@ -52,7 +58,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         CombinedMappings = new ObservableCollection<CombinedMappingEntryViewModel>(
             Model.CombinedMappings.Mappings.Select(e => new CombinedMappingEntryViewModel
             {
-                SourceKey = e.SourceKey,
+                Source = e.Source,
                 TargetKey = e.TargetKey,
                 SuppressOriginalKey = e.SuppressOriginalKey,
                 RightClickOnly = e.RightClickOnly
@@ -213,13 +219,15 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public IReadOnlyList<Models.MouseButton> AvailableMouseButtons
+    public IReadOnlyList<InputTrigger> AvailableAltMouseSources
     {
         get
         {
-            var allButtons = new[] { Models.MouseButton.Left, Models.MouseButton.Right, Models.MouseButton.Middle, Models.MouseButton.XButton1, Models.MouseButton.XButton2 };
-            var usedButtons = AltMouse.Bindings.Select(b => b.Button).ToHashSet();
-            return allButtons.Where(b => !usedButtons.Contains(b)).ToList();
+            var used = AltMouse.Bindings.Select(row => row.Source).ToHashSet();
+            return Enum.GetValues<Models.MouseButton>()
+                .Select(InputTrigger.FromMouseButton)
+                .Concat([InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down)])
+                .Where(source => !used.Contains(source)).ToList();
         }
     }
 
@@ -234,12 +242,12 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public ObservableCollection<WindowsLauncherEntryViewModel> WindowsLaunchers { get; }
 
-    public IReadOnlyList<Key> AvailableCombinedSourceKeys
+    public IReadOnlyList<InputTrigger> AvailableCombinedSources
     {
         get
         {
-            var used = CombinedMappings.Select(e => e.SourceKey).ToHashSet();
-            return _keyOptions.Where(k => !used.Contains(k)).ToList();
+            var used = CombinedMappings.Select(e => e.Source).ToHashSet();
+            return _combinedSourceOptions.Where(source => !used.Contains(source)).ToList();
         }
     }
 
@@ -311,6 +319,10 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         get => Model.RightClickHoldBreath.PanicTrigger;
         set
         {
+            if (value.Kind == InputTriggerKind.MouseWheel)
+            {
+                value = InputTrigger.None;
+            }
             if (Model.RightClickHoldBreath.PanicTrigger != value)
             {
                 Model.RightClickHoldBreath.PanicTrigger = value;
@@ -685,20 +697,15 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public void AddCombinedMapping()
     {
-        var available = AvailableCombinedSourceKeys;
-        var defaultSource = available.FirstOrDefault();
-        if (defaultSource == default)
+        var available = AvailableCombinedSources;
+        if (available.Count == 0)
         {
-            defaultSource = _keyOptions.FirstOrDefault(k => k != Key.None);
-            if (defaultSource == default)
-            {
-                defaultSource = Key.A;
-            }
+            return;
         }
 
         var combined = new CombinedMappingEntryViewModel
         {
-            SourceKey = defaultSource,
+            Source = available[0],
             RightClickOnly = false
         };
 
@@ -734,24 +741,13 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public void AddAltMouseBinding()
     {
-        var availableButtons = AvailableMouseButtons;
-        if (availableButtons.Count == 0)
+        var availableSources = AvailableAltMouseSources;
+        if (availableSources.Count == 0)
         {
             return;
         }
 
-        var entry = new AltMouseBindingEntryViewModel(availableButtons[0], null, null);
-
-        entry.PropertyChanged += (s, e) =>
-        {
-            if (e.PropertyName == nameof(AltMouseBindingEntryViewModel.Button))
-            {
-                OnPropertyChanged(nameof(AvailableMouseButtons));
-            }
-        };
-
-        AltMouse.Bindings.Add(entry);
-        OnPropertyChanged(nameof(AvailableMouseButtons));
+        AltMouse.Bindings.Add(new AltMouseBindingEntryViewModel(availableSources[0], null, null));
     }
 
     public void RemoveAltMouseBinding(AltMouseBindingEntryViewModel? entry)
@@ -761,10 +757,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             return;
         }
 
-        if (AltMouse.Bindings.Remove(entry))
-        {
-            OnPropertyChanged(nameof(AvailableMouseButtons));
-        }
+        AltMouse.Bindings.Remove(entry);
     }
 
     public void RemoveAllAltMouseBindings()
@@ -772,6 +765,15 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         while (AltMouse.Bindings.Count > 0)
         {
             RemoveAltMouseBinding(AltMouse.Bindings[0]);
+        }
+    }
+
+    private void UpdateSelectableAltMouseSources()
+    {
+        var available = AvailableAltMouseSources;
+        foreach (var row in AltMouse.Bindings)
+        {
+            row.SelectableSources = available.Prepend(row.Source).ToArray();
         }
     }
 
@@ -851,7 +853,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             }
         }
         UpdateSelectableKeys();
-        OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
+        OnPropertyChanged(nameof(AvailableCombinedSources));
         OnProfileChanged(ProfileChangeKind.CombinedMappings);
     }
 
@@ -867,10 +869,14 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     private void OnCombinedVmChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(CombinedMappingEntryViewModel.SourceKey))
+        if (e.PropertyName == nameof(CombinedMappingEntryViewModel.SelectableSources))
+        {
+            return;
+        }
+        if (e.PropertyName == nameof(CombinedMappingEntryViewModel.Source))
         {
             UpdateSelectableKeys();
-            OnPropertyChanged(nameof(AvailableCombinedSourceKeys));
+            OnPropertyChanged(nameof(AvailableCombinedSources));
         }
         // Persist and notify engine immediately on any mapping change
         OnProfileChanged(ProfileChangeKind.CombinedMappings);
@@ -878,17 +884,17 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     private void UpdateSelectableKeys()
     {
-        var allUsed = CombinedMappings.Select(m => m.SourceKey).ToHashSet();
+        var allUsed = CombinedMappings.Select(m => m.Source).ToHashSet();
         
         foreach (var vm in CombinedMappings)
         {
             // For each row, allowed keys are:
             // 1. Keys not used by anyone
             // 2. OR the key used by THIS row (so it can keep its own selection)
-            var allowed = _keyOptions
-                .Where(k => !allUsed.Contains(k) || k == vm.SourceKey);
-            
-            vm.SelectableSourceKeys = KeyCatalog.SortKeys(allowed).ToList();
+            var allowed = _combinedSourceOptions
+                .Where(k => !allUsed.Contains(k) || k == vm.Source);
+
+            vm.SelectableSources = allowed.ToList();
         }
     }
 
@@ -986,7 +992,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 mappings.Add(new CombinedMappingEntry
                 {
-                    SourceKey = vm.SourceKey,
+                    Source = vm.Source,
                     TargetKey = vm.TargetKey,
                     SuppressOriginalKey = vm.SuppressOriginalKey,
                     RightClickOnly = vm.RightClickOnly

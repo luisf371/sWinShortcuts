@@ -5,6 +5,7 @@
         xmlns:models="clr-namespace:sWinShortcuts.Models"
         xmlns:conv="clr-namespace:sWinShortcuts.Converters"
         xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
+        xmlns:input="clr-namespace:System.Windows.Input;assembly=WindowsBase"
         Title="sWinShortcuts"
         Icon="pack://application:,,,/Icons/Icon.ico"
         Width="960"
@@ -35,9 +36,7 @@
     <Window.Resources>
         <conv:BooleanNegationConverter x:Key="NotConverter" />
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
-        <conv:MouseButtonDisplayConverter x:Key="MouseButtonDisplayConverter" />
         <conv:InputTriggerDisplayConverter x:Key="InputTriggerDisplayConverter" />
-        <conv:AvailableMouseButtonsConverter x:Key="AvailableMouseButtonsConverter" />
         <conv:AvailableTriggerKeysConverter x:Key="AvailableTriggerKeysConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
@@ -445,7 +444,7 @@
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Single list of mappings. Toggle Right-click column to apply only while holding right button. The toggle enables/disables both global and right-click mappings."
+                                                           ToolTip="Map a key or Wheel Up/Down. Right-click limits the mapping to when the right mouse button is held. Wheel mappings tap their target and preserve held modifiers. Taps are skipped when the target is detected held, or input is too fast or too old. Avoid sharing a wheel target with Background Auto-Run movement/sprint: it can interrupt that posted hold."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                             </StackPanel>
@@ -470,13 +469,13 @@
                                                     <DataGridTemplateColumn Header="Source" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox SelectedItem="{Binding SourceKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          ItemsSource="{Binding SelectableSourceKeys}"
+                                                                <ComboBox SelectedItem="{Binding Source, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          ItemsSource="{Binding SelectableSources}"
                                                                           IsSynchronizedWithCurrentItem="False"
                                                                           behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                                     <ComboBox.ItemTemplate>
                                                                         <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
+                                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
                                                                         </DataTemplate>
                                                                     </ComboBox.ItemTemplate>
                                                                 </ComboBox>
@@ -585,7 +584,7 @@
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Hold Alt and click mouse buttons to trigger tap/hold actions. Configure button mappings and hold threshold below."
+                                                           ToolTip="Hold Alt and click for tap/hold actions, or scroll for a wheel tap. Alt stays held, so the app may receive Alt plus the target key. Wheel taps skip detected held targets and discard overload or old input. Avoid targets held by Background Auto-Run movement/sprint: wheel taps can interrupt those posted holds."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                             </StackPanel>
@@ -644,20 +643,15 @@
                                                       RowHeight="32"
                                                       BorderThickness="0">
                                                 <DataGrid.Columns>
-                                                    <DataGridTemplateColumn Header="Button" Width="*">
+                                                    <DataGridTemplateColumn Header="Trigger" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox SelectedItem="{Binding Button, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Delay=100}"
+                                                                <ComboBox ItemsSource="{Binding SelectableSources}"
+                                                                          SelectedItem="{Binding Source, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                                           IsSynchronizedWithCurrentItem="False">
-                                                                    <ComboBox.ItemsSource>
-                                                                        <MultiBinding Converter="{StaticResource AvailableMouseButtonsConverter}" UpdateSourceTrigger="PropertyChanged">
-                                                                            <Binding Path="DataContext.SelectedProfile.AvailableMouseButtons" ElementName="RootWindow" Mode="OneWay" />
-                                                                            <Binding Path="Button" Mode="OneWay" />
-                                                                        </MultiBinding>
-                                                                    </ComboBox.ItemsSource>
                                                                     <ComboBox.ItemTemplate>
                                                                         <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource MouseButtonDisplayConverter}}" />
+                                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
                                                                         </DataTemplate>
                                                                     </ComboBox.ItemTemplate>
                                                                 </ComboBox>
@@ -684,7 +678,19 @@
                                                             <DataTemplate>
                                                                 <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
                                                                           SelectedItem="{Binding HoldKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                          IsEnabled="{Binding CanHold}"
+                                                                          ToolTip="Mouse wheel triggers support Tap only."
+                                                                          ToolTipService.ShowOnDisabled="True"
                                                                           behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
+                                                                    <ComboBox.Style>
+                                                                        <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+                                                                            <Style.Triggers>
+                                                                                <Trigger Property="IsEnabled" Value="False">
+                                                                                    <Setter Property="Opacity" Value="0.5" />
+                                                                                </Trigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </ComboBox.Style>
                                                                     <ComboBox.ItemTemplate>
                                                                         <DataTemplate>
                                                                             <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />

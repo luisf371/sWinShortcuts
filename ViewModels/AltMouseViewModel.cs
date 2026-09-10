@@ -22,7 +22,17 @@ public sealed class AltMouseViewModel : ViewModelBase
         _model = model ?? throw new ArgumentNullException(nameof(model));
         
         Bindings = new ObservableCollection<AltMouseBindingEntryViewModel>(
-            _model.Bindings.Select(pair => new AltMouseBindingEntryViewModel(pair.Key, pair.Value.TapKey, pair.Value.HoldKey)));
+            _model.Bindings.Select(pair => new AltMouseBindingEntryViewModel(
+                InputTrigger.FromMouseButton(pair.Key), pair.Value.TapKey, pair.Value.HoldKey)));
+        if (_model.WheelUpKey is { } upKey && upKey != Key.None)
+        {
+            Bindings.Add(new AltMouseBindingEntryViewModel(InputTrigger.FromWheel(MouseWheelDirection.Up), upKey, null));
+        }
+        if (_model.WheelDownKey is { } downKey && downKey != Key.None)
+        {
+            Bindings.Add(new AltMouseBindingEntryViewModel(InputTrigger.FromWheel(MouseWheelDirection.Down), downKey, null));
+        }
+
         Bindings.CollectionChanged += OnBindingsChanged;
         foreach (var entry in Bindings)
         {
@@ -110,15 +120,34 @@ public sealed class AltMouseViewModel : ViewModelBase
         // Build-and-swap, never Clear+rebuild in place: the pool-thread autosave serializer and the
         // hook thread read this dictionary concurrently with UI edits.
         var bindings = new System.Collections.Generic.Dictionary<MouseButton, MouseButtonBinding>();
+        Key? wheelUpKey = null;
+        Key? wheelDownKey = null;
         foreach (var entry in Bindings)
         {
-            bindings[entry.Button] = new MouseButtonBinding
+            Key? tapKey = entry.TapKey == Key.None ? null : entry.TapKey;
+            if (entry.Source.Kind == InputTriggerKind.MouseButton)
             {
-                TapKey = entry.TapKey == System.Windows.Input.Key.None ? null : entry.TapKey,
-                HoldKey = entry.HoldKey == System.Windows.Input.Key.None ? null : entry.HoldKey
-            };
+                bindings[entry.Source.MouseButton] = new MouseButtonBinding
+                {
+                    TapKey = tapKey,
+                    HoldKey = entry.HoldKey == Key.None ? null : entry.HoldKey
+                };
+            }
+            else if (entry.Source.Kind == InputTriggerKind.MouseWheel)
+            {
+                if (entry.Source.Wheel == MouseWheelDirection.Up)
+                {
+                    wheelUpKey = tapKey;
+                }
+                else if (entry.Source.Wheel == MouseWheelDirection.Down)
+                {
+                    wheelDownKey = tapKey;
+                }
+            }
         }
 
         _model.Bindings = bindings;
+        _model.WheelUpKey = wheelUpKey;
+        _model.WheelDownKey = wheelDownKey;
     }
 }

@@ -1,6 +1,8 @@
 using System;
 using CommunityToolkit.Mvvm.ComponentModel;
 using System.Windows.Input;
+using System.Collections.Generic;
+using sWinShortcuts.Models;
 
 namespace sWinShortcuts.ViewModels;
 
@@ -10,14 +12,14 @@ public sealed partial class CombinedMappingEntryViewModel : ViewModelBase
 
     public CombinedMappingEntryViewModel()
     {
-        sourceKey = Key.A;
+        source = InputTrigger.FromKey(Key.A);
         targetKey = Key.A;
         suppressOriginalKey = true;
         rightClickOnly = false;
     }
 
     [ObservableProperty]
-    private Key sourceKey;
+    private InputTrigger source;
 
     [ObservableProperty]
     private Key targetKey;
@@ -28,14 +30,14 @@ public sealed partial class CombinedMappingEntryViewModel : ViewModelBase
     [ObservableProperty]
     private bool rightClickOnly;
 
-    private System.Collections.Generic.IEnumerable<Key> _selectableSourceKeys = new System.Collections.Generic.List<Key>();
-    public System.Collections.Generic.IEnumerable<Key> SelectableSourceKeys
+    private IEnumerable<InputTrigger> _selectableSources = [];
+    public IEnumerable<InputTrigger> SelectableSources
     {
-        get => _selectableSourceKeys;
-        set => SetProperty(ref _selectableSourceKeys, value);
+        get => _selectableSources;
+        set => SetProperty(ref _selectableSources, value);
     }
 
-    partial void OnSourceKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);
+    partial void OnSourceChanged(InputTrigger value) => Changed?.Invoke(this, EventArgs.Empty);
 
     partial void OnTargetKeyChanged(Key value) => Changed?.Invoke(this, EventArgs.Empty);
 

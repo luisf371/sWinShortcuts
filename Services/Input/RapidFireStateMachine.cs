@@ -66,11 +66,8 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     internal bool SetToggleKey(Key? key)
     {
+        key = KeyInteropUtilities.NormalizeAppToggleKey(key);
         var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
-        if (vk is 0x10 or 0x11 or 0x12 or 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5 or 0x5B or 0x5C)
-        {
-            vk = 0;
-        }
 
         if (Volatile.Read(ref _toggleVk) == vk)
         {
@@ -273,7 +270,9 @@ internal sealed class RapidFireStateMachine : IDisposable
     internal void ConfigureForTesting(Profile profile, long foregroundGeneration, bool armed = true)
     {
         _runtime.SetActiveProfile(profile, foregroundGeneration);
-        _runtime.SetForegroundIdentity(IntPtr.Zero, 0, profile.Executable, foregroundGeneration);
+        var foreground = _runtime.ForegroundIdentity;
+        _runtime.SetForegroundIdentity(foreground?.WindowHandle ?? IntPtr.Zero,
+            foreground?.ProcessId ?? 0, profile.Executable, foregroundGeneration);
         Release(preservePhysicalPairing: false);
         _ownerProfile = armed ? profile : null;
         Volatile.Write(ref _armedEpoch, Volatile.Read(ref _armEpoch));
@@ -367,7 +366,8 @@ internal sealed class RapidFireStateMachine : IDisposable
         try
         {
             var holdMilliseconds = _random.Value!.Next(HOLD_MIN_MS, HOLD_MAX_MS + 1);
-            if (_runtime.IsDisposed || !IsCurrent(generation, profile, foregroundGeneration))
+            if (!_runtime.LiveForegroundMatches(profile, foregroundGeneration) ||
+                !IsCurrent(generation, profile, foregroundGeneration))
             {
                 return;
             }

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using Tests.Fakes;
@@ -269,8 +270,16 @@ public class ProfileManagerRegressionTests
         var manager = new ProfileManager(store);
         await manager.InitializeAsync();
         var alpha = await manager.AddProfileAsync("Alpha", "alpha.exe");
+        alpha.AltMouse.WheelUpKey = Key.E;
+        alpha.AltMouse.WheelDownKey = Key.Q;
+        alpha.CombinedMappings.Mappings.Add(new CombinedMappingEntry
+        {
+            Source = InputTrigger.FromWheel(MouseWheelDirection.Down), TargetKey = Key.R
+        });
         var snapshot = ProfilePersistenceSnapshot.Create(alpha);
         snapshot.IsEnabled = false;
+        alpha.AltMouse.WheelUpKey = Key.Z;
+        alpha.CombinedMappings.Mappings[0].TargetKey = Key.T;
 
         await manager.RenameProfileAsync(alpha, "Beta");
         await manager.AddProfileAsync("Alpha", "other.exe");
@@ -278,6 +287,11 @@ public class ProfileManagerRegressionTests
 
         Assert.Equal("Beta", store.SavedProfiles[^1].Name);
         Assert.False(store.SavedProfiles[^1].IsEnabled);
+        Assert.Equal(Key.E, store.SavedProfiles[^1].AltMouse.WheelUpKey);
+        Assert.Equal(Key.Q, store.SavedProfiles[^1].AltMouse.WheelDownKey);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Down),
+            Assert.Single(store.SavedProfiles[^1].CombinedMappings.Mappings).Source);
+        Assert.Equal(Key.R, Assert.Single(store.SavedProfiles[^1].CombinedMappings.Mappings).TargetKey);
         Assert.Equal("Beta", alpha.Name);
         Assert.True(alpha.IsEnabled);
     }

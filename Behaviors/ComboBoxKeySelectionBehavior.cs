@@ -1,6 +1,7 @@
 using System;
 using System.Windows;
 using System.Windows.Input;
+using sWinShortcuts.Models;
 
 namespace sWinShortcuts.Behaviors;
 
@@ -56,16 +57,17 @@ public static class ComboBoxKeySelectionBehavior
         }
 
         // Get the key that was pressed
-        var pressedKey = e.Key;
+        var pressedKey = e.Key == Key.System ? e.SystemKey : e.Key;
         
         // Check if this is a valid Key enum value
         if (Enum.IsDefined(typeof(Key), pressedKey))
         {
             // Search through ItemsSource for a matching key
-            foreach (var item in comboBox.ItemsSource)
+            foreach (var item in comboBox.Items)
             {
                 // Handle nullable Key?
-                if (item is Key key && key == pressedKey)
+                if (item is Key key && key == pressedKey ||
+                    item is InputTrigger { Kind: InputTriggerKind.KeyboardKey } trigger && trigger.Key == pressedKey)
                 {
                     comboBox.SelectedItem = item;
                     comboBox.IsDropDownOpen = false;

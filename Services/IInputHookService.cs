@@ -64,9 +64,9 @@ public interface IInputHookService : IDisposable
     bool HookWatchdogEnabled { get; set; }
 
     /// <summary>
-    /// Global gate for non-1:1 automation (Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and un-suppressed key
-    /// mappings). When false those features are inert and any held gated state is released; every
-    /// mapping is forced 1:1. Live-togglable from Settings; persisted as [App] AdvancedMode.
+    /// Global gate for Auto-Run, Anti-AFK, Hold-Breath, Rapid Fire, and original-key passthrough in Key Mapping.
+    /// When false, gated assists stop and their held state is released; Key Mapping suppresses the original
+    /// input. Caps Lock modes remain available. Live-togglable from Settings; persisted as [App] AdvancedMode.
     /// </summary>
     bool AdvancedModeEnabled { get; set; }
 

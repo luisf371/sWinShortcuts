@@ -1108,7 +1108,7 @@ public sealed class InputExecutorReliabilityTests
     public void AutoRun_InactiveOwnerReconciliation_ReleasesOnlyInvalidatedOwner(
         ProfileChangeKind changeKind, bool ownerChanged, bool expectedStop)
     {
-        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), new RecordingInputSender());
         var flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var runtimeField = typeof(InputHookService).GetField("_runtime", flags);
         Assert.NotNull(runtimeField);

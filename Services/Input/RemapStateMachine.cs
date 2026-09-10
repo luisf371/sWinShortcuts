@@ -97,7 +97,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                     IsDown: true,
                     Guard: this,
                     Generation: Volatile.Read(ref _combinedConfigurationGeneration),
-                    Token: GUARD_COMBINED));
+                    Token: GUARD_COMBINED, HoldOwner: InputHoldOwner.Combined));
             }
         }
     }
@@ -265,7 +265,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 if (_activeCombinedOverrides.Remove(sourceKey.Value, out held) && held is not null &&
                     DecrementCombinedTarget(held.TargetKey))
                 {
-                    _queue.Enqueue(new InputCommand(held.TargetKey, IsDown: false));
+                    _queue.Enqueue(new InputCommand(held.TargetKey, IsDown: false, HoldOwner: InputHoldOwner.Combined));
                 }
                 _activeCombinedOverrideCount = _activeCombinedOverrides.Count;
                 _combinedSuppressionUntilUpCount = _combinedSuppressionUntilUp.Count;
@@ -322,7 +322,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         CombinedMappingEntry? entry = null;
         foreach (var candidate in profile.CombinedMappings.Mappings)
         {
-            if (candidate.SourceKey == sourceKey.Value)
+            if (candidate.Source == InputTrigger.FromKey(sourceKey.Value))
             {
                 entry = candidate;
                 break;
@@ -363,7 +363,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                         Generation: generation,
                         ForegroundGeneration: foregroundGeneration,
                         ExpectedProfile: profile,
-                        Token: GUARD_COMBINED)))
+                        Token: GUARD_COMBINED, HoldOwner: InputHoldOwner.Combined)))
             {
                 _activeCombinedOverrides.Remove(sourceKey.Value);
                 DecrementCombinedTarget(target);
@@ -392,7 +392,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             {
                 if (_capsHeldOutputKey is { } heldOutput)
                 {
-                    _queue.Enqueue(new InputCommand(heldOutput, IsDown: false));
+                    _queue.Enqueue(new InputCommand(heldOutput, IsDown: false, HoldOwner: InputHoldOwner.Caps));
                     _capsHeldOutputKey = null;
                     _capsHeldGeneration = 0;
                     _capsHeldForegroundGeneration = 0;
@@ -451,7 +451,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                             Generation: _capsHeldGeneration,
                             ForegroundGeneration: _capsHeldForegroundGeneration,
                             ExpectedProfile: _capsHeldProfile,
-                            Token: GUARD_CAPS));
+                            Token: GUARD_CAPS, HoldOwner: InputHoldOwner.Caps));
                     }
                 }
             }
@@ -495,7 +495,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                         Generation: generation,
                         ForegroundGeneration: foregroundGeneration,
                         ExpectedProfile: foregroundGeneration == 0 ? null : _runtime.ActiveProfile,
-                        Token: GUARD_CAPS));
+                        Token: GUARD_CAPS, HoldOwner: InputHoldOwner.Caps));
                     break;
                 case CapsLockMode.DoubleNormal:
                     var tapPairToken = Interlocked.Increment(ref _capsTapTokenSequence);
@@ -544,7 +544,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             Interlocked.Increment(ref _capsConfigurationGeneration);
             if (_capsHeldOutputKey is { } heldOutput)
             {
-                _queue.Enqueue(new InputCommand(heldOutput, IsDown: false));
+                _queue.Enqueue(new InputCommand(heldOutput, IsDown: false, HoldOwner: InputHoldOwner.Caps));
                 _capsHeldOutputKey = null;
                 _capsHeldGeneration = 0;
                 _capsHeldForegroundGeneration = 0;
@@ -794,7 +794,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         }
         foreach (var target in targets)
         {
-            _queue.Enqueue(new InputCommand(target, IsDown: false));
+            _queue.Enqueue(new InputCommand(target, IsDown: false, HoldOwner: InputHoldOwner.Combined));
         }
     }
 

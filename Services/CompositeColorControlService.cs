@@ -10,6 +10,8 @@ public sealed class CompositeColorControlService : IColorControlService
     private readonly Func<DisplayInfo, DisplayColorProfile, ColorApplyOutcome> _applyAmdVibrance;
     private readonly ILoggerService? _logger;
     private readonly object _sync = new();
+    private readonly HashSet<string> _gammaRestorePending = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _vibranceRestorePending = new(StringComparer.OrdinalIgnoreCase);
 
     public CompositeColorControlService(
         WindowsGammaService gamma,
@@ -40,18 +42,42 @@ public sealed class CompositeColorControlService : IColorControlService
         {
             _logger?.Log($"[Color] Applying profile to '{display.DeviceName}' using detected vendor {display.GpuVendor}.");
 
-            var gamma = _applyGamma(display, profile);
-            var vibrance = display.GpuVendor switch
-            {
-                GpuVendor.Nvidia => _applyNvidiaVibrance(display, profile),
-                GpuVendor.Amd => _applyAmdVibrance(display, profile),
-                GpuVendor.Intel => ColorApplyOutcome.Skipped,
-                _ => ApplyUnknownVendorVibrance(display, profile)
-            };
+            var gamma = ApplyTracked(_applyGamma, _gammaRestorePending, display, profile);
+            var vibrance = ApplyTracked(ApplyVibrance, _vibranceRestorePending, display, profile);
 
             return Merge(gamma, vibrance);
         }
     }
+
+    private static ColorApplyOutcome ApplyTracked(
+        Func<DisplayInfo, DisplayColorProfile, ColorApplyOutcome> apply,
+        HashSet<string> restorePending,
+        DisplayInfo display,
+        DisplayColorProfile profile)
+    {
+        // A failure or exception can follow a partial native write. Record each component before
+        // calling it; a later skip cannot discharge an earlier write's restoration obligation.
+        var firstAttempt = restorePending.Add(display.Id);
+        var outcome = apply(display, profile);
+        if ((outcome == ColorApplyOutcome.Applied && !profile.IsEnabled) ||
+            (outcome == ColorApplyOutcome.Skipped && firstAttempt))
+        {
+            restorePending.Remove(display.Id);
+        }
+
+        return outcome == ColorApplyOutcome.Skipped && !firstAttempt
+            ? ColorApplyOutcome.Failed
+            : outcome;
+    }
+
+    private ColorApplyOutcome ApplyVibrance(DisplayInfo display, DisplayColorProfile profile) =>
+        display.GpuVendor switch
+        {
+            GpuVendor.Nvidia => _applyNvidiaVibrance(display, profile),
+            GpuVendor.Amd => _applyAmdVibrance(display, profile),
+            GpuVendor.Intel => ColorApplyOutcome.Skipped,
+            _ => ApplyUnknownVendorVibrance(display, profile)
+        };
 
     private ColorApplyOutcome ApplyUnknownVendorVibrance(
         DisplayInfo display,

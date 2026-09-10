@@ -54,6 +54,8 @@ internal static class ProfilePersistenceSnapshot
         return new AltMouseSettings
         {
             IsEnabled = source.IsEnabled,
+            WheelUpKey = source.WheelUpKey,
+            WheelDownKey = source.WheelDownKey,
             HoldThresholdMilliseconds = source.HoldThresholdMilliseconds,
             Bindings = bindings
         };
@@ -87,7 +89,7 @@ internal static class ProfilePersistenceSnapshot
         {
             mappings.Add(new CombinedMappingEntry
             {
-                SourceKey = mapping.SourceKey,
+                Source = mapping.Source,
                 TargetKey = mapping.TargetKey,
                 SuppressOriginalKey = mapping.SuppressOriginalKey,
                 RightClickOnly = mapping.RightClickOnly

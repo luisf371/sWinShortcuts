@@ -14,6 +14,8 @@ public sealed class ProfilePersistenceSnapshotTests
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         profile.IsEnabled = true;
         profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.WheelUpKey = Key.E;
+        profile.AltMouse.WheelDownKey = Key.Q;
         profile.AltMouse.Bindings[AppMouseButton.Left] = new MouseButtonBinding
         {
             TapKey = Key.A,
@@ -28,9 +30,16 @@ public sealed class ProfilePersistenceSnapshotTests
         };
         profile.CombinedMappings.Mappings.Add(new CombinedMappingEntry
         {
-            SourceKey = Key.C,
+            Source = InputTrigger.FromKey(Key.C),
             TargetKey = Key.D,
             SuppressOriginalKey = true
+        });
+        profile.CombinedMappings.Mappings.Add(new CombinedMappingEntry
+        {
+            Source = InputTrigger.FromWheel(MouseWheelDirection.Up),
+            TargetKey = Key.R,
+            RightClickOnly = true,
+            SuppressOriginalKey = false
         });
         profile.WindowsLauncher.Launchers[Key.E] = new LauncherBinding
         {
@@ -56,6 +65,8 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.Executable = "other.exe";
         profile.IsEnabled = false;
         profile.AltMouse.Bindings[AppMouseButton.Left].TapKey = Key.F;
+        profile.AltMouse.WheelUpKey = Key.Z;
+        profile.AltMouse.WheelDownKey = null;
         profile.AltKeyboard.IsEnabled = false;
         profile.AltKeyboard.HoldThresholdMilliseconds = 500;
         profile.AltKeyboard.Bindings[Key.Q] = new AltKeyboardBinding
@@ -64,6 +75,8 @@ public sealed class ProfilePersistenceSnapshotTests
             HoldKey = null
         };
         profile.CombinedMappings.Mappings[0].TargetKey = Key.G;
+        profile.CombinedMappings.Mappings[1].Source = InputTrigger.FromWheel(MouseWheelDirection.Down);
+        profile.CombinedMappings.Mappings[1].TargetKey = Key.T;
         profile.WindowsLauncher.Launchers[Key.E].Path = "new.exe";
         profile.RapidFire.IsEnabled = false;
         profile.RapidFire.IntervalMilliseconds = 200;
@@ -81,11 +94,17 @@ public sealed class ProfilePersistenceSnapshotTests
         Assert.Equal("game.exe", snapshot.Executable);
         Assert.True(snapshot.IsEnabled);
         Assert.Equal(Key.A, snapshot.AltMouse.Bindings[AppMouseButton.Left].TapKey);
+        Assert.Equal(Key.E, snapshot.AltMouse.WheelUpKey);
+        Assert.Equal(Key.Q, snapshot.AltMouse.WheelDownKey);
         Assert.True(snapshot.AltKeyboard.IsEnabled);
         Assert.Equal(90, snapshot.AltKeyboard.HoldThresholdMilliseconds);
         Assert.Equal(Key.Z, snapshot.AltKeyboard.Bindings[Key.Q].TapKey);
         Assert.Equal(Key.X, snapshot.AltKeyboard.Bindings[Key.Q].HoldKey);
         Assert.Equal(Key.D, snapshot.CombinedMappings.Mappings[0].TargetKey);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), snapshot.CombinedMappings.Mappings[1].Source);
+        Assert.Equal(Key.R, snapshot.CombinedMappings.Mappings[1].TargetKey);
+        Assert.True(snapshot.CombinedMappings.Mappings[1].RightClickOnly);
+        Assert.False(snapshot.CombinedMappings.Mappings[1].SuppressOriginalKey);
         Assert.Equal("old.exe", snapshot.WindowsLauncher.Launchers[Key.E].Path);
         Assert.True(snapshot.RapidFire.IsEnabled);
         Assert.Equal(80, snapshot.RapidFire.IntervalMilliseconds);

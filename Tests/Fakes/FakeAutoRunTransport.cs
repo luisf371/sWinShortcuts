@@ -12,6 +12,13 @@ internal sealed class FakeAutoRunTransport : IAutoRunTransport
     private int _blockedProcessReadNumber;
     private int _lastWin32Error;
 
+    internal static FakeAutoRunTransport MatchingForeground()
+    {
+        var transport = new FakeAutoRunTransport();
+        transport.ProcessIds[(IntPtr)100] = 42;
+        return transport;
+    }
+
     internal IntPtr ForegroundWindow { get; set; } = (IntPtr)100;
     internal IntPtr ChildWindow { get; set; }
     internal Action<bool>? OnAttach { get; set; }

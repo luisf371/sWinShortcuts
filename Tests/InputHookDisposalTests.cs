@@ -14,7 +14,7 @@ public sealed class InputHookDisposalTests
     [Fact]
     public void StartAfterDispose_ThrowsBeforeCreatingResources()
     {
-        var service = new InputHookService(new NullLoggerService(), new RecordingInputSender());
+        var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), new RecordingInputSender());
         service.Dispose();
 
         Assert.Throws<ObjectDisposedException>(service.Start);
@@ -24,7 +24,7 @@ public sealed class InputHookDisposalTests
     public void NeverStartedDispose_RepeatedDisposeAndStopAreNoOps()
     {
         var sender = new RecordingInputSender();
-        var service = new InputHookService(new NullLoggerService(), sender);
+        var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
 
         var error = Record.Exception(() =>
         {
@@ -115,7 +115,8 @@ public sealed class InputHookDisposalTests
     [Fact]
     public async Task RapidFire_DisposedWhileClickBlocked_DoesNotScheduleSuccessor()
     {
-        var runtime = new InputRuntimeState();
+        var runtime = new InputRuntimeState(FakeAutoRunTransport.MatchingForeground());
+        runtime.SetForegroundIdentity((IntPtr)100, 42, "game.exe", 1);
         runtime.SetRunning(true);
         runtime.SetAdvancedMode(true);
         var profile = RunningProfile();

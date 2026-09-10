@@ -253,6 +253,62 @@ public sealed class AutoRunStateMachineTests
 
     [Theory]
     [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ForegroundGuard_CancelledDuringWorkerPidLookup_RejectsPendingDownAndDrainsReleases(
+        bool sprintDown, bool foregroundChanged)
+    {
+        var transport = FakeAutoRunTransport.MatchingForeground();
+        var runtime = new InputRuntimeState(transport);
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerModifier = ModifierKeys.None;
+        profile.AutoRun.SprintEnabled = sprintDown;
+        profile.AutoRun.SprintMode = SprintActivation.Hold;
+        profile.AutoRun.SprintKey = Key.LeftShift;
+        runtime.SetRunning(true);
+        runtime.SetAdvancedMode(true);
+        runtime.SetActiveProfile(profile, 1);
+        runtime.SetForegroundIdentity((IntPtr)100, 42, profile.NormalizedExecutable, 1);
+        var sender = new RecordingInputSender();
+        var logger = new NullLoggerService();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var executor = new InputExecutor(runtime, sender, logger, keyState: _ => false);
+        var machine = new AutoRunStateMachine(runtime, executor, random, logger, transport);
+        // Activation reads the PID first, followed by movement and (if enabled) sprint on the worker.
+        transport.BlockProcessReadNumber = sprintDown ? 3 : 2;
+        executor.Start();
+        try
+        {
+            Assert.True(Activate(machine, profile));
+            Assert.True(transport.ProcessReadEntered.Wait(TimeSpan.FromSeconds(2)));
+            if (foregroundChanged)
+            {
+                runtime.SetForegroundIdentity((IntPtr)200, 43, "other.exe", 2);
+                transport.ForegroundWindow = (IntPtr)200;
+                transport.ProcessIds[(IntPtr)200] = 43;
+            }
+            machine.Release(includeBackground: true);
+            transport.ReleaseProcessRead.Set();
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Assert.True(executor.Enqueue(new InputCommand(Key.None, false,
+                Kind: InputCommandKind.DummyKey, Completion: completion)));
+            Assert.True(await completion.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Equal(sprintDown ? new[] { Key.W } : [],
+                sender.Transitions.Where(item => item.IsDown).Select(item => item.Key));
+            Assert.Contains(sender.Transitions, item => item.Key == Key.W && !item.IsDown);
+        }
+        finally
+        {
+            transport.ReleaseProcessRead.Set();
+            machine.Release(includeBackground: true);
+            executor.StopAndDrain();
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]
     public void BackgroundSprintPress_StopAfterDown_ReleasesOnlySuccessfulOriginalTarget(
@@ -639,6 +695,39 @@ public sealed class AutoRunStateMachineTests
                 Key.None, IsDown: false, Kind: InputCommandKind.DummyKey, Completion: completion)));
             Assert.True(await completion.Task.WaitAsync(TimeSpan.FromSeconds(2)));
         }
+    }
+
+    [Fact]
+    public async Task ForegroundHeldSprintUsesMovementKey_ReleasesOnceAfterBothHoldsEnd()
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerKey = Key.R;
+        profile.AutoRun.TriggerModifier = ModifierKeys.None;
+        profile.AutoRun.SendMode = AutoRunSendMode.Foreground;
+        profile.AutoRun.SprintEnabled = true;
+        profile.AutoRun.SprintMode = SprintActivation.Hold;
+        profile.AutoRun.SprintKey = Key.W;
+        var transport = FakeAutoRunTransport.MatchingForeground();
+        var runtime = new InputRuntimeState(transport);
+        runtime.SetAdvancedMode(true);
+        runtime.SetActiveProfile(profile, 1);
+        runtime.SetForegroundIdentity((IntPtr)100, 42, profile.NormalizedExecutable, 1);
+        runtime.SetRunning(true);
+        var sender = new RecordingInputSender();
+        using var executor = new InputExecutor(runtime, sender, new NullLoggerService());
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var machine = new AutoRunStateMachine(runtime, executor, random, new NullLoggerService(), transport);
+        executor.Start();
+        Assert.True(Activate(machine, profile));
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(executor.Enqueue(new InputCommand(Key.None, false,
+            Kind: InputCommandKind.DummyKey, Completion: completion)));
+        Assert.True(await completion.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        machine.Release(includeBackground: true);
+        Assert.True(executor.StopAndDrain());
+        Assert.Equal(new[] { (Key.W, true), (Key.W, false) },
+            sender.Transitions.Select(item => (item.Key, item.IsDown)));
     }
 
     private sealed class PausedSprintUpSender : IInputSender, IDisposable

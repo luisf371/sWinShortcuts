@@ -180,6 +180,84 @@ public sealed class CrosshairServiceTests
         Assert.False(service.AppliedVisibility);
     }
 
+    [Fact]
+    public void DisplaySettingsChanged_UnchangedProfile_QueuesConfigurationRefresh()
+    {
+        var pending = new Queue<Action>();
+        using var service = new CrosshairService(new NullLoggerService(), new FakeInputHookService(), pending.Enqueue);
+        var profile = CreateGatedProfile();
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        service.ApplyProfile(profile, (IntPtr)100);
+        Assert.Empty(pending);
+
+        RaiseDisplaySettingsChanged(service);
+
+        Assert.Single(pending);
+        Drain(pending);
+        Assert.True(service.AppliedVisibility);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DisplaySettingsChanged_QueuedBeforeNewerState_UsesLatestVisibility(bool disableProfile)
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+        var profile = CreateGatedProfile();
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        RaiseDisplaySettingsChanged(service);
+        var displayRefresh = Assert.Single(pending);
+        pending.Clear();
+
+        if (disableProfile)
+        {
+            profile.Crosshair.IsEnabled = false;
+            service.ApplyProfile(profile, (IntPtr)100);
+        }
+        else
+        {
+            hook.RaiseRightButton(true);
+        }
+
+        Assert.True(service.AppliedVisibility);
+        displayRefresh();
+
+        Assert.False(service.AppliedVisibility);
+    }
+
+    [Fact]
+    public void DisplaySettingsChanged_AfterDispose_DoesNotQueueOrReshowCrosshair()
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+        service.ApplyProfile(CreateGatedProfile(), (IntPtr)100);
+        Drain(pending);
+        RaiseDisplaySettingsChanged(service);
+        var displayRefresh = Assert.Single(pending);
+        pending.Clear();
+
+        service.Dispose();
+        RaiseDisplaySettingsChanged(service);
+        displayRefresh();
+
+        Assert.Empty(pending);
+        Assert.False(service.AppliedVisibility);
+        Assert.False(hook.RightButtonObservation);
+    }
+
+    private static void RaiseDisplaySettingsChanged(CrosshairService service)
+    {
+        var handler = typeof(CrosshairService).GetMethod("OnDisplaySettingsChanged",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(handler);
+        handler.Invoke(service, [null, EventArgs.Empty]);
+    }
+
     private static Profile CreateGatedProfile()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");

@@ -17,6 +17,7 @@ internal sealed record ForegroundIdentitySnapshot(
 /// </summary>
 internal sealed class InputRuntimeState
 {
+    private readonly IAutoRunTransport _foregroundTransport;
     private int _disposed;
     private volatile bool _isRunning;
     private volatile bool _advancedModeEnabled;
@@ -24,6 +25,11 @@ internal sealed class InputRuntimeState
     private volatile ForegroundIdentitySnapshot? _foregroundIdentity;
     private long _activeProfileGeneration;
     private long _publishedForegroundGeneration;
+
+    internal InputRuntimeState(IAutoRunTransport? foregroundTransport = null)
+    {
+        _foregroundTransport = foregroundTransport ?? new NativeAutoRunTransport();
+    }
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
@@ -81,4 +87,22 @@ internal sealed class InputRuntimeState
         foregroundGeneration == ActiveProfileGeneration &&
         foregroundGeneration == PublishedForegroundGeneration &&
         ReferenceEquals(ActiveProfile, profile);
+
+    // Worker admission only: watcher publication can lag behind the actual foreground window.
+    internal bool LiveForegroundMatches(Profile profile, long foregroundGeneration)
+    {
+        var expected = ForegroundIdentity;
+        if (expected is null || expected.WindowHandle == IntPtr.Zero || expected.ProcessId == 0 ||
+            expected.Generation != foregroundGeneration ||
+            !ProfileInputGenerationIsCurrent(profile, foregroundGeneration))
+        {
+            return false;
+        }
+
+        var foreground = _foregroundTransport.GetForegroundWindow();
+        _foregroundTransport.GetWindowThreadProcessId(foreground, out var processId);
+        return foreground == expected.WindowHandle && processId == expected.ProcessId &&
+            ReferenceEquals(expected, ForegroundIdentity) &&
+            ProfileInputGenerationIsCurrent(profile, foregroundGeneration);
+    }
 }

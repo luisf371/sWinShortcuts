@@ -56,9 +56,12 @@ moment that program comes to the foreground.
   keyboard stays completely untouched until you aim.
   - *FPS example: while aiming, `E` → `4` to pull out equipment — the rest of the time `E`
     still does its normal interact.*
-- **Caps Lock repurposing** — disable Caps Lock entirely, or remap it to fire on hold or on
-  double-tap.
-  - *FPS example: double-tap CapsLock → go prone · hold CapsLock → melee.*
+- **Mouse wheel shortcuts** — select **Wheel Up** or **Wheel Down** as a Key Mapping
+  source to tap a key, optionally with **Right Click Only** checked. Alt + Mouse also
+  includes Wheel Up/Down in its shortcut dropdown; wheel rows use **Tap**, with **Hold** disabled.
+- **Caps Lock repurposing** — **Normal** mirrors Caps Lock down/up; **2x Normal** sends
+  one full key tap on press and another on release; **Disabled** suppresses the key.
+  **Remap Key** substitutes your chosen output key for Caps Lock.
 - **Windows Launcher** — `Win + Numpad` shortcuts launch any program, file, or folder, with
   optional arguments and run-as-admin.
   - *Example: `Win+Numpad1` launches your main game with its launch options.*
@@ -75,9 +78,10 @@ moment that program comes to the foreground.
   mouse button is held, with configurable delay, Hold/Toggle modes, and an optional Early
   Cancel trigger to cancel instantly (only the successful cancel press is blocked; later
   presses pass through until the next aim — releasing and pressing right mouse re-arms it).
-- **Anti-AFK** — presses a key at a set interval (1–15 min), but *only* after real keyboard
-  inactivity: any keypress resets the timer, so it never fires while you're actually
-  playing.
+- **Anti-AFK** — sends a short WASD ripple at a set interval (1–15 min). **Foreground**
+  and **Background** modes require keyboard inactivity; any keypress resets that idle
+  timer. **Forced** mode sends to the game window without waiting for keyboard inactivity,
+  while respecting the configured interval.
 - **Crosshair overlay** — puts a custom crosshair in the center of the screen: use the
   bundled one or your own image. Can hide automatically while you aim.
 
@@ -85,7 +89,9 @@ moment that program comes to the foreground.
 
 - **Per-monitor brightness, contrast, and gamma** applied through GDI gamma ramps — no
   driver needed.
-- **NVIDIA Digital Vibrance** per monitor (silently skipped on other GPUs).
+- **Digital Vibrance** per monitor on supported NVIDIA and AMD GPUs. AMD support requires
+  [Radeon Software Adrenalin 25.3.1 or later](https://gpuopen-librariesandsdks.github.io/adl/).
+  Unsupported GPUs or unavailable driver APIs retain brightness/contrast/gamma controls.
 - **Primary + Secondary presets** per profile (e.g. normal vs. vibrant looks), flipped live
   with a global app-level hotkey.
 
@@ -98,7 +104,7 @@ moment that program comes to the foreground.
 | OS | Windows 10 or 11 (x64) |
 | Install from a release | [.NET 10 Desktop Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/10.0) |
 | Build from source | [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) |
-| Optional | NVIDIA GPU for Digital Vibrance · Administrator rights for remapping input inside elevated windows |
+| Optional | Supported NVIDIA driver or AMD Radeon Software Adrenalin 25.3.1+ for Digital Vibrance · Administrator rights for remapping input inside elevated windows |
 
 ### Install from a Release
 
@@ -153,6 +159,27 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
 > **Tip:** launch sWinShortcuts as Administrator if you want remaps to work inside
 > programs that are themselves running elevated (Task Manager, some game launchers, admin
 > consoles).
+
+### Mouse Wheel Mappings
+
+In a custom profile, enable **Key Mapping**, add a row, and choose **Wheel Up** or
+**Wheel Down** as its source. Choose a keyboard target and check **Right Click Only**
+if it should work only while the right mouse button is held. For an Alt gesture,
+enable **Alt + Mouse**, add a binding, choose **Wheel Up** or **Wheel Down** in its
+shortcut dropdown, and set **Tap** to the target key. **Hold** is disabled for wheel
+rows. An assigned Alt gesture takes priority while Alt is held; otherwise an eligible
+Key Mapping can run.
+
+Each wheel increment taps the target once. Small scroll movements accumulate until
+they reach one increment; changing direction or gesture context clears the partial
+movement. Unbound scroll works normally. Key Mapping suppresses mapped scroll by
+default; Advanced Mode lets you turn suppression off and keep scrolling as well.
+
+Held modifiers stay held, so **Alt + Wheel Up → E may be received as Alt + E**.
+Wheel shortcuts skip targets already detected as held and discard excess or stale
+taps during fast scrolling. They support vertical scrolling and keyboard tap targets.
+When using **Background Auto Run**, choose wheel targets different from its movement
+and sprint keys: wheel output can interrupt those background holds.
 
 ### Default Quick Reference
 
@@ -221,8 +248,9 @@ sWinShortcuts/
 - **"Another instance is already running"** — sWinShortcuts allows only one instance per
   session; check the tray (and hidden tray icons) for the existing one.
 - **Something crashed or behaved oddly** — look in `%APPDATA%\sWinShortcuts\crash.log`.
-- **Digital Vibrance slider does nothing** — it's NVIDIA-only. On other GPUs the app still
-  applies brightness/contrast/gamma and skips vibrance.
+- **Digital Vibrance slider does nothing** — check for a supported NVIDIA driver or AMD
+  Radeon Software Adrenalin 25.3.1+. Unsupported GPUs or unavailable driver APIs skip
+  vibrance; brightness/contrast/gamma controls remain available.
 - **Some protected processes can't be matched by path** — the app falls back to matching by
   process name.
 
@@ -247,7 +275,9 @@ Only if the item says so. Items without run-as-admin always launch as your norma
 user, even when sWinShortcuts itself is running elevated.
 
 **What if I don't have an NVIDIA GPU?**
-Digital Vibrance is skipped; brightness/contrast/gamma still work on any GPU.
+Supported AMD GPUs also provide vibrance through Radeon Software Adrenalin 25.3.1+.
+Other GPUs retain brightness/contrast/gamma controls; vibrance requires a supported
+NVIDIA or AMD driver API.
 
 ## Contributing
 
