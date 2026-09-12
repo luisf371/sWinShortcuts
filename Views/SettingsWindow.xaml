@@ -17,6 +17,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Orientation="Vertical" IsEnabled="{Binding CanEditSettings}">
             <TextBlock Text="Startup"
                        FontWeight="SemiBold"
@@ -113,6 +114,37 @@
                            TextWrapping="Wrap"/>
             </StackPanel>
 
+            <StackPanel Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="132"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="Crosshair offset toggle key"
+                               FontWeight="SemiBold"
+                               Margin="0,0,12,0"
+                               TextWrapping="Wrap"
+                               VerticalAlignment="Center"/>
+                    <ComboBox Grid.Column="1"
+                              ItemsSource="{Binding ColorToggleKeyOptions}"
+                              SelectedItem="{Binding CrosshairOffsetToggleKey, Mode=TwoWay}"
+                              AutomationProperties.Name="Crosshair offset toggle key"
+                              behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                              Width="132">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}"/>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </Grid>
+                <TextBlock Text="Switches the visible crosshair between center and the profile's saved offset."
+                           Foreground="{DynamicResource ForegroundSecondaryBrush}"
+                           FontSize="11"
+                           TextWrapping="Wrap"/>
+            </StackPanel>
+
             <Separator Margin="0,8,0,8" Background="{DynamicResource BorderBrush}"/>
 
             <TextBlock Text="Troubleshooting"
@@ -170,6 +202,8 @@
                       Foreground="{DynamicResource ForegroundPrimaryBrush}"
                       Margin="0,0,0,8"/>
         </StackPanel>
+
+        </ScrollViewer>
 
         <!-- Build stamp: CI bakes the workflow run number into the exe (matches the "build-N"
              GitHub Release tag). "Build dev" = locally built, not from CI. -->

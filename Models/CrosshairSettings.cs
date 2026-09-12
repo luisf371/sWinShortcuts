@@ -11,11 +11,19 @@ public sealed class CrosshairSettings
     public const int MaxSizeAdjustment = 50;
     public const int DefaultSizeAdjustment = 0;
 
+    // Position relative to the monitor center in physical pixels: right/down are positive.
+    public const int MinOffset = -500;
+    public const int MaxOffset = 500;
+
     public bool IsEnabled { get; set; }
 
     public bool HideWhileRightButtonHeld { get; set; }
 
     public int SizeAdjustment { get; set; } = DefaultSizeAdjustment;
+
+    public int OffsetX { get; set; }
+
+    public int OffsetY { get; set; }
 
     // Empty => render the bundled default PNG (pack://application:,,,/Icons/Crosshair.png).
     public string ImagePath { get; set; } = string.Empty;

@@ -94,4 +94,19 @@ public sealed class CrosshairOverlayBoundsTests
         Assert.Equal(0, CrosshairSettings.DefaultSizeAdjustment);
         Assert.Equal(0, new CrosshairSettings().SizeAdjustment);
     }
+
+    [Theory]
+    [InlineData(0, 120, -40, -840, 470, 60, 60)]
+    [InlineData(50, 120, -40, -855, 455, 90, 90)]
+    [InlineData(0, -120, 40, -1080, 550, 60, 60)]
+    [InlineData(0, int.MaxValue, int.MinValue, -460, 10, 60, 60)]
+    public void ComputeOverlayBounds_OffsetsUsePhysicalPixelsAndClamp(
+        int size, int offsetX, int offsetY, int left, int top, int width, int height)
+    {
+        // A 1980x1080 monitor left of the primary: centered 60px image is at (-960, 510).
+        var actual = CrosshairWindow.ComputeOverlayBounds(
+            60, 60, size, -1920, 0, 1980, 1080, offsetX, offsetY);
+
+        Assert.Equal((width, height, left, top), actual);
+    }
 }

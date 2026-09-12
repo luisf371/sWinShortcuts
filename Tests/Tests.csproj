@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\sWinShortcuts.csproj" />
+    <None Include="..\MainWindow.xaml" Link="MainWindow.xaml.testdata" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

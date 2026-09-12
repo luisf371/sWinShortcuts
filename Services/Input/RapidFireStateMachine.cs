@@ -30,6 +30,7 @@ internal sealed class RapidFireStateMachine : IDisposable
     private readonly ILoggerService _logger;
     private readonly object _profileLock;
     private readonly Timer _timer;
+    private readonly Lock _timerCallbackLock = new();
 
     private int _toggleVk;
     private bool _toggleDownLatched;
@@ -44,6 +45,7 @@ internal sealed class RapidFireStateMachine : IDisposable
     private int _intervalMs;
     private int _jitterMs;
     private int _timerState = TIMER_IDLE;
+    private long _requestedPressGeneration;
     private long _timerGeneration;
     private long _armedTick;
     private int _armedDelayMs;
@@ -182,7 +184,6 @@ internal sealed class RapidFireStateMachine : IDisposable
             return;
         }
 
-        CancelTimer();
         var generation = Interlocked.Increment(ref _generation);
         Volatile.Write(ref _foregroundGeneration, _runtime.ActiveProfileGeneration);
         _intervalMs = Math.Clamp(
@@ -190,11 +191,9 @@ internal sealed class RapidFireStateMachine : IDisposable
             RapidFireSettings.MinIntervalMilliseconds,
             RapidFireSettings.MaxIntervalMilliseconds);
         _jitterMs = Math.Clamp(profile.RapidFire.JitterMilliseconds, 0, RapidFireSettings.MaxJitterMilliseconds);
-        Schedule(generation);
-        if (_logger.IsEnabled)
-        {
-            _logger.Log($"Rapid Fire press started: first synthetic click due in {_armedDelayMs} ms (interval={_intervalMs}, jitter={_jitterMs})");
-        }
+        // Publish the request after its settings. Only timer workers own cadence state.
+        Volatile.Write(ref _requestedPressGeneration, generation);
+        ChangeTimer(0, generation);
     }
 
     internal void SeedPhysicalLeftButton(bool isDown) => _physicalLeftDown = isDown;
@@ -208,8 +207,8 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     internal void CancelPress()
     {
+        // An old cancellation must not erase a newer press's request or timer wakeup.
         Interlocked.Increment(ref _generation);
-        CancelTimer();
     }
 
     internal bool Release(bool preservePhysicalPairing, string? reason = null)
@@ -260,6 +259,10 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     internal void FireTimerForTesting()
     {
+        if (Volatile.Read(ref _requestedPressGeneration) != Volatile.Read(ref _timerGeneration))
+        {
+            OnTimerFired();
+        }
         Volatile.Write(
             ref _armedTick,
             Stopwatch.GetTimestamp() -
@@ -309,7 +312,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         profile.IsEnabled &&
         profile.RapidFire.IsEnabled;
 
-    private void Schedule(long generation, double sendElapsedMs = 0)
+    private void Schedule(long generation, double sendElapsedMs = 0, bool firstClick = false)
     {
         var profile = _ownerProfile;
         var foregroundGeneration = Volatile.Read(ref _foregroundGeneration);
@@ -330,21 +333,39 @@ internal sealed class RapidFireStateMachine : IDisposable
             return;
         }
 
-        try
+        if (firstClick && _logger.IsEnabled)
         {
-            _timer.Change(delay, Timeout.Infinite);
+            _logger.Log($"Rapid Fire press started: first synthetic click due in {delay} ms (interval={_intervalMs}, jitter={_jitterMs})");
         }
-        catch (ObjectDisposedException) when (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0)
-        {
-        }
+
+        ChangeTimer(delay, generation);
     }
 
     private void OnTimerFired()
     {
+        var requested = Volatile.Read(ref _requestedPressGeneration);
+        if (requested != Volatile.Read(ref _generation) ||
+            (requested == Volatile.Read(ref _timerGeneration) && Volatile.Read(ref _timerState) != TIMER_ARMED)) return;
+        // A new physical press may rearm while the previous DOWN/UP pair is still sending.
+        // Only timer workers take this lock; hook cancellation and button handling never wait.
+        using var callbackScope = _timerCallbackLock.EnterScope();
+        requested = Volatile.Read(ref _requestedPressGeneration);
+        if (requested != Volatile.Read(ref _generation)) return;
+        if (requested != Volatile.Read(ref _timerGeneration))
+        {
+            Schedule(requested, firstClick: true);
+            return;
+        }
+        if (Volatile.Read(ref _timerState) != TIMER_ARMED) return;
         var delay = Volatile.Read(ref _armedDelayMs);
         var elapsedMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _armedTick)) * TickToMilliseconds;
-        if (elapsedMs < delay - FIRE_TOLERANCE_MS ||
-            Interlocked.CompareExchange(ref _timerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
+        if (elapsedMs < delay - FIRE_TOLERANCE_MS)
+        {
+            // A delayed hook kick can replace the initialized deadline; restore its remaining wait.
+            ChangeTimer(Math.Max(1, (int)Math.Ceiling(delay - elapsedMs)), requested);
+            return;
+        }
+        if (Interlocked.CompareExchange(ref _timerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
         {
             return;
         }
@@ -389,14 +410,20 @@ internal sealed class RapidFireStateMachine : IDisposable
         Schedule(generation, (Stopwatch.GetTimestamp() - clickStart) * TickToMilliseconds);
     }
 
-    private void CancelTimer()
+    private void ChangeTimer(int dueTime, long generation)
     {
-        Interlocked.Exchange(ref _timerState, TIMER_CANCELLED);
         if (Volatile.Read(ref _disposed) == 0)
         {
             try
             {
-                _timer.Change(Timeout.Infinite, Timeout.Infinite);
+                _timer.Change(dueTime, Timeout.Infinite);
+                // A newer request may have arrived before Change and had its kick overwritten.
+                // Requests arriving after this check supply their own later wakeup.
+                var requested = Volatile.Read(ref _requestedPressGeneration);
+                if (requested != generation && requested == Volatile.Read(ref _generation))
+                {
+                    _timer.Change(0, Timeout.Infinite);
+                }
             }
             catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0)
             {
@@ -421,7 +448,6 @@ internal sealed class RapidFireStateMachine : IDisposable
 
         Interlocked.Increment(ref _generation);
         Interlocked.Exchange(ref _timerState, TIMER_CANCELLED);
-        _timer.Change(Timeout.Infinite, Timeout.Infinite);
         _timer.Dispose();
     }
 }

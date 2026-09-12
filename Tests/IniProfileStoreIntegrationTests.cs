@@ -726,6 +726,8 @@ public class IniProfileStoreIntegrationTests : IDisposable
         profile.Crosshair.HideWhileRightButtonHeld = true;
         profile.Crosshair.ImagePath = @"C:\Screens\My Cross Hair.png";
         profile.Crosshair.SizeAdjustment = -25;
+        profile.Crosshair.OffsetX = 120;
+        profile.Crosshair.OffsetY = -35;
 
         await _store.SaveProfileAsync(profile, CancellationToken.None);
         var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
@@ -735,6 +737,30 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.True(loaded.Crosshair.HideWhileRightButtonHeld);
         Assert.Equal(@"C:\Screens\My Cross Hair.png", loaded.Crosshair.ImagePath);
         Assert.Equal(-25, loaded.Crosshair.SizeAdjustment);
+        Assert.Equal(120, loaded.Crosshair.OffsetX);
+        Assert.Equal(-35, loaded.Crosshair.OffsetY);
+    }
+
+    [Theory]
+    [InlineData("-501", "501", -500, 500)]
+    [InlineData("500", "-500", 500, -500)]
+    [InlineData("bad", "1.5", 0, 0)]
+    [InlineData("", "", 0, 0)]
+    public async Task LoadProfile_CrosshairOffsets_ClampsAndDefaultsInvalidValues(
+        string offsetX, string offsetY, int expectedX, int expectedY)
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "CrosshairOffsets.ini"),
+            "[Profile]\nName=CrosshairOffsets\nExecutable=crosshair-offsets.exe\nEnabled=true\n" +
+            $"[Crosshair]\nEnabled=true\nOffsetX={offsetX}\nOffsetY={offsetY}\n");
+
+        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+        var loaded = profiles.Single(p => p.Name == "CrosshairOffsets");
+
+        Assert.Equal(expectedX, loaded.Crosshair.OffsetX);
+        Assert.Equal(expectedY, loaded.Crosshair.OffsetY);
     }
 
     [Theory]
@@ -771,6 +797,8 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var loaded = profiles.Single(p => p.Name == "CrosshairSizeMissing");
 
         Assert.Equal(0, loaded.Crosshair.SizeAdjustment);
+        Assert.Equal(0, loaded.Crosshair.OffsetX);
+        Assert.Equal(0, loaded.Crosshair.OffsetY);
     }
 
     [Fact]
@@ -789,6 +817,8 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.False(loaded.Crosshair.HideWhileRightButtonHeld);
         Assert.Equal(string.Empty, loaded.Crosshair.ImagePath);
         Assert.Equal(0, loaded.Crosshair.SizeAdjustment);
+        Assert.Equal(0, loaded.Crosshair.OffsetX);
+        Assert.Equal(0, loaded.Crosshair.OffsetY);
     }
 
     [Fact]

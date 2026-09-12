@@ -8,6 +8,219 @@ namespace Tests;
 
 public sealed class CrosshairServiceTests
 {
+    [Fact]
+    public void Stop_RejectsLateApplyAndToggle_UntilRestartWithCenteredOverlay()
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+        var profile = CreateGatedProfile();
+        profile.Crosshair.OffsetX = 30;
+        service.ApplyProfile(profile, (IntPtr)100);
+        hook.RaiseCrosshairOffsetToggle(profile);
+
+        service.Stop();
+        service.ApplyProfile(profile, (IntPtr)100);
+        hook.RaiseCrosshairOffsetToggle(profile);
+        Drain(pending);
+        Assert.False(service.AppliedVisibility);
+        Assert.False(hook.RightButtonObservation);
+
+        service.Start();
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        Assert.True(service.AppliedVisibility);
+        Assert.True(hook.RightButtonObservation);
+        Assert.Equal((0, 0), service.AppliedOffset);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OffsetToggle_ProfileChangesDuringDelivery_DoesNotToggleNewProfile(bool returnToOriginal)
+    {
+        var pending = new Queue<Action>();
+        using var hook = InputHookServiceTestExtensions.CreateWithFakeForeground(
+            new NullLoggerService(), new RecordingInputSender());
+        hook.StartInputExecutorForTesting();
+        try
+        {
+            var original = CreateGatedProfile();
+            original.Crosshair.OffsetX = 30;
+            var next = CreateGatedProfile();
+            next.Crosshair.OffsetX = 75;
+            CrosshairService? overlay = null;
+            // Deliver activation between input admission and the overlay's event subscriber.
+            hook.CrosshairOffsetToggleRequested += (_, _) =>
+            {
+                hook.SetForegroundIdentity((IntPtr)101, 42, next.NormalizedExecutable, 2);
+                hook.ActivateProfile(next, 2);
+                overlay!.ApplyProfile(next, (IntPtr)101, 2);
+                if (returnToOriginal)
+                {
+                    hook.SetForegroundIdentity((IntPtr)100, 42, original.NormalizedExecutable, 3);
+                    hook.ActivateProfile(original, 3);
+                    overlay.ApplyProfile(original, (IntPtr)100, 3);
+                }
+            };
+            using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+            overlay = service;
+            hook.SetForegroundIdentity((IntPtr)100, 42, original.NormalizedExecutable, 1);
+            hook.ActivateProfile(original, 1);
+            service.ApplyProfile(original, (IntPtr)100, 1);
+            Drain(pending);
+
+            hook.SetCrosshairOffsetToggleKey(System.Windows.Input.Key.F8);
+            hook.DispatchDecodedKeyboardEvent(0x77, true, false);
+            Drain(pending);
+
+            Assert.True(service.AppliedVisibility);
+            Assert.Equal((0, 0), service.AppliedOffset);
+        }
+        finally
+        {
+            hook.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void OffsetToggle_SameProfileRepublished_UsesNewGenerationWithoutResettingMode()
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+        var profile = CreateGatedProfile();
+        profile.Crosshair.OffsetX = 20;
+        service.ApplyProfile(profile, (IntPtr)100, 1);
+        hook.RaiseCrosshairOffsetToggle(profile, 1);
+        Drain(pending);
+        Assert.Equal((20, 0), service.AppliedOffset);
+
+        service.ApplyProfile(profile, (IntPtr)100, 2);
+        Assert.Empty(pending); // Same configuration need not redraw, but its generation must advance.
+        hook.RaiseCrosshairOffsetToggle(profile, 1);
+        Assert.Empty(pending);
+        Assert.Equal((20, 0), service.AppliedOffset);
+        hook.RaiseCrosshairOffsetToggle(profile, 2);
+        Drain(pending);
+        Assert.Equal((0, 0), service.AppliedOffset);
+    }
+
+    [Fact]
+    public void OffsetToggle_UsesSavedPositionThenCentersWithoutChangingVisibility()
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+        var profile = CreateGatedProfile();
+        profile.Crosshair.OffsetX = 120;
+        profile.Crosshair.OffsetY = -40;
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((0, 0), service.AppliedOffset);
+
+        hook.RaiseCrosshairOffsetToggle(profile);
+        Assert.Equal((0, 0), service.AppliedOffset); // hook callback only queues window work
+        Drain(pending);
+        Assert.Equal((120, -40), service.AppliedOffset);
+        Assert.True(service.AppliedVisibility);
+
+        hook.RaiseRightButton(true);
+        hook.RaiseCrosshairOffsetToggle(profile);
+        Drain(pending);
+        Assert.Equal((0, 0), service.AppliedOffset);
+        Assert.False(service.AppliedVisibility);
+        hook.RaiseRightButton(false);
+        Drain(pending);
+        Assert.True(service.AppliedVisibility);
+        Assert.Equal(120, profile.Crosshair.OffsetX);
+        Assert.Equal(-40, profile.Crosshair.OffsetY);
+    }
+
+    [Fact]
+    public void OffsetToggle_ProfileEditsAndFocusChanges_KeepIndependentModesUntilStop()
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+        var profile = CreateGatedProfile();
+        profile.Crosshair.OffsetX = 20;
+        service.ApplyProfile(profile, (IntPtr)100);
+        hook.RaiseCrosshairOffsetToggle(profile);
+        Drain(pending);
+
+        profile.Crosshair.OffsetX = -30;
+        profile.Crosshair.OffsetY = 45;
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((-30, 45), service.AppliedOffset);
+        service.ApplyProfile(profile, (IntPtr)100);
+        Assert.Empty(pending);
+        RaiseDisplaySettingsChanged(service);
+        Drain(pending);
+        Assert.Equal((-30, 45), service.AppliedOffset);
+
+        // Even an otherwise identical profile starts centered.
+        var next = CreateGatedProfile();
+        next.Crosshair.OffsetX = -30;
+        next.Crosshair.OffsetY = 45;
+        service.ApplyProfile(next, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((0, 0), service.AppliedOffset);
+
+        hook.RaiseCrosshairOffsetToggle(next);
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((-30, 45), service.AppliedOffset);
+        hook.RaiseCrosshairOffsetToggle(profile); // Center only this profile.
+        service.ApplyProfile(next, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((-30, 45), service.AppliedOffset);
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((0, 0), service.AppliedOffset);
+
+        // Stop clears remembered modes for inactive profiles as well.
+        service.Stop();
+        service.Start();
+        service.ApplyProfile(next, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((0, 0), service.AppliedOffset);
+    }
+
+    [Fact]
+    public void OffsetToggle_QueuedBeforeDisableUsesLatestStateAndCannotArmHiddenProfile()
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook, pending.Enqueue);
+        var profile = CreateGatedProfile();
+        profile.Crosshair.OffsetX = 20;
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        hook.RaiseCrosshairOffsetToggle(profile);
+        var oldToggle = pending.Dequeue();
+
+        profile.Crosshair.IsEnabled = false;
+        service.ApplyProfile(profile, (IntPtr)100);
+        hook.RaiseCrosshairOffsetToggle(profile);
+        Drain(pending);
+        oldToggle();
+        Assert.Equal((0, 0), service.AppliedOffset);
+        Assert.False(service.AppliedVisibility);
+
+        profile.Crosshair.IsEnabled = true;
+        service.ApplyProfile(profile, (IntPtr)100);
+        Drain(pending);
+        Assert.Equal((0, 0), service.AppliedOffset);
+        hook.RaiseCrosshairOffsetToggle(profile);
+        service.Dispose();
+        Drain(pending);
+        hook.RaiseCrosshairOffsetToggle(profile);
+        Assert.Empty(pending);
+        Assert.False(service.AppliedVisibility);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

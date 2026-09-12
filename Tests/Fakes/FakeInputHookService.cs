@@ -7,9 +7,17 @@ namespace Tests.Fakes;
 
 public sealed class FakeInputHookService : IInputHookService
 {
+    private volatile Profile? _activeProfile;
+    public Profile? ActiveProfile => _activeProfile;
+
     public event EventHandler<Profile?>? ActiveProfileChanged;
 
     public event EventHandler? ColorVariantToggleRequested;
+
+    public event EventHandler<(Profile? Profile, long ForegroundGeneration)>? CrosshairOffsetToggleRequested;
+
+    public void RaiseCrosshairOffsetToggle(Profile? profile, long foregroundGeneration = 0) =>
+        CrosshairOffsetToggleRequested?.Invoke(this, (profile, foregroundGeneration));
 
     public event EventHandler<bool>? RightButtonStateChanged;
 
@@ -45,6 +53,7 @@ public sealed class FakeInputHookService : IInputHookService
     /// <summary>Test helper: fire ActiveProfileChanged with a specific (or null) profile.</summary>
     public void RaiseActiveProfileChanged(Profile? profile)
     {
+        _activeProfile = profile;
         ActiveProfileChanged?.Invoke(this, profile);
     }
 
@@ -79,12 +88,14 @@ public sealed class FakeInputHookService : IInputHookService
     public void Stop()
     {
         Volatile.Write(ref _isStarted, 0);
+        _activeProfile = null;
     }
 
     public void ActivateProfile(Profile profile, long foregroundGeneration)
     {
         ActivatedProfiles.Enqueue(profile);
         Activations.Enqueue((profile, foregroundGeneration));
+        _activeProfile = profile;
         ActiveProfileChanged?.Invoke(this, profile);
     }
 
@@ -92,6 +103,7 @@ public sealed class FakeInputHookService : IInputHookService
     {
         Interlocked.Increment(ref _deactivateCount);
         DeactivationGenerations.Enqueue(foregroundGeneration);
+        _activeProfile = null;
         ActiveProfileChanged?.Invoke(this, null);
     }
 
@@ -159,6 +171,10 @@ public sealed class FakeInputHookService : IInputHookService
     }
 
     public Key? LastRapidFireToggleKey { get; private set; }
+
+    public Key? LastCrosshairOffsetToggleKey { get; private set; }
+
+    public void SetCrosshairOffsetToggleKey(Key? key) => LastCrosshairOffsetToggleKey = key;
 
     public void SetRapidFireToggleKey(Key? key)
     {

@@ -43,11 +43,11 @@ public partial class CrosshairWindow : Window
 
     // Pure scaling/centering math, free of WPF/WinForms dependencies so it is unit-testable
     // headless. Applies the uniform size-adjustment scale to the source pixel dimensions and
-    // centers the result on the monitor's raw pixel bounds to the nearest pixel (HWND positions
+    // offsets the result from the monitor's raw pixel center to the nearest pixel (HWND positions
     // are integers, so an odd scaled size on an even-parity monitor can be off by <= 0.5 px).
     internal static (int ScaledWidth, int ScaledHeight, int Left, int Top) ComputeOverlayBounds(
         int imageWidth, int imageHeight, int sizeAdjustment,
-        int boundsX, int boundsY, int boundsWidth, int boundsHeight)
+        int boundsX, int boundsY, int boundsWidth, int boundsHeight, int offsetX = 0, int offsetY = 0)
     {
         var clamped = Math.Max(CrosshairSettings.MinSizeAdjustment,
             Math.Min(CrosshairSettings.MaxSizeAdjustment, sizeAdjustment));
@@ -55,14 +55,14 @@ public partial class CrosshairWindow : Window
         var w = Math.Max(1, (int)Math.Round(imageWidth * scale, MidpointRounding.AwayFromZero));
         var h = Math.Max(1, (int)Math.Round(imageHeight * scale, MidpointRounding.AwayFromZero));
         return (w, h,
-            boundsX + ((boundsWidth - w) / 2),
-            boundsY + ((boundsHeight - h) / 2));
+            boundsX + ((boundsWidth - w) / 2) + Math.Clamp(offsetX, CrosshairSettings.MinOffset, CrosshairSettings.MaxOffset),
+            boundsY + ((boundsHeight - h) / 2) + Math.Clamp(offsetY, CrosshairSettings.MinOffset, CrosshairSettings.MaxOffset));
     }
 
     // Called on the UI dispatcher by CrosshairService. targetHwnd is the game's foreground window;
     // IntPtr.Zero positions on the primary screen. Never throws — a bad path decodes to the
     // bundled default instead.
-    public void ApplyConfiguration(IntPtr targetHwnd, string? imagePath, int sizeAdjustment)
+    public void ApplyConfiguration(IntPtr targetHwnd, string? imagePath, int sizeAdjustment, int offsetX = 0, int offsetY = 0)
     {
         // Create the HWND while still hidden so ex-styles are in place before the first Show.
         if (_hwnd == IntPtr.Zero)
@@ -73,15 +73,15 @@ public partial class CrosshairWindow : Window
         var image = LoadImage(imagePath);
         CrosshairImage.Source = image;
 
-        // Center on the game window's monitor, in RAW pixels (Screen.Bounds, not DIPs), at the
-        // size-adjustment-scaled dimensions so the overlay both scales and stays centered.
+        // Position relative to the game window's monitor center in RAW pixels (not DIPs).
+        // Offset distance is independent of image size and display scaling.
         var screen = targetHwnd != IntPtr.Zero
             ? WinForms.Screen.FromHandle(targetHwnd)
             : WinForms.Screen.PrimaryScreen ?? WinForms.Screen.AllScreens[0];
         var bounds = screen.Bounds;
         var (scaledWidth, scaledHeight, x, y) = ComputeOverlayBounds(
             image.PixelWidth, image.PixelHeight, sizeAdjustment,
-            bounds.X, bounds.Y, bounds.Width, bounds.Height);
+            bounds.X, bounds.Y, bounds.Width, bounds.Height, offsetX, offsetY);
         NativeMethods.SetWindowPos(
             _hwnd, NativeMethods.HWND_TOPMOST, x, y, 0, 0,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOSIZE);

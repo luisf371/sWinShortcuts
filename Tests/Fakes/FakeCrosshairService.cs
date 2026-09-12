@@ -6,15 +6,19 @@ namespace Tests.Fakes;
 
 public sealed class FakeCrosshairService : ICrosshairService
 {
-    public sealed record AppliedConfig(Profile? Profile, IntPtr ForegroundHwnd);
+    public sealed record AppliedConfig(Profile? Profile, IntPtr ForegroundHwnd, long ForegroundGeneration);
 
     public ConcurrentQueue<AppliedConfig> Applications { get; } = new();
 
     public ConcurrentQueue<bool> RightButtonStates { get; } = new();
 
-    public void ApplyProfile(Profile? profile, IntPtr foregroundHwnd)
+    public void Start() { }
+
+    public void Stop() => ApplyProfile(null, IntPtr.Zero);
+
+    public void ApplyProfile(Profile? profile, IntPtr foregroundHwnd, long foregroundGeneration = 0)
     {
-        Applications.Enqueue(new AppliedConfig(profile, foregroundHwnd));
+        Applications.Enqueue(new AppliedConfig(profile, foregroundHwnd, foregroundGeneration));
     }
 
     public void SetRightButtonHeld(bool isDown)

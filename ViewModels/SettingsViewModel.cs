@@ -21,6 +21,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
     private bool _enableDebugLogging;
     private Key _colorToggleKey = Key.None;
     private Key _rapidFireToggleKey = Key.None;
+    private Key _crosshairOffsetToggleKey = Key.None;
     private bool _hookWatchdogEnabled;
     private bool _advancedModeEnabled;
     private bool _isIniLoaded;
@@ -200,6 +201,21 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         }
     }
 
+    public Key CrosshairOffsetToggleKey
+    {
+        get => _crosshairOffsetToggleKey;
+        set
+        {
+            value = KeyInteropUtilities.NormalizeAppToggleKey(value) ?? Key.None;
+            if (_crosshairOffsetToggleKey == value) return;
+
+            EnsureToggleKeyOption(value);
+            _crosshairOffsetToggleKey = value;
+            _inputHookService.SetCrosshairOffsetToggleKey(value == Key.None ? null : value);
+            OnPropertyChanged();
+        }
+    }
+
     private void EnsureToggleKeyOption(Key key)
     {
         if (_colorToggleKeyOptions.Contains(key)) return;
@@ -264,6 +280,7 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
             var checkForUpdates = ini.GetValue("App", "CheckForUpdates") == "true";
             var colorToggleKey = KeyInteropUtilities.NormalizeAppToggleKey(ini.GetKey("App", "ColorToggleKey")) ?? Key.None;
             var rapidFireToggleKey = KeyInteropUtilities.NormalizeAppToggleKey(ini.GetKey("App", "RapidFireToggleKey")) ?? Key.None;
+            var crosshairOffsetToggleKey = KeyInteropUtilities.NormalizeAppToggleKey(ini.GetKey("App", AppSettings.CrosshairOffsetToggleKeyName)) ?? Key.None;
 
             SetEnableDebugLoggingProgrammatically(enableDebugLogging);
             HookWatchdogEnabled = hookWatchdogEnabled;
@@ -272,11 +289,13 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
             CheckForUpdates = checkForUpdates;
             ColorToggleKey = colorToggleKey;
             RapidFireToggleKey = rapidFireToggleKey;
+            CrosshairOffsetToggleKey = crosshairOffsetToggleKey;
             // A fresh VM's default values may already match the file while the live services differ.
             _inputHookService.HookWatchdogEnabled = hookWatchdogEnabled;
             _inputHookService.AdvancedModeEnabled = advancedModeEnabled;
             _inputHookService.SetColorToggleKey(colorToggleKey == Key.None ? null : colorToggleKey);
             _inputHookService.SetRapidFireToggleKey(rapidFireToggleKey == Key.None ? null : rapidFireToggleKey);
+            _inputHookService.SetCrosshairOffsetToggleKey(crosshairOffsetToggleKey == Key.None ? null : crosshairOffsetToggleKey);
             IsIniLoaded = true;
             return true;
         }

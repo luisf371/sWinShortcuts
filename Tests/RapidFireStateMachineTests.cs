@@ -11,6 +11,124 @@ namespace Tests;
 public sealed class RapidFireStateMachineTests
 {
     [Fact]
+    public void Timer_LateWakeBeforeFirstDeadline_PreservesScheduledClick()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        const System.Reflection.BindingFlags flags =
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        typeof(RapidFireStateMachine).GetMethod("OnTimerFired", flags)!.Invoke(rapidFire, null);
+        var timer = (System.Threading.Timer)typeof(RapidFireStateMachine)
+            .GetField("_timer", flags)!.GetValue(rapidFire)!;
+        try
+        {
+            // A hook wake delayed until after worker initialization replaces the one-shot deadline.
+            timer.Change(0, Timeout.Infinite);
+            Assert.True(sender.MouseEntered.Wait(TimeSpan.FromSeconds(2)));
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public async Task Timer_NewPressDuringOldJitterCalculation_PreservesNewPressSchedule()
+    {
+        var profile = RapidFireProfile();
+        profile.RapidFire.JitterMilliseconds = 20;
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var oldScheduleEntered = new ManualResetEventSlim();
+        using var releaseOldSchedule = new ManualResetEventSlim();
+        var hookThread = Environment.CurrentManagedThreadId;
+        int blockOnce = 1;
+        using var random = new ThreadLocal<Random>(() => new JitterGateRandom(() =>
+        {
+            if (Environment.CurrentManagedThreadId != hookThread && sender.MouseClickThreadIds.Count == 1 &&
+                Interlocked.Exchange(ref blockOnce, 0) != 0)
+            {
+                oldScheduleEntered.Set();
+                Assert.True(releaseOldSchedule.Wait(TimeSpan.FromSeconds(5)));
+            }
+        }));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        var first = Task.Factory.StartNew(rapidFire.FireTimerForTesting, CancellationToken.None,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        try
+        {
+            Assert.True(oldScheduleEntered.Wait(TimeSpan.FromSeconds(2)));
+            rapidFire.HandleLeftButton(isDown: false, allowStart: true);
+            rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+            releaseOldSchedule.Set();
+            await first.WaitAsync(TimeSpan.FromSeconds(2));
+
+            rapidFire.FireTimerForTesting();
+            Assert.Equal(2, sender.MouseClickThreadIds.Count);
+        }
+        finally
+        {
+            releaseOldSchedule.Set();
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+            await first.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Timer_NewPressDuringBlockedClick_SerializesAndRechecksRelease(bool releaseNewPress)
+    {
+        var profile = RapidFireProfile();
+        profile.RapidFire.IntervalMilliseconds = RapidFireSettings.MaxIntervalMilliseconds;
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender(blockMouse: true);
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        using var secondStarted = new ManualResetEventSlim();
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        Task? first = null;
+        Task? second = null;
+        try
+        {
+            rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+            first = Task.Factory.StartNew(rapidFire.FireTimerForTesting, CancellationToken.None,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            Assert.True(sender.MouseEntered.Wait(TimeSpan.FromSeconds(2)));
+            rapidFire.HandleLeftButton(isDown: false, allowStart: true);
+            rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+            second = Task.Factory.StartNew(() =>
+            {
+                secondStarted.Set();
+                rapidFire.FireTimerForTesting();
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            Assert.True(secondStarted.Wait(TimeSpan.FromSeconds(2)));
+            // The first sender call remains blocked throughout the overlap window.
+            await Task.Delay(100);
+            Assert.Single(sender.MouseClickThreadIds);
+            if (releaseNewPress) rapidFire.HandleLeftButton(isDown: false, allowStart: true);
+            sender.ReleaseMouse.Set();
+            await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(2));
+            rapidFire.HandleLeftButton(isDown: false, allowStart: true);
+            Assert.Equal(releaseNewPress ? 1 : 2, sender.MouseClickThreadIds.Count);
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: true);
+            sender.ReleaseMouse.Set();
+            if (first is not null) await first.WaitAsync(TimeSpan.FromSeconds(2));
+            if (second is not null) await second.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    [Fact]
     public void Toggle_TypematicFiresOnceAndReassignmentDisarms()
     {
         var profile = RapidFireProfile();
@@ -254,6 +372,15 @@ public sealed class RapidFireStateMachineTests
 
         Assert.True(released);
         Assert.Equal(before, after);
+    }
+
+    private sealed class JitterGateRandom(Action beforeJitter) : Random(1)
+    {
+        public override int Next(int maxValue)
+        {
+            beforeJitter();
+            return base.Next(maxValue);
+        }
     }
 
     private static RapidFireStateMachine Create(

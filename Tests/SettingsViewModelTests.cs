@@ -11,6 +11,57 @@ namespace Tests;
 
 public sealed class SettingsViewModelTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CrosshairOffsetToggleKey_AssignmentAndHydration_NormalizesAndPublishesOptions(bool hydrate)
+    {
+        var hook = new FakeInputHookService();
+        var vm = new SettingsViewModel(new NullLoggerService(), hook);
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(vm.CrosshairOffsetToggleKey))
+                Assert.Contains(vm.CrosshairOffsetToggleKey, vm.ColorToggleKeyOptions);
+        };
+        foreach (var (key, expected) in new[]
+        {
+            (Key.F13, Key.F13), (Key.ImeProcessed, Key.ImeProcessed),
+            (Key.LeftCtrl, Key.None), (Key.System, Key.None), ((Key)9999, Key.None),
+            (Key.None, Key.None)
+        })
+        {
+            if (hydrate)
+            {
+                hook.SetCrosshairOffsetToggleKey(Key.F9);
+                var ini = new IniDocument();
+                ini.SetValue("App", AppSettings.CrosshairOffsetToggleKeyName, key.ToString());
+                Assert.True(vm.TryLoadIniState(ini, out var error));
+                Assert.Null(error);
+            }
+            else
+            {
+                vm.CrosshairOffsetToggleKey = Key.F9;
+                vm.CrosshairOffsetToggleKey = key;
+            }
+
+            Assert.Equal(expected, vm.CrosshairOffsetToggleKey);
+            Assert.Equal(expected == Key.None ? (Key?)null : expected, hook.LastCrosshairOffsetToggleKey);
+        }
+    }
+
+    [Fact]
+    public void CrosshairOffsetToggleKey_CaptureSettings_ContainsCurrentAssignment()
+    {
+        var vm = new SettingsViewModel(new NullLoggerService(), new FakeInputHookService())
+        {
+            CrosshairOffsetToggleKey = Key.F13
+        };
+        var snapshot = (IniDocument)typeof(sWinShortcuts.Views.SettingsWindow)
+            .GetMethod("CaptureIniState", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [vm])!;
+
+        Assert.Equal("F13", snapshot.GetValue("App", AppSettings.CrosshairOffsetToggleKeyName));
+    }
+
     [Fact]
     public void ColorToggleKey_UpdatesHookImmediately_AndNoneClearsIt()
     {

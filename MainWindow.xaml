@@ -1386,7 +1386,7 @@
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Shows a centered crosshair overlay while profile is active."
+                                                           ToolTip="Shows a crosshair overlay while the profile is active."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                             </StackPanel>
@@ -1422,7 +1422,7 @@
                                                             IsSnapToTickEnabled="True"
                                                             VerticalAlignment="Center"
                                                             Margin="0,0,8,0"
-                                                            ToolTip="Scales the crosshair overlay from -50% to +50% relative to its source size (0 = original). The overlay stays centered and symmetrical while dragging." />
+                                                            ToolTip="Scales the crosshair overlay from -50% to +50% relative to its source size (0 = original), keeping its selected position." />
                                                     <TextBlock Grid.Column="1"
                                                                Text="{Binding CrosshairSizeAdjustment, StringFormat={}{0:+0 '%';-0 '%';'0 %'}}"
                                                                VerticalAlignment="Center"
@@ -1434,6 +1434,84 @@
                                                 <Button Grid.Column="2"
                                                         Content="Reset"
                                                         Command="{Binding ResetCrosshairSizeCommand}"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
+                                            <Grid Margin="0,8,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Horizontal Offset (X)"
+                                                           VerticalAlignment="Center" />
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding CrosshairOffsetX, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="-500"
+                                                            Maximum="500"
+                                                            TickFrequency="1"
+                                                            SmallChange="1"
+                                                            LargeChange="10"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0"
+                                                            AutomationProperties.Name="Crosshair horizontal offset in pixels"
+                                                            ToolTip="Saved horizontal offset from screen center in physical pixels. Negative moves left; positive moves right. Use the offset toggle key assigned in Settings to apply." />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding CrosshairOffsetX, StringFormat={}{0:+0 'px';-0 'px';'0 px'}}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ResetCrosshairOffsetXCommand}"
+                                                        AutomationProperties.Name="Reset crosshair horizontal offset"
+                                                        Width="70"
+                                                        HorizontalAlignment="Right" />
+                                            </Grid>
+                                            <Grid Margin="0,8,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="140" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="Vertical Offset (Y)"
+                                                           VerticalAlignment="Center" />
+                                                <Grid Grid.Column="1">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Slider Value="{Binding CrosshairOffsetY, UpdateSourceTrigger=PropertyChanged}"
+                                                            Minimum="-500"
+                                                            Maximum="500"
+                                                            TickFrequency="1"
+                                                            SmallChange="1"
+                                                            LargeChange="10"
+                                                            IsSnapToTickEnabled="True"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0"
+                                                            AutomationProperties.Name="Crosshair vertical offset in pixels"
+                                                            ToolTip="Saved vertical offset from screen center in physical pixels. Negative moves up; positive moves down. Use the offset toggle key assigned in Settings to apply." />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding CrosshairOffsetY, StringFormat={}{0:+0 'px';-0 'px';'0 px'}}"
+                                                               VerticalAlignment="Center"
+                                                               Width="60"
+                                                               TextAlignment="Left"
+                                                               Foreground="{StaticResource AccentBrush}"
+                                                               FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Button Grid.Column="2"
+                                                        Content="Reset"
+                                                        Command="{Binding ResetCrosshairOffsetYCommand}"
+                                                        AutomationProperties.Name="Reset crosshair vertical offset"
                                                         Width="70"
                                                         HorizontalAlignment="Right" />
                                             </Grid>

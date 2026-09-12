@@ -32,17 +32,22 @@ public sealed class AppSettingsTests
             var ini = new IniDocument();
             ini.SetValue("App", AppSettings.ColorToggleKeyName, key.ToString());
             ini.SetValue("App", AppSettings.RapidFireToggleKeyName, key.ToString());
+            ini.SetValue("App", AppSettings.CrosshairOffsetToggleKeyName, key.ToString());
             ini.Save(path);
             Assert.Equal(expected, AppSettings.LoadColorToggleKey(path));
             Assert.Equal(expected, AppSettings.LoadRapidFireToggleKey(path));
+            Assert.Equal(expected, AppSettings.LoadCrosshairOffsetToggleKey(path));
 
             AppSettings.SetColorToggleKey(ini, key);
             AppSettings.SetRapidFireToggleKey(ini, key);
+            AppSettings.SetCrosshairOffsetToggleKey(ini, key);
             Assert.Equal(expected?.ToString() ?? "None", ini.GetValue("App", AppSettings.ColorToggleKeyName));
             Assert.Equal(expected?.ToString() ?? "None", ini.GetValue("App", AppSettings.RapidFireToggleKeyName));
+            Assert.Equal(expected?.ToString() ?? "None", ini.GetValue("App", AppSettings.CrosshairOffsetToggleKeyName));
             ini.Save(path);
             Assert.Equal(expected, AppSettings.LoadColorToggleKey(path));
             Assert.Equal(expected, AppSettings.LoadRapidFireToggleKey(path));
+            Assert.Equal(expected, AppSettings.LoadCrosshairOffsetToggleKey(path));
         }
         finally
         {

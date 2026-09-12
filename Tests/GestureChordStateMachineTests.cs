@@ -1,3 +1,6 @@
+using System.Collections;
+using System.Diagnostics;
+using System.Reflection;
 using System.Windows.Input;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
@@ -9,6 +12,115 @@ namespace Tests;
 
 public sealed class GestureChordStateMachineTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AltGesture_DelayedHoldCallback_CannotClaimNextPress(bool keyboard)
+    {
+        var profile = CreateProfile();
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.HoldThresholdMilliseconds = 60_000;
+        profile.AltMouse.Bindings[sWinShortcuts.Models.MouseButton.Middle] = new() { TapKey = Key.A, HoldKey = Key.B };
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.HoldThresholdMilliseconds = 60_000;
+        profile.AltKeyboard.Bindings[Key.Q] = new() { TapKey = Key.A, HoldKey = Key.B };
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var callbackEntered = new ManualResetEventSlim();
+        using var releaseCallback = new ManualResetEventSlim();
+        long tick = 1;
+        int callbackThread = 0;
+        using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random,
+            new NullLoggerService(), () => false, () =>
+            {
+                var capturedTick = Volatile.Read(ref tick);
+                if (Environment.CurrentManagedThreadId == Volatile.Read(ref callbackThread))
+                {
+                    callbackEntered.Set();
+                    Assert.True(releaseCallback.Wait(TimeSpan.FromSeconds(5)));
+                }
+                return capturedTick;
+            });
+        machine.SeedAltPressed(true);
+
+        bool Handle(bool down) => keyboard
+            ? machine.HandleAltKeyboard(KeyInterop.VirtualKeyFromKey(Key.Q), down, !down)
+            : machine.HandleAltMouse(down ? NativeMethods.WM_MBUTTONDOWN : NativeMethods.WM_MBUTTONUP, 0);
+
+        Assert.True(Handle(true));
+        Volatile.Write(ref tick, 61 * Stopwatch.Frequency);
+        var timerTask = Task.Factory.StartNew(() =>
+        {
+            Volatile.Write(ref callbackThread, Environment.CurrentManagedThreadId);
+            FireGestureTimer(machine, keyboard);
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        try
+        {
+            Assert.True(callbackEntered.Wait(TimeSpan.FromSeconds(2)));
+            Assert.True(Handle(false));
+            Assert.True(Handle(true));
+        }
+        finally
+        {
+            releaseCallback.Set();
+            await timerTask.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        Assert.True(Handle(false));
+
+        Assert.Equal(new[] { (Key.B, true), (Key.B, false), (Key.A, true), (Key.A, false) },
+            queue.Commands.Select(command => (command.Key, command.IsDown)).ToArray());
+        Assert.All(queue.Commands.Where(command => command.IsDown), command => Assert.True(machine.CanExecute(command)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AltGesture_QueuedCallbackAfterTapOnlyRebind_DoesNotConsumeTap(bool keyboard)
+    {
+        var profile = CreateProfile();
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.HoldThresholdMilliseconds = 60_000;
+        profile.AltMouse.Bindings[sWinShortcuts.Models.MouseButton.Middle] = new() { TapKey = Key.A, HoldKey = Key.B };
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.HoldThresholdMilliseconds = 60_000;
+        profile.AltKeyboard.Bindings[Key.Q] = new() { TapKey = Key.A, HoldKey = Key.B };
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        long tick = 1;
+        using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random,
+            new NullLoggerService(), () => false, () => tick);
+        machine.SeedAltPressed(true);
+        bool Handle(bool down) => keyboard
+            ? machine.HandleAltKeyboard(KeyInterop.VirtualKeyFromKey(Key.Q), down, !down)
+            : machine.HandleAltMouse(down ? NativeMethods.WM_MBUTTONDOWN : NativeMethods.WM_MBUTTONUP, 0);
+
+        Assert.True(Handle(true));
+        profile.AltMouse.Bindings[sWinShortcuts.Models.MouseButton.Middle].HoldKey = null;
+        profile.AltKeyboard.Bindings[Key.Q].HoldKey = null;
+        if (keyboard) machine.ReleaseAltKeyboard();
+        else machine.ReleaseAltMouse();
+        Assert.True(Handle(false));
+        Assert.Empty(queue.Commands);
+
+        Assert.True(Handle(true));
+        tick = 61 * Stopwatch.Frequency;
+        FireGestureTimer(machine, keyboard);
+        Assert.True(Handle(false));
+        Assert.Equal(new[] { (Key.A, true), (Key.A, false) },
+            queue.Commands.Select(command => (command.Key, command.IsDown)).ToArray());
+    }
+
+    private static void FireGestureTimer(GestureChordStateMachine machine, bool keyboard)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var states = (IDictionary)typeof(GestureChordStateMachine)
+            .GetField(keyboard ? "_keyboardStates" : "_mouseStates", flags)!.GetValue(machine)!;
+        object trigger = keyboard ? Key.Q : sWinShortcuts.Models.MouseButton.Middle;
+        typeof(GestureChordStateMachine)
+            .GetMethod(keyboard ? "OnKeyboardTimerFired" : "OnMouseTimerFired", flags)!
+            .Invoke(machine, [trigger, states[trigger]]);
+    }
+
     [Fact]
     public void Wheel_MinimumSignedDelta_BoundsAdmissionAndRetainsFraction()
     {

@@ -1,4 +1,5 @@
 using sWinShortcuts.Services;
+using System.Security.Principal;
 using Xunit;
 
 namespace Tests;
@@ -7,6 +8,14 @@ public sealed class StartupServiceTests
 {
     private const int Missing = unchecked((int)0x80070002);
     private const int Denied = unchecked((int)0x80070005);
+    private static string OwnedTaskXml
+    {
+        get
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            return $"<Task xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Principals><Principal><UserId>{identity.User!.Value}</UserId></Principal></Principals></Task>";
+        }
+    }
 
     [Theory]
     [InlineData(false, false)]
@@ -32,8 +41,8 @@ public sealed class StartupServiceTests
         var state = host.Create().GetState();
         Assert.Equal(present, state.StartWithWindows);
         Assert.Equal(present, state.StartAsAdmin);
-        Assert.Contains("/HRESULT", Assert.Single(host.Commands));
-        Assert.Equal(3000, Assert.Single(host.Timeouts));
+        Assert.All(host.Commands, args => Assert.Contains("/HRESULT", args));
+        Assert.All(host.Timeouts, timeout => Assert.Equal(3000, timeout));
     }
 
     [Theory]
@@ -81,7 +90,7 @@ public sealed class StartupServiceTests
         Assert.True(host.Create().Apply(false, false, out var error));
         Assert.Null(error);
         Assert.Equal(new[] { false }, host.Writes);
-        Assert.StartsWith("/Query ", Assert.Single(host.Commands));
+        Assert.All(host.Commands, args => Assert.StartsWith("/Query ", args));
     }
 
     [Theory]
@@ -109,7 +118,7 @@ public sealed class StartupServiceTests
     {
         var host = new FakeStartupHost { QueryExit = Missing };
         Assert.True(host.Create().Apply(true, true, out _));
-        Assert.Equal(new[] { "query", "create", "disable" }, host.Events);
+        Assert.Equal(new[] { "query", "query", "create", "disable" }, host.Events);
     }
 
     [Fact]
@@ -215,7 +224,11 @@ public sealed class StartupServiceTests
             Commands.Add(arguments);
             stdout = stderr = "";
             exitCode = 0;
-            if (arguments.StartsWith("/Query ")) exitCode = TaskPresent ? 0 : Missing;
+            if (arguments.StartsWith("/Query "))
+            {
+                exitCode = TaskPresent ? 0 : Missing;
+                stdout = TaskPresent ? OwnedTaskXml : "";
+            }
             else if (arguments.StartsWith("/Delete ")) TaskPresent = false;
             else if (FailCreate)
             {
@@ -262,6 +275,7 @@ public sealed class StartupServiceTests
                 Events.Add("query");
                 if (QueryThrows) throw new InvalidOperationException("query unavailable");
                 exitCode = QueryExit;
+                stdout = QueryExit == 0 ? OwnedTaskXml : "";
                 return Completed;
             }
             if (arguments.StartsWith("/Delete "))

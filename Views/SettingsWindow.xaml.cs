@@ -26,6 +26,7 @@ public partial class SettingsWindow : Window
     private bool _baselineWatchdog;
     private Key _baselineColorToggleKey;
     private Key _baselineRapidFireToggleKey;
+    private Key _baselineCrosshairOffsetToggleKey;
     private bool _baselineAdvancedMode;
     private bool _baselineStartWithWindows;
     private bool _baselineStartAsAdmin;
@@ -64,6 +65,7 @@ public partial class SettingsWindow : Window
             {
                 _baselineColorToggleKey = _vm.ColorToggleKey;
                 _baselineRapidFireToggleKey = _vm.RapidFireToggleKey;
+                _baselineCrosshairOffsetToggleKey = _vm.CrosshairOffsetToggleKey;
                 _baselineDebugLogging = _vm.EnableDebugLogging;
                 _baselineWatchdog = _vm.HookWatchdogEnabled;
                 _baselineAdvancedMode = _vm.AdvancedModeEnabled;
@@ -140,6 +142,7 @@ public partial class SettingsWindow : Window
         ini.SetValue("App", "CheckForUpdates", vm.CheckForUpdates ? "true" : "false");
         AppSettings.SetColorToggleKey(ini, vm.ColorToggleKey);
         AppSettings.SetRapidFireToggleKey(ini, vm.RapidFireToggleKey);
+        AppSettings.SetCrosshairOffsetToggleKey(ini, vm.CrosshairOffsetToggleKey);
         return ini;
     }
 
@@ -330,5 +333,6 @@ public partial class SettingsWindow : Window
         _vm.AdvancedModeEnabled = _baselineAdvancedMode;
         _vm.ColorToggleKey = _baselineColorToggleKey;
         _vm.RapidFireToggleKey = _baselineRapidFireToggleKey;
+        _vm.CrosshairOffsetToggleKey = _baselineCrosshairOffsetToggleKey;
     }
 }

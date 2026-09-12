@@ -151,6 +151,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             }
 
             _inputHookService.SetWindowsProfile(_profileManager.WindowsProfile);
+            _crosshairService.Start();
             StartInputHookOnDispatcher();
 
             // Capture this run's immutable channel/token state. A failed start may clear the service
@@ -227,7 +228,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         try { _foregroundWatcher.Stop(); } catch { /* best effort */ }
         workerCancellation?.Cancel();
         try { _inputHookService.Stop(); } catch { /* best effort */ }
-        try { _crosshairService.ApplyProfile(null, IntPtr.Zero); } catch { /* best effort */ }
+        try { _crosshairService.Stop(); } catch { /* best effort */ }
 
         lock (_publicationLock)
         {
@@ -277,7 +278,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
         // Input teardown must never wait behind a slow, non-cancelable native color call.
         _inputHookService.Stop();
-        _crosshairService.ApplyProfile(null, IntPtr.Zero);
+        _crosshairService.Stop();
         var inputWorkerCompleted =
             await WaitForWorkerAsync(inputWorkerTask, cancellationToken).ConfigureAwait(false);
         var colorWorkerCompleted =
@@ -443,9 +444,13 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 // A removed ACTIVE profile's overlay must not outlive it. The republish above
                 // re-resolves the foreground asynchronously; this immediate hide closes the gap
                 // without touching a different profile's overlay.
-                if (ReferenceEquals(_activeProfile, profile))
+                lock (_publicationLock)
                 {
-                    _crosshairService.ApplyProfile(null, IntPtr.Zero);
+                    var active = _inputHookService.ActiveProfile;
+                    if (!_stopping && (active is null || ReferenceEquals(active, profile)))
+                    {
+                        _crosshairService.ApplyProfile(null, IntPtr.Zero);
+                    }
                 }
             }
             else
@@ -473,15 +478,19 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     // (background-profile edits are ignored — only the active profile's crosshair is ever shown).
     private void ReapplyCrosshairFor(Profile editedProfile)
     {
-        var active = _activeProfile;
-        if (active is not null && !ReferenceEquals(active, editedProfile))
+        lock (_publicationLock)
         {
-            return;
-        }
+            if (_stopping) return;
+            var active = _inputHookService.ActiveProfile;
+            if (active is not null && !ReferenceEquals(active, editedProfile)) return;
 
-        _crosshairService.ApplyProfile(
-            active is { IsEnabled: true } enabled ? enabled : null,
-            _latestForeground?.WindowHandle ?? IntPtr.Zero);
+            var foreground = _latestForeground;
+            if (active is { IsEnabled: true } && !ReferenceEquals(active, foreground?.Profile)) return;
+            _crosshairService.ApplyProfile(
+                active is { IsEnabled: true } enabled ? enabled : null,
+                foreground?.WindowHandle ?? IntPtr.Zero,
+                foreground?.Generation ?? 0);
+        }
     }
 
     private void OnProfileAdded(object? sender, Profile profile)
@@ -620,7 +629,6 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                         $"process={snapshot.ProcessName ?? "<empty>"} " +
                         $"normalized={snapshot.NormalizedExecutable ?? "<empty>"} profile={profile.Name}");
                     _inputHookService.ActivateProfile(profile, snapshot.Generation);
-                    _crosshairService.ApplyProfile(profile, snapshot.WindowHandle);
                 }
                 else
                 {
@@ -632,7 +640,19 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                         $"normalized={snapshot.NormalizedExecutable ?? "<empty>"} " +
                         $"profile={snapshot.Profile?.Name ?? "<none>"}");
                     _inputHookService.DeactivateProfile(snapshot.Generation);
-                    _crosshairService.ApplyProfile(null, IntPtr.Zero);
+                }
+
+                // Input transitions stay lossless; only the latest foreground may publish an overlay.
+                // Share the edit publication gate so a paused edit cannot overwrite a later profile.
+                lock (_publicationLock)
+                {
+                    if (!_stopping && _latestForeground?.Generation == snapshot.Generation)
+                    {
+                        var active = _inputHookService.ActiveProfile;
+                        _crosshairService.ApplyProfile(
+                            active is { IsEnabled: true } ? active : null,
+                            snapshot.WindowHandle, snapshot.Generation);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -907,8 +927,13 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
     private void OnActiveProfileChanged(object? sender, Profile? profile)
     {
-        _activeProfile = profile;
-        var isActive = profile is not null && profile.IsEnabled;
-        _systemTrayService.UpdateStatus(isActive, profile?.Name);
+        lock (_publicationLock)
+        {
+            if (_stopping) return;
+            profile = _inputHookService.ActiveProfile;
+            _activeProfile = profile;
+            var isActive = profile is not null && profile.IsEnabled;
+            _systemTrayService.UpdateStatus(isActive, profile?.Name);
+        }
     }
 }

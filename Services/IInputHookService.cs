@@ -6,6 +6,10 @@ namespace sWinShortcuts.Services;
 
 public interface IInputHookService : IDisposable
 {
+    /// <summary>Current input profile; null while the hook service is stopped or disposed.</summary>
+    Profile? ActiveProfile { get; }
+
+    /// <summary>Signals a transition; concurrent delivery can be stale, so consumers re-read ActiveProfile.</summary>
     event EventHandler<Profile?>? ActiveProfileChanged;
 
     /// <summary>
@@ -14,6 +18,9 @@ public interface IInputHookService : IDisposable
     /// active profile's applied color preset (Primary&lt;-&gt;Secondary) and re-applies.
     /// </summary>
     event EventHandler? ColorVariantToggleRequested;
+
+    /// <summary>Raised once per physical press to switch the visible crosshair between center and its saved offset.</summary>
+    event EventHandler<(Profile? Profile, long ForegroundGeneration)>? CrosshairOffsetToggleRequested;
 
     /// <summary>
     /// Raised on the hook thread with the physical right button's new state (true = down), but ONLY while
@@ -49,6 +56,9 @@ public interface IInputHookService : IDisposable
     /// on the low-level keyboard hook and passed through to applications. Live-updatable.
     /// </summary>
     void SetColorToggleKey(Key? key);
+
+    /// <summary>Sets the app-wide crosshair offset key. The physical key still passes through to applications.</summary>
+    void SetCrosshairOffsetToggleKey(Key? key);
 
     /// <summary>
     /// Sets (or clears, when null) the GLOBAL key that arms or disarms Rapid Fire for the active

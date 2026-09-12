@@ -106,6 +106,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             () => AntiAfkIntervalMinutes = AntiAfkSettings.DefaultIntervalMinutes);
         ResetCrosshairSizeCommand = new RelayCommand(
             () => CrosshairSizeAdjustment = CrosshairSettings.DefaultSizeAdjustment);
+        ResetCrosshairOffsetXCommand = new RelayCommand(() => CrosshairOffsetX = 0);
+        ResetCrosshairOffsetYCommand = new RelayCommand(() => CrosshairOffsetY = 0);
 
         UpdateSelectableKeys();
     }
@@ -116,6 +118,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     public ICommand ResetAntiAfkIntervalCommand { get; }
 
     public ICommand ResetCrosshairSizeCommand { get; }
+    public ICommand ResetCrosshairOffsetXCommand { get; }
+    public ICommand ResetCrosshairOffsetYCommand { get; }
 
     public event EventHandler<ProfileChangedEventArgs>? ProfileChanged;
 
@@ -568,6 +572,36 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public int CrosshairOffsetX
+    {
+        get => Model.Crosshair.OffsetX;
+        set
+        {
+            var clamped = Math.Clamp(value, CrosshairSettings.MinOffset, CrosshairSettings.MaxOffset);
+            if (Model.Crosshair.OffsetX != clamped)
+            {
+                Model.Crosshair.OffsetX = clamped;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.Crosshair);
+            }
+        }
+    }
+
+    public int CrosshairOffsetY
+    {
+        get => Model.Crosshair.OffsetY;
+        set
+        {
+            var clamped = Math.Clamp(value, CrosshairSettings.MinOffset, CrosshairSettings.MaxOffset);
+            if (Model.Crosshair.OffsetY != clamped)
+            {
+                Model.Crosshair.OffsetY = clamped;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.Crosshair);
+            }
+        }
+    }
+
     public string CrosshairImagePath
     {
         get => Model.Crosshair.ImagePath;
@@ -969,6 +1003,8 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.Crosshair.IsEnabled = CrosshairEnabled;
             Model.Crosshair.HideWhileRightButtonHeld = CrosshairHideWhileRightButtonHeld;
             Model.Crosshair.SizeAdjustment = CrosshairSizeAdjustment;
+            Model.Crosshair.OffsetX = CrosshairOffsetX;
+            Model.Crosshair.OffsetY = CrosshairOffsetY;
             Model.Crosshair.ImagePath = CrosshairImagePath;
             Model.AntiAfk.IsEnabled = AntiAfkEnabled;
             Model.AntiAfk.IntervalMinutes = AntiAfkIntervalMinutes;

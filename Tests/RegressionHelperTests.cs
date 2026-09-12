@@ -47,14 +47,13 @@ public class WindowRestoreTests
 public class StartupServiceArgumentTests
 {
     [Fact]
-    public void BuildCreateArguments_WrapsExeInEscapedInnerQuotes()
+    public void BuildCreateArguments_QuotesXmlPathWithSpaces()
     {
-        var args = StartupService.BuildCreateArguments("MyTask", @"C:\Program Files\App\app.exe");
+        var args = StartupService.BuildCreateArguments("MyTask", @"C:\Users\Test User\task.xml");
 
-        // S2: the /TR action must carry escaped inner quotes so a space-containing path survives.
-        Assert.Contains("/TR \"\\\"C:\\Program Files\\App\\app.exe\\\"\"", args);
+        Assert.Contains("/XML \"C:\\Users\\Test User\\task.xml\"", args);
         Assert.Contains("/TN \"MyTask\"", args);
-        Assert.Contains("/RL HIGHEST", args);
+        Assert.DoesNotContain("/F", args);
     }
 }
 

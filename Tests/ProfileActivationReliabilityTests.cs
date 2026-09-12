@@ -9,6 +9,62 @@ namespace Tests;
 public sealed class ProfileActivationReliabilityTests
 {
     [Fact]
+    public async Task LiveEdit_DelayedDeactivationNotification_KeepsNewActiveCrosshair()
+    {
+        using var entered = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var first = ProfileFactory.CreateCustomProfile("First", "first.exe");
+        var second = ProfileFactory.CreateCustomProfile("Second", "second.exe");
+        second.Crosshair.IsEnabled = true;
+        var store = new InMemoryProfileStore();
+        store.Profiles.AddRange([first, second]);
+        var watcher = new FakeForegroundWatcher();
+        var tray = new FakeSystemTrayService();
+        var crosshair = new FakeCrosshairService();
+        using var input = InputHookServiceTestExtensions.CreateWithFakeForeground(
+            new NullLoggerService(), new RecordingInputSender());
+        input.StartInputExecutorForTesting();
+        var delayDeactivation = false;
+        input.ActiveProfileChanged += (_, active) =>
+        {
+            if (active is null && Volatile.Read(ref delayDeactivation))
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(5));
+            }
+        };
+        var service = new ProfileActivationService(new ProfileManager(store), watcher, input, tray,
+            new RecordingColorControlService(), new FakeDisplayService(), crosshair, new NullLoggerService());
+        await service.StartAsync(CancellationToken.None);
+        Task? reconcile = null;
+        try
+        {
+            watcher.RaiseForegroundChanged("first.exe", 101);
+            await WaitForAsync(() => crosshair.Applications.Any(apply => ReferenceEquals(apply.Profile, first)));
+            Volatile.Write(ref delayDeactivation, true);
+            first.IsEnabled = false;
+            reconcile = Task.Factory.StartNew(() => input.ReconcileProfileSettings(first, ProfileChangeKind.Master),
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+
+            watcher.RaiseForegroundChanged("second.exe", 202);
+            await WaitForAsync(() => crosshair.Applications.Any(apply => ReferenceEquals(apply.Profile, second)));
+            release.Set();
+            await reconcile.WaitAsync(TimeSpan.FromSeconds(2));
+            service.NotifyProfileChanged(second, ProfileChangeKind.Crosshair);
+
+            Assert.Same(second, crosshair.Applications.Last().Profile);
+            Assert.Equal((true, second.Name), tray.StatusUpdates.Last());
+        }
+        finally
+        {
+            release.Set();
+            if (reconcile is not null) await reconcile.WaitAsync(TimeSpan.FromSeconds(2));
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task ForegroundChanges_ColorApplyBlocked_InputActivatesEveryGenerationInOrder()
     {
         var store = new InMemoryProfileStore();

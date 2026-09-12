@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using sWinShortcuts.Models;
@@ -14,22 +15,31 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
     private readonly Dispatcher? _dispatcher;
     private readonly Action<Action>? _enqueue;
     private readonly object _gate = new();
+    // Session choices follow profile lifetime without keeping removed profiles alive.
+    private readonly ConditionalWeakTable<Profile, StrongBox<bool>> _offsetModes = new();
 
     // Desired configuration and physical state are published together under _gate. Live edits
     // mutate the same Profile, so compare values rather than the Profile reference.
     private bool _shown;
     private bool _reportsRightButton;
     private bool _rightButtonHeld;
+    private Profile? _appliedProfile;
+    private long _appliedForegroundGeneration;
+    private StrongBox<bool>? _offsetMode;
+    private int _appliedOffsetX;
+    private int _appliedOffsetY;
     private string _appliedImagePath = string.Empty;
     private int _appliedSizeAdjustment = CrosshairSettings.DefaultSizeAdjustment;
     private IntPtr _appliedHwnd;
     private bool _hasAppliedConfiguration;
+    private bool _stopped;
     private bool _disposed;
 
     // Window operations are dispatcher-only and never run inside _gate.
     private CrosshairWindow? _window;
 
     internal bool AppliedVisibility { get; private set; }
+    internal (int X, int Y) AppliedOffset { get; private set; }
 
     public CrosshairService(ILoggerService logger, IInputHookService inputHookService)
         : this(logger, inputHookService, enqueue: null)
@@ -43,33 +53,73 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         _enqueue = enqueue;
         _dispatcher = System.Windows.Application.Current?.Dispatcher;
         _inputHookService.RightButtonStateChanged += OnRightButtonStateChanged;
+        _inputHookService.CrosshairOffsetToggleRequested += OnCrosshairOffsetToggleRequested;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
 
-    public void ApplyProfile(Profile? profile, IntPtr foregroundHwnd)
+    public void Start()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _stopped = false;
+            _hasAppliedConfiguration = false;
+        }
+    }
+
+    public void Stop()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            // Close admission and publish the hidden configuration atomically. Window work is queued.
+            _stopped = true;
+            _offsetModes.Clear();
+            ApplyProfile(null, IntPtr.Zero);
+        }
+    }
+
+    public void ApplyProfile(Profile? profile, IntPtr foregroundHwnd, long foregroundGeneration = 0)
     {
         var shouldShow = CrosshairDecision.ShouldShow(profile);
         var reportsRightButton = CrosshairDecision.ReportsRightButton(profile);
         var imagePath = profile?.Crosshair.ImagePath ?? string.Empty;
         var sizeAdjustment = profile?.Crosshair.SizeAdjustment ?? CrosshairSettings.DefaultSizeAdjustment;
+        var offsetX = profile?.Crosshair.OffsetX ?? 0;
+        var offsetY = profile?.Crosshair.OffsetY ?? 0;
         bool skipApply;
         lock (_gate)
         {
-            if (_disposed)
+            if (_disposed || (_stopped && profile is not null))
             {
                 return;
             }
 
-            skipApply = _hasAppliedConfiguration && (_dispatcher is null || _window is not null) &&
+            var profileChanged = !ReferenceEquals(profile, _appliedProfile);
+            if (_offsetMode is not null && _appliedProfile is not null &&
+                !CrosshairDecision.ShouldShow(_appliedProfile))
+            {
+                _offsetMode.Value = false;
+            }
+            // Allocate state on profile application, never in the input callback.
+            _offsetMode = profile is null ? null : _offsetModes.GetOrCreateValue(profile);
+            if (!shouldShow && _offsetMode is not null) _offsetMode.Value = false;
+
+            skipApply = !profileChanged && _hasAppliedConfiguration && (_dispatcher is null || _window is not null) &&
                 shouldShow == _shown &&
                 reportsRightButton == _reportsRightButton &&
                 string.Equals(imagePath, _appliedImagePath, StringComparison.OrdinalIgnoreCase) &&
                 sizeAdjustment == _appliedSizeAdjustment &&
+                offsetX == _appliedOffsetX && offsetY == _appliedOffsetY &&
                 (!shouldShow || foregroundHwnd == _appliedHwnd);
             _shown = shouldShow;
             _reportsRightButton = reportsRightButton;
             _appliedImagePath = imagePath;
             _appliedSizeAdjustment = sizeAdjustment;
+            _appliedProfile = profile;
+            _appliedForegroundGeneration = foregroundGeneration;
+            _appliedOffsetX = offsetX;
+            _appliedOffsetY = offsetY;
             _appliedHwnd = foregroundHwnd;
             if (!reportsRightButton)
             {
@@ -83,7 +133,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
         if (!skipApply)
         {
-            RunOnDispatcher(ApplyOnDispatcher, synchronous: shouldShow && _window is null);
+            RunOnDispatcher(ApplyOnDispatcher);
         }
     }
 
@@ -100,7 +150,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         }
 
         // Always enqueue, even on the UI thread. Input callbacks never wait or reload assets.
-        RunOnDispatcher(ApplyVisibilityOnDispatcher, synchronous: false, priority: DispatcherPriority.Input);
+        RunOnDispatcher(ApplyVisibilityOnDispatcher, priority: DispatcherPriority.Input);
     }
 
     private void ApplyOnDispatcher()
@@ -110,6 +160,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         IntPtr foregroundHwnd;
         string imagePath;
         int sizeAdjustment;
+        (int X, int Y) offset;
         lock (_gate)
         {
             if (_disposed)
@@ -122,6 +173,8 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
             foregroundHwnd = _appliedHwnd;
             imagePath = _appliedImagePath;
             sizeAdjustment = _appliedSizeAdjustment;
+            offset = _offsetMode?.Value == true ? (_appliedOffsetX, _appliedOffsetY) : (0, 0);
+            AppliedOffset = offset;
             _hasAppliedConfiguration = true;
             AppliedVisibility = visible;
         }
@@ -131,22 +184,29 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
             return;
         }
 
-        if (shouldShow)
+        try
         {
-            var window = _window ??= new CrosshairWindow();
-            window.ApplyConfiguration(foregroundHwnd, imagePath, sizeAdjustment);
-            if (visible)
+            if (shouldShow)
             {
-                window.ShowOverlay();
+                var window = _window ??= new CrosshairWindow();
+                window.ApplyConfiguration(foregroundHwnd, imagePath, sizeAdjustment, offset.X, offset.Y);
+                if (visible)
+                {
+                    window.ShowOverlay();
+                }
+                else
+                {
+                    window.HideOverlay();
+                }
             }
             else
             {
-                window.HideOverlay();
+                _window?.HideOverlay();
             }
         }
-        else
+        catch (Exception ex)
         {
-            _window?.HideOverlay();
+            _logger.Log($"[Crosshair] Overlay configuration failed: {ex}");
         }
     }
 
@@ -179,7 +239,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         }
     }
 
-    private void RunOnDispatcher(Action action, bool synchronous, DispatcherPriority priority = DispatcherPriority.Render)
+    private void RunOnDispatcher(Action action, DispatcherPriority priority = DispatcherPriority.Render)
     {
         if (_enqueue is not null)
         {
@@ -195,21 +255,8 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
         try
         {
-            if (synchronous)
-            {
-                if (dispatcher.CheckAccess())
-                {
-                    action();
-                }
-                else
-                {
-                    dispatcher.Invoke(action);
-                }
-            }
-            else
-            {
-                dispatcher.BeginInvoke(priority, action);
-            }
+            // The activation worker must never wait for a UI thread that may be stopping that worker.
+            dispatcher.BeginInvoke(priority, action);
         }
         catch (Exception ex)
         {
@@ -218,6 +265,23 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
     }
 
     private void OnRightButtonStateChanged(object? sender, bool isDown) => SetRightButtonHeld(isDown);
+
+    private void OnCrosshairOffsetToggleRequested(object? sender, (Profile? Profile, long ForegroundGeneration) context)
+    {
+        lock (_gate)
+        {
+            if (_disposed || !_shown || _offsetMode is null || !ReferenceEquals(context.Profile, _appliedProfile) ||
+                context.ForegroundGeneration != _appliedForegroundGeneration)
+            {
+                return;
+            }
+
+            _offsetMode.Value = !_offsetMode.Value;
+        }
+
+        // Keep input callbacks enqueue-only; the dispatcher reads the latest profile and mode.
+        RunOnDispatcher(ApplyOnDispatcher, priority: DispatcherPriority.Input);
+    }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
@@ -229,7 +293,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
             }
         }
 
-        RunOnDispatcher(ApplyOnDispatcher, synchronous: false);
+        RunOnDispatcher(ApplyOnDispatcher);
     }
 
     public void Dispose()
@@ -244,11 +308,16 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
             _disposed = true;
             _inputHookService.RightButtonStateChanged -= OnRightButtonStateChanged;
+            _inputHookService.CrosshairOffsetToggleRequested -= OnCrosshairOffsetToggleRequested;
             window = _window;
             _window = null;
             _shown = false;
             _reportsRightButton = false;
             _rightButtonHeld = false;
+            _appliedProfile = null;
+            _offsetMode = null;
+            _offsetModes.Clear();
+            AppliedOffset = (0, 0);
             AppliedVisibility = false;
             try
             {
@@ -264,7 +333,7 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
 
         if (window is not null)
         {
-            RunOnDispatcher(window.Close, synchronous: false);
+            RunOnDispatcher(window.Close);
         }
     }
 }

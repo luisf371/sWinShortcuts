@@ -83,7 +83,12 @@ moment that program comes to the foreground.
   timer. **Forced** mode sends to the game window without waiting for keyboard inactivity,
   while respecting the configured interval.
 - **Crosshair overlay** — puts a custom crosshair in the center of the screen: use the
-  bundled one or your own image. Can hide automatically while you aim.
+  bundled one or your own image. Can hide automatically while you aim. Each profile has
+  **Offset X/Y** sliders (−500 to +500 physical pixels; positive X moves right, positive Y
+  moves down). Assign **Crosshair offset toggle key** in **Settings → Hotkeys** to switch
+  between centered and the saved offset. Each profile starts centered for a new app session
+  and remembers its selected mode when you switch away and return. Ordinary edits keep
+  the mode; disabling the active crosshair resets it to centered.
 
 ### Display Color
 
@@ -200,6 +205,13 @@ Open **Settings** from the tray menu or main window to configure:
   profiles (they are intentionally *not* per-profile settings).
 - **Enable Debug Logging** — writes verbose input-hook tracing to `debug.log`.
 - **Start minimized** and **Start with Windows** (with optional *run as administrator*).
+
+Elevated startup is scoped to your Windows account and runs at your logon, including
+on battery power, without a time limit. Existing startup tasks are adopted only when
+their principal belongs to your account; other users' tasks are left alone. To apply
+the battery and time-limit settings to an older task, run the app as administrator,
+turn **Start with Windows** off and save, then turn it back on with **run as
+administrator** and save again.
 
 ### Special Profiles
 

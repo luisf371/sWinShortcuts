@@ -5,15 +5,22 @@ namespace sWinShortcuts.Services;
 
 public interface ICrosshairService
 {
+    /// <summary>Reopens overlay updates for a new activation-service run.</summary>
+    void Start();
+
+    /// <summary>Hides asynchronously and rejects late profile updates until Start is called.</summary>
+    void Stop();
+
     /// <summary>
     /// Applies the ACTIVE profile's crosshair overlay configuration: shows/positions/configures the
     /// overlay when the profile (and its Crosshair feature) is enabled, hides it otherwise.
     /// Called by ProfileActivationService on its activation worker for foreground changes and by
     /// NotifyProfileChanged for live edits; all window work is marshaled to the UI dispatcher.
     /// </summary>
-    /// <param name="profile">The profile that just became active; null to hide (deactivation/stop).</param>
+    /// <param name="profile">The profile that just became active; null to hide on deactivation.</param>
     /// <param name="foregroundHwnd">The game's foreground window handle; IntPtr.Zero = primary screen.</param>
-    void ApplyProfile(Profile? profile, IntPtr foregroundHwnd);
+    /// <param name="foregroundGeneration">The foreground publication used to admit offset toggles.</param>
+    void ApplyProfile(Profile? profile, IntPtr foregroundHwnd, long foregroundGeneration = 0);
 
     /// <summary>
     /// Feed from the input hook's right-button observation (hook thread). Hides the overlay while the

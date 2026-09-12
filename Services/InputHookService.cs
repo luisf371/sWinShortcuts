@@ -39,6 +39,10 @@ public sealed class InputHookService : IInputHookService
     private volatile int _colorToggleVk;
     private bool _colorToggleDownLatched;
     private int _hookSeenToggleVk;
+    // Keep the VK and held latch together across live reassignment and hook-thread updates.
+    private int _crosshairOffsetToggleState;
+    private const int TOGGLE_VK_MASK = 0xFF;
+    private const int TOGGLE_DOWN = 0x100;
     private volatile bool _rightButtonPressed;
     private volatile bool _crosshairRightButtonWatch;
     private volatile Profile? _windowsProfile;
@@ -205,9 +209,13 @@ public sealed class InputHookService : IInputHookService
         _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, _isPhysicalKeyDown);
     }
 
+    public Profile? ActiveProfile => !_runtime.IsDisposed && _runtime.IsRunning ? _runtime.ActiveProfile : null;
+
     public event EventHandler<Profile?>? ActiveProfileChanged;
 
     public event EventHandler? ColorVariantToggleRequested;
+
+    public event EventHandler<(Profile? Profile, long ForegroundGeneration)>? CrosshairOffsetToggleRequested;
 
     // Crosshair overlay RMB feed — see IInputHookService.RightButtonStateChanged. Observation-only:
     // fired from the mouse hook at human click frequency while armed, never causes suppression.
@@ -415,15 +423,6 @@ public sealed class InputHookService : IInputHookService
             // fresh. Hooks are installed above but _runtime.IsRunning is still false, so no callback is honored yet.
             _remaps.SeedCapsPhysicalState(_isPhysicalKeyDown(NativeMethods.VK_CAPITAL));
 
-            // Fresh session: SEED the color-toggle fire-once latch from the ACTUAL physical key state (mirrors
-            // the Caps seed above). If the toggle key is still held across Stop->Start its press already fired,
-            // so latch TRUE so its post-restart typematic repeats DON'T re-fire (a blind clear would
-            // double-fire); its UP then clears it. Not held -> false -> the next press fires. Sync
-            // _hookSeenToggleVk so HandleColorToggle's reconciliation doesn't immediately clear this seed.
-            var colorToggleVk = _colorToggleVk;
-            _colorToggleDownLatched = colorToggleVk != 0 && _isPhysicalKeyDown(colorToggleVk);
-            _hookSeenToggleVk = colorToggleVk;
-
             // Seed the Alt+Keyboard typematic latches from the ACTUAL physical key state (same rationale
             // as the Caps seed): a trigger key already held across Stop->Start had its DOWN delivered to
             // Windows, so its carryover repeats + UP must PASS THROUGH and pair with that DOWN —
@@ -440,7 +439,7 @@ public sealed class InputHookService : IInputHookService
             // event — it is Off by definition). Seed the physical latches so a key or left button
             // held across restart cannot be mistaken for a fresh press.
             _rapidFire.Release(preservePhysicalPairing: false);
-            _rapidFire.SeedTogglePhysicalState(_isPhysicalKeyDown);
+            SeedAppTogglePhysicalState();
             var physicalLeftVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
                 ? NativeMethods.VK_RBUTTON
                 : NativeMethods.VK_LBUTTON;
@@ -563,6 +562,7 @@ public sealed class InputHookService : IInputHookService
 
                 RederivePhysicalModifierState();
                 _autoRun.SeedMovementPhysicalState();
+                SeedAppTogglePhysicalState();
                 if (_runtime.ActiveProfile is { } profile)
                 {
                     _antiAfk.CaptureForegroundTarget(profile);
@@ -958,6 +958,7 @@ public sealed class InputHookService : IInputHookService
         _autoRun.SeedMovementPhysicalState();
 
         Volatile.Write(ref _lastKeyboardEventTick, Stopwatch.GetTimestamp());
+        SeedAppTogglePhysicalState();
         _keyboardReplacementInProgress = false;
     }
 
@@ -1261,6 +1262,29 @@ public sealed class InputHookService : IInputHookService
         RightButtonStateChanged?.Invoke(this, isDown);
     }
 
+    public void SetCrosshairOffsetToggleKey(Key? key)
+    {
+        key = KeyInteropUtilities.NormalizeAppToggleKey(key);
+        var vk = key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0;
+        if ((Volatile.Read(ref _crosshairOffsetToggleState) & TOGGLE_VK_MASK) == vk) return;
+        Interlocked.Exchange(ref _crosshairOffsetToggleState,
+            vk | (vk != 0 && _isPhysicalKeyDown(vk) ? TOGGLE_DOWN : 0));
+    }
+
+    private void SeedAppTogglePhysicalState()
+    {
+        // Reconcile missed UPs at input-stream boundaries without treating held-key repeats as presses.
+        var colorToggleVk = _colorToggleVk;
+        _colorToggleDownLatched = colorToggleVk != 0 && _isPhysicalKeyDown(colorToggleVk);
+        _hookSeenToggleVk = colorToggleVk;
+        _rapidFire.SeedTogglePhysicalState(_isPhysicalKeyDown);
+
+        var state = Volatile.Read(ref _crosshairOffsetToggleState);
+        var vk = state & TOGGLE_VK_MASK;
+        Interlocked.CompareExchange(ref _crosshairOffsetToggleState,
+            vk | (vk != 0 && _isPhysicalKeyDown(vk) ? TOGGLE_DOWN : 0), state);
+    }
+
     public void SetRapidFireToggleKey(Key? key)
     {
         if (_rapidFire.SetToggleKey(key))
@@ -1353,6 +1377,7 @@ public sealed class InputHookService : IInputHookService
         // create a wrong binding. Modifiers are rejected as toggle keys (SetColorToggleKey), so this never
         // shadows the Alt-tracking that follows.
         HandleColorToggle(vkCode, isKeyDown, isKeyUp);
+        HandleCrosshairOffsetToggle(vkCode, isKeyDown, isKeyUp);
         if (_rapidFire.HandleToggleKey(vkCode, isKeyDown, isKeyUp))
         {
             RaiseRapidFireArmChanged();
@@ -1452,6 +1477,30 @@ public sealed class InputHookService : IInputHookService
         else if (isKeyUp)
         {
             _colorToggleDownLatched = false;
+        }
+    }
+
+    private void HandleCrosshairOffsetToggle(int vkCode, bool isKeyDown, bool isKeyUp)
+    {
+        var state = Volatile.Read(ref _crosshairOffsetToggleState);
+        var toggleVk = state & TOGGLE_VK_MASK;
+        if (toggleVk == 0 || vkCode != toggleVk) return;
+
+        if (isKeyDown && (state & TOGGLE_DOWN) == 0)
+        {
+            var profile = _runtime.ActiveProfile;
+            var generation = _runtime.ActiveProfileGeneration;
+            if (Interlocked.CompareExchange(ref _crosshairOffsetToggleState, state | TOGGLE_DOWN, state) == state
+                && generation == _runtime.PublishedForegroundGeneration
+                && generation == _runtime.ActiveProfileGeneration
+                && ReferenceEquals(profile, _runtime.ActiveProfile))
+            {
+                CrosshairOffsetToggleRequested?.Invoke(this, (profile, generation));
+            }
+        }
+        else if (isKeyUp)
+        {
+            Interlocked.CompareExchange(ref _crosshairOffsetToggleState, toggleVk, state);
         }
     }
 

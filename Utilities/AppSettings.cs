@@ -10,6 +10,7 @@ public static class AppSettings
     private static Task _pendingStorage = Task.CompletedTask;
     public const string ColorToggleKeyName = "ColorToggleKey";
     public const string RapidFireToggleKeyName = "RapidFireToggleKey";
+    public const string CrosshairOffsetToggleKeyName = "CrosshairOffsetToggleKey";
     public const string CheckForUpdatesKeyName = "CheckForUpdates";
 
     public static string GetRootDirectory()
@@ -70,6 +71,12 @@ public static class AppSettings
     {
         return KeyInteropUtilities.NormalizeAppToggleKey(IniDocument.Load(settingsPath).GetKey("App", RapidFireToggleKeyName));
     }
+
+    public static Key? LoadCrosshairOffsetToggleKey(string settingsPath)
+        => KeyInteropUtilities.NormalizeAppToggleKey(IniDocument.Load(settingsPath).GetKey("App", CrosshairOffsetToggleKeyName));
+
+    public static void SetCrosshairOffsetToggleKey(IniDocument document, Key? key)
+        => SetToggleKey(document, CrosshairOffsetToggleKeyName, key);
 
     /// <summary>[App] CheckForUpdates — default OFF: only the literal "true" enables the GitHub update check.</summary>
     public static bool LoadCheckForUpdatesEnabled(string settingsPath)

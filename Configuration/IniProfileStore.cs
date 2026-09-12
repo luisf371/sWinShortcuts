@@ -504,6 +504,10 @@ public sealed class IniProfileStore : IProfileStore
         settings.SizeAdjustment = Math.Max(CrosshairSettings.MinSizeAdjustment,
             Math.Min(CrosshairSettings.MaxSizeAdjustment,
                 document.GetInt32("Crosshair", "SizeAdjustment", settings.SizeAdjustment)));
+        settings.OffsetX = Math.Clamp(document.GetInt32("Crosshair", "OffsetX", settings.OffsetX),
+            CrosshairSettings.MinOffset, CrosshairSettings.MaxOffset);
+        settings.OffsetY = Math.Clamp(document.GetInt32("Crosshair", "OffsetY", settings.OffsetY),
+            CrosshairSettings.MinOffset, CrosshairSettings.MaxOffset);
     }
 
     private static IniDocument SerializeProfile(Profile profile)
@@ -578,6 +582,8 @@ public sealed class IniProfileStore : IProfileStore
         document.SetBoolean("Crosshair", "HideWhileRightButtonHeld", crosshair.HideWhileRightButtonHeld);
         document.SetString("Crosshair", "ImagePath", crosshair.ImagePath);
         document.SetInt32("Crosshair", "SizeAdjustment", crosshair.SizeAdjustment);
+        document.SetInt32("Crosshair", "OffsetX", crosshair.OffsetX);
+        document.SetInt32("Crosshair", "OffsetY", crosshair.OffsetY);
 
         var antiAfk = profile.AntiAfk;
         document.SetBoolean("AntiAfk", "Enabled", antiAfk.IsEnabled);

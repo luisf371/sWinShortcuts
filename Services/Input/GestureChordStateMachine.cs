@@ -18,10 +18,6 @@ namespace sWinShortcuts.Services.Input;
 /// </summary>
 internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 {
-    private const int TIMER_IDLE = 0;
-    private const int TIMER_ARMED = 1;
-    private const int TIMER_FIRED = 2;
-    private const int TIMER_CANCELLED = 3;
     private const int KEY_PRESS_MIN_MS = 31;
     private const int KEY_PRESS_MAX_MS = 53;
     private const int HOLD_BREATH_JITTER_MIN_MS = 15;
@@ -342,7 +338,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             return false;
         }
 
-        CancelTimer(state);
+        TryCancelTimer(state.Timer);
         if (generation != Volatile.Read(ref _altMouseGeneration))
         {
             return false;
@@ -352,18 +348,17 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             profile,
             _runtime.ActiveProfileGeneration,
             generation,
-            Stopwatch.GetTimestamp(),
+            _clock(),
             binding.TapKey,
             binding.HoldKey,
             Math.Max(10, profile.AltMouse.HoldThresholdMilliseconds));
         Volatile.Write(ref state.ActivePress, press);
         Interlocked.Exchange(ref state.SuppressNextUp, 1);
-        Interlocked.Exchange(ref state.TimerState, TIMER_ARMED);
         if (press.HoldKey.HasValue && !TryArmTimer(state.Timer, press.HoldThresholdMs))
         {
             Interlocked.Exchange(ref state.ActivePress, null);
             Interlocked.Exchange(ref state.SuppressNextUp, 0);
-            Interlocked.Exchange(ref state.TimerState, TIMER_CANCELLED);
+            Interlocked.Exchange(ref press.CompletionClaimed, 1);
             return false;
         }
 
@@ -420,7 +415,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             return false;
         }
 
-        CancelTimer(state);
+        TryCancelTimer(state.Timer);
         if (generation != Volatile.Read(ref _altKeyboardGeneration))
         {
             return false;
@@ -433,19 +428,18 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             profile,
             _runtime.ActiveProfileGeneration,
             generation,
-            Stopwatch.GetTimestamp(),
+            _clock(),
             binding.TapKey,
             binding.HoldKey,
             Math.Max(10, profile.AltKeyboard.HoldThresholdMilliseconds),
             token);
         Volatile.Write(ref state.ActivePress, press);
         Interlocked.Exchange(ref state.SuppressNextUp, 1);
-        Interlocked.Exchange(ref state.TimerState, TIMER_ARMED);
         if (press.HoldKey.HasValue && !TryArmTimer(state.Timer, press.HoldThresholdMs))
         {
             Interlocked.Exchange(ref state.ActivePress, null);
             Interlocked.Exchange(ref state.SuppressNextUp, 0);
-            Interlocked.Exchange(ref state.TimerState, TIMER_CANCELLED);
+            Interlocked.Exchange(ref press.CompletionClaimed, 1);
             return false;
         }
 
@@ -467,8 +461,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
         if (isKeyDown)
         {
-            CancelTimer(state);
-            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
+            TryCancelTimer(state.Timer);
             var press = Interlocked.Exchange(ref state.ActivePress, null);
             if (press is not null)
             {
@@ -823,26 +816,23 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     {
         var suppressUp = Interlocked.Exchange(ref state.SuppressNextUp, 0) != 0;
         var press = Interlocked.Exchange(ref state.ActivePress, null);
-        var finalState = Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
         TryCancelTimer(state.Timer);
-        if (press is null || !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: false))
+        if (press is null || Interlocked.Exchange(ref press.CompletionClaimed, 1) != 0 ||
+            !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: false))
         {
             return suppressUp;
         }
 
-        var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
-        if (finalState != TIMER_FIRED)
+        var elapsedMs = (_clock() - press.DownTick) * TickToMilliseconds;
+        if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
         {
-            if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
-            {
-                EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation,
-                    TOKEN_ALT_MOUSE | (long)button);
-            }
-            else if (press.TapKey.HasValue)
-            {
-                EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation,
-                    TOKEN_ALT_MOUSE | (long)button);
-            }
+            EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation,
+                TOKEN_ALT_MOUSE | (long)button);
+        }
+        else if (press.TapKey.HasValue)
+        {
+            EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation,
+                TOKEN_ALT_MOUSE | (long)button);
         }
 
         return suppressUp;
@@ -853,26 +843,23 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         state.PhysicallyDown = false;
         var suppressUp = Interlocked.Exchange(ref state.SuppressNextUp, 0) != 0;
         var press = Interlocked.Exchange(ref state.ActivePress, null);
-        var finalState = Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
         TryCancelTimer(state.Timer);
-        if (press is null || !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: true))
+        if (press is null || Interlocked.Exchange(ref press.CompletionClaimed, 1) != 0 ||
+            !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: true))
         {
             return suppressUp;
         }
 
-        var elapsedMs = (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds;
-        if (finalState != TIMER_FIRED)
+        var elapsedMs = (_clock() - press.DownTick) * TickToMilliseconds;
+        if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
         {
-            if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
-            {
-                EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
-                    acknowledgement: press);
-            }
-            else if (press.TapKey.HasValue)
-            {
-                EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
-                    acknowledgement: press);
-            }
+            EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
+                acknowledgement: press);
+        }
+        else if (press.TapKey.HasValue)
+        {
+            EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
+                acknowledgement: press);
         }
 
         return suppressUp;
@@ -882,10 +869,10 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     {
         var press = Volatile.Read(ref state.ActivePress);
         if (press is null ||
-            !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: false) ||
-            (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds < press.HoldThresholdMs - FIRE_TOLERANCE_MS ||
-            Interlocked.CompareExchange(ref state.TimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED ||
             !press.HoldKey.HasValue ||
+            !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: false) ||
+            (_clock() - press.DownTick) * TickToMilliseconds < press.HoldThresholdMs - FIRE_TOLERANCE_MS ||
+            Interlocked.CompareExchange(ref press.CompletionClaimed, 1, 0) != 0 ||
             _runtime.IsDisposed)
         {
             return;
@@ -899,10 +886,10 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     {
         var press = Volatile.Read(ref state.ActivePress);
         if (press is null ||
-            !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: true) ||
-            (Stopwatch.GetTimestamp() - press.DownTick) * TickToMilliseconds < press.HoldThresholdMs - FIRE_TOLERANCE_MS ||
-            Interlocked.CompareExchange(ref state.TimerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED ||
             !press.HoldKey.HasValue ||
+            !GestureIsCurrent(press.Profile, press.ForegroundGeneration, press.Generation, altKeyboard: true) ||
+            (_clock() - press.DownTick) * TickToMilliseconds < press.HoldThresholdMs - FIRE_TOLERANCE_MS ||
+            Interlocked.CompareExchange(ref press.CompletionClaimed, 1, 0) != 0 ||
             _runtime.IsDisposed)
         {
             return;
@@ -1089,8 +1076,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         Interlocked.Increment(ref _altMouseGeneration);
         foreach (var state in _mouseStates.Values)
         {
-            CancelTimer(state);
-            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
+            TryCancelTimer(state.Timer);
             Interlocked.Exchange(ref state.ActivePress, null);
             if (!preserveSuppressedUps)
             {
@@ -1104,8 +1090,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         Interlocked.Increment(ref _altKeyboardGeneration);
         foreach (var state in _keyboardStates.Values)
         {
-            CancelTimer(state);
-            Interlocked.Exchange(ref state.TimerState, TIMER_IDLE);
+            TryCancelTimer(state.Timer);
             Interlocked.Exchange(ref state.ActivePress, null);
             if (!preserveSuppressedUps)
             {
@@ -1113,12 +1098,6 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
                 state.PhysicallyDown = false;
             }
         }
-    }
-
-    private void CancelTimer(FeatureTimerState state)
-    {
-        Interlocked.Exchange(ref state.TimerState, TIMER_CANCELLED);
-        TryCancelTimer(state.Timer);
     }
 
     private bool TryArmTimer(Timer timer, int dueTime)
@@ -1201,7 +1180,6 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
     private abstract class FeatureTimerState
     {
-        internal int TimerState = TIMER_IDLE;
         internal int SuppressNextUp;
         internal readonly Timer Timer;
 
@@ -1237,7 +1215,11 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         long DownTick,
         Key? TapKey,
         Key? HoldKey,
-        int HoldThresholdMs);
+        int HoldThresholdMs)
+    {
+        // The timer and UP compete for this press, never for the next use of the same button.
+        internal int CompletionClaimed;
+    }
 
     private sealed class KeyboardPress(
         Profile profile,
@@ -1249,6 +1231,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         int holdThresholdMs,
         long token) : InputCommandAcknowledgement
     {
+        internal int CompletionClaimed;
         internal Profile Profile { get; } = profile;
         internal long ForegroundGeneration { get; } = foregroundGeneration;
         internal long Generation { get; } = generation;

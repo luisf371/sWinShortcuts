@@ -449,6 +449,57 @@ public sealed class ProfileRuntimeNotificationTests
         Assert.Equal(3, changes.Count);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void CrosshairOffset_ClampsNotifiesDedupsAndResets(bool horizontal)
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(
+            profile,
+            new FakeDisplayService(),
+            new RecordingColorControlService());
+        Action<int> setOffset = horizontal
+            ? value => viewModel.CrosshairOffsetX = value
+            : value => viewModel.CrosshairOffsetY = value;
+        Func<int> getOffset = horizontal
+            ? () => profile.Crosshair.OffsetX
+            : () => profile.Crosshair.OffsetY;
+        var propertyName = horizontal
+            ? nameof(ProfileViewModel.CrosshairOffsetX)
+            : nameof(ProfileViewModel.CrosshairOffsetY);
+        var resetCommand = horizontal
+            ? viewModel.ResetCrosshairOffsetXCommand
+            : viewModel.ResetCrosshairOffsetYCommand;
+        var changes = new List<ProfileChangeKind>();
+        viewModel.ProfileChanged += (_, e) => changes.Add(e.Kind);
+        var notifications = 0;
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == propertyName)
+            {
+                notifications++;
+            }
+        };
+
+        Assert.Equal(0, getOffset());
+        setOffset(999);
+        Assert.Equal(500, getOffset());
+        setOffset(-999);
+        Assert.Equal(-500, getOffset());
+        setOffset(25);
+        Assert.Equal(25, getOffset());
+        setOffset(25);
+        Assert.Equal(3, notifications);
+        Assert.Equal(3, changes.Count);
+
+        resetCommand.Execute(null);
+        Assert.Equal(0, getOffset());
+        Assert.Equal(4, notifications);
+        Assert.Equal(4, changes.Count);
+        Assert.All(changes, kind => Assert.Equal(ProfileChangeKind.Crosshair, kind));
+    }
+
     [Fact]
     public async Task RemoveAllBindings_DetachesRemovedEntriesAndKeepsModelsEmpty()
     {

@@ -55,6 +55,8 @@ public partial class App : System.Windows.Application
         catch (Exception ex) { CrashReporter.Write("App.ToggleKey.Color", ex); }
         try { inputHook.SetRapidFireToggleKey(AppSettings.LoadRapidFireToggleKey(settingsPath)); }
         catch (Exception ex) { CrashReporter.Write("App.ToggleKey.RapidFire", ex); }
+        try { inputHook.SetCrosshairOffsetToggleKey(AppSettings.LoadCrosshairOffsetToggleKey(settingsPath)); }
+        catch (Exception ex) { CrashReporter.Write("App.ToggleKey.CrosshairOffset", ex); }
 
         // Explicit ownership BEFORE anything can instantiate an overlay: WPF auto-assigns
         // Application.MainWindow to the FIRST-created Window, so the status dot (resolved below)
