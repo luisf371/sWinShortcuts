@@ -1,4 +1,5 @@
 using System.Windows.Input;
+using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Services.Input;
 using sWinShortcuts.Utilities;
@@ -87,6 +88,125 @@ public sealed class MacroInputExecutorTests
         Assert.True(await Send(executor, new InputCommand(Key.LeftCtrl, false, HoldOwner: InputHoldOwner.HoldBreath)));
         Assert.Empty(sender.Transitions);
         Assert.True(await Send(executor, Cleanup()));
+    }
+
+    [Fact]
+    public async Task RejectedRemapDown_AfterMacroCleanup_MappedUpDoesNotReleasePhysicalModifier()
+    {
+        var sender = new RecordingInputSender();
+        using var service = MacroPlaybackTests.Create(sender, out var profile,
+            new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 30_000 });
+        profile.CombinedMappings.IsEnabled = true;
+        profile.CombinedMappings.Mappings = [new() { Source = InputTrigger.FromKey(Key.X), TargetKey = Key.LeftCtrl, SuppressOriginalKey = true }];
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.CombinedMappings);
+        MacroPlaybackTests.Press(service, 0x75);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Playing);
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x58, true, false));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.DoesNotContain(sender.Transitions, t => t.Key == Key.LeftCtrl);
+        MacroPlaybackTests.Press(service, 0x7B);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x58, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.DoesNotContain(sender.Transitions, t => t.Key == Key.LeftCtrl && !t.IsDown);
+    }
+
+    [Fact]
+    public async Task RejectedSharedRemapDown_RepeatsAndNewSourceAfterCleanup_StayRejectedUntilLastSourceUp()
+    {
+        var sender = new RecordingInputSender();
+        using var service = MacroPlaybackTests.Create(sender, out var profile,
+            new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 30_000 });
+        profile.CombinedMappings.IsEnabled = true;
+        profile.CombinedMappings.Mappings =
+        [
+            new() { Source = InputTrigger.FromKey(Key.X), TargetKey = Key.LeftCtrl, SuppressOriginalKey = true },
+            new() { Source = InputTrigger.FromKey(Key.Y), TargetKey = Key.LeftCtrl, SuppressOriginalKey = true }
+        ];
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.CombinedMappings);
+        MacroPlaybackTests.Press(service, 0x75);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Playing);
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x58, true, false));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x58, true, false));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        MacroPlaybackTests.Press(service, 0x7B);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x59, true, false));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x58, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Empty(sender.Transitions);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x59, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Empty(sender.Transitions);
+
+        Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, false, true));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x58, true, false));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x59, true, false));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x58, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(new[] { (Key.LeftCtrl, true) }, sender.Transitions.Select(t => (t.Key, t.IsDown)));
+        Assert.True(service.DispatchDecodedKeyboardEvent(0x59, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(new[] { (Key.LeftCtrl, true), (Key.LeftCtrl, false) },
+            sender.Transitions.Select(t => (t.Key, t.IsDown)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RejectedForeignDown_OverlappingLaterOwner_ReleasesOnlyAdmittedHold(bool rejectedReleasedFirst)
+    {
+        var sender = new RecordingInputSender();
+        using var executor = Create(sender);
+        Assert.True(await Send(executor, Reserve()));
+        Assert.False(await Send(executor, new InputCommand(Key.LeftCtrl, true, HoldOwner: InputHoldOwner.Combined)));
+        Assert.True(await Send(executor, Cleanup()));
+        Assert.True(await Send(executor, new InputCommand(Key.LeftCtrl, true, HoldOwner: InputHoldOwner.Caps)));
+        if (rejectedReleasedFirst)
+            Assert.True(await Send(executor, new InputCommand(Key.LeftCtrl, false, HoldOwner: InputHoldOwner.Combined)));
+        Assert.Empty(sender.KeyReleases);
+        Assert.True(await Send(executor, new InputCommand(Key.LeftCtrl, false, HoldOwner: InputHoldOwner.Caps)));
+        if (!rejectedReleasedFirst)
+            Assert.True(await Send(executor, new InputCommand(Key.LeftCtrl, false, HoldOwner: InputHoldOwner.Combined)));
+        Assert.Equal(new[] { (Key.LeftCtrl, true), (Key.LeftCtrl, false) },
+            sender.Transitions.Select(t => (t.Key, t.IsDown)));
+    }
+
+    [Fact]
+    public async Task RejectedForeignDown_GuardAlsoRejectsRepeatedDown_DelayedUpDoesNotSend()
+    {
+        var sender = new RecordingInputSender();
+        using var executor = Create(sender);
+        Assert.True(await Send(executor, Reserve()));
+        var down = new InputCommand(Key.LeftCtrl, true, HoldOwner: InputHoldOwner.HoldBreath,
+            Guard: new MutableGuard { Allows = false });
+        Assert.False(await Send(executor, down));
+        Assert.False(await Send(executor, down));
+        Assert.True(await Send(executor, Cleanup()));
+        Assert.True(await Send(executor, down with { IsDown = false }));
+        Assert.Empty(sender.Transitions);
+        Assert.True(await Send(executor, new InputCommand(Key.LeftCtrl, false)));
+        Assert.Equal(new[] { (Key.LeftCtrl, false) }, sender.Transitions.Select(t => (t.Key, t.IsDown)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RejectedForeignDown_LaterNativeDownFails_PreservesAttemptedDownRelease(bool throws)
+    {
+        var sender = new RecordingInputSender();
+        using var executor = Create(sender);
+        var down = new InputCommand(Key.LeftCtrl, true, HoldOwner: InputHoldOwner.Combined);
+        Assert.True(await Send(executor, Reserve()));
+        Assert.False(await Send(executor, down));
+        Assert.True(await Send(executor, Cleanup()));
+        sender.KeyResult = (_, isDown, _) => !isDown || (throws ? throw new InvalidOperationException("DOWN failed") : false);
+        Assert.False(await Send(executor, down));
+        Assert.True(await Send(executor, down with { IsDown = false }));
+        Assert.Equal(new[] { (Key.LeftCtrl, true), (Key.LeftCtrl, false) },
+            sender.Transitions.Select(t => (t.Key, t.IsDown)));
     }
 
     [Fact]

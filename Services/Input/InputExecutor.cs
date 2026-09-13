@@ -130,6 +130,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     private readonly Key[] _pendingReleases = new Key[256];
     private readonly InputHoldOwner[] _pendingReleaseOwners = new InputHoldOwner[256];
     private readonly InputHoldOwner[] _holdOwners = new InputHoldOwner[256];
+    private readonly InputHoldOwner[] _rejectedHoldOwners = new InputHoldOwner[256];
     private readonly int[] _macroKeysOwned = new int[256];
     private readonly bool[] _mouseDown = new bool[6];
     private readonly bool[] _pendingMouseReleases = new bool[6];
@@ -581,7 +582,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         }
 
         if (command.IsDown &&
-            (queue.IsAddingCompleted || _runtime.IsDisposed || !GuardAllows(in command) ||
+            (RejectForeignMacroDown(command.Key, command.HoldOwner) ||
+             queue.IsAddingCompleted || _runtime.IsDisposed || !GuardAllows(in command) ||
              (_runtime.RecordingPaused && command.HoldOwner != InputHoldOwner.Macro) ||
              (command.HoldOwner == InputHoldOwner.Macro && !CanStartMacroOutput(queue, in command))))
         {
@@ -863,12 +865,10 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         var owners = _holdOwners[virtualKey];
         if (isDown)
         {
-            if ((owner != InputHoldOwner.Macro &&
-                 ((owners & InputHoldOwner.Macro) != 0 || (_macroReservationToken != 0 && IsModifier(virtualKey)))) ||
-                (owner == InputHoldOwner.Macro &&
-                 (_macroInputContext?.IsPhysicalKeyDown(virtualKey) != false ||
-                  (owners & ~InputHoldOwner.Macro) != 0 ||
-                  (_keysDown[virtualKey] && owners == InputHoldOwner.None)))) return false;
+            if (owner == InputHoldOwner.Macro &&
+                (_macroInputContext?.IsPhysicalKeyDown(virtualKey) != false ||
+                 (owners & ~InputHoldOwner.Macro) != 0 ||
+                 (_keysDown[virtualKey] && owners == InputHoldOwner.None))) return false;
             if (_pendingReleases[virtualKey] != Key.None ||
                 (owner == InputHoldOwner.None && owners != InputHoldOwner.None)) return false;
             if (owners != InputHoldOwner.None && (owners & owner) == 0)
@@ -897,11 +897,26 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             }
             return SendKey(key, false, owner);
         }
-        if (_macroReservationToken != 0 && owner != InputHoldOwner.None &&
+        // A rejected producer's physical source pair can outlive the macro reservation.
+        // Shared Combined sources already collapse to one DOWN/final UP per target.
+        var rejected = (_rejectedHoldOwners[virtualKey] & owner) != 0;
+        _rejectedHoldOwners[virtualKey] &= ~owner;
+        if ((rejected || _macroReservationToken != 0) && owner != InputHoldOwner.None &&
             (owners & owner) == 0 &&
             (_pendingReleases[virtualKey] == Key.None || _pendingReleaseOwners[virtualKey] != owner)) return true;
         _holdOwners[virtualKey] = owners & ~owner;
         return _holdOwners[virtualKey] != InputHoldOwner.None || SendKey(key, false, owner);
+    }
+
+    private bool RejectForeignMacroDown(Key key, InputHoldOwner owner)
+    {
+        var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
+        if (owner == InputHoldOwner.Macro || virtualKey <= 0 || virtualKey >= _holdOwners.Length ||
+            (!IsMacroKeyOwned(virtualKey) && (_macroReservationToken == 0 || !IsModifier(virtualKey)))) return false;
+
+        // Record before other guards can reject this DOWN; only the executor worker writes these bits.
+        _rejectedHoldOwners[virtualKey] |= owner;
+        return true;
     }
 
     private bool SendKey(Key key, bool isKeyDown, InputHoldOwner owner = InputHoldOwner.None, Func<bool>? canSend = null)
@@ -945,6 +960,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         try
         {
             attempted = true;
+            // A later native attempt supersedes rejection, including legacy failed-DOWN cleanup.
+            if (tracked && isKeyDown) _rejectedHoldOwners[virtualKey] &= ~owner;
             sent = _inputSender.SendKey(key, isKeyDown,
                 macroRelease: !isKeyDown && owner == InputHoldOwner.Macro, canSend: canSend);
         }

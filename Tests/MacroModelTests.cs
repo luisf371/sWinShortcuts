@@ -9,6 +9,23 @@ namespace Tests;
 
 public sealed class MacroModelTests
 {
+    [Theory]
+    [InlineData(Key.LeftCtrl, ModifierKeys.Control)]
+    [InlineData(Key.RightAlt, ModifierKeys.Alt)]
+    [InlineData(Key.LeftShift, ModifierKeys.Shift)]
+    [InlineData(Key.RWin, ModifierKeys.Windows)]
+    public void Playback_ShortcutRepeatsItsBaseModifier_RejectsUnreachableChord(Key key, ModifierKeys modifier)
+    {
+        var macro = new MacroDefinition
+        {
+            ShortcutKey = key, ShortcutModifiers = modifier,
+            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }]
+        };
+        Assert.Null(MacroValidation.GetFormatError(macro));
+        Assert.Contains("modifiers", MacroValidation.GetPlaybackError(macro));
+        Assert.Null(MacroValidation.GetPlaybackError(macro with { ShortcutModifiers = ModifierKeys.None }));
+    }
+
     [Fact]
     public void Duplicate_EnabledAssignedMacro_CreatesDetachedDisabledDraft()
     {

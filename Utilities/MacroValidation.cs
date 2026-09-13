@@ -134,6 +134,19 @@ public static class MacroValidation
             return "F12 is reserved for emergency cancellation while a macro is active.";
         }
 
+        var baseModifier = macro.ShortcutKey switch
+        {
+            Key.LeftCtrl or Key.RightCtrl => ModifierKeys.Control,
+            Key.LeftAlt or Key.RightAlt => ModifierKeys.Alt,
+            Key.LeftShift or Key.RightShift => ModifierKeys.Shift,
+            Key.LWin or Key.RWin => ModifierKeys.Windows,
+            _ => ModifierKeys.None
+        };
+        if ((macro.ShortcutModifiers & baseModifier) != 0)
+        {
+            return "The shortcut key cannot also be one of its modifiers.";
+        }
+
         if (macro.Steps.Length == 0)
         {
             return "Add at least one step to play this macro.";

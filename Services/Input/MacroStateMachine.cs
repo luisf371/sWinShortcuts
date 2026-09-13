@@ -575,12 +575,15 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     private void SendKey(Key key, bool down)
     {
         var vk = KeyInteropUtilities.ToVirtualKey(key);
+        var revision = _physical.KeyRevision(vk);
         if (!down) _intendedModifiers[vk] = Key.None;
         Send(new InputCommand(key, down), newOutput: down);
         if (down && MacroPhysicalState.ModifierForKey(vk) != ModifierKeys.None)
         {
             _intendedModifiers[vk] = key;
-            _modifierRevisions[vk] = _physical.KeyRevision(vk);
+            // Delivery can pump a physical takeover before returning. Only acknowledge the
+            // revision from before that attempt, so its eventual physical UP requires restoration.
+            _modifierRevisions[vk] = revision;
         }
     }
 
@@ -600,9 +603,13 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                     for (var vk = 0; vk < _intendedModifiers.Length; vk++)
                     {
                         var key = _intendedModifiers[vk];
-                        if (key == Key.None || _modifierRevisions[vk] == _physical.KeyRevision(vk)) continue;
-                        Send(new InputCommand(key, true), restoreModifiers: false);
-                        _modifierRevisions[vk] = _physical.KeyRevision(vk);
+                        if (key == Key.None) continue;
+                        while (_modifierRevisions[vk] != _physical.KeyRevision(vk))
+                        {
+                            var revision = _physical.KeyRevision(vk);
+                            Send(new InputCommand(key, true), restoreModifiers: false);
+                            _modifierRevisions[vk] = revision;
+                        }
                     }
                 }
             }

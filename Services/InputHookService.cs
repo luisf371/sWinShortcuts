@@ -1453,7 +1453,18 @@ public sealed class InputHookService : IInputHookService
         if ((uint)vkCode >= 256 || (!isKeyDown && !isKeyUp)) return false;
         var previous = _macroPhysical.KeyState(vkCode);
         _antiAfk.NotePhysicalKeyboardActivity(Stopwatch.GetTimestamp());
+        // Observe physical W/S exactly once, even when recording or a macro owns the event.
+        // The feature chain still decides activation and honors any completed W-UP handoff.
+        var autoRunPhysicalEvent = _autoRun.ObservePhysicalEvent(vkCode, isKeyDown, isKeyUp);
         var macroDecision = _macros.HandleKey(vkCode, isKeyDown, previous);
+        // Toggles retain physical pairing while macro input has priority, without firing actions.
+        var allowToggle = !macroDecision.HasValue && !_runtime.RecordingPaused;
+        HandleColorToggle(vkCode, isKeyDown, isKeyUp, allowToggle);
+        HandleCrosshairOffsetToggle(vkCode, isKeyDown, isKeyUp, allowToggle);
+        if (_rapidFire.HandleToggleKey(vkCode, isKeyDown, isKeyUp, allowToggle))
+        {
+            RaiseRapidFireArmChanged();
+        }
         bool handled;
         if (macroDecision.HasValue)
         {
@@ -1467,32 +1478,16 @@ public sealed class InputHookService : IInputHookService
                 _macros.Capture(new RecordedMacroEvent(Stopwatch.GetTimestamp(), isKeyDown ? NativeMethods.WM_KEYDOWN : NativeMethods.WM_KEYUP,
                     vkCode, scanCode, flags, 0, 0, 0, 0));
                 _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
-                handled = MacroPhysicalState.WasSuppressed(previous) && DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp);
+                handled = MacroPhysicalState.WasSuppressed(previous) && DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
             }
-            else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp);
+            else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
         }
         _macroPhysical.CompleteKey(vkCode, isKeyDown, handled);
         return handled;
     }
 
-    private bool DispatchKeyboardFeatures(int vkCode, bool isKeyDown, bool isKeyUp)
+    private bool DispatchKeyboardFeatures(int vkCode, bool isKeyDown, bool isKeyUp, AutoRunStateMachine.PhysicalEvent autoRunPhysicalEvent)
     {
-        // Global color-variant toggle: fire on the assigned key (once per physical press). The key is NOT
-        // suppressed — it passes through to apps and the feature chain below — so it can never strand a key or
-        // create a wrong binding. Modifiers are rejected as toggle keys (SetColorToggleKey), so this never
-        // shadows the Alt-tracking that follows.
-        HandleColorToggle(vkCode, isKeyDown, isKeyUp);
-        HandleCrosshairOffsetToggle(vkCode, isKeyDown, isKeyUp);
-        if (_rapidFire.HandleToggleKey(vkCode, isKeyDown, isKeyUp))
-        {
-            RaiseRapidFireArmChanged();
-        }
-
-        // Physical W/S observation must precede every feature that may consume/early-return this event.
-        // In particular, Hold-Breath Early Cancel can own W-UP; Auto-Run still needs to complete its
-        // physical handoff even when that feature ultimately suppresses the same target-visible event.
-        var autoRunPhysicalEvent = _autoRun.ObservePhysicalEvent(vkCode, isKeyDown, isKeyUp);
-
         var suppressEarlyCancelKey = _gestures.HandlePanicKey(
             vkCode,
             isKeyDown,
@@ -1554,7 +1549,7 @@ public sealed class InputHookService : IInputHookService
     // repeats ignored). Deliberately does NOT suppress the key — it passes through to apps — so it holds no
     // paired state and can never strand a key or fabricate a wrong binding across a re-assign / hook restart /
     // watchdog reinstall. (Users should pick a key not otherwise used, since it still reaches the focused app.)
-    private void HandleColorToggle(int vkCode, bool isKeyDown, bool isKeyUp)
+    private void HandleColorToggle(int vkCode, bool isKeyDown, bool isKeyUp, bool allowToggle = true)
     {
         var toggleVk = _colorToggleVk;
 
@@ -1576,7 +1571,7 @@ public sealed class InputHookService : IInputHookService
             if (!_colorToggleDownLatched)
             {
                 _colorToggleDownLatched = true;
-                ColorVariantToggleRequested?.Invoke(this, EventArgs.Empty);
+                if (allowToggle) ColorVariantToggleRequested?.Invoke(this, EventArgs.Empty);
             }
         }
         else if (isKeyUp)
@@ -1585,7 +1580,7 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    private void HandleCrosshairOffsetToggle(int vkCode, bool isKeyDown, bool isKeyUp)
+    private void HandleCrosshairOffsetToggle(int vkCode, bool isKeyDown, bool isKeyUp, bool allowToggle = true)
     {
         var state = Volatile.Read(ref _crosshairOffsetToggleState);
         var toggleVk = state & TOGGLE_VK_MASK;
@@ -1596,6 +1591,7 @@ public sealed class InputHookService : IInputHookService
             var profile = _runtime.ActiveProfile;
             var generation = _runtime.ActiveProfileGeneration;
             if (Interlocked.CompareExchange(ref _crosshairOffsetToggleState, state | TOGGLE_DOWN, state) == state
+                && allowToggle
                 && generation == _runtime.PublishedForegroundGeneration
                 && generation == _runtime.ActiveProfileGeneration
                 && ReferenceEquals(profile, _runtime.ActiveProfile))

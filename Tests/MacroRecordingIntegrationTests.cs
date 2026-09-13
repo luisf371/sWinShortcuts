@@ -13,6 +13,116 @@ namespace Tests;
 
 public sealed class MacroRecordingIntegrationTests
 {
+    [Theory]
+    [InlineData(Key.W, 0x57)]
+    [InlineData(Key.S, 0x53)]
+    public async Task RecordMacroAsync_PreheldMovementReleased_AutoRunStartsAndFreshMovementCancels(Key movementKey, int movementVk)
+    {
+        var sender = new RecordingInputSender();
+        using var service = MacroPlaybackTests.Create(sender, out var profile);
+        ConfigureAutoRun(service, profile);
+        Assert.False(service.DispatchDecodedKeyboardEvent(movementVk, true, false));
+        var recording = service.RecordMacroAsync(profile, profile.Macros.Definitions[0].Id, 30);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+
+        Assert.False(service.DispatchDecodedKeyboardEvent(movementVk, false, true));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, false, true));
+        Assert.Empty(sender.Transitions);
+        service.StopMacroRecording();
+        var result = await recording.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.DoesNotContain(result.Steps, step => step.Key == movementKey);
+
+        MacroPlaybackTests.Press(service, 0x77);
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Single(sender.Transitions, edge => edge.Key == Key.W && edge.IsDown);
+
+        Assert.False(service.DispatchDecodedKeyboardEvent(movementVk, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(movementVk, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(new[] { true, false }, sender.Transitions.Where(edge => edge.Key == Key.W).Select(edge => edge.IsDown));
+    }
+
+    [Theory]
+    [InlineData(Key.W, 0x57)]
+    [InlineData(Key.S, 0x53)]
+    public async Task MacroShortcut_MovementPairConsumed_AutoRunObservesHeldKeyAndFreshPress(Key movementKey, int movementVk)
+    {
+        var sender = new RecordingInputSender();
+        using var service = MacroPlaybackTests.Create(sender, out var profile,
+            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A },
+            new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 30000 });
+        ConfigureAutoRun(service, profile);
+        profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = movementKey }];
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
+        MacroPlaybackTests.Press(service, movementVk);
+        MacroPlaybackTests.WaitUntil(() => sender.Transitions.Any(edge => edge.Key == Key.A && !edge.IsDown));
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession() is { Mode: MacroSessionMode.Playing, RowCount: 2 });
+        Assert.Single(sender.Transitions, edge => edge.Key == Key.A && edge.IsDown);
+        Assert.True(service.DispatchDecodedKeyboardEvent(movementVk, true, false));
+        MacroPlaybackTests.Press(service, 0x7B);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+
+        MacroPlaybackTests.Press(service, 0x77);
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(movementKey == Key.S ? 1 : 0, sender.Transitions.Count(edge => edge.Key == Key.W && edge.IsDown));
+        Assert.True(service.DispatchDecodedKeyboardEvent(movementVk, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Single(sender.Transitions, edge => edge.Key == Key.W && edge.IsDown);
+
+        // Remove the shortcut so the next physical movement press reaches Auto-Run cancellation.
+        profile.Macros.IsEnabled = false;
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
+        Assert.False(service.DispatchDecodedKeyboardEvent(movementVk, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(movementVk, false, true));
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(new[] { true, false }, sender.Transitions.Where(edge => edge.Key == Key.W).Select(edge => edge.IsDown));
+    }
+
+    [Theory]
+    [InlineData("Color")]
+    [InlineData("Crosshair")]
+    [InlineData("RapidFire")]
+    public async Task RecordMacroAsync_PreheldToggleReleased_ObservesPairWithoutActivatingAndReadmitsFreshPress(string toggle)
+    {
+        using var service = MacroPlaybackTests.Create(new RecordingInputSender(), out var profile);
+        var requests = 0;
+        switch (toggle)
+        {
+            case "Color":
+                service.SetColorToggleKey(Key.F8);
+                service.ColorVariantToggleRequested += (_, _) => requests++;
+                break;
+            case "Crosshair":
+                service.SetCrosshairOffsetToggleKey(Key.F8);
+                service.CrosshairOffsetToggleRequested += (_, _) => requests++;
+                break;
+            case "RapidFire":
+                profile.RapidFire.IsEnabled = true;
+                service.ReconcileProfileSettings(profile, ProfileChangeKind.RapidFire);
+                service.SetRapidFireToggleKey(Key.F8);
+                service.RapidFireArmChanged += (_, _) => requests++;
+                break;
+        }
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, true, false));
+        Assert.Equal(1, requests);
+        var recording = service.RecordMacroAsync(profile, profile.Macros.Definitions[0].Id, 30);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, false, true));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, false, true));
+        Assert.Equal(1, requests);
+        service.StopMacroRecording();
+        await recording.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, true, false));
+        Assert.Equal(2, requests);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, true, false));
+        Assert.Equal(2, requests);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, false, true));
+    }
+
     [Fact]
     public async Task RecordMacroAsync_PhysicalCallbacks_PausesRemapsAndRestoresThemAfterStop()
     {
@@ -148,6 +258,16 @@ public sealed class MacroRecordingIntegrationTests
         MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
         Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
         Assert.Contains(sender.Transitions, edge => edge.Key == Key.B && !edge.IsDown);
+    }
+
+    private static void ConfigureAutoRun(InputHookService service, Profile profile)
+    {
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerKey = Key.F8;
+        profile.AutoRun.TriggerModifier = ModifierKeys.None;
+        profile.AutoRun.SendMode = AutoRunSendMode.Foreground;
+        profile.AutoRun.SprintEnabled = false;
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.AutoRun);
     }
 
     private static void ConfigureRemap(InputHookService service, Profile profile)

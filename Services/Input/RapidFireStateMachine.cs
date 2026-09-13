@@ -80,7 +80,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         return Release(preservePhysicalPairing: true, reason: "toggle key reassigned");
     }
 
-    internal bool HandleToggleKey(int vkCode, bool isKeyDown, bool isKeyUp)
+    internal bool HandleToggleKey(int vkCode, bool isKeyDown, bool isKeyUp, bool allowToggle = true)
     {
         if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0)
         {
@@ -111,6 +111,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         }
 
         _toggleDownLatched = true;
+        if (!allowToggle) return false;
         if (IsReady())
         {
             return Release(preservePhysicalPairing: true, reason: "toggle-off");

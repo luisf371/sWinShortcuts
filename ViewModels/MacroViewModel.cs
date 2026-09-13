@@ -81,7 +81,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public IRelayCommand MoveStepUpCommand { get; }
     public IRelayCommand MoveStepDownCommand { get; }
     public IAsyncRelayCommand PickCoordinatesCommand { get; }
-    public static IReadOnlyList<Key> KeyOptions { get; } = KeyCatalog.SortKeys(KeyCatalog.GetCommonKeys().Concat([Key.LWin, Key.RWin]).Distinct()).ToArray();
+    public static IReadOnlyList<Key> KeyOptions { get; } = KeyCatalog.SortKeys(
+        Enum.GetValues<Key>().Where(key => MacroValidation.IsSupportedKey(key)).Distinct()).ToArray();
     public static IReadOnlyList<Key> ShortcutKeyOptions { get; } = KeyCatalog.SortKeys(KeyOptions.Append(Key.None)).ToArray();
     public static IReadOnlyList<MouseButton> MouseButtons { get; } = Enum.GetValues<MouseButton>();
     public static IReadOnlyList<KeyValuePair<MacroStepKind, string>> ActionOptions { get; } =

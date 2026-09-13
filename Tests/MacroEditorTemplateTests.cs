@@ -2,6 +2,8 @@ using System.IO;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -16,6 +18,55 @@ namespace Tests;
 
 public sealed class MacroEditorTemplateTests
 {
+    [Theory]
+    [InlineData(Key.F13)]
+    [InlineData(Key.F24)]
+    [InlineData(Key.PrintScreen)]
+    [InlineData(Key.Pause)]
+    [InlineData(Key.NumLock)]
+    public Task SupportedLoadedKey_MacroShortcutPickerRetainsSelectionAndCanReassign(Key key) =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            using var macro = new MacroViewModel(new MacroDefinition { ShortcutKey = key }, () => true);
+            var picker = new ComboBox { ItemsSource = MacroViewModel.ShortcutKeyOptions };
+            picker.SetBinding(System.Windows.Controls.Primitives.Selector.SelectedItemProperty,
+                new Binding(nameof(MacroViewModel.ShortcutKey)) { Source = macro, Mode = BindingMode.TwoWay });
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+
+            Assert.Equal(key, macro.ShortcutKey);
+            Assert.Equal(key, Assert.IsType<Key>(picker.SelectedItem));
+            picker.SelectedItem = Key.None;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal(Key.None, macro.ShortcutKey);
+            picker.SelectedItem = key;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal(key, macro.ShortcutKey);
+            Assert.Equal(key, Assert.IsType<Key>(picker.SelectedItem));
+        });
+
+    [Fact]
+    public Task RecordedUncommonKey_StepPickerRetainsSelectionAndCanReassign() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            using var macro = new MacroViewModel(new MacroDefinition(), () => true);
+            var picker = new ComboBox { ItemsSource = MacroViewModel.KeyOptions };
+            picker.SetBinding(System.Windows.Controls.Primitives.Selector.SelectedItemProperty,
+                new Binding($"{nameof(MacroViewModel.SelectedStep)}.{nameof(MacroStepViewModel.Key)}")
+                { Source = macro, Mode = BindingMode.TwoWay });
+            macro.InsertRecording(0, [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.PrintScreen }]);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+
+            Assert.Equal(Key.PrintScreen, macro.SelectedStep!.Key);
+            Assert.Equal(Key.PrintScreen, Assert.IsType<Key>(picker.SelectedItem));
+            picker.SelectedItem = Key.Pause;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal(Key.Pause, macro.SelectedStep.Key);
+            picker.SelectedItem = Key.PrintScreen;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal(Key.PrintScreen, macro.SelectedStep.Key);
+            Assert.Equal(Key.PrintScreen, Assert.IsType<Key>(picker.SelectedItem));
+        });
+
     [Fact]
     public Task ActualDeferredMacroTab_LoadsAtMinimumWindowSize_AndKeepsStopAvailable() =>
         MacroRecordingLifetimeTests.RunOnStaAsync(async () =>

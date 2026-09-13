@@ -14,6 +14,42 @@ public sealed class MacroPlaybackTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Playback_PhysicalModifierOverlapsNativeDelivery_RestoresBeforeNextKey(bool overlapRestoration)
+    {
+        var sender = new RecordingInputSender();
+        using var service = Create(sender, out _,
+            new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.LeftCtrl },
+            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.S },
+            new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.LeftCtrl });
+        var downCount = 0;
+        sender.KeyResult = (key, down, _) =>
+        {
+            if (key == Key.LeftCtrl && down)
+            {
+                var attempt = Interlocked.Increment(ref downCount);
+                if (attempt == 1 || (overlapRestoration && attempt == 2))
+                {
+                    Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
+                    // The second overlap completes entirely inside restoration's native call.
+                    if (attempt == 2) Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, false, true));
+                }
+            }
+            return true;
+        };
+        Press(service, 0x75);
+        WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.WaitingForPhysicalModifiers);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, false, true));
+        WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+        var expected = overlapRestoration
+            ? new[] { Key.LeftCtrl, Key.LeftCtrl, Key.LeftCtrl, Key.S }
+            : new[] { Key.LeftCtrl, Key.LeftCtrl, Key.S };
+        Assert.Equal(expected, sender.Transitions.Where(edge => edge.IsDown).Select(edge => edge.Key));
+        Assert.Null(service.GetMacroSession().FailureReason);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Playback_BusyShortcutStillHeld_DoesNotBlockSameKeyOutput(bool control)
     {
         var sender = new RecordingInputSender();
