@@ -11,7 +11,7 @@ namespace sWinShortcuts.Services.Input;
 
 internal sealed class MacroPhysicalState : IMacroInputContext
 {
-    private const int DOWN = 1, SUPPRESSED = 2, TAKEOVER = 4, ACTIVATION = 8;
+    private const int DOWN = 1, SUPPRESSED = 2, TAKEOVER = 4, ACTIVATION = 8, RECORDING_PASSTHROUGH = 16;
     private readonly int[] _keys = new int[256];
     private readonly int[] _buttons = new int[6];
     private readonly int[] _keyRevisions = new int[256];
@@ -32,6 +32,7 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     internal static bool WasDown(int state) => (state & DOWN) != 0;
     internal static bool WasSuppressed(int state) => (state & SUPPRESSED) != 0;
     internal static bool WasTakeover(int state) => (state & TAKEOVER) != 0;
+    internal static bool WasRecordingPassThrough(int state) => (state & RECORDING_PASSTHROUGH) != 0;
 
     internal ModifierKeys Modifiers =>
         ((IsPhysicalKeyDown(0x11) || IsPhysicalKeyDown(0xA2) || IsPhysicalKeyDown(0xA3)) ? ModifierKeys.Control : 0) |
@@ -66,9 +67,11 @@ internal sealed class MacroPhysicalState : IMacroInputContext
         return previous;
     }
 
-    internal void CompleteKey(int vk, bool down, bool suppressed)
+    internal void CompleteKey(int vk, bool down, bool suppressed, bool recordingPaused)
     {
         if (down && suppressed) Interlocked.Or(ref _keys[vk], SUPPRESSED);
+        else if (down && recordingPaused && !WasSuppressed(KeyState(vk)))
+            Interlocked.Or(ref _keys[vk], RECORDING_PASSTHROUGH);
     }
 
     internal void CompleteButton(MouseButton button, bool down, bool suppressed)
@@ -89,7 +92,8 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     {
         Volatile.Write(ref _takeovers, 0);
         for (var vk = 0; vk < _keys.Length; vk++)
-            Volatile.Write(ref _keys[vk], vk is not (0x10 or 0x11 or 0x12) && unknownState(vk) ? DOWN : 0);
+            Volatile.Write(ref _keys[vk], vk is not (0x10 or 0x11 or 0x12) && unknownState(vk)
+                ? DOWN | (KeyState(vk) & RECORDING_PASSTHROUGH) : 0);
         int[] mouseKeys = [0, 1, 2, 4, 5, 6];
         for (var i = 1; i < _buttons.Length; i++) Volatile.Write(ref _buttons[i], unknownState(mouseKeys[i]) ? DOWN : 0);
     }

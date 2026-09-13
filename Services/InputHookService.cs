@@ -249,8 +249,17 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    private void RebuildMacroLookup() => _macros.Rebuild(_runtime.ActiveProfile, _windowsProfile, _colorToggleVk,
-        Volatile.Read(ref _crosshairOffsetToggleState) & TOGGLE_VK_MASK, Volatile.Read(ref _macroRapidFireToggleVk));
+    private void RebuildMacroLookup(Profile? removedProfile = null)
+    {
+        lock (_profileLock)
+        {
+            // Keep owner selection and publication ordered with activation. An inactive
+            // profile's removal must not clear the lookup a foreground republish just built.
+            var active = _runtime.ActiveProfile;
+            _macros.Rebuild(ReferenceEquals(active, removedProfile) ? null : active, _windowsProfile, _colorToggleVk,
+                Volatile.Read(ref _crosshairOffsetToggleState) & TOGGLE_VK_MASK, Volatile.Read(ref _macroRapidFireToggleVk));
+        }
+    }
 
     public event EventHandler<Profile?>? ActiveProfileChanged;
 
@@ -1162,8 +1171,7 @@ public sealed class InputHookService : IInputHookService
             _macros.Cancel("Profile settings changed.", profile, playbackOnly: (changeKind & (ProfileChangeKind.Removed | ProfileChangeKind.Master | ProfileChangeKind.Identity)) == 0);
         if (ReferenceEquals(profile, _windowsProfile) && (changeKind & (ProfileChangeKind.WindowsLauncher | ProfileChangeKind.Master | ProfileChangeKind.Identity)) != 0)
             _macros.Cancel("Windows Launcher shortcuts changed.", playbackOnly: true);
-        if ((changeKind & ProfileChangeKind.Removed) == 0) RebuildMacroLookup();
-        else _macros.Rebuild(null, _windowsProfile, _colorToggleVk, Volatile.Read(ref _crosshairOffsetToggleState) & TOGGLE_VK_MASK, _macroRapidFireToggleVk);
+        RebuildMacroLookup((changeKind & ProfileChangeKind.Removed) != 0 ? profile : null);
 
         var active = ReferenceEquals(_runtime.ActiveProfile, profile);
         var windows = ReferenceEquals(_windowsProfile, profile);
@@ -1457,8 +1465,10 @@ public sealed class InputHookService : IInputHookService
         // The feature chain still decides activation and honors any completed W-UP handoff.
         var autoRunPhysicalEvent = _autoRun.ObservePhysicalEvent(vkCode, isKeyDown, isKeyUp);
         var macroDecision = _macros.HandleKey(vkCode, isKeyDown, previous);
+        var recordingPaused = _runtime.RecordingPaused;
+        var recordingPassThrough = MacroPhysicalState.WasRecordingPassThrough(previous);
         // Toggles retain physical pairing while macro input has priority, without firing actions.
-        var allowToggle = !macroDecision.HasValue && !_runtime.RecordingPaused;
+        var allowToggle = !macroDecision.HasValue && !recordingPaused && !recordingPassThrough;
         HandleColorToggle(vkCode, isKeyDown, isKeyUp, allowToggle);
         HandleCrosshairOffsetToggle(vkCode, isKeyDown, isKeyUp, allowToggle);
         if (_rapidFire.HandleToggleKey(vkCode, isKeyDown, isKeyUp, allowToggle))
@@ -1473,16 +1483,23 @@ public sealed class InputHookService : IInputHookService
         }
         else
         {
-            if (_runtime.RecordingPaused)
+            if (recordingPaused)
             {
                 _macros.Capture(new RecordedMacroEvent(Stopwatch.GetTimestamp(), isKeyDown ? NativeMethods.WM_KEYDOWN : NativeMethods.WM_KEYUP,
                     vkCode, scanCode, flags, 0, 0, 0, 0));
+            }
+            // A DOWN passed through during recording owns its repeats and final UP even after
+            // Stop. Only the next fresh pair may enter the remap/gesture activation chain.
+            if (recordingPaused || recordingPassThrough)
+            {
                 _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
-                handled = MacroPhysicalState.WasSuppressed(previous) && DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
+                handled = MacroPhysicalState.WasSuppressed(previous)
+                    ? DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent)
+                    : autoRunPhysicalEvent.SuppressPhysicalWHandoffUp;
             }
             else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
         }
-        _macroPhysical.CompleteKey(vkCode, isKeyDown, handled);
+        _macroPhysical.CompleteKey(vkCode, isKeyDown, handled, recordingPaused);
         return handled;
     }
 
