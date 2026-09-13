@@ -1535,10 +1535,15 @@ public sealed class InputHookService : IInputHookService
             // Stop. Only the next fresh pair may enter the remap/gesture activation chain.
             if (recordingPaused || recordingPassThrough)
             {
-                _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
-                handled = MacroPhysicalState.WasSuppressed(previous)
-                    ? DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent)
-                    : autoRunPhysicalEvent.SuppressPhysicalWHandoffUp;
+                handled = autoRunPhysicalEvent.SuppressPhysicalWHandoffUp;
+                if (isKeyUp || MacroPhysicalState.WasSuppressed(previous))
+                {
+                    // Retire every preheld feature latch, including unsuppressed pairs. A feature
+                    // activated after Stop cannot newly consume a recorded pair's passed-through UP.
+                    var pairedHandled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
+                    if (MacroPhysicalState.WasSuppressed(previous)) handled = pairedHandled;
+                }
+                else _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
             }
             else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
         }
@@ -1742,15 +1747,21 @@ public sealed class InputHookService : IInputHookService
         var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
         var previous = isButton ? _macroPhysical.ObserveButton(button, down) : 0;
         var decision = isButton ? _macros.HandleButton(button, down, previous) : null;
+        var recordingPaused = _runtime.RecordingPaused;
         bool handled;
         if (decision.HasValue) handled = decision.Value;
-        else if (_runtime.RecordingPaused)
+        else if (recordingPaused)
         {
             _macros.Capture(new RecordedMacroEvent(Stopwatch.GetTimestamp(), message, 0, 0, flags, mouseData, x, y,
                 unchecked((short)(mouseData >> 16))));
             handled = MacroPhysicalState.WasSuppressed(previous) && DispatchMouseFeatures(message, mouseData);
         }
         else handled = DispatchMouseFeatures(message, mouseData);
+        // Keep physical pairing current even when capture or takeover bypasses mouse actions.
+        if (message == NativeMethods.WM_LBUTTONDOWN)
+            _rapidFire.HandleLeftButton(isDown: true, allowStart: !handled && !decision.HasValue && !recordingPaused);
+        else if (message == NativeMethods.WM_LBUTTONUP)
+            _rapidFire.HandleLeftButton(isDown: false, allowStart: false);
         if (isButton) _macroPhysical.CompleteButton(button, down, handled);
         return handled;
     }
@@ -1792,17 +1803,6 @@ public sealed class InputHookService : IInputHookService
 
         var handled = _gestures.HandlePanicMouse(message, mouseData, _rightButtonPressed) ||
                       _gestures.HandleAltMouse(message, mouseData);
-
-        // Rapid Fire never consumes the physical click. Existing mouse actions win priority: an Alt+Left
-        // binding or panic action may consume DOWN, in which case Rapid Fire only records the held state.
-        if (message == NativeMethods.WM_LBUTTONDOWN)
-        {
-            _rapidFire.HandleLeftButton(isDown: true, allowStart: !handled);
-        }
-        else if (message == NativeMethods.WM_LBUTTONUP)
-        {
-            _rapidFire.HandleLeftButton(isDown: false, allowStart: false);
-        }
 
         // H6: only arm hold-breath for a genuine right-click, not one suppressed as an Alt+Right binding.
         if (message == NativeMethods.WM_RBUTTONDOWN)
@@ -1883,7 +1883,7 @@ public sealed class InputHookService : IInputHookService
             _remaps.ClearLauncherState();
         }
 
-        _rightButtonPressed = false;
+        if (!preservePhysicalPairing) _rightButtonPressed = false;
         // Requested, not completed: the injected-key releases are queued to the executor (foreground
         // UPs) or signaled to the Background Auto-Run worker, which flushes them later.
         if (_logger.IsEnabled)

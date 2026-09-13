@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
@@ -13,6 +14,81 @@ namespace Tests;
 
 public sealed class MacroRecordingIntegrationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecordMacroAsync_PreheldLeftReleased_NextFreshPressStartsRapidFire(bool record)
+    {
+        var sender = new RecordingInputSender();
+        using var service = MacroPlaybackTests.Create(sender, out var profile);
+        profile.RapidFire.IsEnabled = true;
+        profile.RapidFire.IntervalMilliseconds = 250;
+        profile.RapidFire.JitterMilliseconds = 0;
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.RapidFire);
+        service.SetRapidFireToggleKey(Key.F8);
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
+        Task<MacroRecordingResult>? take = null;
+        if (record)
+        {
+            take = service.RecordMacroAsync(profile, profile.Macros.Definitions[0].Id, 30);
+            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+        }
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0));
+        if (take is not null)
+        {
+            service.StopMacroRecording();
+            await take.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, false, true));
+        Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
+        service.FireRapidFireTimerForTesting();
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0));
+        Assert.NotEmpty(sender.MouseClickThreadIds);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecordMacroAsync_PreheldUnmodifiedTriggerReleased_NextAutoRunChordStarts(bool record)
+    {
+        var sender = new RecordingInputSender();
+        var transport = FakeAutoRunTransport.MatchingForeground();
+        using var service = new InputHookService(new NullLoggerService(), sender, Stopwatch.GetTimestamp, _ => false, transport);
+        service.StartInputExecutorForTesting();
+        service.AdvancedModeEnabled = true;
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.Macros.Definitions = [new MacroDefinition()];
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerKey = Key.F8;
+        profile.AutoRun.TriggerModifier = ModifierKeys.Control;
+        profile.AutoRun.SprintEnabled = false;
+        service.ConfigureActiveProfileForTesting(profile, 1, false);
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.AutoRun);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, true, false));
+        Task<MacroRecordingResult>? take = null;
+        if (record)
+        {
+            take = service.RecordMacroAsync(profile, profile.Macros.Definitions[0].Id, 30);
+            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+        }
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x77, false, true));
+        if (take is not null)
+        {
+            service.StopMacroRecording();
+            await take.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        transport.KeyStates[0x11] = unchecked((short)0x8000);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
+        var consumed = service.DispatchDecodedKeyboardEvent(0x77, true, false);
+        service.DispatchDecodedKeyboardEvent(0x77, false, true);
+        service.DispatchDecodedKeyboardEvent(0xA2, false, true);
+        Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.True(consumed);
+        Assert.Contains(sender.Transitions, edge => edge.Key == Key.W && edge.IsDown);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
