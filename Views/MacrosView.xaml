@@ -1,0 +1,192 @@
+<UserControl x:Class="sWinShortcuts.Views.MacrosView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:sWinShortcuts.ViewModels"
+             xmlns:conv="clr-namespace:sWinShortcuts.Converters"
+             xmlns:input="clr-namespace:System.Windows.Input;assembly=WindowsBase"
+             x:Name="Editor" Unloaded="Editor_Unloaded" DataContextChanged="Editor_DataContextChanged"
+             AutomationProperties.Name="Macro editor">
+    <UserControl.Resources>
+        <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
+        <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
+        <conv:KeyDisplayConverter x:Key="KeyDisplay" />
+        <DataTemplate x:Key="KeyChoice">
+            <TextBlock>
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="{Binding Converter={StaticResource KeyDisplay}}" />
+                        <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding}" Value="{x:Static input:Key.None}">
+                                <Setter Property="Text" Value="Unassigned" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </DataTemplate>
+        <Style x:Key="Field" TargetType="StackPanel">
+            <Setter Property="Margin" Value="0,0,12,8" />
+        </Style>
+        <Style x:Key="CompactButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="MinWidth" Value="72" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+        </Style>
+    </UserControl.Resources>
+    <Grid Margin="24,12,28,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <DockPanel Margin="0,0,0,8">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Record" Command="{Binding RecordCommand}" Style="{StaticResource CompactButton}"
+                        ToolTip="Record physical input into this macro after the selected row."
+                        AutomationProperties.Name="Record macro" />
+                <Button x:Name="StopRecordingButton" Content="Stop recording" Command="{Binding StopRecordingCommand}"
+                        MinWidth="108" Style="{StaticResource CompactButton}"
+                        PreviewMouseLeftButtonDown="StopRecording_PreviewMouseLeftButtonDown"
+                        PreviewKeyDown="StopRecording_PreviewKeyDown"
+                        AutomationProperties.Name="Stop recording" />
+            </StackPanel>
+            <CheckBox Content="Enable macros" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding CanEdit}"
+                      VerticalAlignment="Center" AutomationProperties.Name="Enable macros for this profile" />
+        </DockPanel>
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <ComboBox ItemsSource="{Binding Definitions}" SelectedItem="{Binding SelectedMacro}"
+                      DisplayMemberPath="Label" IsEnabled="{Binding CanEdit}" Margin="0,0,10,0" MinHeight="28"
+                      AutomationProperties.Name="Selected macro" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button Content="New" Command="{Binding NewMacroCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="New macro" />
+                <Button Content="Duplicate" Command="{Binding DuplicateMacroCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="Duplicate macro" />
+                <Button Content="Delete" Command="{Binding DeleteMacroCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="Delete macro" />
+            </StackPanel>
+        </Grid>
+        <StackPanel Grid.Row="2" Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}"
+                    DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}">
+            <DockPanel Margin="0,0,0,6">
+                <CheckBox DockPanel.Dock="Right" Content="Enabled" IsChecked="{Binding IsEnabled}"
+                          Margin="12,0,0,0" VerticalAlignment="Center" AutomationProperties.Name="Enable selected macro" />
+                <TextBox Text="{Binding Label, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                         MaxLength="100" MinHeight="28" AutomationProperties.Name="Macro label" />
+            </DockPanel>
+            <WrapPanel VerticalAlignment="Center" Margin="0,0,0,4">
+                <TextBlock Text="Shortcut" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox Width="130" ItemsSource="{x:Static vm:MacroViewModel.ShortcutKeyOptions}"
+                          SelectedItem="{Binding ShortcutKey}" ItemTemplate="{StaticResource KeyChoice}"
+                          MinHeight="28" Margin="0,0,14,0" AutomationProperties.Name="Macro shortcut key" />
+                <CheckBox Content="Ctrl" IsChecked="{Binding ControlModifier}" Margin="0,0,14,0" VerticalAlignment="Center" AutomationProperties.Name="Shortcut Control modifier" />
+                <CheckBox Content="Alt" IsChecked="{Binding AltModifier}" Margin="0,0,14,0" VerticalAlignment="Center" AutomationProperties.Name="Shortcut Alt modifier" />
+                <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Margin="0,0,14,0" VerticalAlignment="Center" AutomationProperties.Name="Shortcut Shift modifier" />
+                <CheckBox Content="Win" IsChecked="{Binding WindowsModifier}" VerticalAlignment="Center" AutomationProperties.Name="Shortcut Windows modifier" />
+            </WrapPanel>
+        </StackPanel>
+        <StackPanel Grid.Row="3" Margin="0,0,0,8">
+            <TextBlock Text="{Binding SessionStatus}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Macro session status" />
+            <TextBlock Text="Press F12 to cancel playback." Foreground="{DynamicResource ForegroundSecondaryBrush}"
+                       Visibility="{Binding IsPlaying, Converter={StaticResource VisibleIfTrue}}" />
+            <TextBlock Text="Macro playback requires Advanced Mode in Settings."
+                       Foreground="{DynamicResource ForegroundSecondaryBrush}" TextWrapping="Wrap"
+                       Visibility="{Binding DataContext.AdvancedModeEnabled, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource VisibleIfFalse}}" />
+            <TextBlock Text="{Binding SelectedMacro.ValidationMessage}" TextWrapping="Wrap" Margin="0,4,0,0"
+                       Foreground="{DynamicResource AccentLightBrush}" AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Macro validation" />
+        </StackPanel>
+        <Grid Grid.Row="4">
+            <ListBox ItemsSource="{Binding SelectedMacro.Steps}" SelectedItem="{Binding SelectedMacro.SelectedStep}"
+                     IsEnabled="{Binding CanEdit}" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="Ordered macro steps">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                        <Setter Property="AutomationProperties.Name">
+                            <Setter.Value>
+                                <MultiBinding StringFormat="Step {0}: {1}, {2}">
+                                    <Binding Path="Number" /><Binding Path="ActionLabel" /><Binding Path="Summary" />
+                                </MultiBinding>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate DataType="{x:Type vm:MacroStepViewModel}">
+                        <Grid Margin="6,4">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="30" /><ColumnDefinition Width="102" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding Number}" />
+                            <TextBlock Grid.Column="1" Text="{Binding ActionLabel}" />
+                            <TextBlock Grid.Column="2" Text="{Binding Summary}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Summary}" />
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+            <TextBlock Text="Create a macro, then insert actions or record a take." TextWrapping="Wrap"
+                       Margin="20" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"
+                       Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfFalse}}" />
+        </Grid>
+        <StackPanel Grid.Row="5" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
+                    Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
+            <WrapPanel Margin="0,8,0,8">
+                <Button Content="Insert" Command="{Binding InsertStepCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="Insert macro step" />
+                <Button Content="Duplicate" Command="{Binding DuplicateStepCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="Duplicate macro step" />
+                <Button Content="Delete" Command="{Binding DeleteStepCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="Delete macro step" />
+                <Button Content="Move up" Command="{Binding MoveStepUpCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="Move step up" />
+                <Button Content="Move down" Command="{Binding MoveStepDownCommand}" Style="{StaticResource CompactButton}" AutomationProperties.Name="Move step down" />
+            </WrapPanel>
+            <WrapPanel DataContext="{Binding SelectedStep}">
+                <WrapPanel.Style>
+                    <Style TargetType="WrapPanel">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding}" Value="{x:Null}"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </WrapPanel.Style>
+                <StackPanel Style="{StaticResource Field}">
+                    <TextBlock Text="Action" Margin="0,0,0,3" />
+                    <ComboBox Width="128" ItemsSource="{x:Static vm:MacroViewModel.ActionOptions}" DisplayMemberPath="Value"
+                              SelectedValuePath="Key" SelectedValue="{Binding Kind}" MinHeight="28" AutomationProperties.Name="Step action" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource Field}" Visibility="{Binding HasKey, Converter={StaticResource VisibleIfTrue}}">
+                    <TextBlock Text="Key" Margin="0,0,0,3" />
+                    <ComboBox Width="115" ItemsSource="{x:Static vm:MacroViewModel.KeyOptions}" SelectedItem="{Binding Key}"
+                              ItemTemplate="{StaticResource KeyChoice}" MinHeight="28" AutomationProperties.Name="Step key" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource Field}" Visibility="{Binding HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
+                    <TextBlock Text="Button" Margin="0,0,0,3" />
+                    <ComboBox Width="94" ItemsSource="{x:Static vm:MacroViewModel.MouseButtons}" SelectedItem="{Binding MouseButton}"
+                              MinHeight="28" AutomationProperties.Name="Step mouse button" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource Field}" Visibility="{Binding HasCoordinates, Converter={StaticResource VisibleIfTrue}}">
+                    <TextBlock Text="Screen X / Y (pixels)" Margin="0,0,0,3" />
+                    <StackPanel Orientation="Horizontal">
+                        <TextBox Width="64" Text="{Binding XText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}" MinHeight="28" AutomationProperties.Name="Screen X coordinate" />
+                        <TextBox Width="64" Margin="4,0,0,0" Text="{Binding YText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}" MinHeight="28" AutomationProperties.Name="Screen Y coordinate" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Style="{StaticResource Field}" Visibility="{Binding HasDuration, Converter={StaticResource VisibleIfTrue}}">
+                    <TextBlock Text="{Binding DurationHint}" Margin="0,0,0,3" />
+                    <TextBox Width="100" HorizontalAlignment="Left" Text="{Binding DurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                             MinHeight="28" ToolTip="Whole milliseconds from 0 to 3,600,000. Zero uses automatic hold for a press or click."
+                             AutomationProperties.Name="Step duration in milliseconds" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource Field}" Visibility="{Binding IsWheel, Converter={StaticResource VisibleIfTrue}}">
+                    <TextBlock Text="Wheel delta (signed)" Margin="0,0,0,3" />
+                    <TextBox Width="108" Text="{Binding WheelDeltaText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                             MinHeight="28" ToolTip="Nonzero value from -32,768 to 32,767; 120 is one wheel notch."
+                             AutomationProperties.Name="Wheel delta" />
+                </StackPanel>
+                <CheckBox Content="Horizontal" IsChecked="{Binding HorizontalWheel}" VerticalAlignment="Center"
+                          Visibility="{Binding IsWheel, Converter={StaticResource VisibleIfTrue}}" AutomationProperties.Name="Horizontal mouse wheel" />
+            </WrapPanel>
+            <StackPanel Orientation="Horizontal" Visibility="{Binding SelectedStep.HasCoordinates, Converter={StaticResource VisibleIfTrue}}">
+                <Button Content="Pick in 3 seconds" Command="{Binding PickCoordinatesCommand}" Style="{StaticResource CompactButton}" MinWidth="126"
+                        AutomationProperties.Name="Pick screen coordinates after three seconds" />
+                <TextBlock Text="{Binding CoordinatePickStatus}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="6,0,0,0" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</UserControl>

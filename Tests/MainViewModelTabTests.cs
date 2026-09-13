@@ -9,6 +9,15 @@ namespace Tests;
 // dispatcher or profile construction is needed.
 public sealed class MainViewModelTabTests
 {
+    [Fact]
+    public void MacrosTab_BetweenAdvancedAndDisplay_IsCustomOnly()
+    {
+        Assert.Equal(4, MainViewModel.TabIndexDisplay);
+        Assert.Equal(5, MainViewModel.TabIndexSystem);
+        Assert.Equal(3, MainViewModel.CoerceTabIndex(3, isWindowsProfile: false));
+        Assert.Equal(5, MainViewModel.CoerceTabIndex(3, isWindowsProfile: true));
+    }
+
     // Built-in default profile: Keys/Advanced are custom-only, so they coerce to System (its
     // home tab — Display for the global color settings is one tab away).
     [Theory]

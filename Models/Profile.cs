@@ -37,6 +37,8 @@ public sealed class Profile
 
     public AntiAfkSettings AntiAfk { get; init; } = new();
 
+    public MacroSettings Macros { get; init; } = new();
+
     public ColorSettings ColorSettings { get; init; } = new();
 
 

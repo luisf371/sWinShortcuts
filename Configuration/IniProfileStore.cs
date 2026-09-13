@@ -233,6 +233,7 @@ public sealed class IniProfileStore : IProfileStore
         }
 
         DeserializeColorSettings(document, profileInstance.ColorSettings);
+        LoadMacros(document, profileInstance);
 
         return profileInstance;
     }
@@ -259,8 +260,262 @@ public sealed class IniProfileStore : IProfileStore
         DeserializeCapsLock(document, profile.CapsLock);
         DeserializeColorSettings(document, profile.ColorSettings);
         DeserializeCrosshair(document, profile.Crosshair);
+        LoadMacros(document, profile);
 
         return profile;
+    }
+
+    private void LoadMacros(IniDocument document, Profile profile)
+    {
+        try
+        {
+            var macros = DeserializeMacros(document);
+            profile.Macros.IsEnabled = macros.IsEnabled;
+            profile.Macros.Definitions = macros.Definitions;
+        }
+        catch (FormatException ex)
+        {
+            // Preserve the other parsed features and the unread macro source. An ordinary edit
+            // cannot recover this profile; correct the source and reload before saving again.
+            profile.Macros.IsEnabled = false;
+            profile.Macros.Definitions = [];
+            profile.Macros.LoadError = ex.Message;
+            profile.IsPersistenceSuspended = true;
+            _logger?.Log($"[Profile] Invalid macros in '{profile.SourcePath}': {ex.Message}. Persistence suspended to preserve the source.");
+        }
+    }
+
+    private static MacroSettings DeserializeMacros(IniDocument document)
+    {
+        var indexedSections = new HashSet<string>(
+            document.SectionNames.Where(IsIndexedMacroSection), StringComparer.OrdinalIgnoreCase);
+        if (!document.ContainsSection("Macros"))
+        {
+            if (indexedSections.Count != 0)
+            {
+                throw new FormatException("Indexed macro sections require a [Macros] declaration.");
+            }
+            return new MacroSettings();
+        }
+
+        if (ReadMacroInt(document, "Macros", "Version") != 1)
+        {
+            throw new FormatException("The macro format version is unsupported.");
+        }
+
+        var enabled = ReadMacroBoolean(document, "Macros", "Enabled");
+        var count = ReadMacroInt(document, "Macros", "Count");
+        if (count is < 0 or > MacroValidation.MaxDefinitions)
+        {
+            throw new FormatException($"A profile must declare between 0 and {MacroValidation.MaxDefinitions} macros.");
+        }
+
+        var definitions = new MacroDefinition[count];
+        for (var index = 0; index < count; index++)
+        {
+            var section = FormattableString.Invariant($"Macro{index}");
+            RequireMacroSection(indexedSections, section);
+            if (!Guid.TryParse(ReadMacroString(document, section, "Id"), out var id))
+            {
+                throw InvalidMacroField(section, "Id");
+            }
+
+            var stepCount = ReadMacroInt(document, section, "StepCount");
+            if (stepCount is < 0 or > MacroValidation.MaxSteps)
+            {
+                throw InvalidMacroField(section, "StepCount");
+            }
+
+            var steps = new MacroStep[stepCount];
+            for (var stepIndex = 0; stepIndex < stepCount; stepIndex++)
+            {
+                var stepSection = FormattableString.Invariant($"{section}.Step{stepIndex}");
+                RequireMacroSection(indexedSections, stepSection);
+                steps[stepIndex] = ReadMacroStep(document, stepSection);
+            }
+
+            definitions[index] = new MacroDefinition
+            {
+                Id = id,
+                Label = ReadMacroString(document, section, "Label"),
+                IsEnabled = ReadMacroBoolean(document, section, "Enabled"),
+                ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
+                ShortcutModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutModifiers"),
+                Steps = steps
+            };
+        }
+
+        if (indexedSections.Count != 0)
+        {
+            throw new FormatException("The macro source contains undeclared or noncontiguous indexed sections.");
+        }
+
+        var settings = new MacroSettings { IsEnabled = enabled, Definitions = definitions };
+        if (MacroValidation.GetFormatError(settings) is { } error)
+        {
+            throw new FormatException(error);
+        }
+
+        return settings;
+    }
+
+    private static bool IsIndexedMacroSection(string section) =>
+        section.StartsWith("Macro", StringComparison.OrdinalIgnoreCase) && section.Length > 5 &&
+        (char.IsAsciiDigit(section[5]) || section[5] is '-' or '+');
+
+    private static void RequireMacroSection(HashSet<string> indexedSections, string section)
+    {
+        if (!indexedSections.Remove(section))
+        {
+            throw new FormatException($"The declared [{section}] section is missing.");
+        }
+    }
+
+    private static MacroStep ReadMacroStep(IniDocument document, string section)
+    {
+        var kind = ReadMacroEnum<MacroStepKind>(document, section, "Kind");
+        var step = new MacroStep { Kind = kind };
+        switch (kind)
+        {
+            case MacroStepKind.KeyPress:
+            case MacroStepKind.KeyDown:
+            case MacroStepKind.KeyUp:
+                step = step with { Key = ReadMacroKey(document, section, "Key") };
+                if (kind == MacroStepKind.KeyPress)
+                {
+                    step = step with { DurationMs = ReadMacroInt(document, section, "DurationMs", 0) };
+                }
+                break;
+            case MacroStepKind.Wait:
+                step = step with { DurationMs = ReadMacroInt(document, section, "DurationMs") };
+                break;
+            case MacroStepKind.MouseClick:
+            case MacroStepKind.MouseDown:
+            case MacroStepKind.MouseUp:
+                step = step with { MouseButton = ReadMacroEnum<Models.MouseButton>(document, section, "MouseButton") };
+                if (kind == MacroStepKind.MouseClick)
+                {
+                    step = step with
+                    {
+                        DurationMs = ReadMacroInt(document, section, "DurationMs", 0),
+                        X = ReadMacroInt(document, section, "X"),
+                        Y = ReadMacroInt(document, section, "Y")
+                    };
+                }
+                break;
+            case MacroStepKind.MouseWheel:
+                step = step with
+                {
+                    WheelDelta = ReadMacroInt(document, section, "WheelDelta"),
+                    HorizontalWheel = ReadMacroBoolean(document, section, "HorizontalWheel", false)
+                };
+                break;
+            case MacroStepKind.MoveTo:
+                step = step with
+                {
+                    X = ReadMacroInt(document, section, "X"),
+                    Y = ReadMacroInt(document, section, "Y")
+                };
+                break;
+        }
+
+        return step;
+    }
+
+    private static string ReadMacroString(IniDocument document, string section, string key) =>
+        document.TryGetSourceValue(section, key, out var value) && value is not null
+            ? value : throw InvalidMacroField(section, key);
+
+    private static int ReadMacroInt(IniDocument document, string section, string key, int? defaultValue = null)
+    {
+        if (defaultValue.HasValue && !document.TryGetSourceValue(section, key, out _))
+        {
+            return defaultValue.Value;
+        }
+
+        return document.TryGetInt32(section, key, out var value) ? value : throw InvalidMacroField(section, key);
+    }
+
+    private static bool ReadMacroBoolean(IniDocument document, string section, string key, bool? defaultValue = null)
+    {
+        if (defaultValue.HasValue && !document.TryGetSourceValue(section, key, out _))
+        {
+            return defaultValue.Value;
+        }
+
+        return document.TryGetBoolean(section, key, out var value) ? value : throw InvalidMacroField(section, key);
+    }
+
+    private static Key ReadMacroKey(IniDocument document, string section, string key) =>
+        document.TryGetKey(section, key, out var value) ? value : throw InvalidMacroField(section, key);
+
+    private static TEnum ReadMacroEnum<TEnum>(IniDocument document, string section, string key) where TEnum : struct, Enum =>
+        document.TryGetEnum<TEnum>(section, key, out var value) ? value : throw InvalidMacroField(section, key);
+
+    private static FormatException InvalidMacroField(string section, string key) =>
+        new($"[{section}] {key} is missing or malformed.");
+
+    private static void WriteMacros(IniDocument document, MacroSettings settings)
+    {
+        if (MacroValidation.GetFormatError(settings) is { } error)
+        {
+            throw new FormatException(error);
+        }
+
+        document.SetInt32("Macros", "Version", 1);
+        document.SetBoolean("Macros", "Enabled", settings.IsEnabled);
+        document.SetInt32("Macros", "Count", settings.Definitions.Length);
+        for (var index = 0; index < settings.Definitions.Length; index++)
+        {
+            var macro = settings.Definitions[index];
+            var section = FormattableString.Invariant($"Macro{index}");
+            document.SetString(section, "Id", macro.Id.ToString("N"));
+            document.SetString(section, "Label", macro.Label.Trim());
+            document.SetBoolean(section, "Enabled", macro.IsEnabled);
+            document.SetKey(section, "ShortcutKey", macro.ShortcutKey);
+            document.SetInt32(section, "ShortcutModifiers", (int)macro.ShortcutModifiers);
+            document.SetInt32(section, "StepCount", macro.Steps.Length);
+            for (var stepIndex = 0; stepIndex < macro.Steps.Length; stepIndex++)
+            {
+                var step = macro.Steps[stepIndex];
+                var stepSection = FormattableString.Invariant($"{section}.Step{stepIndex}");
+                document.SetEnum(stepSection, "Kind", step.Kind);
+                switch (step.Kind)
+                {
+                    case MacroStepKind.KeyPress:
+                    case MacroStepKind.KeyDown:
+                    case MacroStepKind.KeyUp:
+                        document.SetKey(stepSection, "Key", step.Key);
+                        if (step.Kind == MacroStepKind.KeyPress)
+                        {
+                            document.SetInt32(stepSection, "DurationMs", step.DurationMs);
+                        }
+                        break;
+                    case MacroStepKind.Wait:
+                        document.SetInt32(stepSection, "DurationMs", step.DurationMs);
+                        break;
+                    case MacroStepKind.MouseClick:
+                    case MacroStepKind.MouseDown:
+                    case MacroStepKind.MouseUp:
+                        document.SetEnum(stepSection, "MouseButton", step.MouseButton.GetValueOrDefault());
+                        if (step.Kind == MacroStepKind.MouseClick)
+                        {
+                            document.SetInt32(stepSection, "DurationMs", step.DurationMs);
+                            document.SetInt32(stepSection, "X", step.X);
+                            document.SetInt32(stepSection, "Y", step.Y);
+                        }
+                        break;
+                    case MacroStepKind.MouseWheel:
+                        document.SetInt32(stepSection, "WheelDelta", step.WheelDelta);
+                        document.SetBoolean(stepSection, "HorizontalWheel", step.HorizontalWheel);
+                        break;
+                    case MacroStepKind.MoveTo:
+                        document.SetInt32(stepSection, "X", step.X);
+                        document.SetInt32(stepSection, "Y", step.Y);
+                        break;
+                }
+            }
+        }
     }
 
     private static (Key? TapKey, Key? HoldKey) ParseTapHold(string value)
@@ -598,6 +853,8 @@ public sealed class IniProfileStore : IProfileStore
 
         WriteColorSection(document, profile.ColorSettings);
 
+        WriteMacros(document, profile.Macros);
+
         return document;
     }
 
@@ -648,6 +905,8 @@ public sealed class IniProfileStore : IProfileStore
 
         // The merged built-in carries the global color fallback in Win.ini's [Color] sections.
         WriteColorSection(document, profile.ColorSettings);
+
+        WriteMacros(document, profile.Macros);
 
         return document;
     }

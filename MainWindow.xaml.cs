@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Interop;
 using sWinShortcuts.Utilities;
+using sWinShortcuts.Services;
 using sWinShortcuts.ViewModels;
 
 namespace sWinShortcuts;
@@ -19,6 +20,7 @@ public partial class MainWindow : Window
     private readonly string _settingsPath;
     private bool _isLoaded;
     private bool _allowClose;
+    private Task? _exitOperation;
     // Set in OnClosed. A tray click delivered in the gap between MainWindow closing (shutdown begun)
     // and tray-icon disposal would otherwise call Show() on a closed window and crash
     // ("Cannot set Visibility or call Show... after a Window has closed").
@@ -122,7 +124,7 @@ public partial class MainWindow : Window
         if (_viewModel.Profiles.Any(p => p.Model.IsPersistenceSuspended))
         {
             System.Windows.MessageBox.Show(this,
-                "A built-in settings file could not be read, so defaults are in use for it. Your existing file was left untouched; changes to it won't be saved until it can be read again (try restarting).",
+                "A profile settings file could not be read. Its existing file was left untouched and the affected profile is read-only. See the profile's loading warning; correct the file and restart to enable editing.",
                 "sWinShortcuts",
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Warning);
@@ -460,6 +462,9 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _isClosed = true;
+        _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        if (System.Windows.Application.Current is not null)
+            System.Windows.Application.Current.SessionEnding -= OnSessionEnding;
         base.OnClosed(e);
     }
 
@@ -478,6 +483,7 @@ public partial class MainWindow : Window
 
     private void MinimizeToTray()
     {
+        _viewModel.SelectedProfile?.Macros.LeaveEditor();
         if (_isMinimizingToTray)
         {
             return;
@@ -552,11 +558,45 @@ public partial class MainWindow : Window
         }));
     }
 
-    public void ExitFromTray()
+    public void ExitFromTray() => _ = ExitAsync();
+
+    public Task ExitAsync()
     {
-        SaveWindowState();
-        _allowClose = true;
-        Close();
+        if (_isClosed) return Task.CompletedTask;
+        if (_exitOperation is null || _exitOperation.IsCompleted) _exitOperation = ExitCoreAsync();
+        return _exitOperation;
+    }
+
+    private async Task ExitCoreAsync()
+    {
+        try
+        {
+            var unsaved = await _viewModel.PrepareForCloseAsync();
+            if (_viewModel.MacroSessionRetirementFailed)
+            {
+                const string message = "Macro input cleanup did not complete. sWinShortcuts will stay open; try Exit again after cleanup finishes.";
+                CrashReporter.Write("Exit.MacroRetirement", new InvalidOperationException(message));
+                System.Windows.MessageBox.Show(this, message, "Unable to exit",
+                    System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+                return;
+            }
+            SaveWindowState();
+            await AppSettings.FlushAsync();
+            if (unsaved > 0)
+                CrashReporter.Write("Exit.Flush", new InvalidOperationException($"{unsaved} profile edit(s) could not be saved before exit."));
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.Write("Exit.Flush", ex);
+        }
+        finally
+        {
+            if (!_viewModel.MacroSessionRetirementFailed && !_isClosed)
+            {
+                _allowClose = true;
+                Close();
+            }
+        }
     }
 
     private void OnSessionEnding(object? sender, System.Windows.SessionEndingCancelEventArgs e)
@@ -570,6 +610,7 @@ public partial class MainWindow : Window
         }
 
         _allowClose = true;
+        _inputHook.StopMacroRecording();
         SaveWindowState();
     }
 

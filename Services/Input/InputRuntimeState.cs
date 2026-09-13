@@ -25,6 +25,9 @@ internal sealed class InputRuntimeState
     private volatile ForegroundIdentitySnapshot? _foregroundIdentity;
     private long _activeProfileGeneration;
     private long _publishedForegroundGeneration;
+    private int _macroInhibition;
+    private int _automationOutputCount;
+    private volatile bool _recordingPaused;
 
     internal InputRuntimeState(IAutoRunTransport? foregroundTransport = null)
     {
@@ -36,6 +39,33 @@ internal sealed class InputRuntimeState
     internal bool IsRunning => _isRunning;
 
     internal bool AdvancedModeEnabled => _advancedModeEnabled;
+
+    internal bool AutomationInhibited => Volatile.Read(ref _macroInhibition) != 0;
+    internal bool RecordingPaused => _recordingPaused;
+    internal bool AutomationOutputDrained => Volatile.Read(ref _automationOutputCount) == 0;
+
+    internal void BeginMacroInhibition(bool recording)
+    {
+        Volatile.Write(ref _macroInhibition, 1);
+        _recordingPaused = recording;
+    }
+
+    internal void EndMacroInhibition()
+    {
+        _recordingPaused = false;
+        Volatile.Write(ref _macroInhibition, 0);
+    }
+
+    internal bool TryBeginAutomationOutput()
+    {
+        if (AutomationInhibited) return false;
+        Interlocked.Increment(ref _automationOutputCount);
+        if (!AutomationInhibited) return true;
+        Interlocked.Decrement(ref _automationOutputCount);
+        return false;
+    }
+
+    internal void EndAutomationOutput() => Interlocked.Decrement(ref _automationOutputCount);
 
     internal Profile? ActiveProfile => _activeProfile;
 

@@ -7,6 +7,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using sWinShortcuts.Configuration;
@@ -16,7 +17,7 @@ using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.ViewModels;
 
-public sealed partial class MainViewModel : ViewModelBase
+public sealed partial class MainViewModel : ViewModelBase, IDisposable
 {
     private readonly IProfileManager _profileManager;
     private readonly IDialogService _dialogService;
@@ -38,6 +39,19 @@ public sealed partial class MainViewModel : ViewModelBase
     private readonly IDisplayService _displayService;
     private readonly IColorControlService _colorControlService;
     private readonly IProfileRuntimeService? _profileRuntimeService;
+    private readonly IInputHookService? _inputHookService;
+    private readonly Dispatcher? _dispatcher;
+    private DispatcherTimer? _macroStatusTimer;
+    private Task _pendingMacroRecording = Task.CompletedTask;
+    private ProfileViewModel? _recordingProfile;
+    private Task<int>? _closeOperation;
+    private bool _disposed;
+
+    // Best-effort retention when OS teardown has already ended the UI dispatcher.
+    public MacroRecordingResult? UnappliedMacroRecording { get; private set; }
+
+    // A failed retirement is an input-cleanup failure, not an unsaved-profile count.
+    public bool MacroSessionRetirementFailed { get; private set; }
     // Shift held at Remove-invocation time bypasses the delete confirmation dialog (the Remove button
     // tooltip documents this). Seamed as a delegate so tests can pin the modifier state deterministically.
     private readonly Func<bool> _removeBypassModifierDown;
@@ -72,13 +86,17 @@ public sealed partial class MainViewModel : ViewModelBase
         IDisplayService displayService,
         IColorControlService colorControlService,
         IProfileRuntimeService? profileRuntimeService = null,
-        Func<bool>? removeBypassModifierDown = null)
+        Func<bool>? removeBypassModifierDown = null,
+        IInputHookService? inputHookService = null,
+        Dispatcher? dispatcher = null)
     {
         _profileManager = profileManager ?? throw new ArgumentNullException(nameof(profileManager));
         _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
         _displayService = displayService ?? throw new ArgumentNullException(nameof(displayService));
         _colorControlService = colorControlService ?? throw new ArgumentNullException(nameof(colorControlService));
         _profileRuntimeService = profileRuntimeService;
+        _inputHookService = inputHookService;
+        _dispatcher = dispatcher ?? System.Windows.Application.Current?.Dispatcher;
         _removeBypassModifierDown = removeBypassModifierDown ?? DefaultRemoveBypassModifierDown;
         _keyOptionsWithNone = KeyCatalog.SortKeys(new[] { Key.None }.Concat(_keyOptions)).ToArray();
         _triggerKeyOptions = _keyOptions.Where(k => k != Key.LeftAlt && k != Key.RightAlt).ToArray();
@@ -87,6 +105,10 @@ public sealed partial class MainViewModel : ViewModelBase
 
         _profileManager.ProfileAdded += OnProfileAdded;
         _profileManager.ProfileRemoved += OnProfileRemoved;
+        if (_inputHookService is not null)
+        {
+            _inputHookService.MacroSessionChanged += OnMacroSessionChanged;
+        }
     }
 
     public ReadOnlyObservableCollection<ProfileViewModel> Profiles { get; }
@@ -139,8 +161,9 @@ public sealed partial class MainViewModel : ViewModelBase
     public const int TabIndexLauncher = 0;
     public const int TabIndexKeys = 1;
     public const int TabIndexAdvanced = 2;
-    public const int TabIndexDisplay = 3;
-    public const int TabIndexSystem = 4;
+    public const int TabIndexMacros = 3;
+    public const int TabIndexDisplay = 4;
+    public const int TabIndexSystem = 5;
 
     [ObservableProperty]
     private int selectedTabIndex;
@@ -248,7 +271,8 @@ public sealed partial class MainViewModel : ViewModelBase
     [RelayCommand(CanExecute = nameof(CanRemoveProfile))]
     private async Task RemoveProfileAsync()
     {
-        if (SelectedProfile is null)
+        var selected = SelectedProfile;
+        if (selected is null)
         {
             return;
         }
@@ -258,14 +282,15 @@ public sealed partial class MainViewModel : ViewModelBase
         // dirty state, and autosave are untouched. The modal disables its owner, so SelectedProfile
         // cannot change during the call.
         if (!_removeBypassModifierDown() &&
-            !_dialogService.ShowRemoveProfileConfirmation(SelectedProfile.Name))
+            !_dialogService.ShowRemoveProfileConfirmation(selected.Name))
         {
             return;
         }
 
         try
         {
-            await _profileManager.RemoveProfileAsync(SelectedProfile.Model);
+            if (ReferenceEquals(_recordingProfile, selected)) await FinalizeMacroRecordingAsync();
+            await _profileManager.RemoveProfileAsync(selected.Model);
         }
         catch (Exception ex)
         {
@@ -514,6 +539,7 @@ public sealed partial class MainViewModel : ViewModelBase
     partial void OnSelectedProfileChanged(ProfileViewModel? oldValue, ProfileViewModel? newValue)
     {
         oldValue?.ColorSettings.EndForcePreview();
+        oldValue?.Macros.LeaveEditor();
 
         CoerceSelectedTabIndex();
 
@@ -529,6 +555,11 @@ public sealed partial class MainViewModel : ViewModelBase
         AddCombinedMappingCommand.NotifyCanExecuteChanged();
         RemoveCombinedMappingCommand.NotifyCanExecuteChanged();
         RemoveAllCombinedMappingsCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnSelectedTabIndexChanged(int oldValue, int newValue)
+    {
+        if (oldValue == TabIndexMacros && newValue != TabIndexMacros) SelectedProfile?.Macros.LeaveEditor();
     }
 
     // AdvancedModeEnabled no longer affects tab visibility (the Advanced page grays out
@@ -547,6 +578,7 @@ public sealed partial class MainViewModel : ViewModelBase
             TabIndexLauncher when isWindowsProfile => TabIndexLauncher,
             TabIndexKeys when visibleKeys => TabIndexKeys,
             TabIndexAdvanced when visibleKeys => TabIndexAdvanced,
+            TabIndexMacros when visibleKeys => TabIndexMacros,
             TabIndexDisplay => TabIndexDisplay,
             TabIndexSystem => TabIndexSystem,
             _ => isWindowsProfile ? TabIndexSystem : TabIndexKeys
@@ -616,6 +648,17 @@ public sealed partial class MainViewModel : ViewModelBase
     {
         viewModel.ProfileChanged += OnProfileChanged;
         viewModel.PropertyChanged += OnProfilePropertyChanged;
+        if (_inputHookService is not null)
+        {
+            viewModel.Macros.ConfigureRuntime(
+                macro => RecordMacroAsync(viewModel, macro),
+                _inputHookService.StopMacroRecording,
+                _inputHookService.BeginMacroRecordingStopGesture,
+                () => _inputHookService.CancelMacroPlayback(viewModel.Model),
+                id => _inputHookService.GetMacroShortcutError(viewModel.Model, id),
+                () => _ = FinalizeMacroRecordingAsync());
+            viewModel.Macros.RefreshSession(_inputHookService.GetMacroSession());
+        }
     }
 
     private void DetachProfile(ProfileViewModel viewModel)
@@ -653,6 +696,167 @@ public sealed partial class MainViewModel : ViewModelBase
                 _profileRuntimeService?.NotifyProfileChanged(viewModel.Model, e.Kind);
             }
             QueueAutoSave(viewModel);
+            foreach (var profile in _profiles) profile.Macros.RefreshValidation();
+        }
+    }
+
+    public Task RecordMacroAsync(ProfileViewModel owner, MacroViewModel destination)
+    {
+        if (_inputHookService is null || _disposed ||
+            (_closeOperation is not null && (!_closeOperation.IsCompleted || !MacroSessionRetirementFailed)) ||
+            !_pendingMacroRecording.IsCompleted ||
+            !_profiles.Contains(owner) || !owner.Macros.Definitions.Contains(destination) || !owner.Macros.CanEdit)
+        {
+            owner.Macros.ShowFailure("Unable to record while another macro session is active.");
+            return Task.CompletedTask;
+        }
+
+        var insertionIndex = destination.RecordingInsertionIndex;
+        _recordingProfile = owner;
+        owner.Macros.SetRecordingDestination(destination);
+        _pendingMacroRecording = RecordAndApplyMacroAsync(owner, destination, insertionIndex);
+        return _pendingMacroRecording;
+    }
+
+    private async Task RecordAndApplyMacroAsync(ProfileViewModel owner, MacroViewModel destination, int insertionIndex)
+    {
+        try
+        {
+            var result = await _inputHookService!.RecordMacroAsync(owner.Model, destination.Id,
+                MacroValidation.MaxSteps - destination.Steps.Count).ConfigureAwait(false);
+            var applied = await OnEditorDispatcherAsync(() =>
+            {
+                if (_disposed || owner.IsDetached || !_profiles.Contains(owner) ||
+                    !owner.Macros.Definitions.Contains(destination) || !ReferenceEquals(result.OwnerProfile, owner.Model) ||
+                    result.MacroId != destination.Id)
+                {
+                    UnappliedMacroRecording = result;
+                    return;
+                }
+
+                destination.InsertRecording(insertionIndex, result.Steps);
+                owner.Macros.ShowRecordingResult(result);
+            }).ConfigureAwait(false);
+            if (!applied) UnappliedMacroRecording = result;
+        }
+        catch (Exception ex)
+        {
+            await OnEditorDispatcherAsync(() => owner.Macros.ShowFailure($"Recording failed: {ex.Message}")).ConfigureAwait(false);
+        }
+        finally
+        {
+            await OnEditorDispatcherAsync(() => owner.Macros.SetRecordingDestination(null)).ConfigureAwait(false);
+            if (ReferenceEquals(_recordingProfile, owner)) _recordingProfile = null;
+        }
+    }
+
+    public async Task FinalizeMacroRecordingAsync(bool requestStop = true)
+    {
+        var pending = _pendingMacroRecording;
+        if (requestStop && !pending.IsCompleted) _inputHookService?.StopMacroRecording();
+        await pending.ConfigureAwait(false);
+    }
+
+    public Task<int> PrepareForCloseAsync()
+    {
+        if (_closeOperation is null || (_closeOperation.IsCompleted && MacroSessionRetirementFailed))
+            _closeOperation = PrepareForCloseCoreAsync();
+        return _closeOperation;
+    }
+
+    private async Task<int> PrepareForCloseCoreAsync()
+    {
+        MacroSessionRetirementFailed = false;
+        _inputHookService?.StopMacroRecording();
+        await OnEditorDispatcherAsync(() =>
+        {
+            foreach (var profile in _profiles) profile.Macros.SelectedMacro?.CancelCoordinatePick();
+        }).ConfigureAwait(false);
+        try
+        {
+            MacroSessionRetirementFailed = _inputHookService is not null &&
+                !await _inputHookService.RetireMacroSessionAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            MacroSessionRetirementFailed = true;
+            CrashReporter.Write("Exit.MacroRetirement", ex);
+        }
+        // A timed-out native operation may still own input or recording preparation. Keep the UI
+        // alive so its pending take can finish normally, and let a later Exit retry retirement.
+        if (MacroSessionRetirementFailed) return 0;
+        await FinalizeMacroRecordingAsync(requestStop: false).ConfigureAwait(false);
+        var unsaved = await FlushPendingSavesAsync().ConfigureAwait(false);
+        return unsaved + (UnappliedMacroRecording is null ? 0 : 1);
+    }
+
+    private async Task<bool> OnEditorDispatcherAsync(Action action)
+    {
+        if (_dispatcher is null) { action(); return true; }
+        if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished) return false;
+        try
+        {
+            if (_dispatcher.CheckAccess()) action();
+            else await _dispatcher.InvokeAsync(action).Task.ConfigureAwait(false);
+            return true;
+        }
+        catch (TaskCanceledException) { return false; }
+        catch (InvalidOperationException) when (_dispatcher.HasShutdownStarted) { return false; }
+    }
+
+    private void OnMacroSessionChanged(object? sender, EventArgs e)
+    {
+        if (_disposed) return;
+        if (_dispatcher is not null)
+        {
+            if (!_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished)
+                _dispatcher.BeginInvoke(new Action(() => RefreshMacroSessions(refreshValidation: true)));
+        }
+        else RefreshMacroSessions(refreshValidation: true);
+    }
+
+    private void RefreshMacroSessions(bool refreshValidation)
+    {
+        if (_disposed || _inputHookService is null) return;
+        var snapshot = _inputHookService.GetMacroSession();
+        foreach (var profile in _profiles)
+        {
+            profile.Macros.RefreshSession(snapshot);
+            if (refreshValidation) profile.Macros.RefreshValidation();
+        }
+        if (_dispatcher is not null && snapshot.Mode != MacroSessionMode.Idle)
+        {
+            if (_macroStatusTimer is null)
+            {
+                _macroStatusTimer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher)
+                { Interval = TimeSpan.FromMilliseconds(250) };
+                _macroStatusTimer.Tick += OnMacroStatusTick;
+            }
+            _macroStatusTimer.Start();
+        }
+        else _macroStatusTimer?.Stop();
+    }
+
+    private void OnMacroStatusTick(object? sender, EventArgs e) => RefreshMacroSessions(refreshValidation: false);
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _inputHookService?.StopMacroRecording();
+        _disposed = true;
+        if (_inputHookService is not null) _inputHookService.MacroSessionChanged -= OnMacroSessionChanged;
+        _profileManager.ProfileAdded -= OnProfileAdded;
+        _profileManager.ProfileRemoved -= OnProfileRemoved;
+        if (_macroStatusTimer is not null)
+        {
+            _macroStatusTimer.Stop();
+            _macroStatusTimer.Tick -= OnMacroStatusTick;
+        }
+        foreach (var profile in _profiles)
+        {
+            profile.ProfileChanged -= OnProfileChanged;
+            profile.PropertyChanged -= OnProfilePropertyChanged;
+            profile.Dispose();
         }
     }
 

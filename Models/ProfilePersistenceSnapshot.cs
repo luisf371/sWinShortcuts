@@ -27,6 +27,7 @@ internal static class ProfilePersistenceSnapshot
             AutoRun = CloneAutoRun(source.AutoRun),
             RapidFire = CloneRapidFire(source.RapidFire),
             AntiAfk = CloneAntiAfk(source.AntiAfk),
+            Macros = CloneMacros(source.Macros),
             ColorSettings = color,
             CapsLock = CloneCapsLock(source.CapsLock),
             Crosshair = CloneCrosshair(source.Crosshair),
@@ -148,6 +149,23 @@ internal static class ProfilePersistenceSnapshot
             IsEnabled = source.IsEnabled,
             IntervalMilliseconds = source.IntervalMilliseconds,
             JitterMilliseconds = source.JitterMilliseconds
+        };
+    }
+
+    private static MacroSettings CloneMacros(MacroSettings source)
+    {
+        var definitions = new MacroDefinition[source.Definitions.Length];
+        for (var index = 0; index < definitions.Length; index++)
+        {
+            var macro = source.Definitions[index];
+            definitions[index] = macro with { Steps = (MacroStep[])macro.Steps.Clone() };
+        }
+
+        return new MacroSettings
+        {
+            IsEnabled = source.IsEnabled,
+            Definitions = definitions,
+            LoadError = source.LoadError
         };
     }
 

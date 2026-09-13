@@ -130,6 +130,9 @@ public partial class App : System.Windows.Application
                 try
                 {
                     var mainViewModel = _host.Services.GetService<MainViewModel>();
+                    // Explicit Exit finalized and applied the take while the dispatcher was alive.
+                    // OS teardown can only request completion here; never wait on its UI application.
+                    _host.Services.GetService<IInputHookService>()?.StopMacroRecording();
                     var flushTask = Task.Run(async () =>
                     {
                         var profiles = mainViewModel?.FlushPendingSavesAsync() ?? Task.FromResult(0);

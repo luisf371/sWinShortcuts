@@ -9,6 +9,7 @@ public sealed class IniDocument
 {
     private readonly Dictionary<string, Dictionary<string, string>> _sections = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _sectionOrder = [];
+    private readonly Dictionary<string, Dictionary<string, string>> _sourceValueOverrides = new(StringComparer.OrdinalIgnoreCase);
 
     public static IniDocument Load(string path)
     {
@@ -66,6 +67,23 @@ public sealed class IniDocument
                 document.EnsureSection(currentSection);
             }
 
+            // Retain only values legacy trimming/SetValue would discard or change. In particular,
+            // empty fields cannot become defaults and label control characters cannot disappear.
+            var sourceValue = rawLine[(rawLine.IndexOf('=') + 1)..].Trim(' ');
+            if (value.Length == 0 || !string.Equals(sourceValue, value, StringComparison.Ordinal))
+            {
+                if (!document._sourceValueOverrides.TryGetValue(currentSection, out var overrides))
+                {
+                    overrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    document._sourceValueOverrides[currentSection] = overrides;
+                }
+                overrides[key] = sourceValue;
+            }
+            else if (document._sourceValueOverrides.TryGetValue(currentSection, out var overrides))
+            {
+                overrides.Remove(key);
+            }
+
             document.SetValue(currentSection, key, value);
         }
 
@@ -90,6 +108,21 @@ public sealed class IniDocument
         }
 
         return new Dictionary<string, string>();
+    }
+
+    public bool ContainsSection(string section) => _sections.ContainsKey(section);
+
+    public IEnumerable<string> SectionNames => _sectionOrder;
+
+    public bool TryGetSourceValue(string section, string key, out string? value)
+    {
+        if (_sourceValueOverrides.TryGetValue(section, out var overrides) && overrides.TryGetValue(key, out value))
+        {
+            return true;
+        }
+
+        value = GetValue(section, key);
+        return value is not null;
     }
 
     public void SetValue(string section, string key, string? value)
@@ -125,6 +158,7 @@ public sealed class IniDocument
 
     public void RemoveSection(string section)
     {
+        _sourceValueOverrides.Remove(section);
         if (_sections.Remove(section))
         {
             _sectionOrder.RemoveAll(s => string.Equals(s, section, StringComparison.OrdinalIgnoreCase));
