@@ -322,7 +322,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         if (_disposed || queue is null || queue.IsAddingCompleted ||
             (_runtime.IsDisposed && startsInput && !IsCompensatingTapCandidate(in command)) ||
             (_runtime.RecordingPaused && startsInput && command.HoldOwner != InputHoldOwner.Macro &&
-             command.Kind != InputCommandKind.MacroReserveModifiers))
+             command.Kind != InputCommandKind.MacroReserveModifiers && !IsCompensatingTapCandidate(in command)))
         {
             command.Completion?.TrySetResult(false);
             return false;
@@ -494,8 +494,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             (command.TapPairToken != 0 &&
              command.TapPairToken == acknowledgedTapPairToken);
         var acknowledgedCompensation = command.RequireTapPairToken && tapPairAcknowledged;
-        if (((queue.IsAddingCompleted || _runtime.IsDisposed) &&
-             !acknowledgedCompensation) || _runtime.RecordingPaused || !GuardAllows(in command) ||
+        if (((queue.IsAddingCompleted || _runtime.IsDisposed || _runtime.RecordingPaused) &&
+             !acknowledgedCompensation) || !GuardAllows(in command) ||
             (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true) ||
             !tapPairAcknowledged || IsBusyForTap(command.Key))
         {
@@ -503,7 +503,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             return false;
         }
 
-        var downSent = SendKey(command.Key, true, out var downAttempted);
+        var downSent = SendKey(command.Key, true, out var downAttempted,
+            acknowledgedCompensation: acknowledgedCompensation);
         var upSent = false;
         try
         {
@@ -923,7 +924,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         => SendKey(key, isKeyDown, out _, owner, canSend);
 
     private bool SendKey(Key key, bool isKeyDown, out bool attempted,
-        InputHoldOwner owner = InputHoldOwner.None, Func<bool>? canSend = null)
+        InputHoldOwner owner = InputHoldOwner.None, Func<bool>? canSend = null, bool acknowledgedCompensation = false)
     {
         attempted = false;
         var virtualKey = KeyInteropUtilities.ToVirtualKey(key);
@@ -931,7 +932,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         if (tracked)
         {
             // All key paths, including unowned taps/sequences, cross this final arbitration point.
-            if (isKeyDown && ((_runtime.RecordingPaused && owner != InputHoldOwner.Macro) ||
+            if (isKeyDown && ((_runtime.RecordingPaused && owner != InputHoldOwner.Macro && !acknowledgedCompensation) ||
                 _pendingReleases[virtualKey] != Key.None ||
                 (owner != InputHoldOwner.Macro &&
                  (IsMacroKeyOwned(virtualKey) || (_macroReservationToken != 0 && IsModifier(virtualKey))))))

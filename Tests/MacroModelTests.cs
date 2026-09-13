@@ -175,10 +175,10 @@ public sealed class MacroModelTests
     [Fact]
     public void GetTotalDurationMs_LongSequence_DoesNotOverflowInt32()
     {
-        var macro = Assigned(Enumerable.Repeat(new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 3_600_000 }, 10000).ToArray());
+        var macro = Assigned(Enumerable.Repeat(new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 3_600_000 }, 1000).ToArray());
 
         Assert.Null(MacroValidation.GetFormatError(macro));
-        Assert.Equal(36_000_000_000L, MacroValidation.GetTotalDurationMs(macro));
+        Assert.Equal(3_600_000_000L, MacroValidation.GetTotalDurationMs(macro));
         Assert.NotNull(MacroValidation.GetFormatError(macro with { Steps = [.. macro.Steps, new() { Kind = MacroStepKind.Wait }] }));
     }
 

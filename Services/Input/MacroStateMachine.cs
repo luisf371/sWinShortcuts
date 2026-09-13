@@ -713,11 +713,14 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
 
     private void Publish(MacroSessionMode mode, int row = 0)
     {
+        var previous = Volatile.Read(ref _status).Value;
         var value = new MacroSessionSnapshot(_sessionId, _recordRequest?.Owner ?? _pending?.Owner,
             _recordRequest?.MacroId ?? _pending?.Definition.Id ?? Guid.Empty, mode,
             Stopwatch.GetElapsedTime(_startedAt), row, _failure);
         Volatile.Write(ref _status, new Status(value));
-        RaiseChanged();
+        // Progress is polled through GetSession; notify immediately for lifecycle/error changes.
+        if (previous.SessionId != value.SessionId || previous.Mode != mode || previous.FailureReason != value.FailureReason)
+            RaiseChanged();
     }
 
     private void RaiseChanged()

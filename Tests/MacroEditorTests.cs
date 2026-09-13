@@ -98,24 +98,27 @@ public sealed class MacroEditorTests
     }
 
     [Fact]
-    public void InsertRecording_ThousandsOfRows_PublishesOneDetachedEdit()
+    public void InsertRecording_ThousandRows_PublishesOneDetachedEditAndEnforcesLimit()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         var edits = 0;
         using var editor = new MacrosViewModel(profile, () => edits++);
         editor.NewMacroCommand.Execute(null);
         var macro = editor.SelectedMacro!;
-        var rows = Enumerable.Range(0, 2000)
+        var rows = Enumerable.Range(0, 1000)
             .Select(_ => new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 2 }).ToArray();
         var before = edits;
 
         macro.InsertRecording(0, rows);
 
         Assert.Equal(before + 1, edits);
-        Assert.Equal(2000, macro.Steps.Count);
-        Assert.Equal(2000, profile.Macros.Definitions[0].Steps.Length);
+        Assert.Equal(1000, macro.Steps.Count);
+        Assert.Equal(1000, profile.Macros.Definitions[0].Steps.Length);
         rows[0] = new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 99 };
         Assert.Equal(2, profile.Macros.Definitions[0].Steps[0].DurationMs);
+        Assert.False(macro.InsertStepCommand.CanExecute(null));
+        Assert.False(macro.DuplicateStepCommand.CanExecute(null));
+        Assert.Throws<ArgumentOutOfRangeException>(() => macro.InsertRecording(1000, [new MacroStep { Kind = MacroStepKind.Wait }]));
     }
 
     [Fact]

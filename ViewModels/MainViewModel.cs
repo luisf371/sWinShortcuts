@@ -42,6 +42,7 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
     private readonly IInputHookService? _inputHookService;
     private readonly Dispatcher? _dispatcher;
     private DispatcherTimer? _macroStatusTimer;
+    private int _macroRefreshPending;
     private Task _pendingMacroRecording = Task.CompletedTask;
     private ProfileViewModel? _recordingProfile;
     private Task<int>? _closeOperation;
@@ -809,8 +810,13 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         if (_disposed) return;
         if (_dispatcher is not null)
         {
-            if (!_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished)
-                _dispatcher.BeginInvoke(new Action(() => RefreshMacroSessions(refreshValidation: true)));
+            if (!_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished &&
+                Interlocked.Exchange(ref _macroRefreshPending, 1) == 0)
+                _dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+                {
+                    Volatile.Write(ref _macroRefreshPending, 0);
+                    RefreshMacroSessions(refreshValidation: true);
+                }));
         }
         else RefreshMacroSessions(refreshValidation: true);
     }

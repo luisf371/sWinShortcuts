@@ -2,12 +2,27 @@ using System.Windows.Input;
 using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services.Input;
+using sWinShortcuts.Utilities;
 using Xunit;
 
 namespace Tests;
 
 public sealed class MacroRecorderTests
 {
+    [Fact]
+    public void Capture_OversizedRequestedBudget_StopsAtThousandRowsWithBalancedRelease()
+    {
+        var recorder = new MacroRecorder(1001, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        for (var i = 0; i < 1001; i++)
+            recorder.Capture(new(0, NativeMethods.WM_KEYDOWN, 0x41, 0, 0, 0, 0, 0, 0));
+        var (steps, balanced) = recorder.BuildSteps();
+        Assert.Equal(MacroRecordingEndReason.RowLimit, recorder.EndReason);
+        Assert.Equal(1000, steps.Length);
+        Assert.True(balanced);
+        Assert.Equal(MacroStepKind.KeyUp, steps[^1].Kind);
+    }
+
     [Fact]
     public void Capture_OverlappingChord_PreservesEdgesAndGaps()
     {
@@ -307,7 +322,7 @@ public sealed class MacroRecorderTests
     {
         for (var iteration = 0; iteration < 20; iteration++)
         {
-            var recorder = new MacroRecorder(10000, 1000);
+            var recorder = new MacroRecorder(MacroValidation.MaxSteps, 1000);
             recorder.Begin(0, new bool[256], new bool[6]);
             var input = new RecordedMacroEvent(0, NativeMethods.WM_KEYDOWN, 0x41, 0, 0, 0, 0, 0, 0);
             recorder.Capture(input);
@@ -318,11 +333,11 @@ public sealed class MacroRecorderTests
                 Assert.Equal(MacroRecordingEndReason.Interrupted, recorder.EndReason);
                 return recorder.BuildSteps().Steps;
             });
-            for (var index = 0; index < 1000; index++) recorder.Capture(input);
+            for (var index = 0; index < MacroValidation.MaxSteps - 2; index++) recorder.Capture(input);
 
             var steps = await finalization;
 
-            Assert.InRange(steps.Length, 2, 1002);
+            Assert.InRange(steps.Length, 2, MacroValidation.MaxSteps);
             Assert.Equal(MacroStepKind.KeyUp, steps[^1].Kind);
             Assert.All(steps[..^1], step => Assert.Equal(MacroStepKind.KeyDown, step.Kind));
             var count = recorder.Count;

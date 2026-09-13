@@ -8,7 +8,7 @@ namespace sWinShortcuts.Utilities;
 public static class MacroValidation
 {
     public const int MaxDefinitions = 64;
-    public const int MaxSteps = 10_000;
+    public const int MaxSteps = 1_000;
     public const int MaxDurationMs = 3_600_000;
 
     public static string? GetFormatError(MacroSettings settings)

@@ -143,7 +143,7 @@ public sealed class MacroPersistenceTests : IDisposable
 
     [Theory]
     [InlineData("[Macro0]\nStepCount=-1\n")]
-    [InlineData("[Macro0]\nStepCount=10001\n")]
+    [InlineData("[Macro0]\nStepCount=1001\n")]
     [InlineData("[Macro0]\nShortcutModifiers=16\n")]
     [InlineData("[Macro0]\nShortcutModifiers=\n")]
     [InlineData("[Macro0]\nShortcutKey=\n")]

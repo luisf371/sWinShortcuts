@@ -209,7 +209,7 @@ recording** appends the take after the selected row (or at the end); edit out un
 actions afterward. Recording pauses other automation, leaves the hooks installed, and
 does not capture free cursor movement. Interrupted or capacity-limited takes retain
 their captured prefix and add release rows for inputs still held. Each macro supports
-10,000 steps, each profile supports 64 macros, and one recording lasts at most 10 minutes.
+1,000 steps, each profile supports 64 macros, and one recording lasts at most 10 minutes.
 
 Mouse positions are signed absolute physical screen pixels, including monitors left of
 or above the primary display. The coordinate picker gives you three seconds to move
