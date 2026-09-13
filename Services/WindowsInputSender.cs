@@ -164,7 +164,18 @@ public sealed class WindowsInputSender : IInputSender
             NativeMethods.MouseEventFlags.MOUSEEVENTF_ABSOLUTE | NativeMethods.MouseEventFlags.MOUSEEVENTF_VIRTUALDESK);
         input.U.mi.dx = (int)(((physicalX - left) * 65536 + 32768) / width);
         input.U.mi.dy = (int)(((physicalY - top) * 65536 + 32768) / height);
-        return canSend?.Invoke() != false && SendInputLogged([input], SendInputKind.MouseMove);
+        // Keep the native send in physical coordinates too: system/unaware threads can have
+        // absolute input quantized through a scaled monitor even after physical enumeration.
+        var previous = NativeMethods.SetThreadDpiAwarenessContext(NativeMethods.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if (previous == IntPtr.Zero) return false;
+        try
+        {
+            return canSend?.Invoke() != false && SendInputLogged([input], SendInputKind.MouseMove);
+        }
+        finally
+        {
+            NativeMethods.SetThreadDpiAwarenessContext(previous);
+        }
     }
 
     internal static bool TryGetPhysicalCursorPosition(out int x, out int y)

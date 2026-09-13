@@ -86,6 +86,9 @@
                 <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Margin="0,0,14,0" VerticalAlignment="Center" AutomationProperties.Name="Shortcut Shift modifier" />
                 <CheckBox Content="Win" IsChecked="{Binding WindowsModifier}" VerticalAlignment="Center" AutomationProperties.Name="Shortcut Windows modifier" />
             </WrapPanel>
+            <CheckBox Content="Cancel on mouse movement" IsChecked="{Binding CancelOnMouseMovement}" Margin="0,0,0,4"
+                      ToolTip="Stop playback when you move the mouse. Off by default."
+                      AutomationProperties.Name="Cancel on mouse movement" />
         </StackPanel>
         <StackPanel Grid.Row="3" Margin="0,0,0,8">
             <TextBlock Text="{Binding SessionStatus}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Macro session status" />

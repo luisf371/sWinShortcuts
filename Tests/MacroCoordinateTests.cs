@@ -11,6 +11,49 @@ namespace Tests;
 public sealed class MacroCoordinateTests
 {
     [Theory]
+    [InlineData(-1, 0)]
+    [InlineData(-2, 0)]
+    [InlineData(-1, 1)]
+    [InlineData(-2, 1)]
+    [InlineData(-1, 2)]
+    [InlineData(-2, 2)]
+    public void MoveMouseTo_NativeSendAndGuard_UsePhysicalDpiContextAndRestoreCaller(int callerAwareness, int outcome)
+    {
+        var original = NativeMethods.SetThreadDpiAwarenessContext(NativeMethods.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        try
+        {
+            var physicalContext = ReadDpiContext();
+            NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(callerAwareness));
+            var callerContext = ReadDpiContext();
+            var sender = new WindowsInputSender(new NullLoggerService(), inputs =>
+            {
+                Assert.Equal(physicalContext, ReadDpiContext());
+                if (outcome == 1) throw new InvalidOperationException("Native send failed.");
+                return (uint)inputs.Length;
+            }, () => [new Rectangle(0, 0, 6000, 1440)]);
+            bool CanSend()
+            {
+                Assert.Equal(physicalContext, ReadDpiContext());
+                return outcome != 2;
+            }
+            try
+            {
+                if (outcome == 1) Assert.Throws<InvalidOperationException>(() => sender.MoveMouseTo(4737, 855, CanSend));
+                else Assert.Equal(outcome == 0, sender.MoveMouseTo(4737, 855, CanSend));
+            }
+            finally { Assert.Equal(callerContext, ReadDpiContext()); }
+        }
+        finally { NativeMethods.SetThreadDpiAwarenessContext(original); }
+    }
+
+    private static IntPtr ReadDpiContext()
+    {
+        var context = NativeMethods.SetThreadDpiAwarenessContext(NativeMethods.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        NativeMethods.SetThreadDpiAwarenessContext(context);
+        return context;
+    }
+
+    [Theory]
     [InlineData(-1920, -1080, 8, 15)]
     [InlineData(0, 0, 32776, 32783)]
     [InlineData(1919, 1079, 65527, 65520)]

@@ -48,6 +48,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public bool CanEdit => !_disposed && _canEdit();
     public string Label { get => _definition.Label; set => Change(_definition with { Label = value ?? string.Empty }, nameof(Label)); }
     public bool IsEnabled { get => _definition.IsEnabled; set => Change(_definition with { IsEnabled = value }, nameof(IsEnabled)); }
+    public bool CancelOnMouseMovement { get => _definition.CancelOnMouseMovement; set => Change(_definition with { CancelOnMouseMovement = value }, nameof(CancelOnMouseMovement)); }
     public Key ShortcutKey { get => _definition.ShortcutKey; set => Change(_definition with { ShortcutKey = value }, nameof(ShortcutKey)); }
     public ModifierKeys ShortcutModifiers { get => _definition.ShortcutModifiers; set => Change(_definition with { ShortcutModifiers = value }, nameof(ShortcutModifiers)); }
     public bool ControlModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Control); set => SetModifier(ModifierKeys.Control, value); }

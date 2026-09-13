@@ -162,7 +162,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     private int _recordStopRequested;
     private int _disposed;
     private int _closing;
-    private int _moving;
     private int _verifyClickPosition;
     private int _clickX, _clickY;
     private Rectangle[]? _movementMonitors;
@@ -187,7 +186,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
 
     internal event EventHandler? Changed;
     internal bool IsBusy => Volatile.Read(ref _busy) != 0;
-    internal bool IsMoving => Volatile.Read(ref _moving) != 0;
+    internal bool CancelsOnMouseMovement => Volatile.Read(ref _requestReady) != 0 && Current() &&
+        !IsRecording && _pending?.Definition.CancelOnMouseMovement == true;
     internal bool IsRecording => Volatile.Read(ref _recordRequest) is not null;
 
     internal MacroSessionSnapshot GetSession()
@@ -506,6 +506,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 }
                 var (steps, balanced) = recorder.BuildSteps();
                 recordingResult = new MacroRecordingResult(_sessionId, owner, macroId, steps, recorder.EndReason, balanced, _failure);
+                if (_logger.IsEnabled)
+                    _logger.Log($"[Macros] Recording session={_sessionId} ended: reason={recorder.EndReason}, rows={steps.Length}, balancedReleases={balanced}");
             }
             else
             {
@@ -517,6 +519,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 {
                     if (!CanExecute(default)) throw new OperationCanceledException();
                     Publish(MacroSessionMode.Playing, i + 1);
+                    if (_logger.IsEnabled)
+                        _logger.Log($"[Macros] Playback session={_sessionId} row={i + 1}/{steps.Length} action={steps[i].Kind}");
                     Play(steps[i]);
                 }
             }
@@ -533,7 +537,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         finally
         {
             Volatile.Write(ref _cancelled, 1);
-            Volatile.Write(ref _moving, 0);
             Volatile.Write(ref _movementMonitors, null);
             Volatile.Write(ref _verifyClickPosition, 0);
             Publish(MacroSessionMode.Finishing);
@@ -685,7 +688,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         var monitors = _monitors();
         var points = MacroCursorPath.Create(start.X, start.Y, x, y, monitors, Random.Shared.NextDouble() * 2 - 1);
         Volatile.Write(ref _movementMonitors, monitors);
-        Volatile.Write(ref _moving, 1);
         try
         {
             var previous = new Point(start.X, start.Y);
@@ -696,16 +698,25 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 Wait((int)Math.Ceiling(Math.Max(8, MacroCursorPath.Distance(previous, point) / 3)));
                 Send(new InputCommand(Key.None, false, Kind: InputCommandKind.MoveTo, X: point.X, Y: point.Y));
                 var settleStart = Stopwatch.GetTimestamp();
-                while (_cursor() != (point.X, point.Y))
+                var observed = _cursor();
+                while (observed != (point.X, point.Y))
                 {
                     if (Stopwatch.GetElapsedTime(settleStart).TotalMilliseconds >= 50)
-                        throw new InvalidOperationException("The cursor was clipped or moved away from the requested position.");
+                    {
+                        if (_logger.IsEnabled)
+                            _logger.Log($"[Macros] Cursor arrival timeout: session={_sessionId}, row={GetSession().RowCount}, " +
+                                $"requested=({point.X},{point.Y}), observed=({observed.X},{observed.Y}), previous=({previous.X},{previous.Y}), " +
+                                $"endpoint=({x},{y}), elapsed={Stopwatch.GetElapsedTime(settleStart).TotalMilliseconds:F1}ms, " +
+                                $"monitors={string.Join("; ", monitors.Select(bounds => bounds.ToString()))}");
+                        throw new InvalidOperationException("The cursor did not reach the requested position.");
+                    }
                     Wait(1);
+                    observed = _cursor();
                 }
                 previous = point;
             }
         }
-        finally { Volatile.Write(ref _moving, 0); Volatile.Write(ref _movementMonitors, null); }
+        finally { Volatile.Write(ref _movementMonitors, null); }
     }
 
     private static (int X, int Y) ReadCursor() => WindowsInputSender.TryGetPhysicalCursorPosition(out var x, out var y)
@@ -720,7 +731,12 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         Volatile.Write(ref _status, new Status(value));
         // Progress is polled through GetSession; notify immediately for lifecycle/error changes.
         if (previous.SessionId != value.SessionId || previous.Mode != mode || previous.FailureReason != value.FailureReason)
+        {
+            if (_logger.IsEnabled)
+                _logger.Log($"[Macros] Session={value.SessionId} state={mode} row={row} elapsed={value.Elapsed.TotalMilliseconds:F0}ms " +
+                    $"cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} failure={value.FailureReason ?? "none"}");
             RaiseChanged();
+        }
     }
 
     private void RaiseChanged()

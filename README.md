@@ -225,6 +225,15 @@ temporary emergency cancellation key during playback or recording. Focus loss, p
 changes, and conflicting physical input also cancel playback and release its held inputs.
 There is no repeat mode or regular playback Stop button.
 
+**Cancel on mouse movement** is a per-macro option, off by default. Enable it to cancel
+playback when you move the mouse, including during waits and held inputs. Injected
+movement does not trigger this option. Coordinate actions still require arrival at the
+requested pixel before continuing.
+
+With **Enable Debug Logging** on, macro diagnostics include session states, step numbers
+and action types, recording completion, and cancellation/failure reasons. A cursor-arrival
+failure also logs the requested and observed pixels, elapsed settling time, and monitor bounds.
+
 Auto-Run must finish before playback can start. Rapid Fire and Anti-AFK wait until the
 macro finishes; the Rapid Fire arm is preserved. Macros use the same Windows input
 transport as the existing features, so game acceptance and exact scheduling remain

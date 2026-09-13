@@ -9,6 +9,27 @@ namespace Tests;
 public sealed class MacroEditorTests
 {
     [Fact]
+    public void CancelOnMouseMovement_DefaultOff_PublishesEachChangedValue()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        var edits = 0;
+        using var editor = new MacrosViewModel(profile, () => edits++);
+        editor.NewMacroCommand.Execute(null);
+        var macro = editor.SelectedMacro!;
+        var before = edits;
+        Assert.False(macro.CancelOnMouseMovement);
+
+        macro.CancelOnMouseMovement = true;
+        macro.CancelOnMouseMovement = true;
+
+        Assert.True(profile.Macros.Definitions[0].CancelOnMouseMovement);
+        Assert.Equal(before + 1, edits);
+        macro.CancelOnMouseMovement = false;
+        Assert.False(profile.Macros.Definitions[0].CancelOnMouseMovement);
+        Assert.Equal(before + 2, edits);
+    }
+
+    [Fact]
     public void MalformedNumericText_IsVisibleAndDisablesPlayback_UntilCorrected()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -82,6 +103,7 @@ public sealed class MacroEditorTests
         editor.NewMacroCommand.Execute(null);
         var original = Assert.Single(editor.Definitions);
         original.IsEnabled = true;
+        original.CancelOnMouseMovement = true;
         original.ShortcutKey = Key.F6;
         original.InsertStepCommand.Execute(null);
         original.SelectedStep!.Key = Key.B;
@@ -91,6 +113,7 @@ public sealed class MacroEditorTests
         var copy = editor.SelectedMacro!;
         Assert.NotEqual(original.Id, copy.Id);
         Assert.False(copy.IsEnabled);
+        Assert.True(copy.CancelOnMouseMovement);
         Assert.Equal(Key.None, copy.ShortcutKey);
         Assert.NotSame(original.Steps[0], copy.Steps[0]);
         copy.Steps[0].Key = Key.C;
@@ -168,11 +191,13 @@ public sealed class MacroEditorTests
         editor.SetRecordingDestination(macro);
 
         macro.Label = "Changed";
+        macro.CancelOnMouseMovement = true;
         macro.Steps[0].Key = Key.Z;
         editor.SelectedMacro = null;
         editor.DeleteMacroCommand.Execute(null);
 
         Assert.Equal("New macro", macro.Label);
+        Assert.False(macro.CancelOnMouseMovement);
         Assert.Equal(Key.A, macro.Steps[0].Key);
         Assert.Same(macro, editor.SelectedMacro);
         Assert.Single(editor.Definitions);

@@ -18,6 +18,7 @@ public sealed record MacroDefinition
     public Guid Id { get; init; } = Guid.NewGuid();
     public string Label { get; init; } = "New macro";
     public bool IsEnabled { get; init; }
+    public bool CancelOnMouseMovement { get; init; }
     public Key ShortcutKey { get; init; } = Key.None;
     public ModifierKeys ShortcutModifiers { get; init; }
     public MacroStep[] Steps { get; init; } = [];

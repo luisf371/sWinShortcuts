@@ -127,6 +127,10 @@ public sealed class MacroEditorTemplateTests
             Assert.False(stop.IsEnabled);
             Assert.DoesNotContain(controls.OfType<Button>(), button => AutomationProperties.GetName(button).Contains("Stop playback", StringComparison.Ordinal));
             Assert.Equal(5, controls.OfType<ComboBox>().Count());
+            var cancelOnMovement = Assert.Single(controls.OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Cancel on mouse movement");
+            Assert.False(cancelOnMovement.IsChecked);
+            cancelOnMovement.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
+            Assert.True(macro.ToDefinition().CancelOnMouseMovement);
             Assert.Contains(controls.OfType<ListBoxItem>(), item => AutomationProperties.GetName(item).StartsWith("Step 1: Key press", StringComparison.Ordinal));
 
             macro.InsertStepCommand.Execute(null);
@@ -153,6 +157,7 @@ public sealed class MacroEditorTemplateTests
             host.UpdateLayout();
 
             Assert.True(stop.IsEnabled);
+            Assert.False(cancelOnMovement.IsEnabled);
             Assert.False(Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro").IsEnabled);
             Assert.True(view.ActualWidth <= 650);
             Assert.True(stop.TransformToAncestor(host).Transform(new Point(0, 0)).Y < 480);
