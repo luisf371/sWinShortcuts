@@ -223,8 +223,9 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         if (profile.CombinedMappings.IsEnabled && profile.CombinedMappings.Mappings.Any(m =>
             m.Source.Kind == InputTriggerKind.KeyboardKey && m.Source.Key == definition.ShortcutKey))
             return "Key Mapping uses this key.";
-        if (definition.ShortcutKey == Key.CapsLock && profile.CapsLock.IsEnabled &&
-            (profile.CapsLock.Mode != CapsLockMode.Normal || profile.CapsLock.IsRemapEnabled))
+        if (definition.ShortcutKey == Key.CapsLock &&
+            RemapStateMachine.GetEffectiveCapsLockSettings(profile, windows) is { } caps &&
+            (caps.Mode != CapsLockMode.Normal || caps.IsRemapEnabled))
             return "Caps Lock behavior uses this key.";
         if (profile.AutoRun.IsEnabled && profile.AutoRun.TriggerKey == definition.ShortcutKey &&
             (profile.AutoRun.TriggerModifier == ModifierKeys.None || (mods & profile.AutoRun.TriggerModifier) != 0))

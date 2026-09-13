@@ -1169,8 +1169,8 @@ public sealed class InputHookService : IInputHookService
             ProfileChangeKind.AutoRun | ProfileChangeKind.HoldBreath | ProfileChangeKind.WindowsLauncher;
         if ((changeKind & macroDependencies) != 0)
             _macros.Cancel("Profile settings changed.", profile, playbackOnly: (changeKind & (ProfileChangeKind.Removed | ProfileChangeKind.Master | ProfileChangeKind.Identity)) == 0);
-        if (ReferenceEquals(profile, _windowsProfile) && (changeKind & (ProfileChangeKind.WindowsLauncher | ProfileChangeKind.Master | ProfileChangeKind.Identity)) != 0)
-            _macros.Cancel("Windows Launcher shortcuts changed.", playbackOnly: true);
+        if (ReferenceEquals(profile, _windowsProfile) && (changeKind & (ProfileChangeKind.WindowsLauncher | ProfileChangeKind.CapsLock | ProfileChangeKind.Master | ProfileChangeKind.Identity)) != 0)
+            _macros.Cancel("Global keyboard shortcuts changed.", playbackOnly: true);
         RebuildMacroLookup((changeKind & ProfileChangeKind.Removed) != 0 ? profile : null);
 
         var active = ReferenceEquals(_runtime.ActiveProfile, profile);
@@ -1298,7 +1298,7 @@ public sealed class InputHookService : IInputHookService
         {
             _windowsProfile = profile;
             _remaps.SetWindowsProfile(profile);
-            _macros.Cancel("Windows Launcher shortcuts changed.", playbackOnly: true);
+            _macros.Cancel("Global keyboard shortcuts changed.", playbackOnly: true);
             RebuildMacroLookup();
             LogDebug($"Windows profile set: {profile.Name}");
         }
