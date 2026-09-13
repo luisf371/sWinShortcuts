@@ -60,8 +60,8 @@ public sealed class MacroMovementTests
             cursor: () => clipped || sender.MouseMoves.IsEmpty ? (0, 0) : sender.MouseMoves.Last(),
             monitors: () => [new Rectangle(-100, -100, 300, 300)]);
         macros.Rebuild(profile, null, 0, 0, 0);
-        Assert.True(macros.HandleKey(0x75, true, 0));
-        Assert.True(macros.HandleKey(0x75, false, 1));
+        Assert.True(macros.HandleKey(0x75, true, physical.KeyState(0x75)));
+        Assert.True(macros.HandleKey(0x75, false, physical.KeyState(0x75)));
         MacroPlaybackTests.WaitUntil(() => macros.GetSession().SessionId == 1 && macros.GetSession().Mode == MacroSessionMode.Idle);
         Assert.NotEmpty(sender.MouseMoves);
         if (clipped)

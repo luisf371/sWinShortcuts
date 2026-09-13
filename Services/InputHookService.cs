@@ -42,6 +42,7 @@ public sealed class InputHookService : IInputHookService
     private readonly RemapStateMachine _remaps;
     private readonly MacroPhysicalState _macroPhysical;
     private readonly MacroStateMachine _macros;
+    private int _macroPhysicalRecoveryPending;
     private int _macroRapidFireToggleVk;
     private readonly Func<int, bool> _isPhysicalKeyDown;
 
@@ -227,7 +228,12 @@ public sealed class InputHookService : IInputHookService
         _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, _isPhysicalKeyDown);
         _macros = new MacroStateMachine(_runtime, _inputExecutor, _macroPhysical, _autoRun, logger,
             PrepareMacroRecording, OnHookThreadAsync);
-        _macros.Changed += (_, _) => MacroSessionChanged?.Invoke(this, EventArgs.Empty);
+        _macros.Changed += (_, _) =>
+        {
+            if (Volatile.Read(ref _macroPhysicalRecoveryPending) != 0 && !_macros.IsBusy)
+                SeedMacroPhysicalState();
+            MacroSessionChanged?.Invoke(this, EventArgs.Empty);
+        };
     }
 
     public Profile? ActiveProfile => !_runtime.IsDisposed && _runtime.IsRunning ? _runtime.ActiveProfile : null;
@@ -966,7 +972,7 @@ public sealed class InputHookService : IInputHookService
     private void ReinstallKeyboardHookLocked()
     {
         _macros.Cancel("Keyboard hook was replaced.");
-        if (!_macros.IsBusy) _macroPhysical.Seed(_isPhysicalKeyDown);
+        SeedMacroPhysicalState();
         _keyboardReplacementInProgress = true;
 
         var user32Handle = NativeMethods.LoadLibrary("user32.dll");
@@ -1022,7 +1028,7 @@ public sealed class InputHookService : IInputHookService
     private void ReinstallMouseHookLocked()
     {
         _macros.Cancel("Mouse hook was replaced.");
-        if (!_macros.IsBusy) _macroPhysical.Seed(_isPhysicalKeyDown);
+        SeedMacroPhysicalState();
         _mouseReplacementInProgress = true;
 
         var user32Handle = NativeMethods.LoadLibrary("user32.dll");
@@ -1350,7 +1356,7 @@ public sealed class InputHookService : IInputHookService
 
     private void SeedAppTogglePhysicalState()
     {
-        if (!_macros.IsBusy) _macroPhysical.Seed(_isPhysicalKeyDown);
+        SeedMacroPhysicalState();
         // Reconcile missed UPs at input-stream boundaries without treating held-key repeats as presses.
         var colorToggleVk = _colorToggleVk;
         _colorToggleDownLatched = colorToggleVk != 0 && _isPhysicalKeyDown(colorToggleVk);
@@ -1361,6 +1367,32 @@ public sealed class InputHookService : IInputHookService
         var vk = state & TOGGLE_VK_MASK;
         Interlocked.CompareExchange(ref _crosshairOffsetToggleState,
             vk | (vk != 0 && _isPhysicalKeyDown(vk) ? TOGGLE_DOWN : 0), state);
+    }
+
+    private void SeedMacroPhysicalState()
+    {
+        Volatile.Write(ref _macroPhysicalRecoveryPending, 1);
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            // Query on the hook thread, after any in-progress callback has completed.
+            if (!dispatcher.HasShutdownStarted)
+                dispatcher.InvokeAsync(() =>
+                {
+                    if (_runtime.IsRunning && !_runtime.IsDisposed &&
+                        Volatile.Read(ref _macroPhysicalRecoveryPending) != 0) SeedMacroPhysicalState();
+                });
+            return;
+        }
+
+        if (_macros.IsBusy)
+        {
+            _macroPhysical.ReconcileActivationPairs(_isPhysicalKeyDown);
+            // Synthetic holds can still affect the native snapshot. Changed retries after cleanup.
+            if (_macros.IsBusy) return;
+        }
+        _macroPhysical.Seed(_isPhysicalKeyDown, NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0);
+        Volatile.Write(ref _macroPhysicalRecoveryPending, 0);
     }
 
     public void SetRapidFireToggleKey(Key? key)

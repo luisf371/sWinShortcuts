@@ -32,6 +32,7 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     internal static bool WasDown(int state) => (state & DOWN) != 0;
     internal static bool WasSuppressed(int state) => (state & SUPPRESSED) != 0;
     internal static bool WasTakeover(int state) => (state & TAKEOVER) != 0;
+    internal static bool WasActivation(int state) => (state & ACTIVATION) != 0;
     internal static bool WasRecordingPassThrough(int state) => (state & RECORDING_PASSTHROUGH) != 0;
 
     internal ModifierKeys Modifiers =>
@@ -88,14 +89,32 @@ internal sealed class MacroPhysicalState : IMacroInputContext
         if (!WasTakeover(Interlocked.Or(ref _buttons[(int)button], TAKEOVER))) Interlocked.Increment(ref _takeovers);
     }
 
-    internal void Seed(Func<int, bool> unknownState)
+    internal void Seed(Func<int, bool> unknownState, bool buttonsSwapped = false)
     {
-        Volatile.Write(ref _takeovers, 0);
         for (var vk = 0; vk < _keys.Length; vk++)
-            Volatile.Write(ref _keys[vk], vk is not (0x10 or 0x11 or 0x12) && unknownState(vk)
-                ? DOWN | (KeyState(vk) & RECORDING_PASSTHROUGH) : 0);
-        int[] mouseKeys = [0, 1, 2, 4, 5, 6];
-        for (var i = 1; i < _buttons.Length; i++) Volatile.Write(ref _buttons[i], unknownState(mouseKeys[i]) ? DOWN : 0);
+        {
+            var previous = KeyState(vk);
+            var down = vk is not (0x10 or 0x11 or 0x12) && unknownState(vk);
+            Volatile.Write(ref _keys[vk], down
+                ? DOWN | (previous & (ACTIVATION | RECORDING_PASSTHROUGH | TAKEOVER)) : 0);
+            if (!down && WasTakeover(previous)) Interlocked.Decrement(ref _takeovers);
+        }
+        // GetAsyncKeyState reports physical buttons; low-level mouse messages are logical.
+        int[] mouseKeys = [0, buttonsSwapped ? 2 : 1, buttonsSwapped ? 1 : 2, 4, 5, 6];
+        for (var i = 1; i < _buttons.Length; i++)
+        {
+            var previous = Volatile.Read(ref _buttons[i]);
+            var down = unknownState(mouseKeys[i]);
+            Volatile.Write(ref _buttons[i], down ? DOWN | (previous & TAKEOVER) : 0);
+            if (!down && WasTakeover(previous)) Interlocked.Decrement(ref _takeovers);
+        }
+    }
+
+    internal void ReconcileActivationPairs(Func<int, bool> unknownState)
+    {
+        // Safe during cleanup: consumed pairs never reached the target application.
+        for (var vk = 0; vk < _keys.Length; vk++)
+            if (WasActivation(KeyState(vk)) && !unknownState(vk)) ObserveKey(vk, false);
     }
 
     internal (bool[] Keys, bool[] Buttons) CaptureHeld()
@@ -127,7 +146,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     private readonly Func<Rectangle[]> _monitors;
     private readonly AutoResetEvent _wake = new(false);
     private readonly Thread _worker;
-    private readonly bool[] _activationPairs = new bool[256];
     private readonly Key[] _intendedModifiers = new Key[256];
     private readonly int[] _modifierRevisions = new int[256];
     private Entry[] _lookup = [];
@@ -239,17 +257,15 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     // null continues ordinary feature dispatch; true suppresses a pair; false gives a physical takeover priority.
     internal bool? HandleKey(int vk, bool down, int previous, bool allowActivation = true)
     {
-        if (_activationPairs[vk])
+        if (MacroPhysicalState.WasActivation(previous))
         {
             _physical.ObserveKey(vk, down, activation: true);
-            if (!down) _activationPairs[vk] = false;
             _wake.Set();
             return true;
         }
         if (vk == EMERGENCY_STOP_VK && IsBusy && down && !MacroPhysicalState.WasDown(previous))
         {
             _physical.ObserveKey(vk, down, activation: true);
-            _activationPairs[vk] = true;
             Cancel("Stopped with F12.");
             return true;
         }
@@ -262,7 +278,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             {
                 if (entry.VirtualKey != vk || entry.Definition.ShortcutModifiers != mods || !ReferenceEquals(entry.Owner, _runtime.ActiveProfile)) continue;
                 _physical.ObserveKey(vk, down, activation: true);
-                _activationPairs[vk] = true;
                 if (Interlocked.CompareExchange(ref _busy, 1, 0) == 0)
                 {
                     Volatile.Write(ref _cancelled, 0);
