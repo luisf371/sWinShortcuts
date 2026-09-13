@@ -111,7 +111,7 @@ public sealed class MacroRecoveryTests
     [Theory]
     [InlineData(Key.A)]
     [InlineData(Key.F12)]
-    public void SessionUnlock_ReleaseStillPending_RecoversEmergencyPairWithoutLosingOwnedCleanup(Key heldKey)
+    public Task SessionUnlock_ReleaseStillPending_RecoversEmergencyPairWithoutLosingOwnedCleanup(Key heldKey) => MacroRecordingLifetimeTests.RunOnStaAsync(() =>
     {
         using var upEntered = new ManualResetEventSlim();
         using var finishUp = new ManualResetEventSlim();
@@ -130,6 +130,8 @@ public sealed class MacroRecoveryTests
             }
         };
         using var service = Create(sender, physicalKeys, out _, heldKey);
+        typeof(InputHookService).GetField("_hookDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, Dispatcher.CurrentDispatcher);
         try
         {
             MacroPlaybackTests.Press(service, 0x75);
@@ -150,9 +152,11 @@ public sealed class MacroRecoveryTests
 
         WaitUntilIdle(service);
         Assert.Equal(new[] { (heldKey, true), (heldKey, false) }, sender.Transitions.Select(edge => (edge.Key, edge.IsDown)));
+        // A hook callback can arrive before the queued post-cleanup recovery callback is pumped.
         Assert.False(service.DispatchDecodedKeyboardEvent(0x7B, true, false));
         Assert.False(service.DispatchDecodedKeyboardEvent(0x7B, false, true));
-    }
+        return Task.CompletedTask;
+    });
 
     [Fact]
     public Task SessionUnlock_OffHookThread_ReadsMacroStateOnHookDispatcher() => MacroRecordingLifetimeTests.RunOnStaAsync(async () =>

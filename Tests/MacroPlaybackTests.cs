@@ -1,16 +1,88 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Windows.Input;
+using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Services.Input;
 using Tests.Fakes;
 using Xunit;
+using MouseButton = sWinShortcuts.Models.MouseButton;
 
 namespace Tests;
 
 public sealed class MacroPlaybackTests
 {
+    [Theory]
+    [InlineData(Key.LeftAlt, false, false)]
+    [InlineData(Key.RightAlt, false, false)]
+    [InlineData(Key.LeftAlt, true, false)]
+    [InlineData(Key.RightAlt, true, false)]
+    [InlineData(Key.LeftAlt, true, true)]
+    [InlineData(Key.RightAlt, true, true)]
+    public void Playback_PhysicalAltTakeover_PreservesAltMouseUntilPhysicalRelease(Key alt, bool macroActive, bool retireBeforeGesture)
+    {
+        var sender = new RecordingInputSender();
+        using var service = Create(sender, out var profile,
+            new MacroStep { Kind = MacroStepKind.KeyDown, Key = alt },
+            new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 30000 },
+            new MacroStep { Kind = MacroStepKind.KeyUp, Key = alt });
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.Bindings[MouseButton.Left] = new MouseButtonBinding { TapKey = Key.B };
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.AltMouse);
+        var vk = KeyInterop.VirtualKeyFromKey(alt);
+        try
+        {
+            if (macroActive)
+            {
+                Press(service, 0x75);
+                WaitUntil(() => sender.Transitions.Any(edge => edge.Key == alt && edge.IsDown));
+            }
+            Assert.False(service.DispatchDecodedKeyboardEvent(vk, true, false));
+            if (retireBeforeGesture)
+            {
+                Press(service, 0x7B);
+                WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+            }
+            Assert.True(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
+            Assert.True(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0));
+            WaitUntil(() => sender.Transitions.Any(edge => edge.Key == Key.B && !edge.IsDown));
+
+            Assert.False(service.DispatchDecodedKeyboardEvent(vk, false, true));
+            Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
+            Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0));
+        }
+        finally
+        {
+            service.DispatchDecodedKeyboardEvent(vk, false, true);
+            if (macroActive && service.GetMacroSession().Mode != MacroSessionMode.Idle)
+            {
+                Press(service, 0x7B);
+                WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(Key.LeftAlt)]
+    [InlineData(Key.RightAlt)]
+    public void Shortcut_ConsumedAlt_DoesNotActivateAltMouse(Key alt)
+    {
+        var sender = new RecordingInputSender();
+        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = alt }];
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.Bindings[MouseButton.Left] = new MouseButtonBinding { TapKey = Key.B };
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros | ProfileChangeKind.AltMouse);
+        var vk = KeyInterop.VirtualKeyFromKey(alt);
+        Assert.True(service.DispatchDecodedKeyboardEvent(vk, true, false));
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0));
+        Assert.True(service.DispatchDecodedKeyboardEvent(vk, false, true));
+        WaitUntil(() => sender.Transitions.Any(edge => edge.Key == Key.A && !edge.IsDown));
+        Assert.DoesNotContain(sender.Transitions, edge => edge.Key == Key.B);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

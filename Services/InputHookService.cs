@@ -1395,6 +1395,13 @@ public sealed class InputHookService : IInputHookService
         Volatile.Write(ref _macroPhysicalRecoveryPending, 0);
     }
 
+    private void CompletePendingMacroRecovery()
+    {
+        // A physical hook event can arrive before the queued post-cleanup seed is pumped.
+        if (Volatile.Read(ref _macroPhysicalRecoveryPending) != 0 && !_macros.IsBusy)
+            SeedMacroPhysicalState();
+    }
+
     public void SetRapidFireToggleKey(Key? key)
     {
         key = KeyInteropUtilities.NormalizeAppToggleKey(key);
@@ -1476,6 +1483,7 @@ public sealed class InputHookService : IInputHookService
 
         if (!featuresActive)
         {
+            CompletePendingMacroRecovery();
             var consume = (uint)vkCode < 256 &&
                 _macros.HandleKey(vkCode, isKeyDown, _macroPhysical.KeyState(vkCode), allowActivation: false) == true;
             return consume ? (IntPtr)1 : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
@@ -1491,6 +1499,7 @@ public sealed class InputHookService : IInputHookService
     internal bool DispatchDecodedKeyboardEvent(int vkCode, bool isKeyDown, bool isKeyUp, uint scanCode = 0, uint flags = 0)
     {
         if ((uint)vkCode >= 256 || (!isKeyDown && !isKeyUp)) return false;
+        CompletePendingMacroRecovery();
         var previous = _macroPhysical.KeyState(vkCode);
         _antiAfk.NotePhysicalKeyboardActivity(Stopwatch.GetTimestamp());
         // Observe physical W/S exactly once, even when recording or a macro owns the event.
@@ -1511,6 +1520,8 @@ public sealed class InputHookService : IInputHookService
         if (macroDecision.HasValue)
         {
             handled = macroDecision.Value;
+            // Passed-through takeover pairs still drive Alt gestures; consumed shortcuts do not.
+            if (!handled) _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
             if (isKeyUp && MacroPhysicalState.WasSuppressed(previous)) _remaps.ReleaseOwnedKeyUp(vkCode);
         }
         else
@@ -1712,6 +1723,7 @@ public sealed class InputHookService : IInputHookService
 
         if (!featuresActive)
         {
+            CompletePendingMacroRecovery();
             if (MacroRecorder.TryDecodeButton(message, data.mouseData, out var button, out var down))
                 _macros.HandleButton(button, down, _macroPhysical.ObserveButton(button, down));
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
@@ -1725,6 +1737,7 @@ public sealed class InputHookService : IInputHookService
     // Hook-thread-only dispatcher; see DispatchDecodedKeyboardEvent for callback ownership rules.
     internal bool DispatchDecodedMouseEvent(int message, uint mouseData, int x = 0, int y = 0, uint flags = 0)
     {
+        CompletePendingMacroRecovery();
         ObserveRightButton(message);
         var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
         var previous = isButton ? _macroPhysical.ObserveButton(button, down) : 0;

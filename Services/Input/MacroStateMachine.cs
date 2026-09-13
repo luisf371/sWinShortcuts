@@ -100,7 +100,7 @@ internal sealed class MacroPhysicalState : IMacroInputContext
             if (!down && WasTakeover(previous)) Interlocked.Decrement(ref _takeovers);
         }
         // GetAsyncKeyState reports physical buttons; low-level mouse messages are logical.
-        int[] mouseKeys = [0, buttonsSwapped ? 2 : 1, buttonsSwapped ? 1 : 2, 4, 5, 6];
+        ReadOnlySpan<int> mouseKeys = stackalloc int[] { 0, buttonsSwapped ? 2 : 1, buttonsSwapped ? 1 : 2, 4, 5, 6 };
         for (var i = 1; i < _buttons.Length; i++)
         {
             var previous = Volatile.Read(ref _buttons[i]);
