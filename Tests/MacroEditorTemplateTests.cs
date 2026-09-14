@@ -122,6 +122,16 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             var view = Assert.Single(Descendants(host).OfType<sWinShortcuts.Views.MacrosView>());
             var controls = Descendants(view).OfType<Control>().ToArray();
+            var shortcutPicker = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut key");
+            var keyPopup = (System.Windows.Controls.Primitives.Popup)shortcutPicker.Template.FindName("Popup", shortcutPicker);
+            keyPopup.Child.Measure(new Size(240, 480));
+            keyPopup.Child.Arrange(new Rect(0, 0, 240, keyPopup.Child.DesiredSize.Height));
+            keyPopup.Child.UpdateLayout();
+            var unassigned = Assert.IsType<ComboBoxItem>(shortcutPicker.ItemContainerGenerator.ContainerFromItem(Key.None));
+            Assert.True(unassigned.IsSelected);
+            var unassignedText = Assert.Single(Descendants(unassigned).OfType<TextBlock>());
+            Assert.Equal("Unassigned", unassignedText.Text);
+            AssertReadableText(unassignedText, unassigned.Background);
             var selector = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro");
             var originalEnabled = macro.IsEnabled;
             var originalDuration = macro.SelectedStep!.DurationText;
@@ -141,16 +151,10 @@ public sealed class MacroEditorTemplateTests
                 macro.SelectedStep.DurationText = state == "Not saved" ? "invalid" : originalDuration;
                 await Dispatcher.Yield(DispatcherPriority.DataBind);
                 popup.Child.UpdateLayout();
-                var background = Luminance(Assert.IsType<SolidColorBrush>(entry.Background).Color);
                 var texts = Descendants(entry).OfType<TextBlock>().Where(text => text.Visibility == Visibility.Visible).ToArray();
                 Assert.Contains(texts, text => text.Text == "F24");
                 if (state != "Ready") Assert.Contains(texts, text => text.Text == state);
-                foreach (var text in texts)
-                {
-                    var foreground = Luminance(Assert.IsType<SolidColorBrush>(text.Foreground).Color);
-                    var contrast = (Math.Max(foreground, background) + 0.05) / (Math.Min(foreground, background) + 0.05);
-                    Assert.True(contrast >= 4.5, $"Selected {state} text '{text.Text}' has contrast {contrast:F2}:1.");
-                }
+                foreach (var text in texts) AssertReadableText(text, entry.Background);
             }
             macro.IsEnabled = originalEnabled;
             macro.ShortcutKey = Key.None;
@@ -203,6 +207,8 @@ public sealed class MacroEditorTemplateTests
             profile.IsEnabled = true;
             var add = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Add step");
             var menu = add.ContextMenu!;
+            // A detached popup normally resolves these resources through Application.Current.
+            menu.Resources.MergedDictionaries.Add(host.Resources);
             // The menu must follow the button's current macro even when opened through the native
             // context-menu gesture. Setting its placement target does not open a native popup.
             menu.PlacementTarget = add;
@@ -217,8 +223,19 @@ public sealed class MacroEditorTemplateTests
             Assert.Same(second, menu.DataContext);
             var actions = menu.Items.OfType<MenuItem>().ToArray();
             Assert.Equal(Enum.GetValues<MacroStepKind>().Order(), actions.Select(item => (MacroStepKind)item.CommandParameter).Order());
+            // Activate the actual template trigger without a native window or physical pointer.
+            var highlightKey = Assert.IsType<DependencyPropertyKey>(typeof(MenuItem).GetField("IsHighlightedPropertyKey",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!.GetValue(null));
             foreach (var item in actions)
             {
+                item.SetValue(highlightKey, true);
+                menu.UpdateLayout();
+                Assert.True(item.IsEnabled);
+                var background = Assert.IsType<Border>(item.Template.FindName("BackgroundBorder", item)).Background;
+                var header = Assert.Single(Descendants(item).OfType<TextBlock>(), text => text.Text == (string)item.Header);
+                AssertReadableText(header, background);
+                Assert.True(ContrastRatio(Assert.IsType<System.Windows.Shapes.Path>(item.Icon).Stroke, background) >= 3);
+                item.SetValue(highlightKey, false);
                 Assert.Same(second.AddStepCommand, item.Command);
                 item.Command.Execute(item.CommandParameter);
                 Assert.Equal(item.CommandParameter, second.SelectedStep!.Kind);
@@ -252,6 +269,20 @@ public sealed class MacroEditorTemplateTests
             Assert.Contains(Descendants(host).OfType<TextBlock>(), block => block.Visibility == Visibility.Visible &&
                 block.ActualHeight > 0 && block.Text == brokenModel.Macros.LoadError);
         });
+
+    private static void AssertReadableText(TextBlock text, Brush background)
+    {
+        var contrast = ContrastRatio(text.Foreground, background);
+        Assert.True(contrast >= 4.5, $"Text '{text.Text}' has contrast {contrast:F2}:1.");
+    }
+
+    private static double ContrastRatio(Brush foreground, Brush background)
+    {
+        var foregroundLuminance = Luminance(Assert.IsType<SolidColorBrush>(foreground).Color);
+        var backgroundLuminance = Luminance(Assert.IsType<SolidColorBrush>(background).Color);
+        return (Math.Max(foregroundLuminance, backgroundLuminance) + 0.05) /
+            (Math.Min(foregroundLuminance, backgroundLuminance) + 0.05);
+    }
 
     private static double Luminance(Color color)
     {

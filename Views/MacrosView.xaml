@@ -355,7 +355,6 @@
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding}" Value="{x:Static input:Key.None}">
                                 <Setter Property="Text" Value="Unassigned" />
-                                <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>
@@ -625,7 +624,8 @@
                         Margin="0,0,10,0" ToolTip="Choose an action to insert after the selected step."
                         AutomationProperties.Name="Add step">
                     <Button.ContextMenu>
-                        <ContextMenu MinWidth="180" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                        <ContextMenu MinWidth="180" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                     ItemContainerStyle="{DynamicResource MacroContextMenuItemStyle}">
                             <MenuItem Header="Key press" CommandParameter="{x:Static models:MacroStepKind.KeyPress}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
                             </MenuItem>
