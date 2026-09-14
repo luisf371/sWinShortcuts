@@ -26,7 +26,6 @@ public partial class MacrosView : UserControl
     private void AddStepButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { ContextMenu: { } menu } button) return;
-        menu.DataContext = button.DataContext;
         menu.PlacementTarget = button;
         menu.Placement = PlacementMode.Bottom;
         menu.IsOpen = true;

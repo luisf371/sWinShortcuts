@@ -162,6 +162,59 @@ public sealed class MacroEditorTemplateTests
             Assert.True(view.ActualWidth <= 650);
             Assert.True(stop.TransformToAncestor(host).Transform(new Point(0, 0)).Y < 480);
             Assert.All(controls.OfType<Button>(), button => Assert.False(string.IsNullOrWhiteSpace(AutomationProperties.GetName(button))));
+
+            profile.Macros.SetRecordingDestination(null);
+            profile.IsEnabled = true;
+            var add = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Add step");
+            var menu = add.ContextMenu!;
+            // The menu must follow the button's current macro even when opened through the native
+            // context-menu gesture. Setting its placement target does not open a native popup.
+            menu.PlacementTarget = add;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Same(macro, menu.DataContext);
+            profile.Macros.NewMacroCommand.Execute(null);
+            var second = profile.Macros.SelectedMacro!;
+            menu.Measure(new Size(240, 480));
+            menu.Arrange(new Rect(0, 0, 240, 480));
+            menu.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Same(second, menu.DataContext);
+            var actions = menu.Items.OfType<MenuItem>().ToArray();
+            Assert.Equal(Enum.GetValues<MacroStepKind>().Order(), actions.Select(item => (MacroStepKind)item.CommandParameter).Order());
+            foreach (var item in actions)
+            {
+                Assert.Same(second.AddStepCommand, item.Command);
+                item.Command.Execute(item.CommandParameter);
+                Assert.Equal(item.CommandParameter, second.SelectedStep!.Kind);
+            }
+            Assert.Equal(2, macro.Steps.Count);
+
+            second.ShortcutKey = Key.F6;
+            second.InsertRecording(second.Steps.Count, Enumerable.Repeat(new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 2 },
+                1000 - second.Steps.Count).ToArray());
+            second.SelectedStep = second.Steps[^1];
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            var list = Assert.Single(Descendants(view).OfType<ListBox>(), box => AutomationProperties.GetName(box) == "Ordered macro steps");
+            Assert.NotNull(list.ItemContainerGenerator.ContainerFromIndex(999));
+            Assert.InRange(Descendants(list).OfType<ListBoxItem>().Count(), 1, 80);
+            second.SelectedStep.DurationText = "invalid";
+            second.SelectedStep = second.Steps[0];
+            second.ShowProblemStepCommand.Execute(null);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.Equal(999, second.SelectedIndex);
+            Assert.NotNull(list.ItemContainerGenerator.ContainerFromIndex(999));
+
+            var brokenModel = ProfileFactory.CreateCustomProfile("Unreadable", "unreadable.exe");
+            brokenModel.IsPersistenceSuspended = true;
+            brokenModel.Macros.LoadError = "Unsupported macro format version. The source is preserved.";
+            using var broken = new ProfileViewModel(brokenModel, new FakeDisplayService(), new RecordingColorControlService());
+            host.Content = broken;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.Contains(Descendants(host).OfType<TextBlock>(), block => block.Visibility == Visibility.Visible &&
+                block.ActualHeight > 0 && block.Text == brokenModel.Macros.LoadError);
         });
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

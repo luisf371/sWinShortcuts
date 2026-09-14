@@ -457,6 +457,13 @@
         <!-- Conditions that stop playback or editing for the whole profile. -->
         <StackPanel Grid.Row="0">
             <Border Margin="0,0,0,10" Padding="10,6" CornerRadius="4" BorderThickness="1"
+                    Background="{StaticResource MacroRecordingSurfaceBrush}" BorderBrush="{StaticResource MacroRecordingLineBrush}"
+                    Visibility="{Binding HasLoadError, Converter={StaticResource VisibleIfTrue}}">
+                <TextBlock Text="{Binding LoadError}" FontSize="13" TextWrapping="Wrap"
+                           Foreground="{StaticResource MacroErrorBrush}" AutomationProperties.LiveSetting="Polite"
+                           AutomationProperties.Name="Macro load error" />
+            </Border>
+            <Border Margin="0,0,0,10" Padding="10,6" CornerRadius="4" BorderThickness="1"
                     Background="{StaticResource MacroNoticeSurfaceBrush}" BorderBrush="{StaticResource MacroNoticeLineBrush}"
                     Visibility="{Binding DataContext.AdvancedModeEnabled, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource VisibleIfFalse}}">
                 <DockPanel>
@@ -475,6 +482,7 @@
                                 <MultiDataTrigger.Conditions>
                                     <Condition Binding="{Binding CanEdit}" Value="False" />
                                     <Condition Binding="{Binding IsRecording}" Value="False" />
+                                    <Condition Binding="{Binding HasLoadError}" Value="False" />
                                 </MultiDataTrigger.Conditions>
                                 <Setter Property="Visibility" Value="Visible" />
                             </MultiDataTrigger>
@@ -613,7 +621,7 @@
                         Margin="0,0,10,0" ToolTip="Choose an action to insert after the selected step."
                         AutomationProperties.Name="Add step">
                     <Button.ContextMenu>
-                        <ContextMenu MinWidth="180">
+                        <ContextMenu MinWidth="180" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                             <MenuItem Header="Key press" CommandParameter="{x:Static models:MacroStepKind.KeyPress}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
                             </MenuItem>

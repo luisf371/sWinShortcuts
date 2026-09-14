@@ -39,16 +39,21 @@ public sealed class MacroEditorTests
         macro.IsEnabled = true;
         macro.ShortcutKey = Key.F6;
         macro.InsertStepCommand.Execute(null);
+        Assert.False(macro.HasFormatError);
         macro.SelectedStep!.DurationText = "letters";
         macro.SelectedStep.Key = Key.B;
 
         Assert.Equal("letters", macro.SelectedStep.DurationText);
         Assert.False(profile.Macros.Definitions[0].IsEnabled);
         Assert.Contains("Not saved", macro.ValidationMessage);
+        Assert.True(macro.HasFormatError);
+        Assert.Equal(1, macro.ProblemStepNumber);
 
         macro.SelectedStep.DurationText = "25";
         Assert.True(profile.Macros.Definitions[0].IsEnabled);
         Assert.Equal(25, profile.Macros.Definitions[0].Steps[0].DurationMs);
+        Assert.False(macro.HasFormatError);
+        Assert.False(macro.HasProblemStep);
     }
 
     [Fact]
@@ -82,17 +87,21 @@ public sealed class MacroEditorTests
         using var editor = new MacrosViewModel(profile, () => { });
         editor.NewMacroCommand.Execute(null);
         var macro = editor.SelectedMacro!;
-        macro.InsertStepCommand.Execute(null);
+        macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
         macro.SelectedStep!.Key = Key.A;
-        macro.DuplicateStepCommand.Execute(null);
+        sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.D, ModifierKeys.Control)!.Execute(null);
         macro.SelectedStep!.Key = Key.B;
-        macro.MoveStepUpCommand.Execute(null);
+        sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Up, ModifierKeys.Alt)!.Execute(null);
         Assert.Equal(new[] { Key.B, Key.A }, profile.Macros.Definitions[0].Steps.Select(step => step.Key));
-        macro.MoveStepDownCommand.Execute(null);
+        Assert.Equal("after step 1", macro.InsertionHint);
+        sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Down, ModifierKeys.Alt)!.Execute(null);
         Assert.Equal(new[] { Key.A, Key.B }, profile.Macros.Definitions[0].Steps.Select(step => step.Key));
+        Assert.Equal("at the end", macro.InsertionHint);
         Assert.Equal(new[] { 1, 2 }, macro.Steps.Select(step => step.Number));
-        macro.DeleteStepCommand.Execute(null);
+        sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Delete, ModifierKeys.None)!.Execute(null);
         Assert.Equal(Key.A, Assert.Single(profile.Macros.Definitions[0].Steps).Key);
+        Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.D, ModifierKeys.None));
+        Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Delete, ModifierKeys.Control));
     }
 
     [Fact]
@@ -141,6 +150,10 @@ public sealed class MacroEditorTests
         Assert.Equal(2, profile.Macros.Definitions[0].Steps[0].DurationMs);
         Assert.False(macro.InsertStepCommand.CanExecute(null));
         Assert.False(macro.DuplicateStepCommand.CanExecute(null));
+        Assert.False(macro.CanAddStep);
+        Assert.False(macro.AddStepCommand.CanExecute(MacroStepKind.Wait));
+        macro.AddStepCommand.Execute(MacroStepKind.Wait);
+        Assert.Equal(1000, macro.Steps.Count);
         Assert.Throws<ArgumentOutOfRangeException>(() => macro.InsertRecording(1000, [new MacroStep { Kind = MacroStepKind.Wait }]));
     }
 
@@ -178,6 +191,15 @@ public sealed class MacroEditorTests
         Assert.Single(profile.Macros.Definitions[0].Steps);
         Assert.Contains("1", macro.ValidationMessage);
         Assert.False(macro.IsPlayable);
+        Assert.False(macro.HasFormatError);
+        Assert.Equal(1, macro.ProblemStepNumber);
+        macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
+        Assert.Equal(1, macro.SelectedIndex);
+        macro.ShowProblemStepCommand.Execute(null);
+        Assert.Equal(0, macro.SelectedIndex);
+        macro.SelectedStep!.Kind = MacroStepKind.KeyPress;
+        Assert.False(macro.HasProblemStep);
+        Assert.False(macro.ShowProblemStepCommand.CanExecute(null));
     }
 
     [Fact]
@@ -202,5 +224,8 @@ public sealed class MacroEditorTests
         Assert.Same(macro, editor.SelectedMacro);
         Assert.Single(editor.Definitions);
         Assert.False(macro.InsertStepCommand.CanExecute(null));
+        Assert.False(macro.AddStepCommand.CanExecute(MacroStepKind.Wait));
+        macro.AddStepCommand.Execute(MacroStepKind.Wait);
+        Assert.Single(macro.Steps);
     }
 }

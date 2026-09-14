@@ -198,6 +198,11 @@ and optional Ctrl/Alt/Shift/Win modifiers, then enable that macro. Playback requ
 **Advanced Mode** and runs only while that profile's application is in the foreground.
 Shortcut conflicts and incomplete sequences are shown in the editor and cannot run.
 
+The sequence stays beside an inspector for the selected step. **Add step** lets you choose
+an action directly; the insertion hint shows where new steps and recordings will go.
+With the step list focused, use **Delete** to remove a step, **Ctrl+D** to duplicate it,
+and **Alt+Up/Down** to reorder it. **Show step** jumps to the row named in a validation error.
+
 Use the step editor to insert, duplicate, delete, and reorder key presses, explicit
 key/button down and up events, waits, mouse clicks, cursor moves, and vertical or
 horizontal scrolling. A press or click with a hold of **0 ms** uses the existing automatic

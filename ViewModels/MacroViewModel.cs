@@ -28,6 +28,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     private string _validationMessage = string.Empty;
     private string _coordinatePickStatus = string.Empty;
     private int? _problemStepNumber;
+    private bool _hasFormatError;
 
     public MacroViewModel(MacroDefinition definition, Func<bool> canEdit)
     {
@@ -143,6 +144,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     {
         var current = ToDefinition();
         var formatError = GetEditorFormatError(current);
+        HasFormatError = formatError is not null;
         ValidationMessage = formatError is not null
             ? $"Not saved: {formatError} Playback is disabled until corrected."
             : conflict ?? MacroValidation.GetPlaybackError(current) ?? string.Empty;

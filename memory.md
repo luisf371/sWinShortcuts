@@ -233,3 +233,6 @@
 # 2026-09-14 (Macro UI redesign)
 
 - UI redesign is delegated for direct edits, with the runtime and profile format preserved. Keep a baseline commit before delegation and commit the returned UI work before follow-up corrections so review fixes remain separately traceable.
+- Macro Add step menus bind DataContext to PlacementTarget.DataContext; a one-time assignment on left-click leaves native context-menu opening without the current macro after selection changes. Preserve detailed LoadError presentation when saves are suspended.
+- Macro format-error presentation reuses the format result already computed by RefreshValidation. IsPlayable also covers saveable incomplete drafts and shortcut conflicts, so it cannot stand in for the red Not saved state.
+- Isolated WPF template checks have no presentation source: assert arranged bounds and Visibility instead of IsVisible. Materialize a closed ContextMenu with Measure/Arrange to verify its child commands without opening a native popup; the 1,000-step editor must retain recycling and scroll the selected error row into view.
