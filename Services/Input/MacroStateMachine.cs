@@ -695,7 +695,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             {
                 if (_physical.AnyMouseButtonDown || !monitors.SequenceEqual(_monitors()))
                     throw new InvalidOperationException("Physical mouse input or display geometry changed during movement.");
-                Wait((int)Math.Ceiling(Math.Max(8, MacroCursorPath.Distance(previous, point) / 3)));
+                Wait((int)Math.Ceiling(Math.Max(MacroCursorPath.UPDATE_INTERVAL_MS,
+                    MacroCursorPath.Distance(previous, point) / MacroCursorPath.SPEED_PIXELS_PER_MS)));
                 Send(new InputCommand(Key.None, false, Kind: InputCommandKind.MoveTo, X: point.X, Y: point.Y));
                 var settleStart = Stopwatch.GetTimestamp();
                 var observed = _cursor();
@@ -757,6 +758,9 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
 
 internal static class MacroCursorPath
 {
+    internal const double SPEED_PIXELS_PER_MS = 9;
+    internal const int UPDATE_INTERVAL_MS = 8;
+
     internal static double Distance(Point from, Point to) => Math.Sqrt(Math.Pow((double)to.X - from.X, 2) + Math.Pow((double)to.Y - from.Y, 2));
 
     internal static Point[] Create(int fromX, int fromY, int toX, int toY, Rectangle[] monitors, double bendFactor)
@@ -772,7 +776,8 @@ internal static class MacroCursorPath
         var bend = length < 4 ? 0 : Math.Clamp(bendFactor, -1, 1) * Math.Min(8, length * .01);
         for (var attempt = 0; attempt < 2; attempt++, bend = 0)
         {
-            var count = (int)Math.Ceiling(Math.Sqrt(length * length + 16 * bend * bend) / 24);
+            var count = (int)Math.Ceiling(Math.Sqrt(length * length + 16 * bend * bend) /
+                (SPEED_PIXELS_PER_MS * UPDATE_INTERVAL_MS));
             var result = new Point[count];
             var valid = true;
             var previous = start;

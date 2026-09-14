@@ -213,9 +213,9 @@ their captured prefix and add release rows for inputs still held. Each macro sup
 
 Mouse positions are signed absolute physical screen pixels, including monitors left of
 or above the primary display. The coordinate picker gives you three seconds to move
-the cursor. Playback travels along a quick, slightly curved path at an internal speed
-cap and checks arrival before clicking. Travel adds time to the saved waits. Clipped
-cursors, changed display geometry, and paths crossing monitor gaps stop playback with
+the cursor. Playback travels along a quick, slightly curved path with a shared
+9,000-pixel/second speed cap and checks arrival before clicking. Travel adds time to
+the saved waits. Clipped cursors, changed display geometry, and paths crossing monitor gaps stop playback with
 an explanation; the app does not remove a game's cursor confinement.
 
 One shortcut press runs the sequence once, after the launch chord is released. Further

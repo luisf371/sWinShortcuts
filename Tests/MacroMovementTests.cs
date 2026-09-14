@@ -77,18 +77,21 @@ public sealed class MacroMovementTests
     }
 
     [Theory]
-    [InlineData(-400, 30, 400, 80)]
-    [InlineData(0, 0, 1, 1)]
-    [InlineData(100, 100, 100, 100)]
-    public void Curve_SignedEndpointsAndShortMoves_RemainVisibleAndLandExactly(int fromX, int fromY, int toX, int toY)
+    [InlineData(-400, 30, 400, 80, 12)]
+    [InlineData(0, 0, 1, 1, 1)]
+    [InlineData(100, 100, 100, 100, 0)]
+    public void Curve_SignedEndpointsAndShortMoves_RemainVisibleAndLandExactly(int fromX, int fromY, int toX, int toY, int maximumUpdates)
     {
         var points = MacroCursorPath.Create(fromX, fromY, toX, toY, [new Rectangle(-1000, -1000, 2000, 2000)], 1);
         if (fromX == toX && fromY == toY) Assert.Empty(points);
         else Assert.Equal(new Point(toX, toY), points[^1]);
         var previous = new Point(fromX, fromY);
+        // Faster travel needs fewer acknowledged updates; changing the delay divisor alone
+        // would leave the minimum interval enforcing the old speed.
+        Assert.InRange(points.Length, 0, maximumUpdates);
         foreach (var point in points)
         {
-            Assert.InRange(MacroCursorPath.Distance(previous, point), 0, 26);
+            Assert.InRange(MacroCursorPath.Distance(previous, point), 0, 74);
             previous = point;
         }
     }
