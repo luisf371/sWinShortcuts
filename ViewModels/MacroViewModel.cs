@@ -2,11 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
+using sWinShortcuts.Converters;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
@@ -25,6 +27,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     private bool _disposed;
     private string _validationMessage = string.Empty;
     private string _coordinatePickStatus = string.Empty;
+    private int? _problemStepNumber;
 
     public MacroViewModel(MacroDefinition definition, Func<bool> canEdit)
     {
@@ -34,12 +37,14 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         _steps = new(new(definition.Steps.Select(CreateStep)));
         RenumberSteps();
         _selectedStep = Steps.FirstOrDefault();
-        InsertStepCommand = new RelayCommand(InsertStep, () => CanEdit && Steps.Count < MacroValidation.MaxSteps);
+        InsertStepCommand = new RelayCommand(InsertStep, () => CanAddStep);
+        AddStepCommand = new RelayCommand<MacroStepKind>(AddStep, _ => CanAddStep);
         DuplicateStepCommand = new RelayCommand(DuplicateStep, () => CanEdit && SelectedStep is not null && Steps.Count < MacroValidation.MaxSteps);
         DeleteStepCommand = new RelayCommand(DeleteStep, () => CanEdit && SelectedStep is not null);
         MoveStepUpCommand = new RelayCommand(() => MoveStep(-1), () => CanEdit && SelectedIndex > 0);
         MoveStepDownCommand = new RelayCommand(() => MoveStep(1), () => CanEdit && SelectedIndex >= 0 && SelectedIndex < Steps.Count - 1);
         PickCoordinatesCommand = new AsyncRelayCommand(PickCoordinatesAsync, () => CanEdit && SelectedStep?.HasCoordinates == true && _coordinatePick is null);
+        ShowProblemStepCommand = new RelayCommand(ShowProblemStep, () => CanEdit && ProblemStepNumber <= Steps.Count);
         RefreshValidation(null);
     }
 
@@ -55,6 +60,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public bool AltModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Alt); set => SetModifier(ModifierKeys.Alt, value); }
     public bool ShiftModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Shift); set => SetModifier(ModifierKeys.Shift, value); }
     public bool WindowsModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Windows); set => SetModifier(ModifierKeys.Windows, value); }
+    public string ShortcutText => FormatShortcut(ShortcutKey, ShortcutModifiers);
     public ReadOnlyObservableCollection<MacroStepViewModel> Steps => _steps;
     public MacroStepViewModel? SelectedStep
     {
@@ -65,23 +71,53 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             if (SetProperty(ref _selectedStep, value))
             {
                 CancelCoordinatePick();
+                OnPropertyChanged(nameof(InsertionHint));
                 RefreshCommands();
             }
         }
     }
     public int SelectedIndex => SelectedStep is null ? -1 : Steps.IndexOf(SelectedStep);
     public int RecordingInsertionIndex => SelectedIndex < 0 ? Steps.Count : SelectedIndex + 1;
+    public bool CanAddStep => CanEdit && Steps.Count < MacroValidation.MaxSteps;
+
+    // Where Add step and Record place new rows; mirrors RecordingInsertionIndex for the editor copy.
+    public string InsertionHint
+    {
+        get
+        {
+            var index = SelectedIndex;
+            return index < 0 || index == Steps.Count - 1 ? "at the end" : $"after step {index + 1}";
+        }
+    }
     public string ValidationMessage { get => _validationMessage; private set => SetProperty(ref _validationMessage, value); }
     public bool IsPlayable => string.IsNullOrEmpty(ValidationMessage);
+
+    // True while a field is unrepresentable: the draft is "Not saved" rather than merely unplayable.
+    public bool HasFormatError { get => _hasFormatError; private set => SetProperty(ref _hasFormatError, value); }
+
+    // The step named by the current validation message, so the editor can jump straight to it.
+    public int? ProblemStepNumber
+    {
+        get => _problemStepNumber;
+        private set
+        {
+            if (!SetProperty(ref _problemStepNumber, value)) return;
+            OnPropertyChanged(nameof(HasProblemStep));
+            ShowProblemStepCommand.NotifyCanExecuteChanged();
+        }
+    }
+    public bool HasProblemStep => ProblemStepNumber is not null;
     public string Error => GetEditorFormatError(ToDefinition()) ?? string.Empty;
     public string this[string columnName] => columnName == nameof(Label) ? Error : string.Empty;
     public string CoordinatePickStatus { get => _coordinatePickStatus; private set => SetProperty(ref _coordinatePickStatus, value); }
     public IRelayCommand InsertStepCommand { get; }
+    public IRelayCommand<MacroStepKind> AddStepCommand { get; }
     public IRelayCommand DuplicateStepCommand { get; }
     public IRelayCommand DeleteStepCommand { get; }
     public IRelayCommand MoveStepUpCommand { get; }
     public IRelayCommand MoveStepDownCommand { get; }
     public IAsyncRelayCommand PickCoordinatesCommand { get; }
+    public IRelayCommand ShowProblemStepCommand { get; }
     public static IReadOnlyList<Key> KeyOptions { get; } = KeyCatalog.SortKeys(
         Enum.GetValues<Key>().Where(key => MacroValidation.IsSupportedKey(key)).Distinct()).ToArray();
     public static IReadOnlyList<Key> ShortcutKeyOptions { get; } = KeyCatalog.SortKeys(KeyOptions.Append(Key.None)).ToArray();
@@ -110,6 +146,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         ValidationMessage = formatError is not null
             ? $"Not saved: {formatError} Playback is disabled until corrected."
             : conflict ?? MacroValidation.GetPlaybackError(current) ?? string.Empty;
+        ProblemStepNumber = FindStepNumber(ValidationMessage);
         OnPropertyChanged(nameof(IsPlayable));
         OnPropertyChanged(nameof(Error));
     }
@@ -125,6 +162,26 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         return null;
     }
 
+    // Validation messages name rows as "Step N: ..."; anything else has no row to show.
+    private static int? FindStepNumber(string message)
+    {
+        const string marker = "Step ";
+        var start = message.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return null;
+        var rest = message.AsSpan(start + marker.Length);
+        var end = rest.IndexOf(':');
+        return end > 0 && int.TryParse(rest[..end], NumberStyles.None, CultureInfo.InvariantCulture, out var number) && number > 0
+            ? number
+            : null;
+    }
+
+    private static string FormatShortcut(Key key, ModifierKeys modifiers) => key == Key.None ? "No shortcut" :
+        (modifiers.HasFlag(ModifierKeys.Control) ? "Ctrl+" : string.Empty) +
+        (modifiers.HasFlag(ModifierKeys.Alt) ? "Alt+" : string.Empty) +
+        (modifiers.HasFlag(ModifierKeys.Shift) ? "Shift+" : string.Empty) +
+        (modifiers.HasFlag(ModifierKeys.Windows) ? "Win+" : string.Empty) +
+        KeyDisplayConverter.ToDisplayText(key);
+
     private void Change(MacroDefinition value, string propertyName)
     {
         if (!CanEdit || value == _definition) return;
@@ -137,6 +194,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             OnPropertyChanged(nameof(ShiftModifier));
             OnPropertyChanged(nameof(WindowsModifier));
         }
+        if (propertyName is nameof(ShortcutKey) or nameof(ShortcutModifiers)) OnPropertyChanged(nameof(ShortcutText));
         PublishChange();
     }
 
@@ -154,10 +212,11 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         RefreshCommands();
         Changed?.Invoke(this, EventArgs.Empty);
     }
-    private void InsertStep()
+    private void InsertStep() => AddStep(MacroStepKind.KeyPress);
+    private void AddStep(MacroStepKind kind)
     {
-        if (!InsertStepCommand.CanExecute(null)) return;
-        InsertRecording(RecordingInsertionIndex, [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, MouseButton = MouseButton.Left, WheelDelta = 120 }]);
+        if (!CanAddStep || !Enum.IsDefined(kind)) return;
+        InsertRecording(RecordingInsertionIndex, [new MacroStep { Kind = kind, Key = Key.A, MouseButton = MouseButton.Left, WheelDelta = 120 }]);
     }
     private void DuplicateStep()
     {
@@ -178,6 +237,10 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         var rows = Steps.ToList();
         (rows[index], rows[index + direction]) = (rows[index + direction], rows[index]);
         ReplaceSteps(rows, index + direction);
+    }
+    private void ShowProblemStep()
+    {
+        if (CanEdit && ProblemStepNumber is int number && number <= Steps.Count) SelectedStep = Steps[number - 1];
     }
 
     public void InsertRecording(int index, IReadOnlyList<MacroStep> rows)
@@ -205,6 +268,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         _selectedStep = selectedIndex >= 0 ? Steps[selectedIndex] : null;
         OnPropertyChanged(nameof(Steps));
         OnPropertyChanged(nameof(SelectedStep));
+        OnPropertyChanged(nameof(InsertionHint));
         PublishChange();
     }
     private void RenumberSteps()
@@ -215,12 +279,15 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public void RefreshCommands()
     {
         OnPropertyChanged(nameof(CanEdit));
+        OnPropertyChanged(nameof(CanAddStep));
         InsertStepCommand.NotifyCanExecuteChanged();
+        AddStepCommand.NotifyCanExecuteChanged();
         DuplicateStepCommand.NotifyCanExecuteChanged();
         DeleteStepCommand.NotifyCanExecuteChanged();
         MoveStepUpCommand.NotifyCanExecuteChanged();
         MoveStepDownCommand.NotifyCanExecuteChanged();
         PickCoordinatesCommand.NotifyCanExecuteChanged();
+        ShowProblemStepCommand.NotifyCanExecuteChanged();
     }
 
     private async Task PickCoordinatesAsync()

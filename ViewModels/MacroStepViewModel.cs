@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
+using sWinShortcuts.Converters;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
 using MouseButton = sWinShortcuts.Models.MouseButton;
@@ -58,26 +59,48 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public bool HasMouseButton => Kind is MacroStepKind.MouseClick or MacroStepKind.MouseDown or MacroStepKind.MouseUp;
     public bool HasCoordinates => Kind is MacroStepKind.MouseClick or MacroStepKind.MoveTo;
     public bool HasDuration => Kind is MacroStepKind.KeyPress or MacroStepKind.MouseClick or MacroStepKind.Wait;
+    public bool HasHold => Kind is MacroStepKind.KeyPress or MacroStepKind.MouseClick;
     public bool IsWheel => Kind == MacroStepKind.MouseWheel;
-    public string DurationHint => Kind == MacroStepKind.Wait ? "Wait (ms)" : "Hold (ms; 0 = automatic)";
+    public string DurationLabel => Kind == MacroStepKind.Wait ? "Wait" : "Hold";
     public string ActionLabel => Kind switch
     {
         MacroStepKind.KeyPress => "Key press", MacroStepKind.KeyDown => "Key down", MacroStepKind.KeyUp => "Key up",
         MacroStepKind.MouseClick => "Mouse click", MacroStepKind.MouseDown => "Mouse down", MacroStepKind.MouseUp => "Mouse up",
         MacroStepKind.MoveTo => "Move to", MacroStepKind.MouseWheel => "Mouse wheel", _ => "Wait"
     };
-    public string Summary => Kind switch
+
+    // Row presentation: what the step targets, and how long it holds or waits (kept in its own column).
+    public string Detail => Kind switch
     {
-        MacroStepKind.KeyPress => $"{KeySerializer.Serialize(Key)} · {HoldText}",
-        MacroStepKind.KeyDown or MacroStepKind.KeyUp => KeySerializer.Serialize(Key),
-        MacroStepKind.Wait => $"{DurationMs.ToString(CultureInfo.InvariantCulture)} ms",
-        MacroStepKind.MouseClick => $"{MouseButton} · ({X}, {Y}) · {HoldText}",
-        MacroStepKind.MouseDown or MacroStepKind.MouseUp => MouseButton?.ToString() ?? "Choose button",
-        MacroStepKind.MoveTo => $"({X}, {Y})",
-        MacroStepKind.MouseWheel => $"{WheelDelta:+0;-0;0} · {(HorizontalWheel ? "horizontal" : "vertical")}",
-        _ => "Unknown action"
+        MacroStepKind.KeyPress or MacroStepKind.KeyDown or MacroStepKind.KeyUp => KeyDisplayConverter.ToDisplayText(Key),
+        MacroStepKind.MouseClick => $"{ButtonText} at {PositionText}",
+        MacroStepKind.MouseDown or MacroStepKind.MouseUp => ButtonText,
+        MacroStepKind.MoveTo => PositionText,
+        MacroStepKind.MouseWheel => $"{WheelDelta.ToString("+0;-0;0", CultureInfo.InvariantCulture)} {(HorizontalWheel ? "horizontal" : "vertical")}",
+        _ => string.Empty
     };
-    private string HoldText => DurationMs == 0 ? "automatic hold" : $"{DurationMs} ms hold";
+    public string TimingText => Kind switch
+    {
+        MacroStepKind.KeyPress or MacroStepKind.MouseClick => DurationMs == 0 ? "auto hold" : $"{MillisecondsText} hold",
+        MacroStepKind.Wait => MillisecondsText,
+        _ => string.Empty
+    };
+    public string Summary => Detail.Length == 0 ? TimingText : TimingText.Length == 0 ? Detail : $"{Detail} · {TimingText}";
+    public string KindHelp => Kind switch
+    {
+        MacroStepKind.KeyPress => "Presses and releases the key.",
+        MacroStepKind.KeyDown => "Holds the key until a later Key up step releases it.",
+        MacroStepKind.KeyUp => "Releases a key held by an earlier Key down step.",
+        MacroStepKind.MouseClick => "Moves the cursor to the position, then presses and releases the button.",
+        MacroStepKind.MouseDown => "Holds the button where the cursor is until a later Mouse up step.",
+        MacroStepKind.MouseUp => "Releases a button held by an earlier Mouse down step.",
+        MacroStepKind.MoveTo => "Moves the cursor to exact screen pixels at up to 9,000 px/s.",
+        MacroStepKind.MouseWheel => "120 is one notch. Negative values scroll down or left.",
+        _ => "Pauses before the next step."
+    };
+    private string ButtonText => MouseButton?.ToString() ?? "Choose button";
+    private string PositionText => $"{X.ToString(CultureInfo.InvariantCulture)}, {Y.ToString(CultureInfo.InvariantCulture)}";
+    private string MillisecondsText => $"{DurationMs.ToString(CultureInfo.InvariantCulture)} ms";
     public string Error =>
         HasCoordinates && (!IsNumber(XText) || !IsNumber(YText)) ? "Screen coordinates must be signed whole numbers." :
         HasDuration && !IsNumber(DurationText) ? "Duration must be a whole number of milliseconds." :
@@ -102,6 +125,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         OnPropertyChanged(nameof(WheelDeltaText));
         OnPropertyChanged(propertyName);
         OnPropertyChanged(nameof(ActionLabel));
+        OnPropertyChanged(nameof(Detail));
+        OnPropertyChanged(nameof(TimingText));
         OnPropertyChanged(nameof(Summary));
         OnPropertyChanged(nameof(Error));
         if (propertyName == nameof(Kind))
@@ -113,8 +138,10 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
             OnPropertyChanged(nameof(HasMouseButton));
             OnPropertyChanged(nameof(HasCoordinates));
             OnPropertyChanged(nameof(HasDuration));
+            OnPropertyChanged(nameof(HasHold));
             OnPropertyChanged(nameof(IsWheel));
-            OnPropertyChanged(nameof(DurationHint));
+            OnPropertyChanged(nameof(DurationLabel));
+            OnPropertyChanged(nameof(KindHelp));
         }
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -134,6 +161,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
             };
         }
         OnPropertyChanged(nameof(Error));
+        OnPropertyChanged(nameof(Detail));
+        OnPropertyChanged(nameof(TimingText));
         OnPropertyChanged(nameof(Summary));
         Changed?.Invoke(this, EventArgs.Empty);
     }
