@@ -369,7 +369,7 @@
                 <Ellipse x:Name="StateDot" Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center" Fill="{StaticResource MacroSuccessBrush}" />
                 <TextBlock Text="{Binding Label}" MaxWidth="200" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                            VerticalAlignment="Center" Foreground="{DynamicResource ForegroundPrimaryBrush}" />
-                <TextBlock Text="{Binding ShortcutText}" Margin="10,0,0,0" FontSize="12" VerticalAlignment="Center"
+                <TextBlock x:Name="Shortcut" Text="{Binding ShortcutText}" Margin="10,0,0,0" FontSize="12" VerticalAlignment="Center"
                            Foreground="{StaticResource MacroMutedBrush}" />
                 <TextBlock x:Name="StateText" Margin="8,0,0,0" FontSize="12" VerticalAlignment="Center" Visibility="Collapsed" />
             </StackPanel>
@@ -390,6 +390,10 @@
                     <Setter TargetName="StateDot" Property="Fill" Value="{StaticResource MacroErrorBrush}" />
                     <Setter TargetName="StateText" Property="Text" Value="Not saved" />
                     <Setter TargetName="StateText" Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ComboBoxItem}}" Value="True">
+                    <Setter TargetName="Shortcut" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
+                    <Setter TargetName="StateText" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>

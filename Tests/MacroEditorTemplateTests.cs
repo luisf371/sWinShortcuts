@@ -122,6 +122,42 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             var view = Assert.Single(Descendants(host).OfType<sWinShortcuts.Views.MacrosView>());
             var controls = Descendants(view).OfType<Control>().ToArray();
+            var selector = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro");
+            var originalEnabled = macro.IsEnabled;
+            var originalDuration = macro.SelectedStep!.DurationText;
+            macro.ShortcutKey = Key.F24;
+            macro.SelectedStep.Key = Key.A;
+            // Materialize the real selector item without opening a native popup. Selected shortcut
+            // and status text must remain readable in ready, off, and unsaved-draft states.
+            var popup = (System.Windows.Controls.Primitives.Popup)selector.Template.FindName("Popup", selector);
+            popup.Child.Measure(new Size(600, 480));
+            popup.Child.Arrange(new Rect(0, 0, 600, popup.Child.DesiredSize.Height));
+            popup.Child.UpdateLayout();
+            var entry = Assert.IsType<ComboBoxItem>(selector.ItemContainerGenerator.ContainerFromIndex(0));
+            Assert.True(entry.IsSelected);
+            foreach (var state in new[] { "Ready", "Off", "Not saved" })
+            {
+                macro.IsEnabled = state != "Off";
+                macro.SelectedStep.DurationText = state == "Not saved" ? "invalid" : originalDuration;
+                await Dispatcher.Yield(DispatcherPriority.DataBind);
+                popup.Child.UpdateLayout();
+                var background = Luminance(Assert.IsType<SolidColorBrush>(entry.Background).Color);
+                var texts = Descendants(entry).OfType<TextBlock>().Where(text => text.Visibility == Visibility.Visible).ToArray();
+                Assert.Contains(texts, text => text.Text == "F24");
+                if (state != "Ready") Assert.Contains(texts, text => text.Text == state);
+                foreach (var text in texts)
+                {
+                    var foreground = Luminance(Assert.IsType<SolidColorBrush>(text.Foreground).Color);
+                    var contrast = (Math.Max(foreground, background) + 0.05) / (Math.Min(foreground, background) + 0.05);
+                    Assert.True(contrast >= 4.5, $"Selected {state} text '{text.Text}' has contrast {contrast:F2}:1.");
+                }
+            }
+            macro.IsEnabled = originalEnabled;
+            macro.ShortcutKey = Key.None;
+            macro.SelectedStep.Key = Key.None;
+            macro.SelectedStep.DurationText = originalDuration;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
             var stop = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Stop recording");
             Assert.True(stop.Focusable);
             Assert.False(stop.IsEnabled);
@@ -216,6 +252,16 @@ public sealed class MacroEditorTemplateTests
             Assert.Contains(Descendants(host).OfType<TextBlock>(), block => block.Visibility == Visibility.Visible &&
                 block.ActualHeight > 0 && block.Text == brokenModel.Macros.LoadError);
         });
+
+    private static double Luminance(Color color)
+    {
+        static double Linear(byte component)
+        {
+            var value = component / 255d;
+            return value <= 0.04045 ? value / 12.92 : Math.Pow((value + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * Linear(color.R) + 0.7152 * Linear(color.G) + 0.0722 * Linear(color.B);
+    }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
