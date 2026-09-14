@@ -5,6 +5,7 @@
              xmlns:models="clr-namespace:sWinShortcuts.Models"
              xmlns:conv="clr-namespace:sWinShortcuts.Converters"
              xmlns:input="clr-namespace:System.Windows.Input;assembly=WindowsBase"
+             xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
              x:Name="Editor" Unloaded="Editor_Unloaded" DataContextChanged="Editor_DataContextChanged"
              AutomationProperties.Name="Macro editor">
     <UserControl.Resources>
@@ -317,8 +318,9 @@
         <Style x:Key="MacroStepItem" TargetType="ListBoxItem">
             <Setter Property="AutomationProperties.Name">
                 <Setter.Value>
-                    <MultiBinding StringFormat="Step {0}: {1}, {2}">
-                        <Binding Path="Number" /><Binding Path="ActionLabel" /><Binding Path="Summary" />
+                    <MultiBinding StringFormat="{}{0}: {1}. {2} {3}">
+                        <Binding Path="AutomationStepLabel" /><Binding Path="DisplayActionLabel" />
+                        <Binding Path="Detail" /><Binding Path="DisplayTimingText" />
                     </MultiBinding>
                 </Setter.Value>
             </Setter>
@@ -399,26 +401,26 @@
 
         <!-- Step row: number, action category, action, target, and hold/wait time in a fixed column. -->
         <DataTemplate x:Key="MacroStepRow" DataType="{x:Type vm:MacroStepViewModel}">
-            <Grid x:Name="Row" Background="Transparent" ToolTip="{Binding Error}">
+            <Grid x:Name="Row" Background="Transparent" ToolTip="{Binding DisplayError}">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="40" />
+                    <ColumnDefinition Width="64" />
                     <ColumnDefinition Width="24" />
                     <ColumnDefinition Width="92" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="84" />
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="Number" Text="{Binding Number}" FontSize="12" TextAlignment="Right" Margin="0,0,10,0"
+                <TextBlock x:Name="Number" Text="{Binding DisplayNumber}" FontSize="12" TextAlignment="Right" Margin="0,0,10,0"
                            VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
                 <Path x:Name="Icon" Grid.Column="1" Style="{StaticResource MacroIcon}" HorizontalAlignment="Left"
                       Data="{StaticResource MacroIconKeyboard}" Stroke="{StaticResource MacroMutedBrush}" />
-                <TextBlock Grid.Column="2" Text="{Binding ActionLabel}" FontSize="13" VerticalAlignment="Center"
+                <TextBlock Grid.Column="2" Text="{Binding DisplayActionLabel}" FontSize="13" VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis" Foreground="{DynamicResource ForegroundPrimaryBrush}" />
                 <TextBlock Grid.Column="3" Text="{Binding Detail}" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"
                            TextTrimming="CharacterEllipsis" Foreground="{StaticResource MacroDetailBrush}" />
                 <Path x:Name="ErrorMark" Grid.Column="4" Style="{StaticResource MacroIcon}" Margin="0,0,4,0"
                       Data="{StaticResource MacroIconWarning}" Stroke="{StaticResource MacroErrorBrush}" />
-                <TextBlock x:Name="Timing" Grid.Column="5" Text="{Binding TimingText}" FontSize="12" TextAlignment="Right"
+                <TextBlock x:Name="Timing" Grid.Column="5" Text="{Binding DisplayTimingText}" FontSize="12" TextAlignment="Right"
                            VerticalAlignment="Center" Margin="0,0,10,0" TextTrimming="CharacterEllipsis"
                            Foreground="{StaticResource MacroMutedBrush}" />
             </Grid>
@@ -435,7 +437,7 @@
                 <DataTrigger Binding="{Binding IsWheel}" Value="True">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconWheel}" />
                 </DataTrigger>
-                <DataTrigger Binding="{Binding Error}" Value="">
+                <DataTrigger Binding="{Binding DisplayError}" Value="">
                     <Setter TargetName="ErrorMark" Property="Visibility" Value="Collapsed" />
                     <Setter TargetName="Row" Property="ToolTip" Value="{x:Null}" />
                 </DataTrigger>
@@ -564,6 +566,7 @@
                 <ComboBox Width="116" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.ShortcutKeyOptions}"
                           SelectedItem="{Binding ShortcutKey}" ItemTemplate="{StaticResource KeyChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
                           BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                           AutomationProperties.Name="Macro shortcut key" />
             </StackPanel>
             <DockPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0">
@@ -734,30 +737,92 @@
                 <ColumnDefinition Width="12" />
                 <ColumnDefinition Width="252" />
             </Grid.ColumnDefinitions>
-            <ListBox x:Name="StepList" ItemsSource="{Binding Steps}" SelectedItem="{Binding SelectedStep}" IsEnabled="{Binding CanEdit}"
-                     Style="{StaticResource MacroStepList}" ItemContainerStyle="{StaticResource MacroStepItem}" ItemTemplate="{StaticResource MacroStepRow}"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
-                     ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
-                     VirtualizingPanel.VirtualizationMode="Recycling"
-                     SelectionChanged="StepList_SelectionChanged" PreviewKeyDown="StepList_PreviewKeyDown"
-                     AutomationProperties.Name="Ordered macro steps"
-                     AutomationProperties.HelpText="Delete removes the selected step, Ctrl+D duplicates it, and Alt+Up or Alt+Down moves it." />
-            <StackPanel MaxWidth="300" Margin="20" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
-                <StackPanel.Style>
-                    <Style TargetType="StackPanel">
-                        <Setter Property="Visibility" Value="Collapsed" />
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding Steps.Count}" Value="0">
-                                <Setter Property="Visibility" Value="Visible" />
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </StackPanel.Style>
-                <TextBlock Text="No steps yet" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center"
-                           Foreground="{DynamicResource ForegroundPrimaryBrush}" />
-                <TextBlock Text="Record your input, or use Add step to build the sequence one action at a time."
-                           FontSize="13" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
-            </StackPanel>
+            <Border CornerRadius="6" BorderThickness="1" IsEnabled="{Binding CanEdit}"
+                    Background="{StaticResource MacroPanelBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Border Padding="10,4,6,4" BorderThickness="0,0,0,1" BorderBrush="{StaticResource MacroLineBrush}">
+                        <DockPanel>
+                            <Button x:Name="AllWaitEditorButton" DockPanel.Dock="Right" Content="Set all waits…" Style="{StaticResource MacroButton}" Margin="10,0,0,0"
+                                    Command="{Binding ShowWaitEditorCommand}" Click="WaitEditorOpen_Click"
+                                    ToolTip="Give every Wait step in this macro the same duration. Unavailable when the macro has no Wait steps."
+                                    AutomationProperties.Name="Set all Wait step durations" />
+                            <CheckBox DockPanel.Dock="Right" Content="Collapse presses" FontSize="13" VerticalAlignment="Center"
+                                      IsChecked="{Binding CollapseSteps}"
+                                      ToolTip="Show each key or button down, wait, and matching up as one press row. Display only; saved steps don't change."
+                                      AutomationProperties.Name="Collapse presses"
+                                      AutomationProperties.HelpText="Show each key or button down, wait, and matching up as one press row. Display only; saved steps don't change." />
+                            <TextBlock Text="{Binding StepCountText}" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"
+                                       Foreground="{StaticResource MacroMutedBrush}" />
+                        </DockPanel>
+                    </Border>
+                    <Border Grid.Row="1" Padding="10,8" Background="{StaticResource MacroControlBrush}"
+                            Visibility="{Binding IsWaitEditorOpen, Converter={StaticResource VisibleIfTrue}}"
+                            PreviewKeyDown="WaitEditor_PreviewKeyDown">
+                        <StackPanel>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Close" Style="{StaticResource MacroButton}" Margin="6,0,0,0"
+                                        Command="{Binding CloseWaitEditorCommand}" Click="WaitEditorClose_Click" AutomationProperties.Name="Close all Wait editor" />
+                                <Button DockPanel.Dock="Right" Content="Apply" Style="{StaticResource MacroPrimaryButton}" Margin="8,0,0,0"
+                                        Command="{Binding ApplyAllWaitTimesCommand}" Click="WaitEditorApply_Click" AutomationProperties.Name="Apply duration to all Wait steps" />
+                                <TextBlock Text="All waits" Style="{StaticResource MacroFieldLabel}" />
+                                <TextBox x:Name="AllWaitDurationField" Width="96" MinHeight="30" VerticalContentAlignment="Center"
+                                         Text="{Binding AllWaitDurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                         BorderBrush="{StaticResource MacroInputLineBrush}"
+                                         AutomationProperties.Name="Duration for all Wait steps in milliseconds" />
+                                <TextBlock Text="ms" FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding WaitEditMessage}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"
+                                       AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="All Wait edit status">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasWaitEditError}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding WaitEditApplied}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource MacroSuccessBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                    <Grid Grid.Row="2">
+                        <ListBox x:Name="StepList" ItemsSource="{Binding VisibleSteps}" SelectedItem="{Binding SelectedStep}"
+                                 Style="{StaticResource MacroStepList}" ItemContainerStyle="{StaticResource MacroStepItem}" ItemTemplate="{StaticResource MacroStepRow}"
+                                 BorderThickness="0" Background="Transparent"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling"
+                                 SelectionChanged="StepList_SelectionChanged" PreviewKeyDown="StepList_PreviewKeyDown"
+                                 AutomationProperties.Name="Ordered macro steps"
+                                 AutomationProperties.HelpText="Delete removes the selected step, Ctrl+D duplicates it, and Alt+Up or Alt+Down moves it." />
+                        <StackPanel MaxWidth="300" Margin="20" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Steps.Count}" Value="0">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <TextBlock Text="No steps yet" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                            <TextBlock Text="Record your input, or use Add step to build the sequence one action at a time."
+                                       FontSize="13" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
 
             <Border Grid.Column="2" CornerRadius="6" BorderThickness="1" IsEnabled="{Binding CanEdit}"
                     Background="{StaticResource MacroPanelBrush}" BorderBrush="{StaticResource MacroLineBrush}">
@@ -779,11 +844,69 @@
                                        TextWrapping="Wrap" Foreground="{StaticResource MacroMutedBrush}" />
                         </StackPanel>
 
+                        <StackPanel Visibility="{Binding SelectedStep.IsCollapsedPress, Converter={StaticResource VisibleIfTrue}, FallbackValue=Collapsed}">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                <TextBlock Text="{Binding SelectedStep.DisplayNumber, StringFormat='Steps {0}'}" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                                <TextBlock Text="{Binding Steps.Count, StringFormat='of {0}'}" FontSize="12" Margin="6,0,0,1" VerticalAlignment="Bottom"
+                                           Foreground="{StaticResource MacroMutedBrush}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Action" Style="{StaticResource MacroFieldLabel}" />
+                                <TextBlock Text="{Binding SelectedStep.DisplayActionLabel}" FontSize="13" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
+                                        Visibility="{Binding SelectedStep.HasKey, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
+                                <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.KeyOptions}"
+                                          SelectedItem="{Binding SelectedPressKey}" ItemTemplate="{StaticResource KeyChoice}"
+                                          ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                          FocusVisualStyle="{StaticResource MacroFocusRing}" behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                          AutomationProperties.Name="Press key" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
+                                        Visibility="{Binding SelectedStep.HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />
+                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtons}"
+                                          SelectedItem="{Binding SelectedPressMouseButton}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                                          AutomationProperties.Name="Press mouse button" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Hold" Style="{StaticResource MacroFieldLabel}" />
+                                <TextBox Width="96" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                         Text="{Binding SelectedStep.CollapsedWait.DurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                         AutomationProperties.Name="Press hold in milliseconds" />
+                                <TextBlock Text="ms" FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding SelectedStep.DisplayError}" FontSize="12" TextWrapping="Wrap"
+                                       Foreground="{StaticResource MacroErrorBrush}" AutomationProperties.LiveSetting="Polite" />
+                            <Border Height="1" Margin="0,10,0,10" Background="{StaticResource MacroLineBrush}" />
+                            <TextBlock FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" Foreground="{StaticResource MacroMutedBrush}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Key down, Wait, and Key up, shown as one press." />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SelectedStep.HasMouseButton}" Value="True">
+                                                <Setter Property="Text" Value="Mouse down, Wait, and Mouse up at the current cursor position, shown as one press." />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <Button Content="Show all steps" Style="{StaticResource MacroLinkButton}" HorizontalAlignment="Left"
+                                    Command="{Binding ExpandSelectedStepCommand}" AutomationProperties.Name="Turn off Collapse presses" />
+                        </StackPanel>
+
                         <StackPanel DataContext="{Binding SelectedStep}">
                             <StackPanel.Style>
                                 <Style TargetType="StackPanel">
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsCollapsedPress}" Value="True">
                                             <Setter Property="Visibility" Value="Collapsed" />
                                         </DataTrigger>
                                     </Style.Triggers>
@@ -808,6 +931,7 @@
                                 <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.KeyOptions}"
                                           SelectedItem="{Binding Key}" ItemTemplate="{StaticResource KeyChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
                                           BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
                                           AutomationProperties.Name="Step key" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasMouseButton, Converter={StaticResource VisibleIfTrue}}">

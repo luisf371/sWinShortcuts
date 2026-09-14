@@ -123,6 +123,7 @@ public sealed class MacroEditorTemplateTests
             var view = Assert.Single(Descendants(host).OfType<sWinShortcuts.Views.MacrosView>());
             var controls = Descendants(view).OfType<Control>().ToArray();
             var shortcutPicker = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut key");
+            Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(shortcutPicker));
             var keyPopup = (System.Windows.Controls.Primitives.Popup)shortcutPicker.Template.FindName("Popup", shortcutPicker);
             keyPopup.Child.Measure(new Size(240, 480));
             keyPopup.Child.Arrange(new Rect(0, 0, 240, keyPopup.Child.DesiredSize.Height));
@@ -166,7 +167,7 @@ public sealed class MacroEditorTemplateTests
             Assert.True(stop.Focusable);
             Assert.False(stop.IsEnabled);
             Assert.DoesNotContain(controls.OfType<Button>(), button => AutomationProperties.GetName(button).Contains("Stop playback", StringComparison.Ordinal));
-            Assert.Equal(5, controls.OfType<ComboBox>().Count());
+            Assert.Equal(7, controls.OfType<ComboBox>().Count());
             var cancelOnMovement = Assert.Single(controls.OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Cancel on mouse movement");
             Assert.False(cancelOnMovement.IsChecked);
             cancelOnMovement.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
@@ -183,6 +184,7 @@ public sealed class MacroEditorTemplateTests
             macro.SelectedStep!.Kind = MacroStepKind.MouseClick;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             var keyChoice = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Step key");
+            Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(keyChoice));
             var buttonChoice = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Step mouse button");
             Assert.Equal(Visibility.Collapsed, Assert.IsType<StackPanel>(keyChoice.Parent).Visibility);
             Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(buttonChoice.Parent).Visibility);
@@ -258,6 +260,99 @@ public sealed class MacroEditorTemplateTests
             host.UpdateLayout();
             Assert.Equal(999, second.SelectedIndex);
             Assert.NotNull(list.ItemContainerGenerator.ContainerFromIndex(999));
+
+            profile.Macros.NewMacroCommand.Execute(null);
+            var grouped = profile.Macros.SelectedMacro!;
+            grouped.ShortcutKey = Key.F7;
+            grouped.InsertRecording(0,
+            [
+                new() { Kind = MacroStepKind.KeyDown, Key = Key.A },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 25 },
+                new() { Kind = MacroStepKind.KeyUp, Key = Key.A },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 50 }
+            ]);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.Equal(2, list.Items.Count);
+            Assert.Same(grouped.Steps[0], list.SelectedItem);
+            var groupedRow = Assert.IsType<ListBoxItem>(list.ItemContainerGenerator.ContainerFromIndex(0));
+            Assert.Equal("Steps 1 to 3: Key press. A 25 ms hold", AutomationProperties.GetName(groupedRow));
+            var pressKey = Assert.Single(Descendants(view).OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Press key");
+            Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(pressKey));
+            pressKey.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedItemProperty, Key.B);
+            Assert.Equal(Key.B, grouped.Steps[0].Key);
+            Assert.Equal(Key.B, grouped.Steps[2].Key);
+            var hold = Assert.Single(Descendants(view).OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Press hold in milliseconds");
+            var visible = grouped.VisibleSteps;
+            foreach (var text in new[] { "letters", "1", "12", "120" })
+            {
+                hold.SetCurrentValue(TextBox.TextProperty, text);
+                await Dispatcher.Yield(DispatcherPriority.DataBind);
+                host.UpdateLayout();
+                Assert.Same(visible, grouped.VisibleSteps);
+                Assert.Same(grouped.Steps[0], list.SelectedItem);
+                Assert.Equal(text, grouped.Steps[1].DurationText);
+                Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(Assert.IsType<StackPanel>(hold.Parent).Parent).Visibility);
+            }
+
+            var bulk = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Set all Wait step durations");
+            var collapse = Assert.Single(Descendants(view).OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Collapse presses");
+            Assert.True(collapse.IsChecked);
+            bulk.Command.Execute(null);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            var duration = Assert.Single(Descendants(view).OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Duration for all Wait steps in milliseconds");
+            var apply = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Apply duration to all Wait steps");
+            var close = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Close all Wait editor");
+            var status = Assert.Single(Descendants(view).OfType<TextBlock>(), block => AutomationProperties.GetName(block) == "All Wait edit status");
+            Assert.Equal("Applies to 2 Wait steps, including 1 press hold.", status.Text);
+            Assert.False(apply.IsEnabled);
+            duration.SetCurrentValue(TextBox.TextProperty, "invalid");
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.True(Validation.GetHasError(duration));
+            Assert.Equal(120, grouped.Steps[1].DurationMs);
+            duration.SetCurrentValue(TextBox.TextProperty, "50");
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.True(apply.IsEnabled);
+            apply.Command.Execute(null);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.Equal("Set 2 Wait steps to 50 ms.", status.Text);
+            Assert.True(grouped.IsWaitEditorOpen);
+            Assert.Equal(50, grouped.Steps[1].DurationMs);
+            Assert.Equal(50, grouped.Steps[3].DurationMs);
+            var sequencePanel = Assert.IsType<Border>(Assert.IsType<Grid>(Assert.IsType<Grid>(list.Parent).Parent).Parent);
+            var panelBounds = sequencePanel.TransformToAncestor(host).TransformBounds(new Rect(sequencePanel.RenderSize));
+            foreach (var control in new FrameworkElement[] { bulk, collapse, duration, apply, close })
+            {
+                var bounds = control.TransformToAncestor(host).TransformBounds(new Rect(control.RenderSize));
+                Assert.True(panelBounds.Contains(bounds), $"{AutomationProperties.GetName(control)} exceeds the sequence panel {panelBounds}: {bounds}.");
+            }
+            var durationRight = duration.TransformToAncestor(host).Transform(new Point(duration.ActualWidth, 0)).X;
+            var applyLeft = apply.TransformToAncestor(host).Transform(new Point(0, 0)).X;
+            Assert.True(durationRight < applyLeft, "Bulk duration field overlaps Apply.");
+            close.Command.Execute(null);
+            var expand = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Turn off Collapse presses");
+            Assert.True(expand.IsEnabled);
+            Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(expand.Parent).Visibility);
+            expand.Command.Execute(null);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.False(grouped.CollapseSteps);
+            Assert.Equal(4, list.Items.Count);
+            Assert.Same(grouped.Steps[0], list.SelectedItem);
+            list.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedItemProperty, grouped.Steps[1]);
+            grouped.CollapseSteps = true;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.Same(grouped.Steps[0], grouped.SelectedStep);
+            Assert.Same(grouped.SelectedStep, list.SelectedItem);
+            grouped.DuplicateStepCommand.Execute(null);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.Equal(7, grouped.Steps.Count);
+            Assert.Equal(3, list.Items.Count);
+            Assert.Same(grouped.Steps[3], list.SelectedItem);
 
             var brokenModel = ProfileFactory.CreateCustomProfile("Unreadable", "unreadable.exe");
             brokenModel.IsPersistenceSuspended = true;

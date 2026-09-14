@@ -19,6 +19,9 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     private string _yText;
     private string _durationText;
     private string _wheelDeltaText;
+    private MacroStepViewModel? _collapsedWait;
+    private int _collapsedDurationMs;
+    private string _collapsedError = string.Empty;
 
     public MacroStepViewModel(MacroStep step, Func<bool> canEdit)
     {
@@ -32,7 +35,16 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
 
     public event EventHandler? Changed;
     public MacroStep ToModel() => _step;
-    public int Number { get => _number; internal set => SetProperty(ref _number, value); }
+    public int Number
+    {
+        get => _number;
+        internal set
+        {
+            if (!SetProperty(ref _number, value)) return;
+            OnPropertyChanged(nameof(DisplayNumber));
+            OnPropertyChanged(nameof(AutomationStepLabel));
+        }
+    }
     public MacroStepKind Kind
     {
         get => _step.Kind;
@@ -85,6 +97,20 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.Wait => MillisecondsText,
         _ => string.Empty
     };
+    public MacroStepViewModel? CollapsedWait => _collapsedWait;
+    public bool IsCollapsedPress => CollapsedWait is not null;
+    public int SourceStepCount => IsCollapsedPress ? 3 : 1;
+    public string DisplayNumber => IsCollapsedPress
+        ? $"{Number.ToString(CultureInfo.InvariantCulture)}–{(Number + 2).ToString(CultureInfo.InvariantCulture)}"
+        : Number.ToString(CultureInfo.InvariantCulture);
+    public string AutomationStepLabel => IsCollapsedPress
+        ? $"Steps {Number.ToString(CultureInfo.InvariantCulture)} to {(Number + 2).ToString(CultureInfo.InvariantCulture)}"
+        : $"Step {Number.ToString(CultureInfo.InvariantCulture)}";
+    public string DisplayActionLabel => IsCollapsedPress ? (HasKey ? "Key press" : "Mouse press") : ActionLabel;
+    public string DisplayTimingText => IsCollapsedPress
+        ? $"{_collapsedDurationMs.ToString(CultureInfo.InvariantCulture)} ms hold"
+        : TimingText;
+    public string DisplayError => IsCollapsedPress ? _collapsedError : Error;
     public string Summary => Detail.Length == 0 ? TimingText : TimingText.Length == 0 ? Detail : $"{Detail} · {TimingText}";
     public string KindHelp => Kind switch
     {
@@ -110,6 +136,31 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
 
     public void SetPosition(int x, int y) => Change(_step with { X = x, Y = y }, string.Empty);
 
+    // Presentation only: preserve each source row and its unparsed editor text.
+    internal void SetCollapsedWait(MacroStepViewModel? wait)
+    {
+        var changed = !ReferenceEquals(_collapsedWait, wait);
+        var duration = wait?.DurationMs ?? 0;
+        var durationChanged = _collapsedDurationMs != duration;
+        var error = wait?.Error ?? string.Empty;
+        var errorChanged = _collapsedError != error;
+        if (!changed && !durationChanged && !errorChanged) return;
+        _collapsedWait = wait;
+        _collapsedDurationMs = duration;
+        _collapsedError = error;
+        if (changed)
+        {
+            OnPropertyChanged(nameof(CollapsedWait));
+            OnPropertyChanged(nameof(IsCollapsedPress));
+            OnPropertyChanged(nameof(SourceStepCount));
+            OnPropertyChanged(nameof(DisplayNumber));
+            OnPropertyChanged(nameof(AutomationStepLabel));
+            OnPropertyChanged(nameof(DisplayActionLabel));
+        }
+        if (changed || durationChanged) OnPropertyChanged(nameof(DisplayTimingText));
+        if (changed || errorChanged) OnPropertyChanged(nameof(DisplayError));
+    }
+
     private void Change(MacroStep value, [CallerMemberName] string? propertyName = null)
     {
         if (!_canEdit() || (value == _step && propertyName != string.Empty)) return;
@@ -125,10 +176,13 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         OnPropertyChanged(nameof(WheelDeltaText));
         OnPropertyChanged(propertyName);
         OnPropertyChanged(nameof(ActionLabel));
+        OnPropertyChanged(nameof(DisplayActionLabel));
         OnPropertyChanged(nameof(Detail));
         OnPropertyChanged(nameof(TimingText));
+        OnPropertyChanged(nameof(DisplayTimingText));
         OnPropertyChanged(nameof(Summary));
         OnPropertyChanged(nameof(Error));
+        OnPropertyChanged(nameof(DisplayError));
         if (propertyName == nameof(Kind))
         {
             OnPropertyChanged(nameof(Key));
@@ -161,8 +215,10 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
             };
         }
         OnPropertyChanged(nameof(Error));
+        OnPropertyChanged(nameof(DisplayError));
         OnPropertyChanged(nameof(Detail));
         OnPropertyChanged(nameof(TimingText));
+        OnPropertyChanged(nameof(DisplayTimingText));
         OnPropertyChanged(nameof(Summary));
         Changed?.Invoke(this, EventArgs.Empty);
     }

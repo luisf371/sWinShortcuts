@@ -202,6 +202,21 @@ The sequence stays beside an inspector for the selected step. **Add step** lets 
 an action directly; the insertion hint shows where new steps and recordings will go.
 With the step list focused, use **Delete** to remove a step, **Ctrl+D** to duplicate it,
 and **Alt+Up/Down** to reorder it. **Show step** jumps to the row named in a validation error.
+Duplicating a macro adds the next available number to its name, such as **Ammo 1** and
+**Ammo 2**. Open either key dropdown and press a key to select it directly.
+
+**Collapse presses** is on by default. Adjacent matching Down, Wait, and Up events appear as one
+press with their original step numbers and hold time. Intervening actions keep the events
+separate. Edit a grouped press's key/button and hold directly, or use **Show all steps**
+to edit the original events. Moving, duplicating, or deleting a collapsed row operates on
+all three. This changes the view only: saved steps,
+playback, and the 1,000-step limit still use the original events.
+
+**Set all waits…** opens an inline editor above the sequence. Enter a duration from
+**0 to 3,600,000 ms** and choose **Apply** (or press Enter in the duration field).
+The affected-step count includes Wait events displayed as press holds. Native Key press
+and Mouse click hold durations are unchanged. **Close** or Escape discards the input;
+switching macros, leaving the editor, or starting a recording closes it automatically.
 
 Use the step editor to insert, duplicate, delete, and reorder key presses, explicit
 key/button down and up events, waits, mouse clicks, cursor moves, and vertical or

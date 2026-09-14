@@ -31,6 +31,43 @@ public partial class MacrosView : UserControl
         menu.IsOpen = true;
     }
 
+    private void WaitEditorOpen_Click(object sender, RoutedEventArgs e) => FocusWaitDuration();
+    private void WaitEditorApply_Click(object sender, RoutedEventArgs e) => FocusWaitDuration();
+    private void WaitEditorClose_Click(object sender, RoutedEventArgs e) => FocusWaitEditorButton();
+
+    private void WaitEditor_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: MacroViewModel macro } || e.KeyboardDevice.Modifiers != ModifierKeys.None) return;
+        if (e.Key == Key.Enter && !AllWaitDurationField.IsKeyboardFocusWithin) return;
+        var command = e.Key switch
+        {
+            Key.Enter => macro.ApplyAllWaitTimesCommand,
+            Key.Escape => macro.CloseWaitEditorCommand,
+            _ => null
+        };
+        if (command is null) return;
+        e.Handled = true;
+        if (!command.CanExecute(null)) return;
+        command.Execute(null);
+        if (e.Key == Key.Escape) FocusWaitEditorButton();
+        else FocusWaitDuration();
+    }
+
+    // Button Click is raised before its command runs, so move focus after bindings update.
+    private void FocusWaitDuration() => Dispatcher.InvokeAsync(() =>
+    {
+        if (!AllWaitDurationField.IsVisible || !AllWaitDurationField.IsEnabled) return;
+        AllWaitDurationField.Focus();
+        AllWaitDurationField.SelectAll();
+    }, DispatcherPriority.Loaded);
+
+    private void FocusWaitEditorButton() => Dispatcher.InvokeAsync(() =>
+    {
+        if (!AllWaitEditorButton.IsVisible) return;
+        if (AllWaitEditorButton.IsEnabled) AllWaitEditorButton.Focus();
+        else StepList.Focus();
+    }, DispatcherPriority.Loaded);
+
     // Commands, recordings and the problem link also move the selection; keep that row in view.
     private void StepList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {

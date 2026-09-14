@@ -1,6 +1,8 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Linq;
+using System.Numerics;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
@@ -70,6 +72,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
             if (IsRecording || (value is not null && !Definitions.Contains(value))) return;
             if (ReferenceEquals(_selectedMacro, value)) return;
             _selectedMacro?.CancelCoordinatePick();
+            _selectedMacro?.CloseWaitEditor();
             _selectedMacro = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(HasSelection));
@@ -124,7 +127,31 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     private void DuplicateMacro()
     {
         if (!DuplicateMacroCommand.CanExecute(null)) return;
-        var duplicate = CreateMacro(SelectedMacro!.GetRepresentableDefinition().Duplicate());
+        var definition = SelectedMacro!.GetRepresentableDefinition().Duplicate();
+        var baseLabel = definition.Label.Trim();
+        var number = BigInteger.Zero;
+        var separator = baseLabel.LastIndexOf(' ');
+        if (separator > 0 && BigInteger.TryParse(baseLabel.AsSpan(separator + 1), NumberStyles.None,
+            CultureInfo.InvariantCulture, out var existingNumber))
+        {
+            baseLabel = baseLabel[..separator].TrimEnd();
+            number = existingNumber;
+        }
+
+        // Invalid editor fields retain an older saved label; reserve both names.
+        var names = Definitions.Select(macro => macro.Label.Trim())
+            .Concat(_profile.Macros.Definitions.Select(macro => macro.Label.Trim()))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        string label;
+        do
+        {
+            var suffix = (++number).ToString(CultureInfo.InvariantCulture);
+            var baseLength = Math.Min(baseLabel.Length, 100 - suffix.Length - 1);
+            if (baseLength > 0 && char.IsHighSurrogate(baseLabel[baseLength - 1])) baseLength--;
+            label = baseLength > 0 ? $"{baseLabel[..baseLength].TrimEnd()} {suffix}" : suffix;
+        } while (names.Contains(label));
+
+        var duplicate = CreateMacro(definition with { Label = label });
         _definitions.Add(duplicate);
         SelectedMacro = duplicate;
         Publish();
@@ -148,6 +175,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     public void LeaveEditor()
     {
         SelectedMacro?.CancelCoordinatePick();
+        SelectedMacro?.CloseWaitEditor();
         if (IsRecording) _leaveEditor?.Invoke();
     }
 
