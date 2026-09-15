@@ -17,6 +17,46 @@ public sealed class MacroMouseShortcutTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public Task ProfileActivation_QueuedRightButtonResync_ExcludesOldHoldUntilBaseline(bool stillHeld) =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var sender = new RecordingInputSender();
+            var rightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0 ? 1 : 2;
+            using var service = new InputHookService(new NullLoggerService(), sender,
+                System.Diagnostics.Stopwatch.GetTimestamp, vk => vk == rightVk && stillHeld,
+                FakeAutoRunTransport.MatchingForeground());
+            service.StartInputExecutorForTesting();
+            service.AdvancedModeEnabled = true;
+            service.ConfigureActiveProfileForTesting(new Profile { Name = "Old", Executable = "game.exe" }, 1, false);
+            Assert.False(Button(service, MouseButton.Right, true));
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            typeof(InputHookService).GetField("_hookDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(service, dispatcher);
+            var next = new Profile { Name = "Next", Executable = "game.exe" };
+            next.CombinedMappings.IsEnabled = true;
+            next.CombinedMappings.Mappings = [new CombinedMappingEntry
+            {
+                Source = InputTrigger.FromKey(Key.Q), TargetKey = Key.E, RightClickOnly = true
+            }];
+            // Keep the hook dispatcher unpumped until an input event beats the queued baseline.
+            Assert.True(Task.Run(() =>
+            {
+                service.SetForegroundIdentity((IntPtr)100, 42, "game.exe", 2);
+                service.ActivateProfile(next, 2);
+            }).Wait(TimeSpan.FromSeconds(3)));
+            Assert.False(service.DispatchDecodedKeyboardEvent(0x51, true, false));
+            Assert.False(service.DispatchDecodedKeyboardEvent(0x51, false, true));
+            Assert.Empty(sender.Transitions);
+            await dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle).Task;
+            Assert.Equal(stillHeld, service.DispatchDecodedKeyboardEvent(0x51, true, false));
+            Assert.Equal(stillHeld, service.DispatchDecodedKeyboardEvent(0x51, false, true));
+            if (stillHeld) WaitUntil(() => sender.Transitions.Any(edge => edge.Key == Key.E && !edge.IsDown));
+            else Assert.Empty(sender.Transitions);
+        });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void RightButtonResync_ActivationDuringNativeRead_RemainsUnobserved(bool recovery)
     {
         Action? duringRead = null;

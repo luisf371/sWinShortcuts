@@ -1100,10 +1100,10 @@ public sealed class InputHookService : IInputHookService
                 ReleaseAllState(preserveRapidFireArm: true);
                 // Publish the incoming profile BEFORE scheduling the re-derivation (the panic-latch
                 // closure reads the live _runtime.ActiveProfile at dispatcher-execution time and must see
-                // the INCOMING trigger), but keep the GENERATION unsettled until AFTER the physical
-                // modifier baseline is restored: the mismatch fences hook handlers
-                // (ProfileInputGenerationIsCurrent) so no new-profile action can observe eligible
-                // state with stale Alt/right-button modifiers (H6).
+                // the INCOMING trigger), but keep the GENERATION unsettled until Alt is restored
+                // and stale RMB eligibility is cleared. A queued RMB baseline restores a still-held
+                // button on the hook thread, so new-profile actions cannot use the previous
+                // profile's stale right-button state (H6).
                 _runtime.SetActiveProfileReference(profile);
                 RederivePhysicalModifierState();
                 _runtime.SetActiveProfileGeneration(foregroundGeneration);
@@ -1335,6 +1335,9 @@ public sealed class InputHookService : IInputHookService
         var dispatcher = _hookDispatcher;
         if (dispatcher is not null && !dispatcher.CheckAccess())
         {
+            // The caller may settle a new profile before this queue drains. Do not admit its
+            // right-click-only actions using the old hold while the physical baseline is pending.
+            if (updateInputState) _rightButtonPressed = false;
             // Crosshair policy holds its own gate while calling the setter. Never wait for
             // the hook thread: serialize the native read and publication with mouse callbacks.
             if (!dispatcher.HasShutdownStarted)
