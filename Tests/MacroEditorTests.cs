@@ -9,6 +9,37 @@ namespace Tests;
 public sealed class MacroEditorTests
 {
     [Fact]
+    public void ToggleMode_DefaultOff_CancelsBeforePublishingEachChangedValue()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new()];
+        var beforePublish = new List<MacroDefinition>();
+        var published = new List<MacroDefinition>();
+        using var editor = new MacrosViewModel(profile, () => published.Add(profile.Macros.Definitions[0]));
+        editor.ConfigureRuntime(_ => Task.CompletedTask, () => { }, _ => { },
+            () => beforePublish.Add(profile.Macros.Definitions[0]), _ => null, () => { });
+        var macro = editor.SelectedMacro!;
+        Assert.False(macro.ToggleMode);
+
+        macro.ToggleMode = true;
+        macro.ToggleMode = true;
+        macro.ToggleMode = false;
+
+        Assert.Collection(beforePublish, previous => Assert.False(previous.ToggleMode), previous => Assert.True(previous.ToggleMode));
+        Assert.Collection(published, current => Assert.True(current.ToggleMode), current => Assert.False(current.ToggleMode));
+        Assert.False(macro.ToDefinition().ToggleMode);
+        profile.IsEnabled = false;
+        macro.ToggleMode = true;
+        profile.IsEnabled = true;
+        profile.IsPersistenceSuspended = true;
+        macro.ToggleMode = true;
+        Assert.False(macro.ToggleMode);
+        Assert.False(profile.Macros.Definitions[0].ToggleMode);
+        Assert.Equal(2, beforePublish.Count);
+        Assert.Equal(2, published.Count);
+    }
+
+    [Fact]
     public void CancelOnMouseMovement_DefaultOff_PublishesEachChangedValue()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -112,8 +143,10 @@ public sealed class MacroEditorTests
         editor.NewMacroCommand.Execute(null);
         var original = Assert.Single(editor.Definitions);
         original.IsEnabled = true;
+        original.ToggleMode = true;
         original.CancelOnMouseMovement = true;
         original.ShortcutKey = Key.F6;
+        original.ShortcutModifiers = ModifierKeys.Control;
         original.InsertStepCommand.Execute(null);
         original.SelectedStep!.Key = Key.B;
 
@@ -122,8 +155,11 @@ public sealed class MacroEditorTests
         var copy = editor.SelectedMacro!;
         Assert.NotEqual(original.Id, copy.Id);
         Assert.False(copy.IsEnabled);
+        Assert.True(copy.ToggleMode);
         Assert.True(copy.CancelOnMouseMovement);
         Assert.Equal(Key.None, copy.ShortcutKey);
+        Assert.Equal(ModifierKeys.None, copy.ShortcutModifiers);
+        Assert.True(profile.Macros.Definitions[1].ToggleMode);
         Assert.NotSame(original.Steps[0], copy.Steps[0]);
         copy.Steps[0].Key = Key.C;
         Assert.Equal(Key.B, original.Steps[0].Key);
@@ -213,12 +249,14 @@ public sealed class MacroEditorTests
         editor.SetRecordingDestination(macro);
 
         macro.Label = "Changed";
+        macro.ToggleMode = true;
         macro.CancelOnMouseMovement = true;
         macro.Steps[0].Key = Key.Z;
         editor.SelectedMacro = null;
         editor.DeleteMacroCommand.Execute(null);
 
         Assert.Equal("New macro", macro.Label);
+        Assert.False(macro.ToggleMode);
         Assert.False(macro.CancelOnMouseMovement);
         Assert.Equal(Key.A, macro.Steps[0].Key);
         Assert.Same(macro, editor.SelectedMacro);

@@ -257,3 +257,8 @@
 - A saved recording with uniform100ms waits needs both repeated modifier DOWN removal and coalescing the resulting adjacent waits back to one100ms row to undo bulk-edit amplification. Apply only with explicit user authorization, the app exited, a byte-for-byte backup, and source-hash checks; future recorder filtering must instead preserve original elapsed timing.
 
 - Naming uses the existing native modal-dialog convention and a view-supplied callback, with no new dialog service. Keep input local until acceptance, recheck the editor identity/availability and intended macro after modal dispatch, and publish accepted creation once. The container/naming follow-up recovered minimum-size space through an ellipsized status line with a full tooltip and smaller row gaps; all100 focused UI/lifecycle checks passed.
+
+# 2026-09-15 (Macro toggle mode)
+
+- Toggle mode reuses the current one-session worker/reservation and balanced sequence validation. The activation latch must consume the stop press through its physical UP after cleanup, so key repeats cannot start another loop; only the pending macro identity/owner may cancel via its shortcut. Keep one-shot and other busy shortcuts unchanged.
+- Toggle regression checks first reproduced all 11 playback failures and three strict-persistence failures. Reusing Cancel for the second fresh shortcut and a cancellable 10 ms gap between passes passed 511 focused checks and all 1,396 tests; no native input APIs or dependencies changed. The actual-template checkbox binding, disabled state and original minimum viewport also passed.

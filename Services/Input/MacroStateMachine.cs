@@ -290,6 +290,11 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                     Volatile.Write(ref _requestReady, 1);
                     _wake.Set();
                 }
+                else if (_pending is { } pending && pending.Definition.ToggleMode &&
+                    pending.Definition.Id == entry.Definition.Id && ReferenceEquals(pending.Owner, entry.Owner))
+                {
+                    Cancel("Stopped with the macro shortcut.", entry.Owner, playbackOnly: true);
+                }
                 return true;
             }
         }
@@ -514,15 +519,24 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 Publish(MacroSessionMode.WaitingForShortcutRelease);
                 while (_physical.IsRawKeyDown(_pending!.VirtualKey) || _physical.PhysicalModifiersDown) Wait(10);
                 Array.Clear(_intendedModifiers);
-                var steps = _pending.Definition.Steps;
-                for (var i = 0; i < steps.Length; i++)
+                var definition = _pending.Definition;
+                var steps = definition.Steps;
+                long iteration = 0;
+                do
                 {
-                    if (!CanExecute(default)) throw new OperationCanceledException();
-                    Publish(MacroSessionMode.Playing, i + 1);
-                    if (_logger.IsEnabled)
-                        _logger.Log($"[Macros] Playback session={_sessionId} row={i + 1}/{steps.Length} action={steps[i].Kind}");
-                    Play(steps[i]);
-                }
+                    iteration++;
+                    for (var i = 0; i < steps.Length; i++)
+                    {
+                        if (!CanExecute(default)) throw new OperationCanceledException();
+                        Publish(MacroSessionMode.Playing, i + 1);
+                        if (_logger.IsEnabled)
+                            _logger.Log($"[Macros] Playback session={_sessionId} row={i + 1}/{steps.Length} action={steps[i].Kind} iteration={iteration}");
+                        Play(steps[i]);
+                    }
+                    if (!definition.ToggleMode) break;
+                    // Yield between passes even when every step completes without a delay.
+                    Wait(10);
+                } while (true);
             }
         }
         catch (OperationCanceledException)
@@ -735,7 +749,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         {
             if (_logger.IsEnabled)
                 _logger.Log($"[Macros] Session={value.SessionId} state={mode} row={row} elapsed={value.Elapsed.TotalMilliseconds:F0}ms " +
-                    $"cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} failure={value.FailureReason ?? "none"}");
+                    $"toggleMode={_pending?.Definition.ToggleMode ?? false} cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} failure={value.FailureReason ?? "none"}");
             RaiseChanged();
         }
     }

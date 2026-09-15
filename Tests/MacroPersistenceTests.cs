@@ -65,6 +65,7 @@ public sealed class MacroPersistenceTests : IDisposable
                 {
                     Label = "  Inventaire 日本語  ",
                     IsEnabled = true,
+                    ToggleMode = true,
                     CancelOnMouseMovement = true,
                     ShortcutKey = Key.F6,
                     ShortcutModifiers = ModifierKeys.Control | ModifierKeys.Alt,
@@ -92,16 +93,20 @@ public sealed class MacroPersistenceTests : IDisposable
             Assert.Equal(2, loaded.Macros.Definitions.Length);
             Assert.Equal(profile.Macros.Definitions[0].Id, loaded.Macros.Definitions[0].Id);
             Assert.Equal("Inventaire 日本語", loaded.Macros.Definitions[0].Label);
+            Assert.True(loaded.Macros.Definitions[0].ToggleMode);
             Assert.True(loaded.Macros.Definitions[0].CancelOnMouseMovement);
             Assert.Equal(ModifierKeys.Control | ModifierKeys.Alt, loaded.Macros.Definitions[0].ShortcutModifiers);
             Assert.Equal(profile.Macros.Definitions[0].Steps, loaded.Macros.Definitions[0].Steps);
             Assert.Equal(Key.None, loaded.Macros.Definitions[1].ShortcutKey);
+            Assert.False(loaded.Macros.Definitions[1].ToggleMode);
             Assert.False(loaded.Macros.Definitions[1].CancelOnMouseMovement);
             Assert.Equal(profile.Macros.Definitions[1].Steps, loaded.Macros.Definitions[1].Steps);
             Assert.Null(MacroValidation.GetPlaybackError(loaded.Macros.Definitions[0]));
             Assert.NotNull(MacroValidation.GetPlaybackError(loaded.Macros.Definitions[1]));
             var ini = IniDocument.Load(profile.SourcePath);
             Assert.Equal("3", ini.GetValue("Macro0", "ShortcutModifiers"));
+            Assert.Equal("True", ini.GetValue("Macro0", "ToggleMode"));
+            Assert.Equal("False", ini.GetValue("Macro1", "ToggleMode"));
             Assert.Equal("True", ini.GetValue("Macro0", "CancelOnMouseMovement"));
             Assert.Equal("False", ini.GetValue("Macro1", "CancelOnMouseMovement"));
             Assert.Null(ini.GetValue("Macro0.Step0", "DurationMs"));
@@ -152,6 +157,8 @@ public sealed class MacroPersistenceTests : IDisposable
     [InlineData("[Macro0]\nShortcutModifiers=16\n")]
     [InlineData("[Macro0]\nShortcutModifiers=\n")]
     [InlineData("[Macro0]\nShortcutKey=\n")]
+    [InlineData("[Macro0]\nToggleMode=\n")]
+    [InlineData("[Macro0]\nToggleMode=broken\n")]
     [InlineData("[Macro0]\nCancelOnMouseMovement=\n")]
     [InlineData("[Macro0]\nCancelOnMouseMovement=broken\n")]
     [InlineData("[Macro0]\nId=00000000000000000000000000000000\n")]
@@ -176,7 +183,7 @@ public sealed class MacroPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task LoadMacros_MissingOptionalFields_UsesAutomaticDurationAndKeepsMovementCancellationOff()
+    public async Task LoadMacros_MissingOptionalFields_UsesAutomaticDurationAndKeepsOptionalModesOff()
     {
         var path = Path.Combine(_root, "Profiles", "Broken.ini");
         File.WriteAllText(path, ValidMacroIni + "[Macro0.Step0]\nKind=KeyPress\nKey=A\n");
@@ -186,6 +193,7 @@ public sealed class MacroPersistenceTests : IDisposable
         Assert.False(profile.IsPersistenceSuspended);
         var macro = Assert.Single(profile.Macros.Definitions);
         Assert.Equal(0, Assert.Single(macro.Steps).DurationMs);
+        Assert.False(macro.ToggleMode);
         Assert.False(macro.CancelOnMouseMovement);
     }
 

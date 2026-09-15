@@ -339,6 +339,7 @@ public sealed class IniProfileStore : IProfileStore
                 Id = id,
                 Label = ReadMacroString(document, section, "Label"),
                 IsEnabled = ReadMacroBoolean(document, section, "Enabled"),
+                ToggleMode = ReadMacroBoolean(document, section, "ToggleMode", false),
                 CancelOnMouseMovement = ReadMacroBoolean(document, section, "CancelOnMouseMovement", false),
                 ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
                 ShortcutModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutModifiers"),
@@ -473,6 +474,7 @@ public sealed class IniProfileStore : IProfileStore
             document.SetString(section, "Id", macro.Id.ToString("N"));
             document.SetString(section, "Label", macro.Label.Trim());
             document.SetBoolean(section, "Enabled", macro.IsEnabled);
+            document.SetBoolean(section, "ToggleMode", macro.ToggleMode);
             document.SetBoolean(section, "CancelOnMouseMovement", macro.CancelOnMouseMovement);
             document.SetKey(section, "ShortcutKey", macro.ShortcutKey);
             document.SetInt32(section, "ShortcutModifiers", (int)macro.ShortcutModifiers);
