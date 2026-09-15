@@ -117,7 +117,9 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
                     return;
                 }
                 if (!isDown && !held[index]) return;
-                if (buttonEdge && isDown && held[index]) return;
+                // Modifier repeats add no new hold; retain the elapsed gap to the next real edge.
+                if (isDown && held[index] &&
+                    (buttonEdge || MacroPhysicalState.ModifierForKey(index) != ModifierKeys.None)) return;
             }
 
             var heldDelta = keyEdge || buttonEdge ? (isDown ? (held[index] ? 0 : 1) : -1) : 0;

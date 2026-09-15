@@ -9,6 +9,63 @@ namespace Tests;
 
 public sealed class MacroRecorderTests
 {
+    [Theory]
+    [InlineData(0x10)]
+    [InlineData(0x11)]
+    [InlineData(0x12)]
+    [InlineData(0xA0)]
+    [InlineData(0xA1)]
+    [InlineData(0xA2)]
+    [InlineData(0xA3)]
+    [InlineData(0xA4)]
+    [InlineData(0xA5)]
+    [InlineData(0x5B)]
+    [InlineData(0x5C)]
+    public void Capture_RepeatedModifierDuringClick_PreservesHoldAndElapsedGapsWithoutUsingRows(int virtualKey)
+    {
+        var recorder = new MacroRecorder(10, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        recorder.Capture(new(10, NativeMethods.WM_KEYDOWN, virtualKey, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(40, NativeMethods.WM_KEYDOWN, virtualKey, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(60, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 50, 60, 0));
+        recorder.Capture(new(75, NativeMethods.WM_KEYDOWN, virtualKey, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(90, NativeMethods.WM_LBUTTONUP, 0, 0, 0, 0, 50, 60, 0));
+        recorder.Capture(new(110, NativeMethods.WM_KEYDOWN, virtualKey, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(140, NativeMethods.WM_KEYUP, virtualKey, 0, 0, 0, 0, 0, 0));
+        Assert.True(recorder.IsCapturing);
+        Assert.Equal(4, recorder.Count);
+        recorder.RequestStop(MacroRecordingEndReason.Stopped);
+
+        var (steps, balanced) = recorder.BuildSteps();
+
+        Assert.False(balanced);
+        Assert.Equal(new[] { MacroStepKind.KeyDown, MacroStepKind.Wait, MacroStepKind.MoveTo,
+            MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MoveTo, MacroStepKind.MouseUp,
+            MacroStepKind.Wait, MacroStepKind.KeyUp }, steps.Select(x => x.Kind));
+        Assert.Equal(new[] { 50, 30, 50 }, steps.Where(x => x.Kind == MacroStepKind.Wait).Select(x => x.DurationMs));
+        Assert.Equal(KeyInteropUtilities.FromVirtualKey(virtualKey), steps[0].Key);
+        Assert.Equal(steps[0].Key, steps[^1].Key);
+    }
+
+    [Fact]
+    public void Capture_RepeatedLetter_PreservesTypematicAndTiming()
+    {
+        var recorder = new MacroRecorder(10, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        recorder.Capture(new(10, NativeMethods.WM_KEYDOWN, 0x41, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(40, NativeMethods.WM_KEYDOWN, 0x41, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(100, NativeMethods.WM_KEYUP, 0x41, 0, 0, 0, 0, 0, 0));
+        recorder.RequestStop(MacroRecordingEndReason.Stopped);
+
+        var (steps, balanced) = recorder.BuildSteps();
+
+        Assert.False(balanced);
+        Assert.Equal(new[] { MacroStepKind.KeyDown, MacroStepKind.Wait, MacroStepKind.KeyDown,
+            MacroStepKind.Wait, MacroStepKind.KeyUp }, steps.Select(x => x.Kind));
+        Assert.Equal(new[] { 30, 60 }, steps.Where(x => x.Kind == MacroStepKind.Wait).Select(x => x.DurationMs));
+        Assert.All(steps.Where(x => x.Kind != MacroStepKind.Wait), step => Assert.Equal(Key.A, step.Key));
+    }
+
     [Fact]
     public void Capture_OversizedRequestedBudget_StopsAtThousandRowsWithBalancedRelease()
     {
