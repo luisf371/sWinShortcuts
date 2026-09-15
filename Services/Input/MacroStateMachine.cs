@@ -141,8 +141,9 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     {
         var keys = new bool[256];
         var buttons = new bool[6];
-        for (var i = 0; i < keys.Length; i++) keys[i] = IsRawKeyDown(i);
-        for (var i = 1; i < buttons.Length; i++) buttons[i] = IsRawMouseButtonDown((MouseButton)i);
+        // Activation pairs filter their own UP before capture; they must not seed recorder preholds.
+        for (var i = 0; i < keys.Length; i++) keys[i] = IsPhysicalKeyDown(i);
+        for (var i = 1; i < buttons.Length; i++) buttons[i] = IsPhysicalMouseButtonDown((MouseButton)i);
         return (keys, buttons);
     }
 }
@@ -362,6 +363,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             return true;
         }
         if (TryActivate(0, button, down, previous, allowActivation)) return true;
+        // Classify first: a consumed DOWN must never look like physical takeover to the executor.
+        _physical.ObserveButton(button, down);
         if (_physical.HasPhysicalMouseTakeover(button) || MacroPhysicalState.WasTakeover(previous)) return false;
         if (down && !MacroPhysicalState.WasSuppressed(previous) && _executor.IsMacroMouseOwned(button))
         {

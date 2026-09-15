@@ -1172,7 +1172,8 @@ public sealed class InputHookService : IInputHookService
 
         const ProfileChangeKind macroDependencies = ProfileChangeKind.Macros | ProfileChangeKind.Master | ProfileChangeKind.Identity |
             ProfileChangeKind.Removed | ProfileChangeKind.AltKeyboard | ProfileChangeKind.CombinedMappings | ProfileChangeKind.CapsLock |
-            ProfileChangeKind.AutoRun | ProfileChangeKind.HoldBreath | ProfileChangeKind.WindowsLauncher;
+            ProfileChangeKind.AutoRun | ProfileChangeKind.HoldBreath | ProfileChangeKind.WindowsLauncher |
+            ProfileChangeKind.AltMouse | ProfileChangeKind.RapidFire;
         if ((changeKind & macroDependencies) != 0)
             _macros.Cancel("Profile settings changed.", profile, playbackOnly: (changeKind & (ProfileChangeKind.Removed | ProfileChangeKind.Master | ProfileChangeKind.Identity)) == 0);
         if (ReferenceEquals(profile, _windowsProfile) && (changeKind & (ProfileChangeKind.WindowsLauncher | ProfileChangeKind.CapsLock | ProfileChangeKind.Master | ProfileChangeKind.Identity)) != 0)
@@ -1339,7 +1340,8 @@ public sealed class InputHookService : IInputHookService
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
-        var isDown = _isPhysicalKeyDown(physicalRightVk);
+        var isDown = !MacroPhysicalState.WasActivation(_macroPhysical.ButtonState(Models.MouseButton.Right)) &&
+            _isPhysicalKeyDown(physicalRightVk);
         RightButtonStateChanged?.Invoke(this, isDown);
     }
 
@@ -1731,7 +1733,7 @@ public sealed class InputHookService : IInputHookService
         {
             CompletePendingMacroRecovery();
             if (MacroRecorder.TryDecodeButton(message, data.mouseData, out var button, out var down) &&
-                _macros.HandleButton(button, down, _macroPhysical.ObserveButton(button, down), allowActivation: false) == true)
+                _macros.HandleButton(button, down, _macroPhysical.ButtonState(button), allowActivation: false) == true)
                 return (IntPtr)1;
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
@@ -1746,7 +1748,7 @@ public sealed class InputHookService : IInputHookService
     {
         CompletePendingMacroRecovery();
         var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
-        var previous = isButton ? _macroPhysical.ObserveButton(button, down) : 0;
+        var previous = isButton ? _macroPhysical.ButtonState(button) : 0;
         var decision = isButton ? _macros.HandleButton(button, down, previous) : null;
         // A consumed activation must not arm right-click mappings or crosshair/hold-breath state.
         if (decision != true) ObserveRightButton(message);

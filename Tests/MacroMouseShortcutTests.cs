@@ -14,6 +14,60 @@ namespace Tests;
 
 public sealed class MacroMouseShortcutTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Recording_AfterConsumedShortcut_CapturesFirstFreshPress(bool mouse)
+    {
+        var sender = new RecordingInputSender();
+        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 1 });
+        if (mouse) Configure(service, profile, MouseButton.Middle);
+        bool Edge(bool down) => mouse ? Button(service, MouseButton.Middle, down)
+            : service.DispatchDecodedKeyboardEvent(0x75, down, !down);
+        Assert.True(Edge(true));
+        WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.WaitingForShortcutRelease);
+        service.CancelMacroPlayback(profile);
+        WaitUntil(() => !Field<MacroStateMachine>(service, "_macros").IsBusy);
+        var take = service.RecordMacroAsync(profile, profile.Macros.Definitions[0].Id, 30);
+        WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+        Assert.True(Edge(false));
+        Assert.False(Edge(true));
+        Assert.False(Edge(false));
+        service.StopMacroRecording();
+        var result = await take.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Single(result.Steps, step => step.Kind == (mouse ? MacroStepKind.MouseDown : MacroStepKind.KeyDown));
+        Assert.Single(result.Steps, step => step.Kind == (mouse ? MacroStepKind.MouseUp : MacroStepKind.KeyUp));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NewMouseConflict_CancelsPlaybackBeforeRemovingItsStopShortcut(bool rapidFire)
+    {
+        var sender = new RecordingInputSender();
+        using var service = Create(sender, out var profile,
+            new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.A },
+            new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 30000 },
+            new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.A });
+        var button = rapidFire ? MouseButton.Left : MouseButton.Middle;
+        Configure(service, profile, button, rapidFire ? ModifierKeys.None : ModifierKeys.Control | ModifierKeys.Alt, true);
+        if (!rapidFire) Modifiers(service, true);
+        Assert.True(Button(service, button, true));
+        Assert.True(Button(service, button, false));
+        if (!rapidFire) Modifiers(service, false);
+        WaitUntil(() => sender.Transitions.Any(edge => edge.IsDown));
+        if (rapidFire) profile.RapidFire.IsEnabled = true;
+        else
+        {
+            profile.AltMouse.IsEnabled = true;
+            profile.AltMouse.Bindings[button] = new MouseButtonBinding { TapKey = Key.B };
+        }
+        service.ReconcileProfileSettings(profile, rapidFire ? ProfileChangeKind.RapidFire : ProfileChangeKind.AltMouse);
+        Assert.NotNull(service.GetMacroShortcutError(profile, profile.Macros.Definitions[0].Id));
+        WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+        Assert.Single(sender.KeyReleases, edge => edge.Key == Key.A && edge.MacroRelease);
+    }
+
     [Fact]
     public void ConsumedRightButton_RecoveryDoesNotArmRightClickFeatures()
     {
@@ -30,9 +84,13 @@ public sealed class MacroMouseShortcutTests
             Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }] }];
         service.ConfigureActiveProfileForTesting(profile, 1, false);
         Configure(service, profile, MouseButton.Right);
+        var observed = new List<bool>();
+        service.RightButtonStateChanged += (_, down) => observed.Add(down);
         held = true;
         Assert.True(Button(service, MouseButton.Right, true));
         Assert.False(Field<bool>(service, "_rightButtonPressed"));
+        service.SetRightButtonObservation(true);
+        Assert.False(Assert.Single(observed));
         service.CancelMacroPlayback(profile);
         WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
         typeof(InputHookService).GetMethod("RederivePhysicalModifierState", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -41,6 +99,7 @@ public sealed class MacroMouseShortcutTests
         held = false;
         Assert.True(Button(service, MouseButton.Right, false));
         Assert.False(Field<bool>(service, "_rightButtonPressed"));
+        Assert.All(observed, down => Assert.False(down));
     }
 
     [Theory]
@@ -184,11 +243,11 @@ public sealed class MacroMouseShortcutTests
         var physical = Field<MacroPhysicalState>(service, "_macroPhysical");
         physical.Seed(vk => vk == (swapped ? 2 : 1), swapped);
         Assert.False(physical.IsPhysicalMouseButtonDown(MouseButton.Left));
-        Assert.True(physical.CaptureHeld().Buttons[(int)MouseButton.Left]);
+        Assert.True(physical.IsRawMouseButtonDown(MouseButton.Left));
         physical.ReconcileActivationPairs(vk => vk == (swapped ? 2 : 1), swapped);
-        Assert.True(physical.CaptureHeld().Buttons[(int)MouseButton.Left]);
+        Assert.True(physical.IsRawMouseButtonDown(MouseButton.Left));
         physical.ReconcileActivationPairs(_ => false);
-        Assert.False(physical.CaptureHeld().Buttons[(int)MouseButton.Left]);
+        Assert.False(physical.IsRawMouseButtonDown(MouseButton.Left));
         Assert.False(Button(service, MouseButton.Left, false));
     }
 
