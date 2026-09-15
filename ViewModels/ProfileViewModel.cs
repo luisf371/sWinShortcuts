@@ -94,6 +94,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         _name = Model.Name;
         _isEnabled = Model.IsEnabled;
         _executable = Model.Executable;
+        Macros = new MacrosViewModel(Model, () => OnProfileChanged(ProfileChangeKind.Macros));
 
         // Slider resets (cf. DisplayColorSettingsViewModel): each restores the model's named default.
         ResetRapidFireIntervalCommand = new RelayCommand(
@@ -183,6 +184,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
                     ColorSettings.EndForcePreview();
                 }
                 OnPropertyChanged(nameof(CanEditContent));
+                Macros.RefreshAvailability();
                 OnProfileChanged(ProfileChangeKind.Master);
 
                 if (IsWindowsProfile)
@@ -201,6 +203,14 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
     // A regular game profile (not the built-in default). Profile kind is immutable per instance, so
     // no change notifications are needed.
     public bool IsCustomProfile => !IsWindowsProfile;
+
+    public MacrosViewModel Macros { get; }
+
+    public bool IsPersistenceSuspended => Model.IsPersistenceSuspended;
+
+    public string PersistenceWarning => Model.Macros.LoadError is { Length: > 0 } error
+        ? $"Macros could not be loaded: {error} This profile is read-only to preserve its file."
+        : "This profile could not be read. Changes are disabled to preserve its file; restart after correcting it.";
 
     public AltMouseViewModel AltMouse { get; }
 
@@ -970,6 +980,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public void Dispose()
     {
+        Macros.Dispose();
         ColorSettings.Dispose();
     }
 

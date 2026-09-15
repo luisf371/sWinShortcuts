@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Input;
 using Microsoft.Win32;
 using sWinShortcuts.Interop;
@@ -19,6 +20,18 @@ namespace sWinShortcuts.Services;
 /// </summary>
 public sealed class InputHookService : IInputHookService
 {
+    public event EventHandler? MacroSessionChanged;
+    public MacroSessionSnapshot GetMacroSession() => _macros.GetSession();
+    public string? GetMacroShortcutError(Profile owner, Guid macroId) => MacroStateMachine.GetShortcutError(
+        owner, macroId, _windowsProfile, _colorToggleVk, Volatile.Read(ref _crosshairOffsetToggleState) & TOGGLE_VK_MASK, _macroRapidFireToggleVk);
+    public Task<MacroRecordingResult> RecordMacroAsync(Profile owner, Guid macroId,
+        int availableRows, CancellationToken cancellationToken = default) => _macros.RecordAsync(owner, macroId, availableRows, cancellationToken);
+    public void StopMacroRecording() => _macros.StopRecording();
+
+    public Task<bool> RetireMacroSessionAsync() => _macros.RetireAsync();
+    public void BeginMacroRecordingStopGesture(Key? key = null) => _macros.StopFromControl(key);
+    public void CancelMacroPlayback(Profile owner) => _macros.Invalidate(owner);
+
     private readonly ILoggerService _logger;
     private readonly InputRuntimeState _runtime;
     private readonly InputExecutor _inputExecutor;
@@ -27,6 +40,10 @@ public sealed class InputHookService : IInputHookService
     private readonly AutoRunStateMachine _autoRun;
     private readonly AntiAfkStateMachine _antiAfk;
     private readonly RemapStateMachine _remaps;
+    private readonly MacroPhysicalState _macroPhysical;
+    private readonly MacroStateMachine _macros;
+    private int _macroPhysicalRecoveryPending;
+    private int _macroRapidFireToggleVk;
     private readonly Func<int, bool> _isPhysicalKeyDown;
 
     private readonly object _profileLock = new();
@@ -154,6 +171,7 @@ public sealed class InputHookService : IInputHookService
             // action — its tick self-gates on _runtime.AdvancedModeEnabled. (Auto-Run release is wired in P3a.)
             if (!value)
             {
+                _macros.Cancel("Advanced Mode was disabled.");
                 if (_rapidFire.Release(preservePhysicalPairing: true, reason: "Advanced Mode disabled"))
                 {
                     // Gate closed: the arm is gone. Raised only when an arm was actually live;
@@ -195,7 +213,8 @@ public sealed class InputHookService : IInputHookService
         _isPhysicalKeyDown = keyState;
         var transport = foregroundTransport ?? new NativeAutoRunTransport();
         _runtime = new InputRuntimeState(transport);
-        _inputExecutor = new InputExecutor(_runtime, inputSender, logger, clock, keyState);
+        _macroPhysical = new MacroPhysicalState();
+        _inputExecutor = new InputExecutor(_runtime, inputSender, logger, clock, keyState, _macroPhysical);
         _autoRun = new AutoRunStateMachine(_runtime, _inputExecutor, _random, logger, transport);
         _antiAfk = new AntiAfkStateMachine(_runtime, _autoRun, _random, logger, transport);
         _gestures = new GestureChordStateMachine(
@@ -207,9 +226,46 @@ public sealed class InputHookService : IInputHookService
             clock);
         _rapidFire = new RapidFireStateMachine(_runtime, inputSender, _random, logger, _profileLock);
         _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, _isPhysicalKeyDown);
+        _macros = new MacroStateMachine(_runtime, _inputExecutor, _macroPhysical, _autoRun, logger,
+            PrepareMacroRecording, OnHookThreadAsync);
+        _macros.Changed += (_, _) =>
+        {
+            if (Volatile.Read(ref _macroPhysicalRecoveryPending) != 0 && !_macros.IsBusy)
+                SeedMacroPhysicalState();
+            MacroSessionChanged?.Invoke(this, EventArgs.Empty);
+        };
     }
 
     public Profile? ActiveProfile => !_runtime.IsDisposed && _runtime.IsRunning ? _runtime.ActiveProfile : null;
+
+    private Task OnHookThreadAsync(Action action)
+    {
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess()) { action(); return Task.CompletedTask; }
+        if (dispatcher.HasShutdownStarted) return Task.FromException(new InvalidOperationException("The input dispatcher is closing."));
+        return dispatcher.InvokeAsync(action).Task;
+    }
+
+    private void PrepareMacroRecording()
+    {
+        lock (_profileLock)
+        {
+            ReleaseAllState(preserveRapidFireArm: true);
+            _autoRun.Release(includeBackground: true);
+        }
+    }
+
+    private void RebuildMacroLookup(Profile? removedProfile = null)
+    {
+        lock (_profileLock)
+        {
+            // Keep owner selection and publication ordered with activation. An inactive
+            // profile's removal must not clear the lookup a foreground republish just built.
+            var active = _runtime.ActiveProfile;
+            _macros.Rebuild(ReferenceEquals(active, removedProfile) ? null : active, _windowsProfile, _colorToggleVk,
+                Volatile.Read(ref _crosshairOffsetToggleState) & TOGGLE_VK_MASK, Volatile.Read(ref _macroRapidFireToggleVk));
+        }
+    }
 
     public event EventHandler<Profile?>? ActiveProfileChanged;
 
@@ -450,6 +506,7 @@ public sealed class InputHookService : IInputHookService
             // Once live, ordered W/S hook events own the state until the next genuine hook boundary.
             _autoRun.SeedMovementPhysicalState();
 
+            _macros.ResumeAdmission();
             _runtime.SetRunning(true);
             LogDebug("InputHookService started");
             }
@@ -466,6 +523,7 @@ public sealed class InputHookService : IInputHookService
 
     public void Stop()
     {
+        _macros.StopBeforeExecutorClose();
         var rapidFireArmCleared = false;
         lock (_profileLock)
         {
@@ -544,6 +602,7 @@ public sealed class InputHookService : IInputHookService
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     {
+        _macros.Cancel("Windows session changed.");
         // Desktop is BACK: the away-side handler below hard-cleared every latch (the desktop was
         // gone; the UPs were never seen). Re-baseline from the ACTUAL physical keys now that input
         // flows again — a trigger key still held across the transition must classify its repeats as
@@ -912,6 +971,8 @@ public sealed class InputHookService : IInputHookService
     // enough — MouseCallback's side effects are non-suppressing.
     private void ReinstallKeyboardHookLocked()
     {
+        _macros.Cancel("Keyboard hook was replaced.");
+        SeedMacroPhysicalState();
         _keyboardReplacementInProgress = true;
 
         var user32Handle = NativeMethods.LoadLibrary("user32.dll");
@@ -966,6 +1027,8 @@ public sealed class InputHookService : IInputHookService
     // independence: a stall kills only the hook that had an event pending).
     private void ReinstallMouseHookLocked()
     {
+        _macros.Cancel("Mouse hook was replaced.");
+        SeedMacroPhysicalState();
         _mouseReplacementInProgress = true;
 
         var user32Handle = NativeMethods.LoadLibrary("user32.dll");
@@ -1003,6 +1066,8 @@ public sealed class InputHookService : IInputHookService
 
     public void ActivateProfile(Profile profile, long foregroundGeneration)
     {
+        if (!ReferenceEquals(_runtime.ActiveProfile, profile) || _runtime.ActiveProfileGeneration != foregroundGeneration)
+            _macros.Cancel("Active profile changed.", playbackOnly: true);
         ArgumentNullException.ThrowIfNull(profile);
 
         var changed = false;
@@ -1035,10 +1100,10 @@ public sealed class InputHookService : IInputHookService
                 ReleaseAllState(preserveRapidFireArm: true);
                 // Publish the incoming profile BEFORE scheduling the re-derivation (the panic-latch
                 // closure reads the live _runtime.ActiveProfile at dispatcher-execution time and must see
-                // the INCOMING trigger), but keep the GENERATION unsettled until AFTER the physical
-                // modifier baseline is restored: the mismatch fences hook handlers
-                // (ProfileInputGenerationIsCurrent) so no new-profile action can observe eligible
-                // state with stale Alt/right-button modifiers (H6).
+                // the INCOMING trigger), but keep the GENERATION unsettled until Alt is restored
+                // and stale RMB eligibility is cleared. A queued RMB baseline restores a still-held
+                // button on the hook thread, so new-profile actions cannot use the previous
+                // profile's stale right-button state (H6).
                 _runtime.SetActiveProfileReference(profile);
                 RederivePhysicalModifierState();
                 _runtime.SetActiveProfileGeneration(foregroundGeneration);
@@ -1053,6 +1118,7 @@ public sealed class InputHookService : IInputHookService
             }
         }
 
+        RebuildMacroLookup();
         if (changed)
         {
             ActiveProfileChanged?.Invoke(this, profile);
@@ -1067,6 +1133,7 @@ public sealed class InputHookService : IInputHookService
 
     public void DeactivateProfile(long foregroundGeneration)
     {
+        _macros.Cancel("Profile lost focus.", playbackOnly: true);
         Profile? previous;
 
         lock (_profileLock)
@@ -1090,6 +1157,7 @@ public sealed class InputHookService : IInputHookService
             LogDebug("Profile deactivated");
         }
 
+        RebuildMacroLookup();
         ActiveProfileChanged?.Invoke(this, null);
     }
 
@@ -1101,6 +1169,16 @@ public sealed class InputHookService : IInputHookService
         {
             return;
         }
+
+        const ProfileChangeKind macroDependencies = ProfileChangeKind.Macros | ProfileChangeKind.Master | ProfileChangeKind.Identity |
+            ProfileChangeKind.Removed | ProfileChangeKind.AltKeyboard | ProfileChangeKind.CombinedMappings | ProfileChangeKind.CapsLock |
+            ProfileChangeKind.AutoRun | ProfileChangeKind.HoldBreath | ProfileChangeKind.WindowsLauncher |
+            ProfileChangeKind.AltMouse | ProfileChangeKind.RapidFire;
+        if ((changeKind & macroDependencies) != 0)
+            _macros.Cancel("Profile settings changed.", profile, playbackOnly: (changeKind & (ProfileChangeKind.Removed | ProfileChangeKind.Master | ProfileChangeKind.Identity)) == 0);
+        if (ReferenceEquals(profile, _windowsProfile) && (changeKind & (ProfileChangeKind.WindowsLauncher | ProfileChangeKind.CapsLock | ProfileChangeKind.Master | ProfileChangeKind.Identity)) != 0)
+            _macros.Cancel("Global keyboard shortcuts changed.", playbackOnly: true);
+        RebuildMacroLookup((changeKind & ProfileChangeKind.Removed) != 0 ? profile : null);
 
         var active = ReferenceEquals(_runtime.ActiveProfile, profile);
         var windows = ReferenceEquals(_windowsProfile, profile);
@@ -1227,6 +1305,8 @@ public sealed class InputHookService : IInputHookService
         {
             _windowsProfile = profile;
             _remaps.SetWindowsProfile(profile);
+            _macros.Cancel("Global keyboard shortcuts changed.", playbackOnly: true);
+            RebuildMacroLookup();
             LogDebug($"Windows profile set: {profile.Name}");
         }
     }
@@ -1240,26 +1320,41 @@ public sealed class InputHookService : IInputHookService
         // thread. Because the key is never suppressed, a stale latch across this change costs at most one
         // missed/extra flip — so no cross-thread latch reset (which would itself be a race) is needed.
         _colorToggleVk = vk;
+        _macros.Cancel("App toggle shortcuts changed.", playbackOnly: true);
+        RebuildMacroLookup();
     }
 
     public void SetRightButtonObservation(bool enabled)
     {
         _crosshairRightButtonWatch = enabled;
+        if (enabled) ResyncRightButtonState(updateInputState: false);
+    }
 
-        if (!enabled)
+    private void ResyncRightButtonState(bool updateInputState)
+    {
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
         {
+            // The caller may settle a new profile before this queue drains. Do not admit its
+            // right-click-only actions using the old hold while the physical baseline is pending.
+            if (updateInputState) _rightButtonPressed = false;
+            // Crosshair policy holds its own gate while calling the setter. Never wait for
+            // the hook thread: serialize the native read and publication with mouse callbacks.
+            if (!dispatcher.HasShutdownStarted)
+                dispatcher.InvokeAsync(() => ResyncRightButtonState(updateInputState));
             return;
         }
+        if (_runtime.IsDisposed || (!updateInputState && !_crosshairRightButtonWatch)) return;
 
-        // Re-sync on arm: a WM_RBUTTONUP swallowed while we were not watching (secure desktop, hook
-        // reinstall, app-start while the button was already held) must not leave the overlay stuck
-        // hidden. Publish the CURRENT physical state once. GetAsyncKeyState reports the PHYSICAL
-        // button, so honor the swap setting exactly like RederivePhysicalModifierState.
+        // GetAsyncKeyState reports physical buttons. Check activation ownership AFTER the
+        // native query, which can dispatch a pending low-level callback before returning.
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
-        var isDown = _isPhysicalKeyDown(physicalRightVk);
-        RightButtonStateChanged?.Invoke(this, isDown);
+        var isDown = _runtime.IsRunning && _isPhysicalKeyDown(physicalRightVk) &&
+            !MacroPhysicalState.WasActivation(_macroPhysical.ButtonState(Models.MouseButton.Right));
+        if (updateInputState) _rightButtonPressed = isDown;
+        if (_crosshairRightButtonWatch) RightButtonStateChanged?.Invoke(this, isDown);
     }
 
     public void SetCrosshairOffsetToggleKey(Key? key)
@@ -1269,10 +1364,13 @@ public sealed class InputHookService : IInputHookService
         if ((Volatile.Read(ref _crosshairOffsetToggleState) & TOGGLE_VK_MASK) == vk) return;
         Interlocked.Exchange(ref _crosshairOffsetToggleState,
             vk | (vk != 0 && _isPhysicalKeyDown(vk) ? TOGGLE_DOWN : 0));
+        _macros.Cancel("App toggle shortcuts changed.", playbackOnly: true);
+        RebuildMacroLookup();
     }
 
     private void SeedAppTogglePhysicalState()
     {
+        SeedMacroPhysicalState();
         // Reconcile missed UPs at input-stream boundaries without treating held-key repeats as presses.
         var colorToggleVk = _colorToggleVk;
         _colorToggleDownLatched = colorToggleVk != 0 && _isPhysicalKeyDown(colorToggleVk);
@@ -1285,8 +1383,45 @@ public sealed class InputHookService : IInputHookService
             vk | (vk != 0 && _isPhysicalKeyDown(vk) ? TOGGLE_DOWN : 0), state);
     }
 
+    private void SeedMacroPhysicalState()
+    {
+        Volatile.Write(ref _macroPhysicalRecoveryPending, 1);
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            // Query on the hook thread, after any in-progress callback has completed.
+            if (!dispatcher.HasShutdownStarted)
+                dispatcher.InvokeAsync(() =>
+                {
+                    if (_runtime.IsRunning && !_runtime.IsDisposed &&
+                        Volatile.Read(ref _macroPhysicalRecoveryPending) != 0) SeedMacroPhysicalState();
+                });
+            return;
+        }
+
+        if (_macros.IsBusy)
+        {
+            _macroPhysical.ReconcileActivationPairs(_isPhysicalKeyDown, NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0);
+            // Synthetic holds can still affect the native snapshot. Changed retries after cleanup.
+            if (_macros.IsBusy) return;
+        }
+        _macroPhysical.Seed(_isPhysicalKeyDown, NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0);
+        Volatile.Write(ref _macroPhysicalRecoveryPending, 0);
+    }
+
+    private void CompletePendingMacroRecovery()
+    {
+        // A physical hook event can arrive before the queued post-cleanup seed is pumped.
+        if (Volatile.Read(ref _macroPhysicalRecoveryPending) != 0 && !_macros.IsBusy)
+            SeedMacroPhysicalState();
+    }
+
     public void SetRapidFireToggleKey(Key? key)
     {
+        key = KeyInteropUtilities.NormalizeAppToggleKey(key);
+        Volatile.Write(ref _macroRapidFireToggleVk, key.HasValue ? KeyInteropUtilities.ToVirtualKey(key.Value) : 0);
+        _macros.Cancel("App toggle shortcuts changed.", playbackOnly: true);
+        RebuildMacroLookup();
         if (_rapidFire.SetToggleKey(key))
         {
             RaiseRapidFireArmChanged();
@@ -1309,6 +1444,7 @@ public sealed class InputHookService : IInputHookService
         _antiAfk.Dispose();
         _gestures.Dispose();
         _rapidFire.Dispose();
+        _macros.Dispose();
         _inputExecutor.Dispose();
     }
 
@@ -1319,14 +1455,10 @@ public sealed class InputHookService : IInputHookService
         // P8: any invocation proves the hook alive; must be the FIRST statement, before every guard.
         Volatile.Write(ref _lastKeyboardEventTick, Stopwatch.GetTimestamp());
 
-        // P8 fail-open swap window: while a re-install is in flight for THIS hook, pass everything
-        // through with zero side effects (see _keyboardReplacementInProgress declaration).
-        if (_keyboardReplacementInProgress)
-        {
-            return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
-        }
-
-        if (nCode < 0 || _runtime.IsDisposed || !_runtime.IsRunning)
+        // During retirement retain only macro pairing/physical takeover tracking. The regular
+        // feature chain stays fail-open during replacement; tagged releases still need protection.
+        var featuresActive = !_keyboardReplacementInProgress && !_runtime.IsDisposed && _runtime.IsRunning;
+        if (nCode < 0 || (!featuresActive && !_macros.IsBusy && !_macroPhysical.HasTakeovers))
         {
             return NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
@@ -1348,6 +1480,10 @@ public sealed class InputHookService : IInputHookService
             data = *(NativeMethods.KBDLLHOOKSTRUCT*)lParam;
         }
 
+        if (data.dwExtraInfo == NativeMethods.INPUT_MACRO_RELEASE &&
+            message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP &&
+            _macroPhysical.HasPhysicalKeyTakeover((int)data.vkCode)) return (IntPtr)1;
+
         // Ignore injected events from our own SendInput calls
         if ((data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 ||
             data.dwExtraInfo == NativeMethods.INPUT_IGNORE)
@@ -1359,35 +1495,78 @@ public sealed class InputHookService : IInputHookService
         bool isKeyUp = message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP;
         int vkCode = (int)data.vkCode;
 
-        return DispatchDecodedKeyboardEvent(vkCode, isKeyDown, isKeyUp)
+        if (!featuresActive)
+        {
+            CompletePendingMacroRecovery();
+            var consume = (uint)vkCode < 256 &&
+                _macros.HandleKey(vkCode, isKeyDown, _macroPhysical.KeyState(vkCode), allowActivation: false) == true;
+            return consume ? (IntPtr)1 : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
+        }
+
+        return DispatchDecodedKeyboardEvent(vkCode, isKeyDown, isKeyUp, data.scanCode, (uint)data.flags)
             ? (IntPtr)1
             : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
     }
 
     // Hook-thread-only dispatcher. Native callbacks do liveness, replacement, running, message and
     // injected-event filtering before entering this allocation-free feature priority chain.
-    internal bool DispatchDecodedKeyboardEvent(int vkCode, bool isKeyDown, bool isKeyUp)
+    internal bool DispatchDecodedKeyboardEvent(int vkCode, bool isKeyDown, bool isKeyUp, uint scanCode = 0, uint flags = 0)
     {
-        // Anti-AFK keyboard-idle basis: a genuine PHYSICAL key event (injected events returned above).
-        var physicalTimestamp = Stopwatch.GetTimestamp();
-        _antiAfk.NotePhysicalKeyboardActivity(physicalTimestamp);
-
-        // Global color-variant toggle: fire on the assigned key (once per physical press). The key is NOT
-        // suppressed — it passes through to apps and the feature chain below — so it can never strand a key or
-        // create a wrong binding. Modifiers are rejected as toggle keys (SetColorToggleKey), so this never
-        // shadows the Alt-tracking that follows.
-        HandleColorToggle(vkCode, isKeyDown, isKeyUp);
-        HandleCrosshairOffsetToggle(vkCode, isKeyDown, isKeyUp);
-        if (_rapidFire.HandleToggleKey(vkCode, isKeyDown, isKeyUp))
+        if ((uint)vkCode >= 256 || (!isKeyDown && !isKeyUp)) return false;
+        CompletePendingMacroRecovery();
+        var previous = _macroPhysical.KeyState(vkCode);
+        _antiAfk.NotePhysicalKeyboardActivity(Stopwatch.GetTimestamp());
+        // Observe physical W/S exactly once, even when recording or a macro owns the event.
+        // The feature chain still decides activation and honors any completed W-UP handoff.
+        var autoRunPhysicalEvent = _autoRun.ObservePhysicalEvent(vkCode, isKeyDown, isKeyUp);
+        var macroDecision = _macros.HandleKey(vkCode, isKeyDown, previous);
+        var recordingPaused = _runtime.RecordingPaused;
+        var recordingPassThrough = MacroPhysicalState.WasRecordingPassThrough(previous);
+        // Toggles retain physical pairing while macro input has priority, without firing actions.
+        var allowToggle = !macroDecision.HasValue && !recordingPaused && !recordingPassThrough;
+        HandleColorToggle(vkCode, isKeyDown, isKeyUp, allowToggle);
+        HandleCrosshairOffsetToggle(vkCode, isKeyDown, isKeyUp, allowToggle);
+        if (_rapidFire.HandleToggleKey(vkCode, isKeyDown, isKeyUp, allowToggle))
         {
             RaiseRapidFireArmChanged();
         }
+        bool handled;
+        if (macroDecision.HasValue)
+        {
+            handled = macroDecision.Value;
+            // Passed-through takeover pairs still drive Alt gestures; consumed shortcuts do not.
+            if (!handled) _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
+            if (isKeyUp && MacroPhysicalState.WasSuppressed(previous)) _remaps.ReleaseOwnedKeyUp(vkCode);
+        }
+        else
+        {
+            if (recordingPaused)
+            {
+                _macros.Capture(new RecordedMacroEvent(Stopwatch.GetTimestamp(), isKeyDown ? NativeMethods.WM_KEYDOWN : NativeMethods.WM_KEYUP,
+                    vkCode, scanCode, flags, 0, 0, 0, 0));
+            }
+            // A DOWN passed through during recording owns its repeats and final UP even after
+            // Stop. Only the next fresh pair may enter the remap/gesture activation chain.
+            if (recordingPaused || recordingPassThrough)
+            {
+                handled = autoRunPhysicalEvent.SuppressPhysicalWHandoffUp;
+                if (isKeyUp || MacroPhysicalState.WasSuppressed(previous))
+                {
+                    // Retire every preheld feature latch, including unsuppressed pairs. A feature
+                    // activated after Stop cannot newly consume a recorded pair's passed-through UP.
+                    var pairedHandled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
+                    if (MacroPhysicalState.WasSuppressed(previous)) handled = pairedHandled;
+                }
+                else _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
+            }
+            else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
+        }
+        _macroPhysical.CompleteKey(vkCode, isKeyDown, handled, recordingPaused);
+        return handled;
+    }
 
-        // Physical W/S observation must precede every feature that may consume/early-return this event.
-        // In particular, Hold-Breath Early Cancel can own W-UP; Auto-Run still needs to complete its
-        // physical handoff even when that feature ultimately suppresses the same target-visible event.
-        var autoRunPhysicalEvent = _autoRun.ObservePhysicalEvent(vkCode, isKeyDown, isKeyUp);
-
+    private bool DispatchKeyboardFeatures(int vkCode, bool isKeyDown, bool isKeyUp, AutoRunStateMachine.PhysicalEvent autoRunPhysicalEvent)
+    {
         var suppressEarlyCancelKey = _gestures.HandlePanicKey(
             vkCode,
             isKeyDown,
@@ -1449,7 +1628,7 @@ public sealed class InputHookService : IInputHookService
     // repeats ignored). Deliberately does NOT suppress the key — it passes through to apps — so it holds no
     // paired state and can never strand a key or fabricate a wrong binding across a re-assign / hook restart /
     // watchdog reinstall. (Users should pick a key not otherwise used, since it still reaches the focused app.)
-    private void HandleColorToggle(int vkCode, bool isKeyDown, bool isKeyUp)
+    private void HandleColorToggle(int vkCode, bool isKeyDown, bool isKeyUp, bool allowToggle = true)
     {
         var toggleVk = _colorToggleVk;
 
@@ -1471,7 +1650,7 @@ public sealed class InputHookService : IInputHookService
             if (!_colorToggleDownLatched)
             {
                 _colorToggleDownLatched = true;
-                ColorVariantToggleRequested?.Invoke(this, EventArgs.Empty);
+                if (allowToggle) ColorVariantToggleRequested?.Invoke(this, EventArgs.Empty);
             }
         }
         else if (isKeyUp)
@@ -1480,7 +1659,7 @@ public sealed class InputHookService : IInputHookService
         }
     }
 
-    private void HandleCrosshairOffsetToggle(int vkCode, bool isKeyDown, bool isKeyUp)
+    private void HandleCrosshairOffsetToggle(int vkCode, bool isKeyDown, bool isKeyUp, bool allowToggle = true)
     {
         var state = Volatile.Read(ref _crosshairOffsetToggleState);
         var toggleVk = state & TOGGLE_VK_MASK;
@@ -1491,6 +1670,7 @@ public sealed class InputHookService : IInputHookService
             var profile = _runtime.ActiveProfile;
             var generation = _runtime.ActiveProfileGeneration;
             if (Interlocked.CompareExchange(ref _crosshairOffsetToggleState, state | TOGGLE_DOWN, state) == state
+                && allowToggle
                 && generation == _runtime.PublishedForegroundGeneration
                 && generation == _runtime.ActiveProfileGeneration
                 && ReferenceEquals(profile, _runtime.ActiveProfile))
@@ -1515,14 +1695,8 @@ public sealed class InputHookService : IInputHookService
         // including the P5 message-type early-out below (moves still count as liveness).
         Volatile.Write(ref _lastMouseEventTick, Stopwatch.GetTimestamp());
 
-        // P8 fail-open swap window: while a re-install is in flight for THIS hook, pass everything
-        // through with zero side effects (see _mouseReplacementInProgress declaration).
-        if (_mouseReplacementInProgress)
-        {
-            return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
-        }
-
-        if (nCode < 0 || _runtime.IsDisposed || !_runtime.IsRunning)
+        var featuresActive = !_mouseReplacementInProgress && !_runtime.IsDisposed && _runtime.IsRunning;
+        if (nCode < 0 || (!featuresActive && !_macros.IsBusy && !_macroPhysical.HasTakeovers && !_macroPhysical.HasMouseActivations))
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
@@ -1535,7 +1709,9 @@ public sealed class InputHookService : IInputHookService
                              NativeMethods.WM_RBUTTONDOWN or NativeMethods.WM_RBUTTONUP or
                              NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_MBUTTONUP or
                              NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP or
-                             NativeMethods.WM_MOUSEWHEEL))
+                             NativeMethods.WM_MOUSEWHEEL) &&
+            !(message == NativeMethods.WM_MOUSEHWHEEL && _runtime.RecordingPaused) &&
+            !(message == NativeMethods.WM_MOUSEMOVE && _macros.CancelsOnMouseMovement))
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
@@ -1548,25 +1724,67 @@ public sealed class InputHookService : IInputHookService
             data = *(NativeMethods.MSLLHOOKSTRUCT*)lParam;
         }
 
+        if (data.dwExtraInfo == NativeMethods.INPUT_MACRO_RELEASE &&
+            MacroRecorder.TryDecodeButton(message, data.mouseData, out var releaseButton, out var releaseDown) && !releaseDown &&
+            _macroPhysical.HasPhysicalMouseTakeover(releaseButton)) return (IntPtr)1;
+
         // Ignore injected events
         if ((data.flags & NativeMethods.MouseLlFlags.LLMHF_INJECTED) != 0)
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
 
-        return DispatchDecodedMouseEvent(message, data.mouseData)
+        if (message == NativeMethods.WM_MOUSEMOVE)
+        {
+            if (_macros.CancelsOnMouseMovement)
+                _macros.Cancel("Physical mouse movement interrupted playback.", playbackOnly: true);
+            return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
+        }
+
+        if (!featuresActive)
+        {
+            CompletePendingMacroRecovery();
+            if (MacroRecorder.TryDecodeButton(message, data.mouseData, out var button, out var down) &&
+                _macros.HandleButton(button, down, _macroPhysical.ButtonState(button), allowActivation: false) == true)
+                return (IntPtr)1;
+            return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
+        }
+
+        return DispatchDecodedMouseEvent(message, data.mouseData, data.pt.X, data.pt.Y, (uint)data.flags)
             ? (IntPtr)1
             : NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
     }
 
     // Hook-thread-only dispatcher; see DispatchDecodedKeyboardEvent for callback ownership rules.
-    internal bool DispatchDecodedMouseEvent(int message, uint mouseData)
+    internal bool DispatchDecodedMouseEvent(int message, uint mouseData, int x = 0, int y = 0, uint flags = 0)
     {
-        if (message == NativeMethods.WM_MOUSEWHEEL)
+        CompletePendingMacroRecovery();
+        var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
+        var previous = isButton ? _macroPhysical.ButtonState(button) : 0;
+        var decision = isButton ? _macros.HandleButton(button, down, previous) : null;
+        // A consumed activation must not arm right-click mappings or crosshair/hold-breath state.
+        if (decision != true) ObserveRightButton(message);
+        var recordingPaused = _runtime.RecordingPaused;
+        bool handled;
+        if (decision.HasValue) handled = decision.Value;
+        else if (recordingPaused)
         {
-            return _gestures.HandleWheel(message, mouseData);
+            _macros.Capture(new RecordedMacroEvent(Stopwatch.GetTimestamp(), message, 0, 0, flags, mouseData, x, y,
+                unchecked((short)(mouseData >> 16))));
+            handled = MacroPhysicalState.WasSuppressed(previous) && DispatchMouseFeatures(message, mouseData);
         }
+        else handled = DispatchMouseFeatures(message, mouseData);
+        // Keep physical pairing current even when capture or takeover bypasses mouse actions.
+        if (message == NativeMethods.WM_LBUTTONDOWN)
+            _rapidFire.HandleLeftButton(isDown: true, allowStart: !handled && !decision.HasValue && !recordingPaused);
+        else if (message == NativeMethods.WM_LBUTTONUP)
+            _rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        if (isButton) _macroPhysical.CompleteButton(button, down, handled);
+        return handled;
+    }
 
+    private void ObserveRightButton(int message)
+    {
         // Track right button state (lock-free). Keep _rightButtonPressed = true HERE — CombinedMappings'
         // RightClickOnly gate reads it — but decide hold-breath AFTER HandleAltMouse (H6).
         if (message == NativeMethods.WM_RBUTTONDOWN)
@@ -1591,20 +1809,17 @@ public sealed class InputHookService : IInputHookService
             }
             _remaps.OnRightButtonReleased();
         }
+    }
+
+    private bool DispatchMouseFeatures(int message, uint mouseData)
+    {
+        if (message == NativeMethods.WM_MOUSEWHEEL)
+        {
+            return _gestures.HandleWheel(message, mouseData);
+        }
 
         var handled = _gestures.HandlePanicMouse(message, mouseData, _rightButtonPressed) ||
                       _gestures.HandleAltMouse(message, mouseData);
-
-        // Rapid Fire never consumes the physical click. Existing mouse actions win priority: an Alt+Left
-        // binding or panic action may consume DOWN, in which case Rapid Fire only records the held state.
-        if (message == NativeMethods.WM_LBUTTONDOWN)
-        {
-            _rapidFire.HandleLeftButton(isDown: true, allowStart: !handled);
-        }
-        else if (message == NativeMethods.WM_LBUTTONUP)
-        {
-            _rapidFire.HandleLeftButton(isDown: false, allowStart: false);
-        }
 
         // H6: only arm hold-breath for a genuine right-click, not one suppressed as an Alt+Right binding.
         if (message == NativeMethods.WM_RBUTTONDOWN)
@@ -1628,6 +1843,7 @@ public sealed class InputHookService : IInputHookService
 
     public void ReleaseForegroundState()
     {
+        _macros.Cancel("Foreground input context changed.", playbackOnly: true);
         lock (_profileLock)
         {
             if (!_runtime.IsRunning)
@@ -1646,6 +1862,9 @@ public sealed class InputHookService : IInputHookService
         string? normalizedExecutable,
         long foregroundGeneration)
     {
+        var oldForeground = _runtime.ForegroundIdentity;
+        if (oldForeground is null || oldForeground.WindowHandle != windowHandle || oldForeground.ProcessId != processId || oldForeground.Generation != foregroundGeneration)
+            _macros.Cancel("Foreground window changed.", playbackOnly: true);
         var generationChanged = _runtime.PublishedForegroundGeneration != foregroundGeneration;
         _gestures.InvalidateWheel();
         _runtime.SetForegroundIdentity(
@@ -1681,7 +1900,7 @@ public sealed class InputHookService : IInputHookService
             _remaps.ClearLauncherState();
         }
 
-        _rightButtonPressed = false;
+        if (!preservePhysicalPairing) _rightButtonPressed = false;
         // Requested, not completed: the injected-key releases are queued to the executor (foreground
         // UPs) or signaled to the Background Auto-Run worker, which flushes them later.
         if (_logger.IsEnabled)
@@ -1713,14 +1932,7 @@ public sealed class InputHookService : IInputHookService
             _gestures.RederiveAltKeyboardPhysicalState(_isPhysicalKeyDown);
             _gestures.RederivePanicTriggerPhysicalState(_isPhysicalKeyDown);
         });
-        var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
-            ? NativeMethods.VK_LBUTTON
-            : NativeMethods.VK_RBUTTON;
-        _rightButtonPressed = _isPhysicalKeyDown(physicalRightVk);
-        if (_crosshairRightButtonWatch)
-        {
-            RightButtonStateChanged?.Invoke(this, _rightButtonPressed);
-        }
+        ResyncRightButtonState(updateInputState: true);
     }
 
     private void SchedulePanicDerivation(Action derive)

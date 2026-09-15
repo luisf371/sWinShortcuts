@@ -94,6 +94,8 @@ internal static class NativeMethods
     internal const int WM_MBUTTONDOWN = 0x0207;
     internal const int WM_MBUTTONUP = 0x0208;
     internal const int WM_MOUSEWHEEL = 0x020A;
+    internal const int WM_MOUSEMOVE = 0x0200;
+    internal const int WM_MOUSEHWHEEL = 0x020E;
     internal const int WHEEL_DELTA = 120;
     internal const int WM_XBUTTONDOWN = 0x020B;
     internal const int WM_XBUTTONUP = 0x020C;
@@ -104,6 +106,8 @@ internal static class NativeMethods
     internal const int VK_LBUTTON = 0x01;
     internal const int VK_RBUTTON = 0x02;
     internal static readonly IntPtr INPUT_IGNORE = new(12345);
+    internal static readonly IntPtr INPUT_MACRO_RELEASE = new(12346);
+    internal static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new(-4);
 
     // P9: GetAsyncKeyState reports PHYSICAL mouse buttons, unlike the LL hook's WM_RBUTTONDOWN which
     // reports the LOGICAL (post-swap) button — SM_SWAPBUTTON tells which physical VK maps to "right".
@@ -111,6 +115,34 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetPhysicalCursorPos(out POINT point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+
+    internal delegate bool MonitorEnumProc(IntPtr monitor, IntPtr deviceContext, ref RECT bounds, IntPtr data);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumDisplayMonitors(IntPtr deviceContext, IntPtr clip, MonitorEnumProc callback, IntPtr data);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFOEX info);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct MONITORINFOEX
+    {
+        internal int Size;
+        internal RECT Monitor;
+        internal RECT Work;
+        internal uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        internal string DeviceName;
+    }
 
     internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
     internal delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -616,6 +648,7 @@ internal static class NativeMethods
         MOUSEEVENTF_XUP = 0x0100,
         MOUSEEVENTF_WHEEL = 0x0800,
         MOUSEEVENTF_HWHEEL = 0x01000,
+        MOUSEEVENTF_VIRTUALDESK = 0x4000,
         MOUSEEVENTF_ABSOLUTE = 0x8000
     }
 
@@ -623,6 +656,7 @@ internal static class NativeMethods
     internal enum KbdLlFlags : uint
     {
         LLKHF_EXTENDED = 0x01,
+        LLKHF_LOWER_IL_INJECTED = 0x02,
         LLKHF_INJECTED = 0x10,
         LLKHF_ALTDOWN = 0x20,
         LLKHF_UP = 0x80

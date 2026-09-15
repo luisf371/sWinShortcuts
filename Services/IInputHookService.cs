@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 
@@ -6,6 +8,27 @@ namespace sWinShortcuts.Services;
 
 public interface IInputHookService : IDisposable
 {
+    event EventHandler? MacroSessionChanged;
+
+    MacroSessionSnapshot GetMacroSession();
+
+    string? GetMacroShortcutError(Profile owner, Guid macroId);
+
+    Task<MacroRecordingResult> RecordMacroAsync(Profile owner, Guid macroId, int availableRows,
+        CancellationToken cancellationToken = default);
+
+    void StopMacroRecording();
+
+    void BeginMacroRecordingStopGesture(Key? key = null);
+
+    void CancelMacroPlayback(Profile owner);
+
+    /// <summary>
+    /// Cancels the current macro session and asynchronously waits for bounded input cleanup.
+    /// False means cleanup timed out or faulted; keep the dispatcher and hooks alive for recovery.
+    /// </summary>
+    Task<bool> RetireMacroSessionAsync();
+
     /// <summary>Current input profile; null while the hook service is stopped or disposed.</summary>
     Profile? ActiveProfile { get; }
 

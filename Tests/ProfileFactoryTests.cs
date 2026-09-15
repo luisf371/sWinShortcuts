@@ -8,6 +8,19 @@ namespace Tests;
 public class ProfileFactoryTests
 {
     [Fact]
+    public void CreateProfiles_Macros_StartAsIndependentEmptyDisabledCollections()
+    {
+        var windows = ProfileFactory.CreateWindowsProfile();
+        var custom = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+
+        Assert.False(windows.Macros.IsEnabled);
+        Assert.False(custom.Macros.IsEnabled);
+        Assert.Empty(windows.Macros.Definitions);
+        Assert.Empty(custom.Macros.Definitions);
+        Assert.NotSame(windows.Macros, custom.Macros);
+    }
+
+    [Fact]
     public void CreateWindowsProfile_HasCorrectName()
     {
         var profile = ProfileFactory.CreateWindowsProfile();

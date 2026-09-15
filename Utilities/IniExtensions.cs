@@ -7,6 +7,50 @@ namespace sWinShortcuts.Utilities;
 
 public static class IniExtensions
 {
+    public static bool TryGetBoolean(this IniDocument doc, string section, string key, out bool result)
+    {
+        result = default;
+        return doc.TryGetSourceValue(section, key, out var value) && bool.TryParse(value, out result);
+    }
+
+    public static bool TryGetInt32(this IniDocument doc, string section, string key, out int result)
+    {
+        result = default;
+        return doc.TryGetSourceValue(section, key, out var value) &&
+            int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
+    }
+
+    public static bool TryGetEnum<TEnum>(this IniDocument doc, string section, string key, out TEnum result)
+        where TEnum : struct, Enum
+    {
+        result = default;
+        return doc.TryGetSourceValue(section, key, out var value) && value is not null && !value.Contains(',') &&
+            Enum.TryParse(value, true, out result) && Enum.IsDefined(result);
+    }
+
+    public static bool TryGetKey(this IniDocument doc, string section, string key, out Key result)
+    {
+        result = Key.None;
+        if (!doc.TryGetSourceValue(section, key, out var value) || string.IsNullOrWhiteSpace(value) || value.Contains(','))
+        {
+            return false;
+        }
+
+        if (value.Equals("None", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var parsed = KeySerializer.Deserialize(value);
+        if (!parsed.HasValue)
+        {
+            return false;
+        }
+
+        result = parsed.Value;
+        return true;
+    }
+
     public static bool GetBoolean(this IniDocument doc, string section, string key, bool defaultValue = false)
     {
         var value = doc.GetValue(section, key);

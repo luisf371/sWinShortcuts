@@ -410,13 +410,18 @@ public sealed class WheelInputExecutorTests
     {
         internal ConcurrentQueue<(Key Key, bool IsDown)> Transitions { get; } = new();
 
-        public bool SendKey(Key key, bool isKeyDown)
+        public bool SendKey(Key key, bool isKeyDown, bool macroRelease = false, Func<bool>? canSend = null)
         {
+            if (isKeyDown && canSend?.Invoke() == false) return false;
             Transitions.Enqueue((key, isKeyDown));
             return send(key, isKeyDown);
         }
 
         public bool SendVirtualKeyTap(int virtualKey) => throw new NotSupportedException();
+        public bool SendMouseButton(sWinShortcuts.Models.MouseButton button, bool isDown, bool macroRelease = false, Func<bool>? canSend = null) =>
+            throw new NotSupportedException();
+        public bool MoveMouseTo(int physicalX, int physicalY, Func<bool>? canSend = null) => throw new NotSupportedException();
+        public bool SendMouseWheel(int delta, bool horizontal, Func<bool>? canSend = null) => throw new NotSupportedException();
         public bool SendLeftClick(int holdMilliseconds) => throw new NotSupportedException();
         public bool SendDummyKey() => true;
     }

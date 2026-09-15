@@ -9,6 +9,28 @@ namespace Tests;
 public sealed class ProfilePersistenceSnapshotTests
 {
     [Fact]
+    public void Create_MacroRowsChangeAfterCapture_KeepsDetachedDefinitionsAndSteps()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.IsEnabled = true;
+        profile.Macros.LoadError = "Preserved failure";
+        profile.IsPersistenceSuspended = true;
+        profile.Macros.Definitions = [new() { Label = "Original", Steps = [new() { Kind = MacroStepKind.Wait, DurationMs = 100 }] }];
+
+        var snapshot = ProfilePersistenceSnapshot.Create(profile);
+        profile.Macros.Definitions[0].Steps[0] = new() { Kind = MacroStepKind.Wait, DurationMs = 200 };
+        profile.Macros.Definitions[0] = profile.Macros.Definitions[0] with { Label = "Changed" };
+        profile.Macros.IsEnabled = false;
+        profile.Macros.LoadError = null;
+
+        Assert.True(snapshot.Macros.IsEnabled);
+        Assert.Equal("Original", Assert.Single(snapshot.Macros.Definitions).Label);
+        Assert.Equal(100, Assert.Single(snapshot.Macros.Definitions[0].Steps).DurationMs);
+        Assert.Equal("Preserved failure", snapshot.Macros.LoadError);
+        Assert.True(snapshot.IsPersistenceSuspended);
+    }
+
+    [Fact]
     public void Create_LiveModelMutatesAfterCapture_SnapshotRemainsDeepAndCoherent()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");

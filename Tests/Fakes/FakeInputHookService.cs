@@ -7,6 +7,36 @@ namespace Tests.Fakes;
 
 public sealed class FakeInputHookService : IInputHookService
 {
+    public event EventHandler? MacroSessionChanged;
+    public int MacroSessionSubscriberCount => MacroSessionChanged?.GetInvocationList().Length ?? 0;
+    public MacroSessionSnapshot MacroSession { get; set; }
+    public MacroSessionSnapshot GetMacroSession() => MacroSession;
+    public Func<Profile, Guid, string?>? MacroShortcutError { get; set; }
+    public string? GetMacroShortcutError(Profile owner, Guid macroId) => MacroShortcutError?.Invoke(owner, macroId);
+    public Func<Profile, Guid, int, CancellationToken, Task<MacroRecordingResult>>? RecordMacroHandler { get; set; }
+    public Action? MacroRecordingStopRequested { get; set; }
+    public int StopMacroRecordingCount { get; private set; }
+    public int MacroStopGestureCount { get; private set; }
+    public ConcurrentQueue<Profile> CancelledMacroOwners { get; } = new();
+    public Action<Profile>? MacroPlaybackCancellation { get; set; }
+    public Func<Task<bool>>? RetireMacroSessionHandler { get; set; }
+    public Task<bool> RetireMacroSessionAsync() => RetireMacroSessionHandler?.Invoke() ?? Task.FromResult(true);
+    public void RaiseMacroSessionChanged() => MacroSessionChanged?.Invoke(this, EventArgs.Empty);
+    public Task<MacroRecordingResult> RecordMacroAsync(Profile owner, Guid macroId, int availableRows, CancellationToken cancellationToken = default) =>
+        RecordMacroHandler?.Invoke(owner, macroId, availableRows, cancellationToken) ??
+        Task.FromResult(new MacroRecordingResult(1, owner, macroId, [], MacroRecordingEndReason.Stopped, false));
+    public void StopMacroRecording()
+    {
+        StopMacroRecordingCount++;
+        MacroRecordingStopRequested?.Invoke();
+    }
+    public void BeginMacroRecordingStopGesture(Key? key = null) => MacroStopGestureCount++;
+    public void CancelMacroPlayback(Profile owner)
+    {
+        MacroPlaybackCancellation?.Invoke(owner);
+        CancelledMacroOwners.Enqueue(owner);
+    }
+
     private volatile Profile? _activeProfile;
     public Profile? ActiveProfile => _activeProfile;
 

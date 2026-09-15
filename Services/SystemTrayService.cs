@@ -203,7 +203,7 @@ public sealed class SystemTrayService : ISystemTrayService
             return;
         }
 
-        _application.Dispatcher.Invoke(() =>
+        _application.Dispatcher.BeginInvoke(new Action(() =>
         {
             if (_mainWindow is MainWindow mainWindow)
             {
@@ -219,7 +219,7 @@ public sealed class SystemTrayService : ISystemTrayService
             _mainWindow.Topmost = restoreTopmost;
             _mainWindow.Focus();
             _application.Shutdown();
-        });
+        }));
     }
 
     private void ThrowIfDisposed()

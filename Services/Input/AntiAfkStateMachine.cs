@@ -229,6 +229,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
     public bool CanExecute(in InputCommand command)
     {
         return !_runtime.IsDisposed
+            && !_runtime.AutomationInhibited
             && _runtime.IsRunning
             && _runtime.AdvancedModeEnabled
             && command.ExpectedProfile is { IsEnabled: true } profile
@@ -245,7 +246,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
 
     private void Tick(long generation, bool requireStarted = true)
     {
-        if (_runtime.IsDisposed || !_runtime.IsRunning || Volatile.Read(ref _disposed) != 0
+        if (_runtime.AutomationInhibited || _runtime.IsDisposed || !_runtime.IsRunning || Volatile.Read(ref _disposed) != 0
             || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration))))
         {
             return;
@@ -525,6 +526,7 @@ internal sealed class AntiAfkStateMachine : IInputCommandGuard, IDisposable
         if (_runtime.IsDisposed || !_runtime.IsRunning || Volatile.Read(ref _disposed) != 0
             || (requireStarted && (!_started || generation != Volatile.Read(ref _lifecycleGeneration)))
             || !_runtime.AdvancedModeEnabled
+            || _runtime.AutomationInhibited
             || !_runtime.ProfileInputGenerationIsCurrent()
             || owner is not { IsEnabled: true }
             || !owner.AntiAfk.IsEnabled

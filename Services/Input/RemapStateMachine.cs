@@ -516,9 +516,11 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         return true;
     }
 
-    private CapsLockSettings? GetEffectiveCapsLockSettings()
+    private CapsLockSettings? GetEffectiveCapsLockSettings() => GetEffectiveCapsLockSettings(
+        _runtime.ProfileInputGenerationIsCurrent() ? _runtime.ActiveProfile : null, _windowsProfile);
+
+    internal static CapsLockSettings? GetEffectiveCapsLockSettings(Profile? activeProfile, Profile? windows)
     {
-        var activeProfile = _runtime.ProfileInputGenerationIsCurrent() ? _runtime.ActiveProfile : null;
         var active = activeProfile is { IsEnabled: true } ? activeProfile.CapsLock : null;
         if (active is { IsEnabled: true } enabledActive &&
             (enabledActive.Mode != CapsLockMode.Normal || enabledActive.IsRemapEnabled))
@@ -526,7 +528,6 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             return enabledActive;
         }
 
-        var windows = _windowsProfile;
         var global = windows is { IsEnabled: true } ? windows.CapsLock : null;
         if (global is { IsEnabled: true } enabledGlobal &&
             (enabledGlobal.Mode != CapsLockMode.Normal || enabledGlobal.IsRemapEnabled))

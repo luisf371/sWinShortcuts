@@ -381,6 +381,21 @@
         </Setter>
     </Style>
 
+    <Style x:Key="MacroContextMenuItemStyle" TargetType="MenuItem" BasedOn="{StaticResource ContextMenuItemStyle}">
+        <Setter Property="HeaderTemplate">
+            <Setter.Value>
+                <DataTemplate>
+                    <TextBlock Text="{Binding}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=MenuItem}}" />
+                </DataTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource BackgroundBrush}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
     <Style TargetType="ContextMenu">
         <Setter Property="Background" Value="{StaticResource ComboBoxBackgroundBrush}" />
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
