@@ -18,8 +18,8 @@ namespace sWinShortcuts.Services.Input;
 /// </summary>
 internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 {
-    private const int KEY_PRESS_MIN_MS = 31;
-    private const int KEY_PRESS_MAX_MS = 53;
+    internal const int KEY_PRESS_MIN_MS = 31;
+    internal const int KEY_PRESS_MAX_MS = 53;
     private const int HOLD_BREATH_JITTER_MIN_MS = 15;
     private const int HOLD_BREATH_JITTER_MAX_MS = 36;
     private const int HOLD_BREATH_TAP_MIN_MS = 20;

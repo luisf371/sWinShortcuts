@@ -19,8 +19,8 @@ internal sealed class RapidFireStateMachine : IDisposable
     private const int TIMER_ARMED = 1;
     private const int TIMER_FIRED = 2;
     private const int TIMER_CANCELLED = 3;
-    private const int HOLD_MIN_MS = 10;
-    private const int HOLD_MAX_MS = 20;
+    internal const int HOLD_MIN_MS = 10;
+    internal const int HOLD_MAX_MS = 20;
     private const double FIRE_TOLERANCE_MS = 2.0;
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
 
@@ -80,7 +80,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         return Release(preservePhysicalPairing: true, reason: "toggle key reassigned");
     }
 
-    internal bool HandleToggleKey(int vkCode, bool isKeyDown, bool isKeyUp)
+    internal bool HandleToggleKey(int vkCode, bool isKeyDown, bool isKeyUp, bool allowToggle = true)
     {
         if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0)
         {
@@ -111,6 +111,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         }
 
         _toggleDownLatched = true;
+        if (!allowToggle) return false;
         if (IsReady())
         {
             return Release(preservePhysicalPairing: true, reason: "toggle-off");
@@ -300,6 +301,7 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     private bool IsCurrent(long generation, Profile profile, long foregroundGeneration) =>
         !_runtime.IsDisposed &&
+        !_runtime.AutomationInhibited &&
         _runtime.IsRunning &&
         _runtime.AdvancedModeEnabled &&
         IsReady() &&
@@ -394,7 +396,16 @@ internal sealed class RapidFireStateMachine : IDisposable
             }
 
             // WindowsInputSender logs which SendInput call failed; this bool adds no useful detail.
-            _inputSender.SendLeftClick(holdMilliseconds);
+            if (!_runtime.TryBeginAutomationOutput()) return;
+            try
+            {
+                if (IsCurrent(generation, profile, foregroundGeneration))
+                    _inputSender.SendLeftClick(holdMilliseconds);
+            }
+            finally
+            {
+                _runtime.EndAutomationOutput();
+            }
         }
         catch (Exception ex)
         {

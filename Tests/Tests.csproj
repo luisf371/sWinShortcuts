@@ -21,6 +21,8 @@
   <ItemGroup>
     <ProjectReference Include="..\sWinShortcuts.csproj" />
     <None Include="..\MainWindow.xaml" Link="MainWindow.xaml.testdata" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\Brushes.xaml" Link="Brushes.xaml.testdata" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\Resources\Styles.xaml" Link="Styles.xaml.testdata" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

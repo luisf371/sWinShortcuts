@@ -130,6 +130,28 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     }
 
     internal bool IsActive => _active;
+
+    private bool _macroReserved;
+
+    internal bool TryReserveForMacro()
+    {
+        lock (_autoRunLock)
+        {
+            if (_active || _activationPending || _backgroundThread is not null || _macroReserved) return false;
+            _macroReserved = true;
+            return true;
+        }
+    }
+
+    internal bool MacroAdmissionDrained
+    {
+        get { lock (_autoRunLock) return !_antiAfkTapInFlight; }
+    }
+
+    internal void EndMacroReservation()
+    {
+        lock (_autoRunLock) _macroReserved = false;
+    }
     internal bool IsBackground => _active && _isBackground;
     internal long ConfigurationGeneration => Volatile.Read(ref _configurationGeneration);
 
@@ -353,7 +375,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     {
         lock (_autoRunLock)
         {
-            if (_active || _activationPending || _backgroundThread is not null || _runtime.IsDisposed || !_runtime.IsRunning
+            if (_macroReserved || _runtime.AutomationInhibited || _active || _activationPending || _backgroundThread is not null || _runtime.IsDisposed || !_runtime.IsRunning
                 || command.ExpectedProfile is not { IsEnabled: true } profile
                 || !_runtime.ProfileInputGenerationIsCurrent(profile, command.ForegroundGeneration)
                 || !profile.AntiAfk.IsEnabled)
@@ -371,7 +393,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     {
         lock (_autoRunLock)
         {
-            if (_active || _activationPending || _backgroundThread is not null || _runtime.IsDisposed || !_runtime.IsRunning)
+            if (_macroReserved || _runtime.AutomationInhibited || _active || _activationPending || _backgroundThread is not null || _runtime.IsDisposed || !_runtime.IsRunning)
             {
                 return false;
             }
@@ -488,7 +510,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         ModifierKeys triggerModifier;
         lock (_autoRunLock)
         {
-            if (!CanActivate(profile, configurationGeneration) || _active || _activationPending
+            if (_macroReserved || !CanActivate(profile, configurationGeneration) || _active || _activationPending
                 || _backgroundThread is not null || _antiAfkTapInFlight) return false;
             generation = Interlocked.Increment(ref _injectionGeneration);
             _activationPending = true;
@@ -584,6 +606,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
 
     private bool CanActivate(Profile profile, long configurationGeneration) =>
         !_runtime.IsDisposed && _runtime.IsRunning && _runtime.AdvancedModeEnabled
+        && !_runtime.AutomationInhibited
         && profile.IsEnabled && profile.AutoRun.IsEnabled
         && ReferenceEquals(_runtime.ActiveProfile, profile) && _runtime.ProfileInputGenerationIsCurrent()
         && configurationGeneration == Volatile.Read(ref _configurationGeneration);

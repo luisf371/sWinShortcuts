@@ -13,6 +13,62 @@ namespace Tests;
 public sealed class ProfileRuntimeNotificationTests
 {
     [Fact]
+    public async Task MacroEdit_CancelsBeforePublication_ThenNotifiesRuntimeWithNewRows()
+    {
+        var store = new InMemoryProfileStore();
+        var manager = new ProfileManager(store);
+        var input = new FakeInputHookService();
+        var runtime = new RecordingProfileRuntimeService(() => { });
+        using var vm = new MainViewModel(manager, new FakeDialogService(), new FakeDisplayService(),
+            new RecordingColorControlService(), runtime, inputHookService: input);
+        await vm.InitializeAsync();
+        var model = await manager.AddProfileAsync("Game", "game.exe");
+        var owner = vm.Profiles.Single(profile => ReferenceEquals(profile.Model, model));
+        owner.Macros.NewMacroCommand.Execute(null);
+        var macro = owner.Macros.SelectedMacro!;
+        runtime.Changes.Clear();
+        while (input.CancelledMacroOwners.TryDequeue(out _)) { }
+        var rowsAtCancellation = -1;
+        input.MacroPlaybackCancellation = profile => rowsAtCancellation = profile.Macros.Definitions[0].Steps.Length;
+
+        macro.InsertRecording(0, [new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 500 }]);
+
+        Assert.Same(model, Assert.Single(input.CancelledMacroOwners));
+        Assert.Equal(0, rowsAtCancellation);
+        Assert.Equal((model, ProfileChangeKind.Macros), Assert.Single(runtime.Changes));
+        Assert.Equal(500, Assert.Single(model.Macros.Definitions[0].Steps).DurationMs);
+        await vm.FlushPendingSavesAsync();
+    }
+
+    [Fact]
+    public async Task ShortcutConflictNotification_RefreshesEditor_WithoutChangingSavedAssignment()
+    {
+        var store = new InMemoryProfileStore();
+        var manager = new ProfileManager(store);
+        var input = new FakeInputHookService();
+        using var vm = new MainViewModel(manager, new FakeDialogService(), new FakeDisplayService(),
+            new RecordingColorControlService(), inputHookService: input);
+        await vm.InitializeAsync();
+        var model = await manager.AddProfileAsync("Game", "game.exe");
+        var owner = vm.Profiles.Single(profile => ReferenceEquals(profile.Model, model));
+        owner.Macros.NewMacroCommand.Execute(null);
+        var macro = owner.Macros.SelectedMacro!;
+        macro.ShortcutKey = Key.F6;
+        macro.ControlModifier = true;
+        input.MacroShortcutError = (_, _) => "This key is reserved by an app-level toggle.";
+
+        input.RaiseMacroSessionChanged();
+
+        Assert.Contains("app-level toggle", macro.ValidationMessage);
+        Assert.Equal(Key.F6, model.Macros.Definitions[0].ShortcutKey);
+        Assert.Equal(ModifierKeys.Control, model.Macros.Definitions[0].ShortcutModifiers);
+        input.MacroShortcutError = null;
+        input.RaiseMacroSessionChanged();
+        Assert.DoesNotContain("app-level toggle", macro.ValidationMessage);
+        await vm.FlushPendingSavesAsync();
+    }
+
+    [Fact]
     public void AltMouseSources_ExhaustionDoesNotDuplicate_RowsRetainOwnSource()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");

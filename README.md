@@ -68,6 +68,10 @@ moment that program comes to the foreground.
 
 ### Gaming Assists
 
+- **Macros** — create labeled, editable sequences of keyboard presses, waits, mouse
+  buttons, scrolling, and coordinate clicks. Assign a keyboard shortcut to run a macro
+  once in its application profile, or record physical actions and edit the resulting steps.
+
 - **Auto Run** — toggle continuous forward movement with a hotkey (default `Ctrl+R`), with
   optional sprint in hold or press mode. By default it sends to the focused window; it can
   also target the game while it's in the background (experimental — support depends on the
@@ -185,6 +189,76 @@ Wheel shortcuts skip targets already detected as held and discard excess or stal
 taps during fast scrolling. They support vertical scrolling and keyboard tap targets.
 When using **Background Auto Run**, choose wheel targets different from its movement
 and sprint keys: wheel output can interrupt those background holds.
+
+### Macros
+
+Open an application profile's **Macros** tab, immediately after **Advanced**. Enable
+macros for the profile, choose **New**, give the macro a label, assign its keyboard key
+and optional Ctrl/Alt/Shift/Win modifiers, then enable that macro. Playback requires
+**Advanced Mode** and runs only while that profile's application is in the foreground.
+Shortcut conflicts and incomplete sequences are shown in the editor and cannot run.
+
+The sequence stays beside an inspector for the selected step. **Add step** lets you choose
+an action directly; the insertion hint shows where new steps and recordings will go.
+With the step list focused, use **Delete** to remove a step, **Ctrl+D** to duplicate it,
+and **Alt+Up/Down** to reorder it. **Show step** jumps to the row named in a validation error.
+Duplicating a macro adds the next available number to its name, such as **Ammo 1** and
+**Ammo 2**. Open either key dropdown and press a key to select it directly.
+
+**Collapse presses** is on by default. Adjacent matching Down, Wait, and Up events appear as one
+press with their original step numbers and hold time. Intervening actions keep the events
+separate. Edit a grouped press's key/button and hold directly, or use **Show all steps**
+to edit the original events. Moving, duplicating, or deleting a collapsed row operates on
+all three. This changes the view only: saved steps,
+playback, and the 1,000-step limit still use the original events.
+
+**Set all waits…** opens an inline editor above the sequence. Enter a duration from
+**0 to 3,600,000 ms** and choose **Apply** (or press Enter in the duration field).
+The affected-step count includes Wait events displayed as press holds. Native Key press
+and Mouse click hold durations are unchanged. **Close** or Escape discards the input;
+switching macros, leaving the editor, or starting a recording closes it automatically.
+
+Use the step editor to insert, duplicate, delete, and reorder key presses, explicit
+key/button down and up events, waits, mouse clicks, cursor moves, and vertical or
+horizontal scrolling. A press or click with a hold of **0 ms** uses the existing automatic
+hold timing; explicit waits and holds keep their entered durations. Explicit down/up
+sequences must balance before playback is enabled.
+
+**Record** captures physical keyboard/button/wheel actions and their timing. **Stop
+recording** appends the take after the selected row (or at the end); edit out unwanted
+actions afterward. Recording pauses other automation, leaves the hooks installed, and
+does not capture free cursor movement. Interrupted or capacity-limited takes retain
+their captured prefix and add release rows for inputs still held. Each macro supports
+1,000 steps, each profile supports 64 macros, and one recording lasts at most 10 minutes.
+
+Mouse positions are signed absolute physical screen pixels, including monitors left of
+or above the primary display. The coordinate picker gives you three seconds to move
+the cursor. Playback travels along a quick, slightly curved path with a shared
+9,000-pixel/second speed cap and checks arrival before clicking. Travel adds time to
+the saved waits. Clipped cursors, changed display geometry, and paths crossing monitor gaps stop playback with
+an explanation; the app does not remove a game's cursor confinement.
+
+One shortcut press runs the sequence once, after the launch chord is released. Further
+macro shortcuts are ignored while a run is busy. Physical modifiers pause new output
+until released; they can still affect keys already held in the target app. **F12** is a
+temporary emergency cancellation key during playback or recording. Focus loss, profile
+changes, and conflicting physical input also cancel playback and release its held inputs.
+There is no repeat mode or regular playback Stop button.
+
+**Cancel on mouse movement** is a per-macro option, off by default. Enable it to cancel
+playback when you move the mouse, including during waits and held inputs. Injected
+movement does not trigger this option. Coordinate actions still require arrival at the
+requested pixel before continuing.
+
+With **Enable Debug Logging** on, macro diagnostics include session states, step numbers
+and action types, recording completion, and cancellation/failure reasons. A cursor-arrival
+failure also logs the requested and observed pixels, elapsed settling time, and monitor bounds.
+
+Auto-Run must finish before playback can start. Rapid Fire and Anti-AFK wait until the
+macro finishes; the Rapid Fire arm is preserved. Macros use the same Windows input
+transport as the existing features, so game acceptance and exact scheduling remain
+application dependent. Unreadable or malformed macro sections suspend saves for that
+profile to protect the original file; correct the file and restart to recover.
 
 ### Default Quick Reference
 

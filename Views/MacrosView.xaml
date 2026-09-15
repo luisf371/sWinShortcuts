@@ -1,0 +1,1098 @@
+<UserControl x:Class="sWinShortcuts.Views.MacrosView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:sWinShortcuts.ViewModels"
+             xmlns:models="clr-namespace:sWinShortcuts.Models"
+             xmlns:conv="clr-namespace:sWinShortcuts.Converters"
+             xmlns:input="clr-namespace:System.Windows.Input;assembly=WindowsBase"
+             xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
+             x:Name="Editor" Unloaded="Editor_Unloaded" DataContextChanged="Editor_DataContextChanged"
+             AutomationProperties.Name="Macro editor">
+    <UserControl.Resources>
+        <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
+        <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
+        <conv:KeyDisplayConverter x:Key="KeyDisplay" />
+        <conv:InputTriggerDisplayConverter x:Key="ShortcutDisplay" />
+
+        <!-- App brushes are referenced with DynamicResource: template tests host this view without an
+             Application. These local tones keep secondary text, selection and state colors at 4.5:1 or
+             better on the dark panels. State is always repeated in text, never color alone. -->
+        <SolidColorBrush x:Key="MacroMutedBrush" Color="#FF9AA4B2" />
+        <SolidColorBrush x:Key="MacroDetailBrush" Color="#FFC5CDD8" />
+        <SolidColorBrush x:Key="MacroSelectedTextBrush" Color="#FFD5DDE8" />
+        <SolidColorBrush x:Key="MacroPanelBrush" Color="#FF121B26" />
+        <SolidColorBrush x:Key="MacroLineBrush" Color="#FF243246" />
+        <SolidColorBrush x:Key="MacroInputLineBrush" Color="#FF5A6B80" />
+        <SolidColorBrush x:Key="MacroControlBrush" Color="#FF17212D" />
+        <SolidColorBrush x:Key="MacroControlHoverBrush" Color="#FF1F2C3B" />
+        <SolidColorBrush x:Key="MacroControlPressedBrush" Color="#FF16324A" />
+        <SolidColorBrush x:Key="MacroRowHoverBrush" Color="#FF1A2533" />
+        <SolidColorBrush x:Key="MacroRowSelectedBrush" Color="#FF1D4A6B" />
+        <SolidColorBrush x:Key="MacroPrimaryBrush" Color="#FF2579AD" />
+        <SolidColorBrush x:Key="MacroPrimaryHoverBrush" Color="#FF206A99" />
+        <SolidColorBrush x:Key="MacroPrimaryPressedBrush" Color="#FF1A5A83" />
+        <SolidColorBrush x:Key="MacroFocusBrush" Color="#FF65BDED" />
+        <SolidColorBrush x:Key="MacroSuccessBrush" Color="#FF7CC99A" />
+        <SolidColorBrush x:Key="MacroWarningBrush" Color="#FFE3B25B" />
+        <SolidColorBrush x:Key="MacroErrorBrush" Color="#FFF08A7E" />
+        <SolidColorBrush x:Key="MacroOffBrush" Color="#FF6B7686" />
+        <SolidColorBrush x:Key="MacroRecordBrush" Color="#FFE5484D" />
+        <SolidColorBrush x:Key="MacroRecordingSurfaceBrush" Color="#FF2A191C" />
+        <SolidColorBrush x:Key="MacroRecordingLineBrush" Color="#FF6B2E35" />
+        <SolidColorBrush x:Key="MacroNoticeSurfaceBrush" Color="#FF272216" />
+        <SolidColorBrush x:Key="MacroNoticeLineBrush" Color="#FF5A4822" />
+
+        <!-- 16 px stroke icons drawn in one weight by MacroIcon. -->
+        <Geometry x:Key="MacroIconKeyboard">M2.5,4.5 H13.5 A1,1 0 0 1 14.5,5.5 V11.5 A1,1 0 0 1 13.5,12.5 H2.5 A1,1 0 0 1 1.5,11.5 V5.5 A1,1 0 0 1 2.5,4.5 Z M4.25,7 H4.75 M6.75,7 H7.25 M9.25,7 H9.75 M11.25,7 H11.75 M5,10 H11</Geometry>
+        <Geometry x:Key="MacroIconMouse">M8,1.5 A4.5,4.5 0 0 1 12.5,6 V10 A4.5,4.5 0 0 1 3.5,10 V6 A4.5,4.5 0 0 1 8,1.5 Z M8,3.5 V6</Geometry>
+        <Geometry x:Key="MacroIconWait">M1.75,8 A6.25,6.25 0 0 1 14.25,8 A6.25,6.25 0 0 1 1.75,8 Z M8,4.5 V8 L10.5,9.5</Geometry>
+        <Geometry x:Key="MacroIconMove">M4.5,2 V13 L7.25,10.5 L9.25,14.25 L10.9,13.4 L8.9,9.75 H12.5 Z</Geometry>
+        <Geometry x:Key="MacroIconWheel">M8,2 V14 M5,5 L8,2 L11,5 M5,11 L8,14 L11,11</Geometry>
+        <Geometry x:Key="MacroIconAdd">M8,3 V13 M3,8 H13</Geometry>
+        <Geometry x:Key="MacroIconChevron">M4,6 L8,10 L12,6</Geometry>
+        <Geometry x:Key="MacroIconDuplicate">M5.5,5.5 H12.5 A1,1 0 0 1 13.5,6.5 V13.5 A1,1 0 0 1 12.5,14.5 H5.5 A1,1 0 0 1 4.5,13.5 V6.5 A1,1 0 0 1 5.5,5.5 Z M2.5,10.5 V3.5 A1,1 0 0 1 3.5,2.5 H10.5</Geometry>
+        <Geometry x:Key="MacroIconDelete">M2.5,4.5 H13.5 M6,4.5 V3 A0.75,0.75 0 0 1 6.75,2.25 H9.25 A0.75,0.75 0 0 1 10,3 V4.5 M4,4.5 L4.75,13 A1,1 0 0 0 5.75,14 H10.25 A1,1 0 0 0 11.25,13 L12,4.5 M6.75,7 V11.5 M9.25,7 V11.5</Geometry>
+        <Geometry x:Key="MacroIconUp">M8,13 V3 M4,7 L8,3 L12,7</Geometry>
+        <Geometry x:Key="MacroIconDown">M8,3 V13 M4,9 L8,13 L12,9</Geometry>
+        <Geometry x:Key="MacroIconTarget">M3,8 A5,5 0 0 1 13,8 A5,5 0 0 1 3,8 Z M8,1 V5 M8,11 V15 M1,8 H5 M11,8 H15</Geometry>
+        <Geometry x:Key="MacroIconWarning">M8,1.75 L14.75,13.75 H1.25 Z M8,6 V9.25 M8,11.5 V11.75</Geometry>
+
+        <Style x:Key="MacroIcon" TargetType="Path">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="Stretch" Value="None" />
+            <Setter Property="StrokeThickness" Value="1.25" />
+            <Setter Property="StrokeStartLineCap" Value="Round" />
+            <Setter Property="StrokeEndLineCap" Value="Round" />
+            <Setter Property="StrokeLineJoin" Value="Round" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Stroke" Value="{Binding (TextElement.Foreground), RelativeSource={RelativeSource Self}}" />
+        </Style>
+
+        <!-- Keyboard focus rings (shown only for keyboard navigation). -->
+        <Style x:Key="MacroFocusRing">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Border Margin="-3" BorderThickness="2" CornerRadius="6" SnapsToDevicePixels="True"
+                                BorderBrush="{StaticResource MacroFocusBrush}" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="MacroInsetFocusRing">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Border Margin="4,1" BorderThickness="2" CornerRadius="4" SnapsToDevicePixels="True"
+                                BorderBrush="{StaticResource MacroFocusBrush}" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="MacroButton" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+            <Setter Property="Background" Value="{StaticResource MacroControlBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource MacroLineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="MinWidth" Value="30" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource MacroFocusRing}" />
+            <Setter Property="ToolTipService.ShowOnDisabled" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}"
+                                CornerRadius="4" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Resources>
+                <!-- The app-wide TextBlock style would pin label text to one color; follow the button. -->
+                <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                </Style>
+            </Style.Resources>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroControlHoverBrush}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroControlPressedBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MacroPrimaryButton" TargetType="Button" BasedOn="{StaticResource MacroButton}">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="{StaticResource MacroPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource MacroPrimaryBrush}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroPrimaryHoverBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource MacroFocusBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroPrimaryPressedBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MacroIconButton" TargetType="Button" BasedOn="{StaticResource MacroButton}">
+            <Setter Property="Foreground" Value="{StaticResource MacroDetailBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroControlHoverBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource MacroLineBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroControlPressedBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MacroLinkButton" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource AccentLightBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="2,1" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource MacroFocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center" RecognizesAccessKey="False" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Resources>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    <Setter Property="TextDecorations" Value="Underline" />
+                </Style>
+            </Style.Resources>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Shortcut modifiers read as keycaps; checked caps are filled, bold and bordered. -->
+        <Style x:Key="MacroKeycap" TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="{StaticResource MacroInputLineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="MinWidth" Value="46" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="8,0" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource MacroFocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}"
+                                CornerRadius="4" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Resources>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=CheckBox}}" />
+                </Style>
+            </Style.Resources>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroRowSelectedBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource MacroFocusBrush}" />
+                    <Setter Property="Foreground" Value="White" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MacroFieldLabel" TargetType="TextBlock">
+            <Setter Property="Width" Value="56" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="MacroComboItem" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}" CornerRadius="3" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroControlHoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroRowSelectedBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MacroMenuSeparator" TargetType="Separator">
+            <Setter Property="Margin" Value="6,4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Separator">
+                        <Border Height="1" Background="{StaticResource MacroLineBrush}" SnapsToDevicePixels="True" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Own template: the theme ListBox turns white when disabled, which recording does. -->
+        <Style x:Key="MacroStepList" TargetType="ListBox">
+            <Setter Property="Background" Value="{StaticResource MacroPanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource MacroLineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+            <Setter Property="Padding" Value="0,3" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource MacroInsetFocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBox">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6" SnapsToDevicePixels="True">
+                            <ScrollViewer Padding="{TemplateBinding Padding}" Focusable="False">
+                                <ItemsPresenter />
+                            </ScrollViewer>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.6" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="MacroStepItem" TargetType="ListBoxItem">
+            <Setter Property="AutomationProperties.Name">
+                <Setter.Value>
+                    <MultiBinding StringFormat="{}{0}: {1}. {2} {3}">
+                        <Binding Path="AutomationStepLabel" /><Binding Path="DisplayActionLabel" />
+                        <Binding Path="Detail" /><Binding Path="DisplayTimingText" />
+                    </MultiBinding>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource MacroInsetFocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border Background="{TemplateBinding Background}" Margin="4,1" CornerRadius="4" SnapsToDevicePixels="True">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroRowHoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource MacroRowSelectedBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <DataTemplate x:Key="KeyChoice">
+            <TextBlock TextTrimming="CharacterEllipsis">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="{Binding Converter={StaticResource KeyDisplay}}" />
+                        <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding}" Value="{x:Static input:Key.None}">
+                                <Setter Property="Text" Value="Unassigned" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </DataTemplate>
+
+        <DataTemplate x:Key="ShortcutChoice">
+            <TextBlock TextTrimming="CharacterEllipsis">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="{Binding Converter={StaticResource ShortcutDisplay}}" />
+                        <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:InputTriggerKind.None}">
+                                <Setter Property="Text" Value="Unassigned" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </DataTemplate>
+
+        <!-- Macro switcher entry: label, shortcut, and a state word whenever it cannot play as-is. -->
+        <DataTemplate x:Key="MacroChoice" DataType="{x:Type vm:MacroViewModel}">
+            <StackPanel Orientation="Horizontal">
+                <Ellipse x:Name="StateDot" Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center" Fill="{StaticResource MacroSuccessBrush}" />
+                <TextBlock Text="{Binding Label}" MaxWidth="200" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                <TextBlock x:Name="Shortcut" Text="{Binding ShortcutText}" Margin="10,0,0,0" FontSize="12" VerticalAlignment="Center"
+                           Foreground="{StaticResource MacroMutedBrush}" />
+                <TextBlock x:Name="StateText" Margin="8,0,0,0" FontSize="12" VerticalAlignment="Center" Visibility="Collapsed" />
+            </StackPanel>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsEnabled}" Value="False">
+                    <Setter TargetName="StateDot" Property="Fill" Value="{StaticResource MacroOffBrush}" />
+                    <Setter TargetName="StateText" Property="Text" Value="Off" />
+                    <Setter TargetName="StateText" Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
+                    <Setter TargetName="StateText" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsPlayable}" Value="False">
+                    <Setter TargetName="StateDot" Property="Fill" Value="{StaticResource MacroWarningBrush}" />
+                    <Setter TargetName="StateText" Property="Text" Value="Not ready" />
+                    <Setter TargetName="StateText" Property="Foreground" Value="{StaticResource MacroWarningBrush}" />
+                    <Setter TargetName="StateText" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding HasFormatError}" Value="True">
+                    <Setter TargetName="StateDot" Property="Fill" Value="{StaticResource MacroErrorBrush}" />
+                    <Setter TargetName="StateText" Property="Text" Value="Not saved" />
+                    <Setter TargetName="StateText" Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ComboBoxItem}}" Value="True">
+                    <Setter TargetName="Shortcut" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
+                    <Setter TargetName="StateText" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+
+        <!-- Step row: number, action category, action, target, and hold/wait time in a fixed column. -->
+        <DataTemplate x:Key="MacroStepRow" DataType="{x:Type vm:MacroStepViewModel}">
+            <Grid x:Name="Row" Background="Transparent" ToolTip="{Binding DisplayError}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="64" />
+                    <ColumnDefinition Width="24" />
+                    <ColumnDefinition Width="92" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="84" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="Number" Text="{Binding DisplayNumber}" FontSize="12" TextAlignment="Right" Margin="0,0,10,0"
+                           VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                <Path x:Name="Icon" Grid.Column="1" Style="{StaticResource MacroIcon}" HorizontalAlignment="Left"
+                      Data="{StaticResource MacroIconKeyboard}" Stroke="{StaticResource MacroMutedBrush}" />
+                <TextBlock Grid.Column="2" Text="{Binding DisplayActionLabel}" FontSize="13" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                <TextBlock Grid.Column="3" Text="{Binding Detail}" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"
+                           TextTrimming="CharacterEllipsis" Foreground="{StaticResource MacroDetailBrush}" />
+                <Path x:Name="ErrorMark" Grid.Column="4" Style="{StaticResource MacroIcon}" Margin="0,0,4,0"
+                      Data="{StaticResource MacroIconWarning}" Stroke="{StaticResource MacroErrorBrush}" />
+                <TextBlock x:Name="Timing" Grid.Column="5" Text="{Binding DisplayTimingText}" FontSize="12" TextAlignment="Right"
+                           VerticalAlignment="Center" Margin="0,0,10,0" TextTrimming="CharacterEllipsis"
+                           Foreground="{StaticResource MacroMutedBrush}" />
+            </Grid>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding HasMouseButton}" Value="True">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMouse}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.Wait}">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconWait}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.MoveTo}">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMove}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsWheel}" Value="True">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconWheel}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding DisplayError}" Value="">
+                    <Setter TargetName="ErrorMark" Property="Visibility" Value="Collapsed" />
+                    <Setter TargetName="Row" Property="ToolTip" Value="{x:Null}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                    <Setter TargetName="Number" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
+                    <Setter TargetName="Icon" Property="Stroke" Value="{StaticResource MacroSelectedTextBrush}" />
+                    <Setter TargetName="Timing" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid Margin="24,12,24,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Conditions that stop playback or editing for the whole profile. They sit outside the
+             section so they stay full-contrast while its body is shaded. -->
+        <StackPanel Grid.Row="0">
+            <Border Margin="0,0,0,10" Padding="10,6" CornerRadius="4" BorderThickness="1"
+                    Background="{StaticResource MacroRecordingSurfaceBrush}" BorderBrush="{StaticResource MacroRecordingLineBrush}"
+                    Visibility="{Binding HasLoadError, Converter={StaticResource VisibleIfTrue}}">
+                <TextBlock Text="{Binding LoadError}" FontSize="13" TextWrapping="Wrap"
+                           Foreground="{StaticResource MacroErrorBrush}" AutomationProperties.LiveSetting="Polite"
+                           AutomationProperties.Name="Macro load error" />
+            </Border>
+            <Border Margin="0,0,0,10" Padding="10,6" CornerRadius="4" BorderThickness="1"
+                    Background="{StaticResource MacroNoticeSurfaceBrush}" BorderBrush="{StaticResource MacroNoticeLineBrush}"
+                    Visibility="{Binding DataContext.AdvancedModeEnabled, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource VisibleIfFalse}}">
+                <DockPanel>
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWarning}" Stroke="{StaticResource MacroWarningBrush}" Margin="0,0,8,0" />
+                    <TextBlock Text="Macros won't play until Advanced Mode is on. Turn it on in Settings."
+                               FontSize="13" TextWrapping="Wrap" VerticalAlignment="Center" Foreground="{StaticResource MacroWarningBrush}" />
+                </DockPanel>
+            </Border>
+            <Border Margin="0,0,0,10" Padding="10,6" CornerRadius="4" BorderThickness="1"
+                    Background="{StaticResource MacroPanelBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding CanEdit}" Value="False" />
+                                    <Condition Binding="{Binding IsRecording}" Value="False" />
+                                    <Condition Binding="{Binding HasLoadError}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Visibility" Value="Visible" />
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <TextBlock Text="Macros can't be edited while this profile is disabled or read-only."
+                           FontSize="13" TextWrapping="Wrap" Foreground="{StaticResource MacroMutedBrush}" />
+            </Border>
+        </StackPanel>
+
+        <!-- Section box with the profile switch in its header, as on the other profile tabs. -->
+        <GroupBox Grid.Row="1" Padding="16">
+            <GroupBox.Header>
+                <StackPanel Orientation="Horizontal" MinHeight="22">
+                    <CheckBox Content="Macros" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding CanEdit}" Margin="0" VerticalAlignment="Center"
+                              AutomationProperties.Name="Enable macros for this profile" />
+                    <TextBlock Style="{DynamicResource InfoIconStyle}"
+                               ToolTip="Turns every macro shortcut in this profile on or off."
+                               ToolTipService.InitialShowDelay="0"
+                               ToolTipService.Placement="Right" />
+                </StackPanel>
+            </GroupBox.Header>
+        <!-- Body. A disabled ancestor disables every child, so the switch above and Stop recording stay
+             outside the three gated parts. Tag drives the host's feature-off shading. -->
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+        <StackPanel IsEnabled="{Binding IsEnabled}" Tag="{Binding IsEnabled}" Style="{DynamicResource FeatureToggleContentStyle}">
+
+        <!-- Macro switcher, the selected macro's own switch, and macro management. Rows above the workspace
+             share 8 px gaps so the step inspector keeps its coordinate picker in view at the minimum size. -->
+        <Grid Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Grid>
+                <ComboBox ItemsSource="{Binding Definitions}" SelectedItem="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
+                          ItemTemplate="{StaticResource MacroChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                          TextSearch.TextPath="Label" MinHeight="32" MaxDropDownHeight="360"
+                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                          ToolTip="{Binding SelectedMacro.Label}" AutomationProperties.Name="Selected macro" />
+                <TextBlock Text="No macros yet" Margin="10,0,28,0" FontSize="13" VerticalAlignment="Center" IsHitTestVisible="False"
+                           Foreground="{StaticResource MacroMutedBrush}"
+                           Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfFalse}}" />
+            </Grid>
+            <CheckBox Grid.Column="1" Content="Enabled" IsChecked="{Binding SelectedMacro.IsEnabled}" IsEnabled="{Binding CanEdit}"
+                      Margin="12,0,4,0" VerticalAlignment="Center" Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfTrue}}"
+                      ToolTip="Only enabled macros respond to their shortcut."
+                      AutomationProperties.Name="Enable selected macro" />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
+                <Button Style="{StaticResource MacroButton}" Command="{Binding NewMacroCommand}" Margin="0,0,6,0"
+                        ToolTip="Name and create a macro in this profile. A profile holds up to 64 macros."
+                        AutomationProperties.Name="New macro">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconAdd}" Margin="0,0,6,0" />
+                        <TextBlock Text="New…" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource MacroButton}" Content="Duplicate" Command="{Binding DuplicateMacroCommand}" Margin="0,0,6,0"
+                        ToolTip="Copy the selected macro. The copy starts off, without a shortcut."
+                        AutomationProperties.Name="Duplicate macro" />
+                <Button Style="{StaticResource MacroButton}" Content="Delete" Command="{Binding DeleteMacroCommand}"
+                        ToolTip="Delete the selected macro and all of its steps."
+                        AutomationProperties.Name="Delete macro" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Selected macro: rename, shortcut, options, and whether it can play. -->
+        <Grid Margin="0,0,0,8" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
+              Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <!-- Names change only through the naming dialog, so an unaccepted name never reaches the macro. -->
+            <Button Style="{StaticResource MacroButton}" Content="Rename…" VerticalAlignment="Center"
+                    Command="{Binding DataContext.RenameMacroCommand, ElementName=Editor}"
+                    ToolTip="Change the selected macro's name."
+                    AutomationProperties.Name="Rename macro" />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="16,0,0,0">
+                <TextBlock Text="Shortcut" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}"
+                           ToolTip="Hold the selected modifiers, then press the key or mouse button. Release the shortcut to start playback. F12 stops playback." />
+                <CheckBox Content="Ctrl" IsChecked="{Binding ControlModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Control modifier" />
+                <CheckBox Content="Alt" IsChecked="{Binding AltModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Alt modifier" />
+                <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Shift modifier" />
+                <CheckBox Content="Win" IsChecked="{Binding WindowsModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Windows modifier" />
+                <TextBlock Text="+" Margin="4,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                <ComboBox Width="160" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.ShortcutOptions}"
+                          SelectedItem="{Binding ShortcutTrigger}" ItemTemplate="{StaticResource ShortcutChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                          ToolTip="Choose a keyboard key or mouse button. You can also press a key while this list is open. The matching shortcut is consumed."
+                          AutomationProperties.Name="Macro shortcut"
+                          AutomationProperties.HelpText="Choose a keyboard key or one of the five mouse buttons, then select any required modifiers." />
+            </StackPanel>
+            <DockPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0">
+                <CheckBox Content="Cancel on mouse movement" IsChecked="{Binding CancelOnMouseMovement}" Margin="0,0,18,0" VerticalAlignment="Center"
+                          ToolTip="Stop playback when you move the mouse. Off by default."
+                          AutomationProperties.Name="Cancel on mouse movement" />
+                <CheckBox Content="Toggle loop" IsChecked="{Binding ToggleMode}" Margin="0,0,18,0" VerticalAlignment="Center"
+                          ToolTip="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut. Off by default."
+                          AutomationProperties.Name="Toggle loop"
+                          AutomationProperties.HelpText="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut. Off by default." />
+                <Button DockPanel.Dock="Right" Style="{StaticResource MacroLinkButton}" Command="{Binding ShowProblemStepCommand}"
+                        Content="{Binding ProblemStepNumber}" ContentStringFormat="Show step {0}" Margin="10,0,0,0" VerticalAlignment="Center"
+                        Visibility="{Binding HasProblemStep, Converter={StaticResource VisibleIfTrue}}"
+                        AutomationProperties.Name="Show the step named in the message" />
+                <Ellipse Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center" Fill="{Binding Foreground, ElementName=MacroStatus}" />
+                <!-- One line keeps the workspace height stable; the tooltip carries a long message in full. -->
+                <TextBlock x:Name="MacroStatus" FontSize="13" TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
+                           AutomationProperties.LiveSetting="Polite">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource MacroSuccessBrush}" />
+                            <Setter Property="Text" Value="{Binding ShortcutText, StringFormat='Ready. Press {0} while this profile is active.'}" />
+                            <Style.Triggers>
+                                <!-- Later triggers win, so off and validation messages still replace the looping ready copy. -->
+                                <DataTrigger Binding="{Binding ToggleMode}" Value="True">
+                                    <Setter Property="Text" Value="{Binding ShortcutText, StringFormat='Ready. Press {0} to loop; press it again to stop.'}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding DataContext.IsEnabled, ElementName=Editor}" Value="False">
+                                    <Setter Property="Foreground" Value="{StaticResource MacroWarningBrush}" />
+                                    <Setter Property="Text" Value="Ready, but macros are off for this profile." />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsEnabled}" Value="False">
+                                    <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
+                                    <Setter Property="Text" Value="Off. Turn on Enabled to use the shortcut." />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsPlayable}" Value="False">
+                                    <Setter Property="Foreground" Value="{StaticResource MacroWarningBrush}" />
+                                    <Setter Property="Text" Value="{Binding ValidationMessage}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding HasFormatError}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </DockPanel>
+        </Grid>
+        </StackPanel>
+
+        <!-- Sequence commands; while recording the same row becomes the recording banner. Only the commands
+             are gated: the banner keeps Stop recording reachable while the section is off. -->
+        <Grid Grid.Row="1" Margin="0,0,0,8" MinHeight="32" Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfTrue}}">
+            <DockPanel DataContext="{Binding SelectedMacro}"
+                       IsEnabled="{Binding DataContext.IsEnabled, ElementName=Editor}" Tag="{Binding DataContext.IsEnabled, ElementName=Editor}"
+                       Style="{DynamicResource FeatureToggleContentStyle}"
+                       Visibility="{Binding DataContext.IsRecording, ElementName=Editor, Converter={StaticResource VisibleIfFalse}}">
+                <Button Style="{StaticResource MacroButton}" Command="{Binding DataContext.RecordCommand, ElementName=Editor}" Margin="0,0,6,0"
+                        ToolTip="Record keys, mouse buttons and wheel input. The take is inserted after the selected step."
+                        AutomationProperties.Name="Record macro">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="10" Height="10" Margin="0,0,7,0" VerticalAlignment="Center" Fill="{StaticResource MacroRecordBrush}" />
+                        <TextBlock Text="Record" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <Button x:Name="AddStepButton" Style="{StaticResource MacroButton}" IsEnabled="{Binding CanAddStep}" Click="AddStepButton_Click"
+                        Margin="0,0,10,0" ToolTip="Choose an action to insert after the selected step."
+                        AutomationProperties.Name="Add step">
+                    <Button.ContextMenu>
+                        <ContextMenu MinWidth="180" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                     ItemContainerStyle="{DynamicResource MacroContextMenuItemStyle}">
+                            <MenuItem Header="Key press" CommandParameter="{x:Static models:MacroStepKind.KeyPress}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Key down" CommandParameter="{x:Static models:MacroStepKind.KeyDown}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Key up" CommandParameter="{x:Static models:MacroStepKind.KeyUp}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <Separator Style="{StaticResource MacroMenuSeparator}" />
+                            <MenuItem Header="Mouse click" CommandParameter="{x:Static models:MacroStepKind.MouseClick}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Mouse down" CommandParameter="{x:Static models:MacroStepKind.MouseDown}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Mouse up" CommandParameter="{x:Static models:MacroStepKind.MouseUp}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Move to" CommandParameter="{x:Static models:MacroStepKind.MoveTo}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Mouse wheel" CommandParameter="{x:Static models:MacroStepKind.MouseWheel}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWheel}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <Separator Style="{StaticResource MacroMenuSeparator}" />
+                            <MenuItem Header="Wait" CommandParameter="{x:Static models:MacroStepKind.Wait}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWait}" /></MenuItem.Icon>
+                            </MenuItem>
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconAdd}" Margin="0,0,6,0" />
+                        <TextBlock Text="Add step" VerticalAlignment="Center" />
+                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconChevron}" Margin="4,0,0,0" />
+                    </StackPanel>
+                </Button>
+                <TextBlock Text="{Binding InsertionHint}" FontSize="12" Margin="0,0,12,0" VerticalAlignment="Center"
+                           Foreground="{StaticResource MacroMutedBrush}" />
+                <Rectangle Width="1" Margin="0,6,8,6" Fill="{StaticResource MacroLineBrush}" />
+                <Button Style="{StaticResource MacroIconButton}" Command="{Binding DuplicateStepCommand}" Margin="0,0,2,0"
+                        ToolTip="Duplicate step (Ctrl+D)" AutomationProperties.Name="Duplicate macro step">
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconDuplicate}" />
+                </Button>
+                <Button Style="{StaticResource MacroIconButton}" Command="{Binding DeleteStepCommand}" Margin="0,0,2,0"
+                        ToolTip="Delete step (Delete)" AutomationProperties.Name="Delete macro step">
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconDelete}" />
+                </Button>
+                <Button Style="{StaticResource MacroIconButton}" Command="{Binding MoveStepUpCommand}" Margin="0,0,2,0"
+                        ToolTip="Move step up (Alt+Up)" AutomationProperties.Name="Move step up">
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconUp}" />
+                </Button>
+                <Button Style="{StaticResource MacroIconButton}" Command="{Binding MoveStepDownCommand}"
+                        ToolTip="Move step down (Alt+Down)" AutomationProperties.Name="Move step down">
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconDown}" />
+                </Button>
+                <DockPanel HorizontalAlignment="Right" Margin="12,0,0,0">
+                    <DockPanel.Style>
+                        <Style TargetType="DockPanel">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding DataContext.SessionStatus, ElementName=Editor}" Value="Idle">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DockPanel.Style>
+                    <TextBlock DockPanel.Dock="Right" Text=" · F12 cancels" FontSize="12" VerticalAlignment="Center"
+                               Foreground="{StaticResource MacroMutedBrush}"
+                               Visibility="{Binding DataContext.IsPlaying, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}" />
+                    <TextBlock Text="{Binding DataContext.SessionStatus, ElementName=Editor}" FontSize="12" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" Foreground="{StaticResource MacroDetailBrush}"
+                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" AutomationProperties.LiveSetting="Polite" />
+                </DockPanel>
+            </DockPanel>
+
+            <Border Padding="10,0,0,0" CornerRadius="4" BorderThickness="1"
+                    Background="{StaticResource MacroRecordingSurfaceBrush}" BorderBrush="{StaticResource MacroRecordingLineBrush}"
+                    Visibility="{Binding IsRecording, Converter={StaticResource VisibleIfTrue}}">
+                <DockPanel>
+                    <Button x:Name="StopRecordingButton" DockPanel.Dock="Right" Style="{StaticResource MacroPrimaryButton}"
+                            Command="{Binding StopRecordingCommand}"
+                            PreviewMouseLeftButtonDown="StopRecording_PreviewMouseLeftButtonDown"
+                            PreviewKeyDown="StopRecording_PreviewKeyDown"
+                            ToolTip="Finish recording and insert the take. F12 also stops."
+                            AutomationProperties.Name="Stop recording">
+                        <StackPanel Orientation="Horizontal">
+                            <Rectangle Width="9" Height="9" RadiusX="1.5" RadiusY="1.5" Margin="0,0,7,0" VerticalAlignment="Center"
+                                       Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            <TextBlock Text="Stop recording" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <Ellipse Width="10" Height="10" Margin="0,0,10,0" VerticalAlignment="Center" Fill="{StaticResource MacroRecordBrush}" />
+                    <TextBlock FontSize="13" Margin="0,0,8,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                               AutomationProperties.LiveSetting="Polite">
+                        <Run Text="{Binding SessionStatus, Mode=OneWay}" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundPrimaryBrush}" /><Run Text=" · New steps go " Foreground="{StaticResource MacroMutedBrush}" /><Run Text="{Binding SelectedMacro.InsertionHint, Mode=OneWay}" Foreground="{StaticResource MacroMutedBrush}" /><Run Text=" · F12 also stops" Foreground="{StaticResource MacroMutedBrush}" />
+                    </TextBlock>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- Workspace: the ordered sequence and the editor for the selected step. -->
+        <Grid Grid.Row="2" IsEnabled="{Binding IsEnabled}" Tag="{Binding IsEnabled}" Style="{DynamicResource FeatureToggleContentStyle}">
+        <Grid DataContext="{Binding SelectedMacro}"
+              Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="252" />
+            </Grid.ColumnDefinitions>
+            <Border CornerRadius="6" BorderThickness="1" IsEnabled="{Binding CanEdit}"
+                    Background="{StaticResource MacroPanelBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Border Padding="10,4,6,4" BorderThickness="0,0,0,1" BorderBrush="{StaticResource MacroLineBrush}">
+                        <DockPanel>
+                            <Button x:Name="AllWaitEditorButton" DockPanel.Dock="Right" Content="Set all waits…" Style="{StaticResource MacroButton}" Margin="10,0,0,0"
+                                    Command="{Binding ShowWaitEditorCommand}" Click="WaitEditorOpen_Click"
+                                    ToolTip="Give every Wait step in this macro the same duration. Unavailable when the macro has no Wait steps."
+                                    AutomationProperties.Name="Set all Wait step durations" />
+                            <CheckBox DockPanel.Dock="Right" Content="Collapse presses" FontSize="13" VerticalAlignment="Center"
+                                      IsChecked="{Binding CollapseSteps}"
+                                      ToolTip="Show each key or button down, wait, and matching up as one press row. Display only; saved steps don't change."
+                                      AutomationProperties.Name="Collapse presses"
+                                      AutomationProperties.HelpText="Show each key or button down, wait, and matching up as one press row. Display only; saved steps don't change." />
+                            <TextBlock Text="{Binding StepCountText}" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"
+                                       Foreground="{StaticResource MacroMutedBrush}" />
+                        </DockPanel>
+                    </Border>
+                    <Border Grid.Row="1" Padding="10,8" Background="{StaticResource MacroControlBrush}"
+                            Visibility="{Binding IsWaitEditorOpen, Converter={StaticResource VisibleIfTrue}}"
+                            PreviewKeyDown="WaitEditor_PreviewKeyDown">
+                        <StackPanel>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Close" Style="{StaticResource MacroButton}" Margin="6,0,0,0"
+                                        Command="{Binding CloseWaitEditorCommand}" Click="WaitEditorClose_Click" AutomationProperties.Name="Close all Wait editor" />
+                                <Button DockPanel.Dock="Right" Content="Apply" Style="{StaticResource MacroPrimaryButton}" Margin="8,0,0,0"
+                                        Command="{Binding ApplyAllWaitTimesCommand}" Click="WaitEditorApply_Click" AutomationProperties.Name="Apply duration to all Wait steps" />
+                                <TextBlock Text="All waits" Style="{StaticResource MacroFieldLabel}" />
+                                <TextBox x:Name="AllWaitDurationField" Width="96" MinHeight="30" VerticalContentAlignment="Center"
+                                         Text="{Binding AllWaitDurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                         BorderBrush="{StaticResource MacroInputLineBrush}"
+                                         AutomationProperties.Name="Duration for all Wait steps in milliseconds" />
+                                <TextBlock Text="ms" FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding WaitEditMessage}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"
+                                       AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="All Wait edit status">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasWaitEditError}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding WaitEditApplied}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource MacroSuccessBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                    <Grid Grid.Row="2">
+                        <ListBox x:Name="StepList" ItemsSource="{Binding VisibleSteps}" SelectedItem="{Binding SelectedStep}"
+                                 Style="{StaticResource MacroStepList}" ItemContainerStyle="{StaticResource MacroStepItem}" ItemTemplate="{StaticResource MacroStepRow}"
+                                 BorderThickness="0" Background="Transparent"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling"
+                                 SelectionChanged="StepList_SelectionChanged" PreviewKeyDown="StepList_PreviewKeyDown"
+                                 AutomationProperties.Name="Ordered macro steps"
+                                 AutomationProperties.HelpText="Delete removes the selected step, Ctrl+D duplicates it, and Alt+Up or Alt+Down moves it." />
+                        <StackPanel MaxWidth="300" Margin="20" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Steps.Count}" Value="0">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <TextBlock Text="No steps yet" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center"
+                                       Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                            <TextBlock Text="Record your input, or use Add step to build the sequence one action at a time."
+                                       FontSize="13" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="2" CornerRadius="6" BorderThickness="1" IsEnabled="{Binding CanEdit}"
+                    Background="{StaticResource MacroPanelBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False" Padding="12,10,12,12">
+                    <Grid>
+                        <StackPanel>
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SelectedStep}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <TextBlock Text="No step selected" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                            <TextBlock Text="Select a step to edit its action, target, and timing here." FontSize="12" Margin="0,4,0,0"
+                                       TextWrapping="Wrap" Foreground="{StaticResource MacroMutedBrush}" />
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding SelectedStep.IsCollapsedPress, Converter={StaticResource VisibleIfTrue}, FallbackValue=Collapsed}">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                <TextBlock Text="{Binding SelectedStep.DisplayNumber, StringFormat='Steps {0}'}" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                                <TextBlock Text="{Binding Steps.Count, StringFormat='of {0}'}" FontSize="12" Margin="6,0,0,1" VerticalAlignment="Bottom"
+                                           Foreground="{StaticResource MacroMutedBrush}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Action" Style="{StaticResource MacroFieldLabel}" />
+                                <TextBlock Text="{Binding SelectedStep.DisplayActionLabel}" FontSize="13" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
+                                        Visibility="{Binding SelectedStep.HasKey, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
+                                <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.KeyOptions}"
+                                          SelectedItem="{Binding SelectedPressKey}" ItemTemplate="{StaticResource KeyChoice}"
+                                          ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                          FocusVisualStyle="{StaticResource MacroFocusRing}" behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                          AutomationProperties.Name="Press key" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
+                                        Visibility="{Binding SelectedStep.HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />
+                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtons}"
+                                          SelectedItem="{Binding SelectedPressMouseButton}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                                          AutomationProperties.Name="Press mouse button" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Hold" Style="{StaticResource MacroFieldLabel}" />
+                                <TextBox Width="96" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                         Text="{Binding SelectedStep.CollapsedWait.DurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                         AutomationProperties.Name="Press hold in milliseconds" />
+                                <TextBlock Text="ms" FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding SelectedStep.DisplayError}" FontSize="12" TextWrapping="Wrap"
+                                       Foreground="{StaticResource MacroErrorBrush}" AutomationProperties.LiveSetting="Polite" />
+                            <Border Height="1" Margin="0,10,0,10" Background="{StaticResource MacroLineBrush}" />
+                            <TextBlock FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" Foreground="{StaticResource MacroMutedBrush}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Text" Value="Key down, Wait, and Key up, shown as one press." />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SelectedStep.HasMouseButton}" Value="True">
+                                                <Setter Property="Text" Value="Mouse down, Wait, and Mouse up at the current cursor position, shown as one press." />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <Button Content="Show all steps" Style="{StaticResource MacroLinkButton}" HorizontalAlignment="Left"
+                                    Command="{Binding ExpandSelectedStepCommand}" AutomationProperties.Name="Turn off Collapse presses" />
+                        </StackPanel>
+
+                        <StackPanel DataContext="{Binding SelectedStep}">
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsCollapsedPress}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                <TextBlock Text="{Binding Number, StringFormat='Step {0}'}" FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+                                <TextBlock Text="{Binding DataContext.SelectedMacro.Steps.Count, ElementName=Editor, StringFormat='of {0}'}"
+                                           FontSize="12" Margin="6,0,0,1" VerticalAlignment="Bottom" Foreground="{StaticResource MacroMutedBrush}" />
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Action" Style="{StaticResource MacroFieldLabel}" />
+                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.ActionOptions}" DisplayMemberPath="Value"
+                                          SelectedValuePath="Key" SelectedValue="{Binding Kind}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                                          AutomationProperties.Name="Step action" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasKey, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
+                                <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.KeyOptions}"
+                                          SelectedItem="{Binding Key}" ItemTemplate="{StaticResource KeyChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                                          AutomationProperties.Name="Step key" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />
+                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtons}" SelectedItem="{Binding MouseButton}"
+                                          ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                          FocusVisualStyle="{StaticResource MacroFocusRing}" AutomationProperties.Name="Step mouse button" />
+                            </StackPanel>
+
+                            <StackPanel Margin="0,0,0,8" Visibility="{Binding HasCoordinates, Converter={StaticResource VisibleIfTrue}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Position" Style="{StaticResource MacroFieldLabel}"
+                                               ToolTip="Absolute physical screen pixels. Displays left of or above the main display use negative values." />
+                                    <TextBlock Text="X" FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                                    <TextBox Width="56" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                             Text="{Binding XText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                             AutomationProperties.Name="Screen X coordinate" />
+                                    <TextBlock Text="Y" FontSize="12" Margin="10,0,5,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                                    <TextBox Width="56" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                             Text="{Binding YText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                             AutomationProperties.Name="Screen Y coordinate" />
+                                </StackPanel>
+                                <Button Style="{StaticResource MacroButton}" Margin="56,8,0,0" HorizontalAlignment="Left"
+                                        Command="{Binding DataContext.SelectedMacro.PickCoordinatesCommand, ElementName=Editor}"
+                                        ToolTip="After you click, point at the spot on screen. The position is captured after 3 seconds."
+                                        AutomationProperties.Name="Pick screen coordinates after three seconds">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconTarget}" Margin="0,0,6,0" />
+                                        <TextBlock Text="Pick in 3 s" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <TextBlock Text="{Binding DataContext.SelectedMacro.CoordinatePickStatus, ElementName=Editor}" Margin="56,6,0,0"
+                                           FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource MacroDetailBrush}"
+                                           AutomationProperties.LiveSetting="Polite">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding DataContext.SelectedMacro.CoordinatePickStatus, ElementName=Editor}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+
+                            <StackPanel Margin="0,0,0,8" Visibility="{Binding HasDuration, Converter={StaticResource VisibleIfTrue}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding DurationLabel}" Style="{StaticResource MacroFieldLabel}" />
+                                    <TextBox Width="96" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                             Text="{Binding DurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                             ToolTip="Whole milliseconds from 0 to 3600000."
+                                             AutomationProperties.Name="Step duration in milliseconds" />
+                                    <TextBlock Text="ms" FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                                </StackPanel>
+                                <TextBlock Text="0 uses automatic hold timing." Margin="56,4,0,0" FontSize="12" TextWrapping="Wrap"
+                                           Foreground="{StaticResource MacroMutedBrush}"
+                                           Visibility="{Binding HasHold, Converter={StaticResource VisibleIfTrue}}" />
+                            </StackPanel>
+
+                            <StackPanel Margin="0,0,0,8" Visibility="{Binding IsWheel, Converter={StaticResource VisibleIfTrue}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Delta" Style="{StaticResource MacroFieldLabel}" />
+                                    <TextBox Width="96" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                             Text="{Binding WheelDeltaText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                             ToolTip="Nonzero whole number from -32768 to 32767. 120 is one notch."
+                                             AutomationProperties.Name="Wheel delta" />
+                                </StackPanel>
+                                <CheckBox Content="Horizontal" IsChecked="{Binding HorizontalWheel}" Margin="56,8,0,0"
+                                          AutomationProperties.Name="Horizontal mouse wheel" />
+                            </StackPanel>
+
+                            <TextBlock Text="{Binding Error}" Margin="0,0,0,8" FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource MacroErrorBrush}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Error}" Value="">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <Border Margin="0,4,0,0" Padding="0,8,0,0" BorderThickness="0,1,0,0" BorderBrush="{StaticResource MacroLineBrush}">
+                                <TextBlock Text="{Binding KindHelp}" FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource MacroMutedBrush}" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <!-- First run: nothing to select yet. -->
+        <StackPanel MaxWidth="400" Margin="0,0,0,48" VerticalAlignment="Center" HorizontalAlignment="Center"
+                    Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfFalse}}">
+            <TextBlock Text="No macros in this profile" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center"
+                       Foreground="{DynamicResource ForegroundPrimaryBrush}" />
+            <TextBlock Text="A macro plays back keys, clicks, cursor moves, and waits when you press its shortcut while this profile is active."
+                       FontSize="13" Margin="0,8,0,16" TextWrapping="Wrap" TextAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+            <Button Style="{StaticResource MacroPrimaryButton}" Command="{Binding NewMacroCommand}" HorizontalAlignment="Center"
+                    MinHeight="34" Padding="16,0" AutomationProperties.Name="Create first macro">
+                <StackPanel Orientation="Horizontal">
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconAdd}" Margin="0,0,6,0" />
+                    <TextBlock Text="New macro…" FontSize="14" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+        </StackPanel>
+        </Grid>
+        </Grid>
+        </GroupBox>
+    </Grid>
+</UserControl>

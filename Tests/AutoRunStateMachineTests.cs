@@ -736,9 +736,9 @@ public sealed class AutoRunStateMachineTests
         internal ManualResetEventSlim SprintUpEntered { get; } = new(false);
         internal ManualResetEventSlim ReleaseSprintUp { get; } = new(false);
 
-        public bool SendKey(Key key, bool isKeyDown)
+        public bool SendKey(Key key, bool isKeyDown, bool macroRelease = false, Func<bool>? canSend = null)
         {
-            var sent = Recording.SendKey(key, isKeyDown);
+            var sent = Recording.SendKey(key, isKeyDown, macroRelease, canSend);
             if (key == Key.W && !isKeyDown)
             {
                 SprintUpEntered.Set();
@@ -748,6 +748,10 @@ public sealed class AutoRunStateMachineTests
         }
 
         public bool SendVirtualKeyTap(int virtualKey) => Recording.SendVirtualKeyTap(virtualKey);
+        public bool SendMouseButton(sWinShortcuts.Models.MouseButton button, bool isDown, bool macroRelease = false, Func<bool>? canSend = null) =>
+            Recording.SendMouseButton(button, isDown, macroRelease, canSend);
+        public bool MoveMouseTo(int physicalX, int physicalY, Func<bool>? canSend = null) => Recording.MoveMouseTo(physicalX, physicalY, canSend);
+        public bool SendMouseWheel(int delta, bool horizontal, Func<bool>? canSend = null) => Recording.SendMouseWheel(delta, horizontal, canSend);
         public bool SendLeftClick(int holdMilliseconds) => Recording.SendLeftClick(holdMilliseconds);
         public bool SendDummyKey() => Recording.SendDummyKey();
 
