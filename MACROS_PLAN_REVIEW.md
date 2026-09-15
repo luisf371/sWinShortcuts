@@ -62,3 +62,9 @@ The user reduced the macro limit to 1,000 steps during code review. MACROS_PLAN.
 The user requested per-macro cancellation on physical mouse movement to be optional and default off, and more useful debug logging. The current plan reflects that setting throughout playback, its legacy-INI default, and continued exact-arrival/input-ownership checks. A native reproduction of the user's cursor-arrival error found one-pixel rounding when the final absolute send ran outside per-monitor DPI awareness; the plan now includes the scoped native-send context. The original planning verdict remains historical. A fresh full-feature code review will follow green CI on these implementation changes.
 
 User testing follow-up (2026-09-13): increased the shared cursor speed from 3,000 to 9,000 physical pixels/second. The point spacing now derives from the same cap and existing 8 ms interval; no settings UI or per-step speed field was requested. All saved waits/holds and movement validation remain. MACROS_PLAN.md reflects this approved scope update; the original planning review remains historical.
+
+## 2026-09-14 implementation follow-up
+
+The UI container and naming changes are implementation-stage follow-ups: preserve their returned work before any root corrections, then run exact-head CI and a fresh independent code review. The returned naming stage builds without warnings and passes 100 focused checks, including the original minimum-size layout assertion. This checkpoint is not the final hosted-CI or independent-review verdict.
+
+The shared recorder now excludes repeated already-held modifier DOWNs without changing elapsed capture timing or ordinary typematic. Eleven modifier variants reproduced the defect before the fix. The isolated runtime-only build passed 1,370 tests with two existing desktop skips; the integrated UI build is validated separately.

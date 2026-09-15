@@ -16,7 +16,25 @@ public partial class MacrosView : UserControl
 {
     public MacrosView() => InitializeComponent();
     private void Editor_Unloaded(object sender, RoutedEventArgs e) => (DataContext as MacrosViewModel)?.LeaveEditor();
-    private void Editor_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e) => (e.OldValue as MacrosViewModel)?.LeaveEditor();
+    private void Editor_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.OldValue is MacrosViewModel previous)
+        {
+            previous.LeaveEditor();
+            previous.ConfigureNaming(null);
+        }
+        if (e.NewValue is MacrosViewModel editor) editor.ConfigureNaming(label => RequestMacroName(editor, label));
+    }
+
+    // New and Rename ask through a modal dialog owned by this window. A name comes back only while this view
+    // still edits the same profile; the view model rechecks availability and the target macro itself.
+    private string? RequestMacroName(MacrosViewModel editor, string? currentLabel)
+    {
+        var dialog = new MacroNameDialog { Owner = Window.GetWindow(this) };
+        dialog.Configure(currentLabel);
+        return dialog.ShowDialog() == true && ReferenceEquals(DataContext, editor) ? dialog.MacroName : null;
+    }
+
     private void StopRecording_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) => (DataContext as MacrosViewModel)?.BeginStopGesture();
     private void StopRecording_PreviewKeyDown(object sender, KeyEventArgs e)
     {

@@ -1,0 +1,76 @@
+<Window x:Class="sWinShortcuts.Views.MacroNameDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="New Macro"
+        SizeToContent="WidthAndHeight"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="{DynamicResource BackgroundBrush}">
+    <!-- Background is explicit for the same reason as the profile dialogs: an implicit Window style never
+         reaches a x:Class-derived window. Enter accepts through IsDefault and Escape cancels through
+         IsCancel, both scoped to this modal window. -->
+    <Grid Margin="24" MinWidth="440" MaxWidth="560">
+        <Border Padding="16"
+                Background="{DynamicResource BackgroundElevatedBrush}"
+                CornerRadius="12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="12"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="16"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="HeadingText"
+                           Grid.ColumnSpan="2"
+                           Text="New Macro"
+                           FontWeight="Bold"
+                           FontSize="14" />
+
+                <TextBlock Grid.Row="2"
+                           Text="Name"
+                           Margin="0,0,12,0"
+                           VerticalAlignment="Center" />
+                <TextBox x:Name="NameTextBox"
+                         Grid.Row="2"
+                         Grid.Column="1"
+                         MaxLength="100"
+                         TextChanged="OnNameTextChanged"
+                         AutomationProperties.Name="Macro name" />
+                <TextBlock x:Name="ErrorText"
+                           Grid.Row="3"
+                           Grid.Column="1"
+                           Margin="0,6,0,0"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource AccentLightBrush}"
+                           Visibility="Collapsed"
+                           AutomationProperties.LiveSetting="Polite" />
+
+                <StackPanel Grid.Row="5"
+                            Grid.ColumnSpan="2"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right">
+                    <Button Content="Cancel"
+                            Width="96"
+                            Height="30"
+                            Margin="0,0,8,0"
+                            IsCancel="True"
+                            Click="OnCancelClick"/>
+                    <Button x:Name="AcceptButton"
+                            Content="Create"
+                            Width="96"
+                            Height="30"
+                            IsDefault="True"
+                            Click="OnAcceptClick"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

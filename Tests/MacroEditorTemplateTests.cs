@@ -159,7 +159,28 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.False(macro.IsEnabled);
             Assert.True(profile.Macros.IsEnabled);
-            Assert.True(Assert.Single(controls.OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Macro label").IsEnabled);
+            Assert.True(Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut key").IsEnabled);
+            // Names change only through the naming dialog: no permanent Name field, and both New entry points and
+            // Rename request a name from the view model. A stand-in request replaces the modal window here.
+            Assert.DoesNotContain(controls.OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Macro label");
+            var rename = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Rename macro");
+            Assert.True(rename.IsEnabled);
+            Assert.Same(profile.Macros.RenameMacroCommand, rename.Command);
+            var newButtons = controls.OfType<Button>()
+                .Where(button => AutomationProperties.GetName(button) is "New macro" or "Create first macro").ToArray();
+            Assert.Equal(2, newButtons.Length);
+            Assert.All(newButtons, button => Assert.Same(profile.Macros.NewMacroCommand, button.Command));
+            var requests = new List<string?>();
+            profile.Macros.ConfigureNaming(label =>
+            {
+                requests.Add(label);
+                return label is null ? null : "Renamed";
+            });
+            foreach (var button in newButtons) button.Command.Execute(null);
+            rename.Command.Execute(null);
+            Assert.Equal(new string?[] { null, null, "New macro" }, requests);
+            Assert.Same(macro, Assert.Single(profile.Macros.Definitions));
+            Assert.Equal("Renamed", macro.Label);
             var shortcutPicker = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut key");
             Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(shortcutPicker));
             var keyPopup = (System.Windows.Controls.Primitives.Popup)shortcutPicker.Template.FindName("Popup", shortcutPicker);
@@ -265,8 +286,8 @@ public sealed class MacroEditorTemplateTests
             menu.PlacementTarget = add;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Same(macro, menu.DataContext);
-            profile.Macros.NewMacroCommand.Execute(null);
-            var second = profile.Macros.SelectedMacro!;
+            // New now asks the stand-in naming request above, which cancels; create these fixtures directly.
+            var second = profile.Macros.AddMacro("Second")!;
             menu.Measure(new Size(240, 480));
             menu.Arrange(new Rect(0, 0, 240, 480));
             menu.UpdateLayout();
@@ -310,8 +331,7 @@ public sealed class MacroEditorTemplateTests
             Assert.Equal(999, second.SelectedIndex);
             Assert.NotNull(list.ItemContainerGenerator.ContainerFromIndex(999));
 
-            profile.Macros.NewMacroCommand.Execute(null);
-            var grouped = profile.Macros.SelectedMacro!;
+            var grouped = profile.Macros.AddMacro("Grouped")!;
             grouped.ShortcutKey = Key.F7;
             grouped.InsertRecording(0,
             [

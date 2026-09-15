@@ -519,8 +519,9 @@
             </Grid.RowDefinitions>
         <StackPanel IsEnabled="{Binding IsEnabled}" Tag="{Binding IsEnabled}" Style="{DynamicResource FeatureToggleContentStyle}">
 
-        <!-- Macro switcher, the selected macro's own switch, and macro management. -->
-        <Grid Margin="0,0,0,12">
+        <!-- Macro switcher, the selected macro's own switch, and macro management. Rows above the workspace
+             share 8 px gaps so the step inspector keeps its coordinate picker in view at the minimum size. -->
+        <Grid Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -542,11 +543,11 @@
                       AutomationProperties.Name="Enable selected macro" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
                 <Button Style="{StaticResource MacroButton}" Command="{Binding NewMacroCommand}" Margin="0,0,6,0"
-                        ToolTip="Create a macro in this profile. A profile holds up to 64 macros."
+                        ToolTip="Name and create a macro in this profile. A profile holds up to 64 macros."
                         AutomationProperties.Name="New macro">
                     <StackPanel Orientation="Horizontal">
                         <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconAdd}" Margin="0,0,6,0" />
-                        <TextBlock Text="New" VerticalAlignment="Center" />
+                        <TextBlock Text="New…" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource MacroButton}" Content="Duplicate" Command="{Binding DuplicateMacroCommand}" Margin="0,0,6,0"
@@ -558,8 +559,8 @@
             </StackPanel>
         </Grid>
 
-        <!-- Selected macro: identity, shortcut, options, and whether it can play. -->
-        <Grid Margin="0,0,0,12" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
+        <!-- Selected macro: rename, shortcut, options, and whether it can play. -->
+        <Grid Margin="0,0,0,8" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
               Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -570,10 +571,11 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock Text="Name" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
-            <TextBox Grid.Column="1" Text="{Binding Label, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}" MaxLength="100"
-                     MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
-                     AutomationProperties.Name="Macro label" />
+            <!-- Names change only through the naming dialog, so an unaccepted name never reaches the macro. -->
+            <Button Style="{StaticResource MacroButton}" Content="Rename…" VerticalAlignment="Center"
+                    Command="{Binding DataContext.RenameMacroCommand, ElementName=Editor}"
+                    ToolTip="Change the selected macro's name."
+                    AutomationProperties.Name="Rename macro" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="16,0,0,0">
                 <TextBlock Text="Shortcut" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}"
                            ToolTip="Hold the selected modifiers, then press the key. F12 is reserved for cancelling." />
@@ -597,7 +599,8 @@
                         Visibility="{Binding HasProblemStep, Converter={StaticResource VisibleIfTrue}}"
                         AutomationProperties.Name="Show the step named in the message" />
                 <Ellipse Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center" Fill="{Binding Foreground, ElementName=MacroStatus}" />
-                <TextBlock x:Name="MacroStatus" FontSize="13" MaxHeight="36" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                <!-- One line keeps the workspace height stable; the tooltip carries a long message in full. -->
+                <TextBlock x:Name="MacroStatus" FontSize="13" TextTrimming="CharacterEllipsis"
                            VerticalAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                            AutomationProperties.LiveSetting="Polite">
                     <TextBlock.Style>
@@ -1057,7 +1060,7 @@
                     MinHeight="34" Padding="16,0" AutomationProperties.Name="Create first macro">
                 <StackPanel Orientation="Horizontal">
                     <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconAdd}" Margin="0,0,6,0" />
-                    <TextBlock Text="New macro" FontSize="14" VerticalAlignment="Center" />
+                    <TextBlock Text="New macro…" FontSize="14" VerticalAlignment="Center" />
                 </StackPanel>
             </Button>
         </StackPanel>

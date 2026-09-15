@@ -23,6 +23,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     private Action<Key?>? _stopGesture;
     private Action? _beforePublish;
     private Action? _leaveEditor;
+    private Func<string?, string?>? _requestName;
     private Func<Guid, string?>? _shortcutError;
     private bool _disposed;
     private bool _disposeRequested;
@@ -37,7 +38,8 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         _definitions = new(profile.Macros.Definitions.Select(CreateMacro));
         Definitions = new(_definitions);
         _selectedMacro = _definitions.FirstOrDefault();
-        NewMacroCommand = new RelayCommand(NewMacro, () => CanEdit && Definitions.Count < MacroValidation.MaxDefinitions);
+        NewMacroCommand = new RelayCommand(NewMacro, CanAddMacro);
+        RenameMacroCommand = new RelayCommand(RenameSelectedMacro, () => CanEdit && SelectedMacro is not null);
         DuplicateMacroCommand = new RelayCommand(DuplicateMacro, () => CanEdit && SelectedMacro is not null && Definitions.Count < MacroValidation.MaxDefinitions);
         DeleteMacroCommand = new RelayCommand(DeleteMacro, () => CanEdit && SelectedMacro is not null);
         RecordCommand = new AsyncRelayCommand(RecordAsync, CanRecord);
@@ -81,6 +83,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     }
     public bool HasSelection => SelectedMacro is not null;
     public IRelayCommand NewMacroCommand { get; }
+    public IRelayCommand RenameMacroCommand { get; }
     public IRelayCommand DuplicateMacroCommand { get; }
     public IRelayCommand DeleteMacroCommand { get; }
     public IAsyncRelayCommand RecordCommand { get; }
@@ -100,6 +103,14 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         RefreshValidation();
     }
 
+    // The editor view supplies its modal naming dialog: the current label (null for a new macro) in, the
+    // accepted label out, or null when cancelled.
+    internal void ConfigureNaming(Func<string?, string?>? requestName) => _requestName = requestName;
+
+    // Label rules only: a clean temporary definition keeps unrelated draft errors from blocking a name.
+    internal static string? GetLabelError(string? label) =>
+        MacroValidation.GetFormatError(new MacroDefinition { Label = label?.Trim() ?? string.Empty });
+
     private MacroViewModel CreateMacro(MacroDefinition definition)
     {
         var macro = new MacroViewModel(definition, () => CanEdit);
@@ -116,13 +127,38 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         RefreshValidation();
         RefreshAvailability();
     }
+    private bool CanAddMacro() => CanEdit && Definitions.Count < MacroValidation.MaxDefinitions;
     private void NewMacro()
     {
-        if (!NewMacroCommand.CanExecute(null)) return;
-        var macro = CreateMacro(new MacroDefinition());
+        if (!CanAddMacro()) return;
+        // Programmatic callers without an attached editor view keep the model's default label.
+        if (_requestName is null) AddMacro(new MacroDefinition().Label);
+        else if (_requestName(null) is { } label) AddMacro(label);
+    }
+
+    // Creates, selects and publishes one macro under an accepted label. A modal dialog keeps dispatching
+    // lifecycle changes, so availability is checked again here instead of trusted from before it opened.
+    internal MacroViewModel? AddMacro(string label)
+    {
+        if (!CanAddMacro() || GetLabelError(label) is not null) return null;
+        var macro = CreateMacro(new MacroDefinition { Label = label.Trim() });
         _definitions.Add(macro);
         SelectedMacro = macro;
         Publish();
+        return macro;
+    }
+    private void RenameSelectedMacro()
+    {
+        if (!CanEdit || SelectedMacro is not { } macro || _requestName?.Invoke(macro.Label) is not { } label) return;
+        RenameMacro(macro, label);
+    }
+
+    // Renames only the macro the dialog was opened for, while it still belongs to this editable profile.
+    internal bool RenameMacro(MacroViewModel macro, string label)
+    {
+        if (!CanEdit || !Definitions.Contains(macro) || GetLabelError(label) is not null) return false;
+        macro.Label = label.Trim();
+        return true;
     }
     private void DuplicateMacro()
     {
@@ -230,6 +266,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         NewMacroCommand.NotifyCanExecuteChanged();
         DuplicateMacroCommand.NotifyCanExecuteChanged();
         DeleteMacroCommand.NotifyCanExecuteChanged();
+        RenameMacroCommand.NotifyCanExecuteChanged();
         RecordCommand.NotifyCanExecuteChanged();
         StopRecordingCommand.NotifyCanExecuteChanged();
         foreach (var macro in Definitions) macro.RefreshCommands();

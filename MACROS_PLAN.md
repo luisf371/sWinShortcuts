@@ -435,3 +435,10 @@ Checked 2026-09-13 through Context7 and page retrieval; recheck if implementatio
 - Replace the persistent Name field with a focused naming dialog for New and Rename. Cancel changes nothing; acceptance creates or renames once using existing label validation. Both toolbar and empty-state creation use this flow. Duplicates retain their automatic incremented name.
 - Place the selected macro's enable control with its identity so its scope is clear. An individually disabled macro remains editable.
 - Preserve Collapse, bulk Wait editing, shortcuts, raw draft text, runtime behavior and profile persistence. The user delegated direct implementation to Claude Opus 5/max; root validates and records each supported fix separately before repeating CI and clean-context review. Do not merge PR #25.
+
+- Implementation checkpoint: the outer container was preserved in `0ceb162`; the naming follow-up builds without warnings and passes 100 focused UI/lifecycle checks. The original 650x480 coordinate-picker bounds check now passes after compacting spacing and showing the status line with ellipsis plus its full tooltip. Full-suite, hosted CI and fresh review results follow separately.
+
+## 2026-09-14 modifier recording correction
+
+- Ignore repeated DOWN events for already-held modifiers before recording row budgeting and timestamp advancement. Preserve the complete elapsed gap to the next accepted event, the original modifier/click ordering, and ordinary non-modifier typematic.
+- Existing saved steps remain unchanged by the software fix. The user separately authorized repair of one saved macro with a backup while the app was closed; uniform 100ms wait fragments caused by duplicate modifier events were coalesced for that repair only.
