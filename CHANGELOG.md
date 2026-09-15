@@ -4,6 +4,32 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## September 15, 2026
+
+### Added
+- **Per-Profile Macro Engine & Automation**:
+  - Added a comprehensive macro engine enabling creation, recording, editing, and playback of complex keyboard and mouse action sequences per profile.
+  - **Action Types**: Supports compact Key Presses (tap), separate Key Down / Key Up events, Mouse Clicks (Left, Right, Middle, Mouse 4, Mouse 5), Mouse Wheel scrolling, smooth Mouse Cursor Movement (relative and absolute screen coordinates), and customizable Wait delays.
+  - **Playback & Toggle Repeat Modes**: Execute macros once on trigger or run them as continuous repeating loops until stopped by pressing the shortcut key again or switching profiles.
+  - **Flexible Activation Shortcuts & Chords**: Trigger macros via keyboard keys, mouse buttons, or mouse button chords (e.g. holding Right Mouse Button and pressing Left Mouse Button) with optional modifier keys (`Ctrl`, `Alt`, `Shift`, `Win`).
+- **Interactive Macro Recorder & Visual Editor**:
+  - **Live Input Recording**: Record real-time keyboard keystrokes and mouse clicks directly into step sequences with automatic modifier deduplication and clean keystroke pairing.
+  - **Visual Step Editor**: Dedicated macro management interface with drag/reordering, step cloning, bulk wait/delay adjustments, compact press folding, and individual step deletions.
+  - **Macro Creation & Naming Dialog**: Added a modal dialog for creating and renaming macros with duplicate name detection and inline validation.
+  - **Dark Theme Polish & Accessibility**: High-contrast step icons, accessible selection states, and clear error badges for missing or invalid bindings.
+
+### Changed & Improved
+- **Input Engine Coordination & State Recovery**:
+  - **Zero-Allocation Hook Integration**: Integrated macro event interception and execution directly into the low-level Windows hook pipeline with lock-free state machines.
+  - **Input State Reconciliation**: Synchronized mouse button and modifier states across Windows focus transitions, desktop locking, and hook recovery watchdog events.
+  - **Chord & Gesture Coexistence**: Seamless co-existence between macro mouse chords, Alt-gestures, hold-breath steady aim, and standard key remaps.
+  - **Fast Cursor Movement**: Optimized smooth cursor interpolation for relative and absolute mouse travel actions without UI or game frame stutter.
+- **Persistence & Test Infrastructure**:
+  - **Robust INI Storage**: Structured serialization of macro definitions, step sequences, and playback settings in profile INI files with backward-compatible migrations.
+  - **Comprehensive Test Suite**: Added 25+ automated test fixtures verifying coordinate scaling, playback loops, shortcut conflicts, recording pairing, and hook lifecycles.
+
+---
+
 ## September 8 – 9, 2026 (Build 109)
 
 ### Fixed & Improved
