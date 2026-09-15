@@ -1327,22 +1327,31 @@ public sealed class InputHookService : IInputHookService
     public void SetRightButtonObservation(bool enabled)
     {
         _crosshairRightButtonWatch = enabled;
+        if (enabled) ResyncRightButtonState(updateInputState: false);
+    }
 
-        if (!enabled)
+    private void ResyncRightButtonState(bool updateInputState)
+    {
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
         {
+            // Crosshair policy holds its own gate while calling the setter. Never wait for
+            // the hook thread: serialize the native read and publication with mouse callbacks.
+            if (!dispatcher.HasShutdownStarted)
+                dispatcher.InvokeAsync(() => ResyncRightButtonState(updateInputState));
             return;
         }
+        if (_runtime.IsDisposed || (!updateInputState && !_crosshairRightButtonWatch)) return;
 
-        // Re-sync on arm: a WM_RBUTTONUP swallowed while we were not watching (secure desktop, hook
-        // reinstall, app-start while the button was already held) must not leave the overlay stuck
-        // hidden. Publish the CURRENT physical state once. GetAsyncKeyState reports the PHYSICAL
-        // button, so honor the swap setting exactly like RederivePhysicalModifierState.
+        // GetAsyncKeyState reports physical buttons. Check activation ownership AFTER the
+        // native query, which can dispatch a pending low-level callback before returning.
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
-        var isDown = !MacroPhysicalState.WasActivation(_macroPhysical.ButtonState(Models.MouseButton.Right)) &&
-            _isPhysicalKeyDown(physicalRightVk);
-        RightButtonStateChanged?.Invoke(this, isDown);
+        var isDown = _runtime.IsRunning && _isPhysicalKeyDown(physicalRightVk) &&
+            !MacroPhysicalState.WasActivation(_macroPhysical.ButtonState(Models.MouseButton.Right));
+        if (updateInputState) _rightButtonPressed = isDown;
+        if (_crosshairRightButtonWatch) RightButtonStateChanged?.Invoke(this, isDown);
     }
 
     public void SetCrosshairOffsetToggleKey(Key? key)
@@ -1920,15 +1929,7 @@ public sealed class InputHookService : IInputHookService
             _gestures.RederiveAltKeyboardPhysicalState(_isPhysicalKeyDown);
             _gestures.RederivePanicTriggerPhysicalState(_isPhysicalKeyDown);
         });
-        var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
-            ? NativeMethods.VK_LBUTTON
-            : NativeMethods.VK_RBUTTON;
-        _rightButtonPressed = !MacroPhysicalState.WasActivation(_macroPhysical.ButtonState(Models.MouseButton.Right)) &&
-            _isPhysicalKeyDown(physicalRightVk);
-        if (_crosshairRightButtonWatch)
-        {
-            RightButtonStateChanged?.Invoke(this, _rightButtonPressed);
-        }
+        ResyncRightButtonState(updateInputState: true);
     }
 
     private void SchedulePanicDerivation(Action derive)

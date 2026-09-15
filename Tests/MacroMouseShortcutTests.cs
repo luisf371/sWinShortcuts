@@ -17,6 +17,68 @@ public sealed class MacroMouseShortcutTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void RightButtonResync_ActivationDuringNativeRead_RemainsUnobserved(bool recovery)
+    {
+        Action? duringRead = null;
+        var rightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0 ? 1 : 2;
+        using var service = new InputHookService(new NullLoggerService(), new RecordingInputSender(),
+            System.Diagnostics.Stopwatch.GetTimestamp, vk =>
+            {
+                if (vk != rightVk) return false;
+                var action = Interlocked.Exchange(ref duringRead, null);
+                action?.Invoke();
+                return action is not null;
+            }, FakeAutoRunTransport.MatchingForeground());
+        service.StartInputExecutorForTesting();
+        service.AdvancedModeEnabled = true;
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.Macros.IsEnabled = true;
+        profile.Macros.Definitions = [new MacroDefinition { IsEnabled = true,
+            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }] }];
+        service.ConfigureActiveProfileForTesting(profile, 1, false);
+        Configure(service, profile, MouseButton.Right);
+        service.SetRightButtonObservation(true);
+        var observed = new List<bool>();
+        service.RightButtonStateChanged += (_, down) => observed.Add(down);
+        duringRead = () => Assert.True(Button(service, MouseButton.Right, true));
+        if (recovery)
+            typeof(InputHookService).GetMethod("RederivePhysicalModifierState", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(service, null);
+        else service.SetRightButtonObservation(true);
+        Assert.True(Button(service, MouseButton.Right, false));
+        Assert.False(Field<bool>(service, "_rightButtonPressed"));
+        Assert.False(Assert.Single(observed));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RightButtonResync_OffHookThread_PublishesOnHookDispatcher(bool recovery) =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            using var service = Create(new RecordingInputSender(), out _, new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 1 });
+            var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;
+            var hookThread = Environment.CurrentManagedThreadId;
+            typeof(InputHookService).GetField("_hookDispatcher", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(service, dispatcher);
+            service.SetRightButtonObservation(true);
+            var threads = new System.Collections.Concurrent.ConcurrentQueue<int>();
+            service.RightButtonStateChanged += (_, _) => threads.Enqueue(Environment.CurrentManagedThreadId);
+            await Task.Run(() =>
+            {
+                if (recovery)
+                    typeof(InputHookService).GetMethod("RederivePhysicalModifierState", BindingFlags.Instance | BindingFlags.NonPublic)!
+                        .Invoke(service, null);
+                else service.SetRightButtonObservation(true);
+            });
+            await dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle).Task;
+            Assert.NotEmpty(threads);
+            Assert.All(threads, thread => Assert.Equal(hookThread, thread));
+        });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Recording_AfterConsumedShortcut_CapturesFirstFreshPress(bool mouse)
     {
         var sender = new RecordingInputSender();
