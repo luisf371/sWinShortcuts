@@ -594,6 +594,10 @@
                 <CheckBox Content="Cancel on mouse movement" IsChecked="{Binding CancelOnMouseMovement}" Margin="0,0,18,0" VerticalAlignment="Center"
                           ToolTip="Stop playback when you move the mouse. Off by default."
                           AutomationProperties.Name="Cancel on mouse movement" />
+                <CheckBox Content="Toggle loop" IsChecked="{Binding ToggleMode}" Margin="0,0,18,0" VerticalAlignment="Center"
+                          ToolTip="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut. Off by default."
+                          AutomationProperties.Name="Toggle loop"
+                          AutomationProperties.HelpText="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut. Off by default." />
                 <Button DockPanel.Dock="Right" Style="{StaticResource MacroLinkButton}" Command="{Binding ShowProblemStepCommand}"
                         Content="{Binding ProblemStepNumber}" ContentStringFormat="Show step {0}" Margin="10,0,0,0" VerticalAlignment="Center"
                         Visibility="{Binding HasProblemStep, Converter={StaticResource VisibleIfTrue}}"
@@ -608,6 +612,10 @@
                             <Setter Property="Foreground" Value="{StaticResource MacroSuccessBrush}" />
                             <Setter Property="Text" Value="{Binding ShortcutText, StringFormat='Ready. Press {0} while this profile is active.'}" />
                             <Style.Triggers>
+                                <!-- Later triggers win, so off and validation messages still replace the looping ready copy. -->
+                                <DataTrigger Binding="{Binding ToggleMode}" Value="True">
+                                    <Setter Property="Text" Value="{Binding ShortcutText, StringFormat='Ready. Press {0} to loop; press it again to stop.'}" />
+                                </DataTrigger>
                                 <DataTrigger Binding="{Binding DataContext.IsEnabled, ElementName=Editor}" Value="False">
                                     <Setter Property="Foreground" Value="{StaticResource MacroWarningBrush}" />
                                     <Setter Property="Text" Value="Ready, but macros are off for this profile." />

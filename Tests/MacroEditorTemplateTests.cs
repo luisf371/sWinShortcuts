@@ -131,7 +131,7 @@ public sealed class MacroEditorTemplateTests
             var gated = Descendants(section).OfType<FrameworkElement>()
                 .Where(element => ReferenceEquals(element.Style, host.Resources["FeatureToggleContentStyle"])).ToArray();
             Assert.Equal(3, gated.Length);
-            var body = new[] { "Selected macro", "Enable selected macro", "New macro", "Ordered macro steps", "Create first macro" }
+            var body = new[] { "Selected macro", "Enable selected macro", "New macro", "Ordered macro steps", "Create first macro", "Toggle loop" }
                 .Select(name => Assert.Single(controls, control => AutomationProperties.GetName(control) == name)).ToArray();
             Assert.All(body, control => Assert.Contains(gated, part => part.IsAncestorOf(control)));
             Assert.All(new FrameworkElement[]
@@ -205,6 +205,11 @@ public sealed class MacroEditorTemplateTests
             popup.Child.UpdateLayout();
             var entry = Assert.IsType<ComboBoxItem>(selector.ItemContainerGenerator.ContainerFromIndex(0));
             Assert.True(entry.IsSelected);
+            // Toggle loop defaults off and binds both ways; its looping ready copy yields to the off and validation messages.
+            var toggleLoop = Assert.Single(controls.OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Toggle loop");
+            var macroStatus = Assert.IsType<TextBlock>(view.FindName("MacroStatus"));
+            Assert.False(toggleLoop.IsChecked);
+            Assert.False(macro.ToggleMode);
             foreach (var state in new[] { "Ready", "Off", "Not saved" })
             {
                 macro.IsEnabled = state != "Off";
@@ -215,7 +220,25 @@ public sealed class MacroEditorTemplateTests
                 Assert.Contains(texts, text => text.Text == "F24");
                 if (state != "Ready") Assert.Contains(texts, text => text.Text == state);
                 foreach (var text in texts) AssertReadableText(text, entry.Background);
+                foreach (var loop in new[] { true, false })
+                {
+                    toggleLoop.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, loop);
+                    await Dispatcher.Yield(DispatcherPriority.DataBind);
+                    Assert.Equal(loop, macro.ToggleMode);
+                    Assert.Equal(state switch
+                    {
+                        "Ready" => loop ? "Ready. Press F24 to loop; press it again to stop." : "Ready. Press F24 while this profile is active.",
+                        "Off" => "Off. Turn on Enabled to use the shortcut.",
+                        _ => macro.ValidationMessage
+                    }, macroStatus.Text);
+                }
             }
+            // With the problem-step link also shown, the option still fits its row at the minimum size.
+            host.UpdateLayout();
+            var optionsRow = Assert.IsType<DockPanel>(toggleLoop.Parent);
+            var rowBounds = optionsRow.TransformToAncestor(host).TransformBounds(new Rect(optionsRow.RenderSize));
+            var toggleBounds = toggleLoop.TransformToAncestor(host).TransformBounds(new Rect(toggleLoop.RenderSize));
+            Assert.True(rowBounds.Contains(toggleBounds), $"Toggle loop exceeds the macro options row {rowBounds}: {toggleBounds}.");
             macro.IsEnabled = originalEnabled;
             macro.ShortcutKey = Key.None;
             macro.SelectedStep.Key = Key.None;
