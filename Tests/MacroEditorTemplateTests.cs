@@ -122,6 +122,44 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             var view = Assert.Single(Descendants(host).OfType<sWinShortcuts.Views.MacrosView>());
             var controls = Descendants(view).OfType<Control>().ToArray();
+            // Same section box and header switch as the other tabs. Off disables and shades the whole body,
+            // including management and the empty state, while the switch, notices and Stop stay outside it.
+            var section = Assert.Single(controls.OfType<GroupBox>());
+            Assert.Equal(new Thickness(16), section.Padding);
+            var master = Assert.Single(controls.OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Enable macros for this profile");
+            Assert.Same(section.Header, master.Parent);
+            var gated = Descendants(section).OfType<FrameworkElement>()
+                .Where(element => ReferenceEquals(element.Style, host.Resources["FeatureToggleContentStyle"])).ToArray();
+            Assert.Equal(3, gated.Length);
+            var body = new[] { "Selected macro", "Enable selected macro", "New macro", "Ordered macro steps", "Create first macro" }
+                .Select(name => Assert.Single(controls, control => AutomationProperties.GetName(control) == name)).ToArray();
+            Assert.All(body, control => Assert.Contains(gated, part => part.IsAncestorOf(control)));
+            Assert.All(new FrameworkElement[]
+            {
+                master,
+                Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Stop recording"),
+                Assert.Single(Descendants(view).OfType<TextBlock>(), block => AutomationProperties.GetName(block) == "Macro load error")
+            }, element => Assert.DoesNotContain(gated, part => part.IsAncestorOf(element)));
+            Assert.False(profile.Macros.IsEnabled);
+            Assert.True(master.IsEnabled);
+            Assert.All(gated, part => Assert.Equal(0.75, part.Opacity));
+            Assert.All(body, control => Assert.False(control.IsEnabled));
+            master.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.True(profile.Macros.IsEnabled);
+            Assert.All(gated, part => Assert.Equal(1d, part.Opacity));
+            Assert.All(body, control => Assert.True(control.IsEnabled));
+            // The selected macro's own switch is separate from the section switch; a macro that is off stays editable.
+            var macroSwitch = Assert.IsType<CheckBox>(body[1]);
+            Assert.NotSame(master, macroSwitch);
+            macroSwitch.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.True(macro.IsEnabled);
+            macroSwitch.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, false);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.False(macro.IsEnabled);
+            Assert.True(profile.Macros.IsEnabled);
+            Assert.True(Assert.Single(controls.OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Macro label").IsEnabled);
             var shortcutPicker = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut key");
             Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(shortcutPicker));
             var keyPopup = (System.Windows.Controls.Primitives.Popup)shortcutPicker.Template.FindName("Popup", shortcutPicker);
@@ -193,11 +231,16 @@ public sealed class MacroEditorTemplateTests
             var pickerBottom = coordinatePicker.TransformToAncestor(host).Transform(new Point(0, coordinatePicker.ActualHeight)).Y;
             Assert.True(pickerBottom <= host.ActualHeight, $"Coordinate picker bottom {pickerBottom} exceeds viewport {host.ActualHeight}.");
 
+            // Stop stays operable with the section off and the profile disabled while recording.
+            master.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, false);
             profile.IsEnabled = false;
             profile.Macros.SetRecordingDestination(macro);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
 
+            Assert.False(profile.Macros.IsEnabled);
+            Assert.All(gated, part => Assert.False(part.IsEnabled));
+            Assert.False(master.IsEnabled);
             Assert.True(stop.IsEnabled);
             Assert.False(cancelOnMovement.IsEnabled);
             Assert.False(Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro").IsEnabled);
@@ -207,6 +250,12 @@ public sealed class MacroEditorTemplateTests
 
             profile.Macros.SetRecordingDestination(null);
             profile.IsEnabled = true;
+            // The section switch must still be able to turn itself back on.
+            Assert.True(master.IsEnabled);
+            master.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.True(profile.Macros.IsEnabled);
+            Assert.All(gated, part => Assert.True(part.IsEnabled));
             var add = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Add step");
             var menu = add.ContextMenu!;
             // A detached popup normally resolves these resources through Application.Current.

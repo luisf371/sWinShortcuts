@@ -453,13 +453,11 @@
     <Grid Margin="24,12,24,16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Conditions that stop playback or editing for the whole profile. -->
+        <!-- Conditions that stop playback or editing for the whole profile. They sit outside the
+             section so they stay full-contrast while its body is shaded. -->
         <StackPanel Grid.Row="0">
             <Border Margin="0,0,0,10" Padding="10,6" CornerRadius="4" BorderThickness="1"
                     Background="{StaticResource MacroRecordingSurfaceBrush}" BorderBrush="{StaticResource MacroRecordingLineBrush}"
@@ -499,19 +497,36 @@
             </Border>
         </StackPanel>
 
-        <!-- Profile switch, macro switcher, and macro management. -->
-        <Grid Grid.Row="1" Margin="0,0,0,12">
+        <!-- Section box with the profile switch in its header, as on the other profile tabs. -->
+        <GroupBox Grid.Row="1" Padding="16">
+            <GroupBox.Header>
+                <StackPanel Orientation="Horizontal" MinHeight="22">
+                    <CheckBox Content="Macros" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding CanEdit}" Margin="0" VerticalAlignment="Center"
+                              AutomationProperties.Name="Enable macros for this profile" />
+                    <TextBlock Style="{DynamicResource InfoIconStyle}"
+                               ToolTip="Turns every macro shortcut in this profile on or off."
+                               ToolTipService.InitialShowDelay="0"
+                               ToolTipService.Placement="Right" />
+                </StackPanel>
+            </GroupBox.Header>
+        <!-- Body. A disabled ancestor disables every child, so the switch above and Stop recording stay
+             outside the three gated parts. Tag drives the host's feature-off shading. -->
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+        <StackPanel IsEnabled="{Binding IsEnabled}" Tag="{Binding IsEnabled}" Style="{DynamicResource FeatureToggleContentStyle}">
+
+        <!-- Macro switcher, the selected macro's own switch, and macro management. -->
+        <Grid Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <CheckBox Content="Enable macros" IsChecked="{Binding IsEnabled}" IsEnabled="{Binding CanEdit}" Margin="0" VerticalAlignment="Center"
-                      ToolTip="Turns every macro shortcut in this profile on or off."
-                      AutomationProperties.Name="Enable macros for this profile" />
-            <Rectangle Grid.Column="1" Width="1" Margin="14,4" Fill="{StaticResource MacroLineBrush}" />
-            <Grid Grid.Column="2">
+            <Grid>
                 <ComboBox ItemsSource="{Binding Definitions}" SelectedItem="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
                           ItemTemplate="{StaticResource MacroChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
                           TextSearch.TextPath="Label" MinHeight="32" MaxDropDownHeight="360"
@@ -521,7 +536,11 @@
                            Foreground="{StaticResource MacroMutedBrush}"
                            Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfFalse}}" />
             </Grid>
-            <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="8,0,0,0">
+            <CheckBox Grid.Column="1" Content="Enabled" IsChecked="{Binding SelectedMacro.IsEnabled}" IsEnabled="{Binding CanEdit}"
+                      Margin="12,0,4,0" VerticalAlignment="Center" Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfTrue}}"
+                      ToolTip="Only enabled macros respond to their shortcut."
+                      AutomationProperties.Name="Enable selected macro" />
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0">
                 <Button Style="{StaticResource MacroButton}" Command="{Binding NewMacroCommand}" Margin="0,0,6,0"
                         ToolTip="Create a macro in this profile. A profile holds up to 64 macros."
                         AutomationProperties.Name="New macro">
@@ -540,7 +559,7 @@
         </Grid>
 
         <!-- Selected macro: identity, shortcut, options, and whether it can play. -->
-        <Grid Grid.Row="2" Margin="0,0,0,12" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
+        <Grid Margin="0,0,0,12" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
               Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -570,9 +589,6 @@
                           AutomationProperties.Name="Macro shortcut key" />
             </StackPanel>
             <DockPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0">
-                <CheckBox Content="Enabled" IsChecked="{Binding IsEnabled}" Margin="0,0,18,0" VerticalAlignment="Center"
-                          ToolTip="Only enabled macros respond to their shortcut."
-                          AutomationProperties.Name="Enable selected macro" />
                 <CheckBox Content="Cancel on mouse movement" IsChecked="{Binding CancelOnMouseMovement}" Margin="0,0,18,0" VerticalAlignment="Center"
                           ToolTip="Stop playback when you move the mouse. Off by default."
                           AutomationProperties.Name="Cancel on mouse movement" />
@@ -610,10 +626,14 @@
                 </TextBlock>
             </DockPanel>
         </Grid>
+        </StackPanel>
 
-        <!-- Sequence commands; while recording the same row becomes the recording banner. -->
-        <Grid Grid.Row="3" Margin="0,0,0,8" MinHeight="32" Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfTrue}}">
+        <!-- Sequence commands; while recording the same row becomes the recording banner. Only the commands
+             are gated: the banner keeps Stop recording reachable while the section is off. -->
+        <Grid Grid.Row="1" Margin="0,0,0,8" MinHeight="32" Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfTrue}}">
             <DockPanel DataContext="{Binding SelectedMacro}"
+                       IsEnabled="{Binding DataContext.IsEnabled, ElementName=Editor}" Tag="{Binding DataContext.IsEnabled, ElementName=Editor}"
+                       Style="{DynamicResource FeatureToggleContentStyle}"
                        Visibility="{Binding DataContext.IsRecording, ElementName=Editor, Converter={StaticResource VisibleIfFalse}}">
                 <Button Style="{StaticResource MacroButton}" Command="{Binding DataContext.RecordCommand, ElementName=Editor}" Margin="0,0,6,0"
                         ToolTip="Record keys, mouse buttons and wheel input. The take is inserted after the selected step."
@@ -730,7 +750,8 @@
         </Grid>
 
         <!-- Workspace: the ordered sequence and the editor for the selected step. -->
-        <Grid Grid.Row="4" DataContext="{Binding SelectedMacro}"
+        <Grid Grid.Row="2" IsEnabled="{Binding IsEnabled}" Tag="{Binding IsEnabled}" Style="{DynamicResource FeatureToggleContentStyle}">
+        <Grid DataContext="{Binding SelectedMacro}"
               Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
@@ -1026,7 +1047,7 @@
         </Grid>
 
         <!-- First run: nothing to select yet. -->
-        <StackPanel Grid.Row="2" Grid.RowSpan="3" MaxWidth="400" Margin="0,0,0,48" VerticalAlignment="Center" HorizontalAlignment="Center"
+        <StackPanel MaxWidth="400" Margin="0,0,0,48" VerticalAlignment="Center" HorizontalAlignment="Center"
                     Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfFalse}}">
             <TextBlock Text="No macros in this profile" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center"
                        Foreground="{DynamicResource ForegroundPrimaryBrush}" />
@@ -1040,5 +1061,8 @@
                 </StackPanel>
             </Button>
         </StackPanel>
+        </Grid>
+        </Grid>
+        </GroupBox>
     </Grid>
 </UserControl>

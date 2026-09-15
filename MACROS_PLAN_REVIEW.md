@@ -1,5 +1,7 @@
 # Macro plan review log
 
+> Historical planning record. The feature and editor at `f779947` subsequently passed hosted CI and independent code review. The current container/naming follow-up is tracked in `MACROS_PLAN.md`; the pre-implementation statements below describe their original review dates.
+
 Scope: review and improve MACROS_PLAN.md before implementing the feature. Reviewers use fresh contexts, gpt-6-astra, xhigh reasoning, and the confirmed user requirements. Production code is unchanged by this review loop.
 
 ## Initial improvements

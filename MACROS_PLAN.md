@@ -3,7 +3,7 @@
 > For agentic workers: use superpowers:subagent-driven-development or superpowers:executing-plans to execute this plan task by task. Use the parent model for coding workers, use Serena when available, and keep shared input-runtime edits under one owner.
 
 **Date:** 2026-09-13
-**Status:** User scope confirmed. Review rounds and the readiness verdict are recorded in MACROS_PLAN_REVIEW.md. Feature implementation has not started.
+**Status:** Feature implemented on `feat/macros` in PR #25. The editor at `f779947` passed hosted CI and independent review; the container, naming-dialog and enable-control follow-up below is in progress. `MACROS_PLAN_REVIEW.md` retains the original planning review history.
 **Baseline inspected:** main, 0bf8192.
 **Goal:** Add a Macros tab immediately after Advanced, supporting labeled macros, assigned shortcuts, an editable sequence of keyboard/mouse/wait actions, and Record/Stop assistance.
 **Architecture:** Store macros with their owning profiles, publish detached runtime snapshots, and add a recorder and a playback coordinator to the existing input service. Reuse InputExecutor and WindowsInputSender for delivery and release accounting; macro waits run outside the shared executor.
@@ -426,3 +426,12 @@ Checked 2026-09-13 through Context7 and page retrieval; recheck if implementatio
 - Collapse presses is a default-on presentation setting. Only an adjacent matching Down/Wait/Up triple becomes one displayed press; keep canonical models, timing and recording indices intact. Grouped row operations use the entire span. Mismatched, unsupported, overlapping or interleaved sequences remain separate. Grouped key/button edits update both endpoints in one batch; the grouped hold edits the original Wait text. Invalid hold text keeps the group and selection stable, with its error shown on the group and inspector. Error navigation selects the containing displayed row. Show all steps turns off Collapse for manual source editing.
 - Claude Opus5/max completed the authorized /low-priority consultation. Add Collapse presses and Set all waits… in a sequence-panel header. The bulk input opens inline beneath that header, validates text without saving, shows affected Wait/press-hold counts, and stays open after an explicit Apply. Scope Enter to the duration field and Escape to the strip; close automatically on macro/context/recording changes. No app settings, persistence changes or new dependencies.
 - Finish focused/full validation, commit/push, exact-head green CI, then a fresh Astra/xhigh review; repeat supported fixes as separate commits and leave PR25 open. The original returned Claude UI was preserved in its own commit before root corrections.
+
+## 2026-09-14 container and naming follow-up
+
+- Checkpoint every pending project change before UI edits. Completed as `35823db`, including the previously local root plans.
+- Match the neighboring tabs' outer GroupBox and header, padding, border and disabled treatment. Keep the sequence viewport finite and virtualized.
+- Put the profile's master switch in the section header. Turning it off dims and disables the full editor body, while the master remains usable and recording Stop remains reachable. Keep master-toggle admission separate from editor-body enablement.
+- Replace the persistent Name field with a focused naming dialog for New and Rename. Cancel changes nothing; acceptance creates or renames once using existing label validation. Both toolbar and empty-state creation use this flow. Duplicates retain their automatic incremented name.
+- Place the selected macro's enable control with its identity so its scope is clear. An individually disabled macro remains editable.
+- Preserve Collapse, bulk Wait editing, shortcuts, raw draft text, runtime behavior and profile persistence. The user delegated direct implementation to Claude Opus 5/max; root validates and records each supported fix separately before repeating CI and clean-context review. Do not merge PR #25.
