@@ -342,6 +342,8 @@ public sealed class IniProfileStore : IProfileStore
                 ToggleMode = ReadMacroBoolean(document, section, "ToggleMode", false),
                 CancelOnMouseMovement = ReadMacroBoolean(document, section, "CancelOnMouseMovement", false),
                 ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
+                ShortcutMouseButton = document.TryGetSourceValue(section, "ShortcutMouseButton", out _)
+                    ? ReadMacroEnum<Models.MouseButton>(document, section, "ShortcutMouseButton") : null,
                 ShortcutModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutModifiers"),
                 Steps = steps
             };
@@ -477,6 +479,7 @@ public sealed class IniProfileStore : IProfileStore
             document.SetBoolean(section, "ToggleMode", macro.ToggleMode);
             document.SetBoolean(section, "CancelOnMouseMovement", macro.CancelOnMouseMovement);
             document.SetKey(section, "ShortcutKey", macro.ShortcutKey);
+            if (macro.ShortcutMouseButton is { } button) document.SetEnum(section, "ShortcutMouseButton", button);
             document.SetInt32(section, "ShortcutModifiers", (int)macro.ShortcutModifiers);
             document.SetInt32(section, "StepCount", macro.Steps.Length);
             for (var stepIndex = 0; stepIndex < macro.Steps.Length; stepIndex++)

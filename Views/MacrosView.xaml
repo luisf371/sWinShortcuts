@@ -12,6 +12,7 @@
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
         <conv:KeyDisplayConverter x:Key="KeyDisplay" />
+        <conv:InputTriggerDisplayConverter x:Key="ShortcutDisplay" />
 
         <!-- App brushes are referenced with DynamicResource: template tests host this view without an
              Application. These local tones keep secondary text, selection and state colors at 4.5:1 or
@@ -364,6 +365,22 @@
             </TextBlock>
         </DataTemplate>
 
+        <DataTemplate x:Key="ShortcutChoice">
+            <TextBlock TextTrimming="CharacterEllipsis">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="{Binding Converter={StaticResource ShortcutDisplay}}" />
+                        <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:InputTriggerKind.None}">
+                                <Setter Property="Text" Value="Unassigned" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </DataTemplate>
+
         <!-- Macro switcher entry: label, shortcut, and a state word whenever it cannot play as-is. -->
         <DataTemplate x:Key="MacroChoice" DataType="{x:Type vm:MacroViewModel}">
             <StackPanel Orientation="Horizontal">
@@ -578,17 +595,19 @@
                     AutomationProperties.Name="Rename macro" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="16,0,0,0">
                 <TextBlock Text="Shortcut" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}"
-                           ToolTip="Hold the selected modifiers, then press the key. F12 is reserved for cancelling." />
+                           ToolTip="Hold the selected modifiers, then press the key or mouse button. Release the shortcut to start playback. F12 stops playback." />
                 <CheckBox Content="Ctrl" IsChecked="{Binding ControlModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Control modifier" />
                 <CheckBox Content="Alt" IsChecked="{Binding AltModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Alt modifier" />
                 <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Shift modifier" />
                 <CheckBox Content="Win" IsChecked="{Binding WindowsModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Windows modifier" />
                 <TextBlock Text="+" Margin="4,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
-                <ComboBox Width="116" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.ShortcutKeyOptions}"
-                          SelectedItem="{Binding ShortcutKey}" ItemTemplate="{StaticResource KeyChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                <ComboBox Width="160" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.ShortcutOptions}"
+                          SelectedItem="{Binding ShortcutTrigger}" ItemTemplate="{StaticResource ShortcutChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
                           BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
                           behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                          AutomationProperties.Name="Macro shortcut key" />
+                          ToolTip="Choose a keyboard key or mouse button. You can also press a key while this list is open. The matching shortcut is consumed."
+                          AutomationProperties.Name="Macro shortcut"
+                          AutomationProperties.HelpText="Choose a keyboard key or one of the five mouse buttons, then select any required modifiers." />
             </StackPanel>
             <DockPanel Grid.Row="1" Grid.ColumnSpan="3" Margin="0,8,0,0">
                 <CheckBox Content="Cancel on mouse movement" IsChecked="{Binding CancelOnMouseMovement}" Margin="0,0,18,0" VerticalAlignment="Center"

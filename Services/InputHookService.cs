@@ -1387,7 +1387,7 @@ public sealed class InputHookService : IInputHookService
 
         if (_macros.IsBusy)
         {
-            _macroPhysical.ReconcileActivationPairs(_isPhysicalKeyDown);
+            _macroPhysical.ReconcileActivationPairs(_isPhysicalKeyDown, NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0);
             // Synthetic holds can still affect the native snapshot. Changed retries after cleanup.
             if (_macros.IsBusy) return;
         }
@@ -1682,7 +1682,7 @@ public sealed class InputHookService : IInputHookService
         Volatile.Write(ref _lastMouseEventTick, Stopwatch.GetTimestamp());
 
         var featuresActive = !_mouseReplacementInProgress && !_runtime.IsDisposed && _runtime.IsRunning;
-        if (nCode < 0 || (!featuresActive && !_macros.IsBusy && !_macroPhysical.HasTakeovers))
+        if (nCode < 0 || (!featuresActive && !_macros.IsBusy && !_macroPhysical.HasTakeovers && !_macroPhysical.HasMouseActivations))
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
@@ -1730,8 +1730,9 @@ public sealed class InputHookService : IInputHookService
         if (!featuresActive)
         {
             CompletePendingMacroRecovery();
-            if (MacroRecorder.TryDecodeButton(message, data.mouseData, out var button, out var down))
-                _macros.HandleButton(button, down, _macroPhysical.ObserveButton(button, down));
+            if (MacroRecorder.TryDecodeButton(message, data.mouseData, out var button, out var down) &&
+                _macros.HandleButton(button, down, _macroPhysical.ObserveButton(button, down), allowActivation: false) == true)
+                return (IntPtr)1;
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
 
@@ -1744,10 +1745,11 @@ public sealed class InputHookService : IInputHookService
     internal bool DispatchDecodedMouseEvent(int message, uint mouseData, int x = 0, int y = 0, uint flags = 0)
     {
         CompletePendingMacroRecovery();
-        ObserveRightButton(message);
         var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
         var previous = isButton ? _macroPhysical.ObserveButton(button, down) : 0;
         var decision = isButton ? _macros.HandleButton(button, down, previous) : null;
+        // A consumed activation must not arm right-click mappings or crosshair/hold-breath state.
+        if (decision != true) ObserveRightButton(message);
         var recordingPaused = _runtime.RecordingPaused;
         bool handled;
         if (decision.HasValue) handled = decision.Value;
@@ -1919,7 +1921,8 @@ public sealed class InputHookService : IInputHookService
         var physicalRightVk = NativeMethods.GetSystemMetrics(NativeMethods.SM_SWAPBUTTON) != 0
             ? NativeMethods.VK_LBUTTON
             : NativeMethods.VK_RBUTTON;
-        _rightButtonPressed = _isPhysicalKeyDown(physicalRightVk);
+        _rightButtonPressed = !MacroPhysicalState.WasActivation(_macroPhysical.ButtonState(Models.MouseButton.Right)) &&
+            _isPhysicalKeyDown(physicalRightVk);
         if (_crosshairRightButtonWatch)
         {
             RightButtonStateChanged?.Invoke(this, _rightButtonPressed);

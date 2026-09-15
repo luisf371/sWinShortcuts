@@ -23,7 +23,18 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     public bool IsPhysicalKeyDown(int vk) => (uint)vk < 256 && (KeyState(vk) & (DOWN | ACTIVATION)) == DOWN;
     internal bool IsRawKeyDown(int vk) => (uint)vk < 256 && (KeyState(vk) & DOWN) != 0;
     internal int KeyState(int vk) => Volatile.Read(ref _keys[vk]);
-    public bool IsPhysicalMouseButtonDown(MouseButton button) => (Volatile.Read(ref _buttons[(int)button]) & DOWN) != 0;
+    public bool IsPhysicalMouseButtonDown(MouseButton button) => (ButtonState(button) & (DOWN | ACTIVATION)) == DOWN;
+    internal bool IsRawMouseButtonDown(MouseButton button) => (ButtonState(button) & DOWN) != 0;
+    internal int ButtonState(MouseButton button) => Volatile.Read(ref _buttons[(int)button]);
+    internal bool HasMouseActivations
+    {
+        get
+        {
+            for (var i = 1; i < _buttons.Length; i++)
+                if (WasActivation(Volatile.Read(ref _buttons[i]))) return true;
+            return false;
+        }
+    }
     public bool HasPhysicalKeyTakeover(int vk) => (uint)vk < 256 && (Volatile.Read(ref _keys[vk]) & (DOWN | TAKEOVER)) == (DOWN | TAKEOVER);
     public bool HasPhysicalMouseTakeover(MouseButton button) => (Volatile.Read(ref _buttons[(int)button]) & (DOWN | TAKEOVER)) == (DOWN | TAKEOVER);
     internal bool AnyMouseButtonDown => IsPhysicalMouseButtonDown(MouseButton.Left) || IsPhysicalMouseButtonDown(MouseButton.Right) ||
@@ -59,11 +70,11 @@ internal sealed class MacroPhysicalState : IMacroInputContext
         return previous;
     }
 
-    internal int ObserveButton(MouseButton button, bool down)
+    internal int ObserveButton(MouseButton button, bool down, bool activation = false)
     {
         var index = (int)button;
         var previous = Volatile.Read(ref _buttons[index]);
-        Volatile.Write(ref _buttons[index], down ? previous | DOWN : 0);
+        Volatile.Write(ref _buttons[index], down ? previous | DOWN | (activation ? ACTIVATION : 0) : 0);
         if (!down && WasTakeover(previous)) Interlocked.Decrement(ref _takeovers);
         return previous;
     }
@@ -100,21 +111,30 @@ internal sealed class MacroPhysicalState : IMacroInputContext
             if (!down && WasTakeover(previous)) Interlocked.Decrement(ref _takeovers);
         }
         // GetAsyncKeyState reports physical buttons; low-level mouse messages are logical.
-        ReadOnlySpan<int> mouseKeys = stackalloc int[] { 0, buttonsSwapped ? 2 : 1, buttonsSwapped ? 1 : 2, 4, 5, 6 };
         for (var i = 1; i < _buttons.Length; i++)
         {
             var previous = Volatile.Read(ref _buttons[i]);
-            var down = unknownState(mouseKeys[i]);
-            Volatile.Write(ref _buttons[i], down ? DOWN | (previous & TAKEOVER) : 0);
+            var down = unknownState(MouseVirtualKey(i, buttonsSwapped));
+            Volatile.Write(ref _buttons[i], down ? DOWN | (previous & (TAKEOVER | ACTIVATION)) : 0);
             if (!down && WasTakeover(previous)) Interlocked.Decrement(ref _takeovers);
         }
     }
 
-    internal void ReconcileActivationPairs(Func<int, bool> unknownState)
+    private static int MouseVirtualKey(int button, bool buttonsSwapped) => button switch
+    {
+        1 => buttonsSwapped ? 2 : 1,
+        2 => buttonsSwapped ? 1 : 2,
+        _ => button + 1
+    };
+
+    internal void ReconcileActivationPairs(Func<int, bool> unknownState, bool buttonsSwapped = false)
     {
         // Safe during cleanup: consumed pairs never reached the target application.
         for (var vk = 0; vk < _keys.Length; vk++)
             if (WasActivation(KeyState(vk)) && !unknownState(vk)) ObserveKey(vk, false);
+        for (var i = 1; i < _buttons.Length; i++)
+            if (WasActivation(Volatile.Read(ref _buttons[i])) && !unknownState(MouseVirtualKey(i, buttonsSwapped)))
+                ObserveButton((MouseButton)i, false);
     }
 
     internal (bool[] Keys, bool[] Buttons) CaptureHeld()
@@ -122,7 +142,7 @@ internal sealed class MacroPhysicalState : IMacroInputContext
         var keys = new bool[256];
         var buttons = new bool[6];
         for (var i = 0; i < keys.Length; i++) keys[i] = IsRawKeyDown(i);
-        for (var i = 1; i < buttons.Length; i++) buttons[i] = IsPhysicalMouseButtonDown((MouseButton)i);
+        for (var i = 1; i < buttons.Length; i++) buttons[i] = IsRawMouseButtonDown((MouseButton)i);
         return (keys, buttons);
     }
 }
@@ -225,13 +245,27 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     internal static string? GetShortcutError(Profile profile, Guid id, Profile? windows, int colorVk, int crosshairVk, int rapidFireVk)
     {
         var definition = Array.Find(profile.Macros.Definitions, m => m.Id == id);
-        if (definition is null || definition.ShortcutKey == Key.None) return null;
-        var vk = KeyInteropUtilities.ToVirtualKey(definition.ShortcutKey);
+        if (definition is null || definition.ShortcutTrigger.Kind == InputTriggerKind.None) return null;
         var mods = definition.ShortcutModifiers;
+        if (profile.Macros.Definitions.Any(m => m.Id != id && m.IsEnabled && m.ShortcutTrigger == definition.ShortcutTrigger && m.ShortcutModifiers == mods))
+            return "Another enabled macro uses this shortcut.";
+        if (definition.ShortcutMouseButton is { } button)
+        {
+            if ((mods & ModifierKeys.Alt) != 0 && profile.AltMouse.IsEnabled &&
+                profile.AltMouse.Bindings.TryGetValue(button, out var mouseBinding) && mouseBinding.SuppressOriginalWhileAltIsHeld)
+                return "Alt + Mouse uses this shortcut.";
+            if (button == MouseButton.Right && profile.RightClickHoldBreath.IsEnabled)
+                return "Hold-Breath uses the right mouse button.";
+            if (button == MouseButton.Left && profile.RapidFire.IsEnabled)
+                return "Rapid Fire uses the left mouse button.";
+            if (profile.RightClickHoldBreath.IsEnabled && profile.RightClickHoldBreath.SuppressEarlyCancelInput &&
+                profile.RightClickHoldBreath.PanicTrigger == definition.ShortcutTrigger)
+                return "Hold-Breath Early Cancel uses this mouse button.";
+            return null;
+        }
+        var vk = KeyInteropUtilities.ToVirtualKey(definition.ShortcutKey);
         if (vk == EMERGENCY_STOP_VK) return "F12 is reserved for emergency cancellation.";
         if (vk == colorVk || vk == crosshairVk || vk == rapidFireVk) return "This key is assigned to an app-level toggle.";
-        if (profile.Macros.Definitions.Any(m => m.Id != id && m.IsEnabled && m.ShortcutKey == definition.ShortcutKey && m.ShortcutModifiers == mods))
-            return "Another enabled macro uses this shortcut.";
         if ((mods & ModifierKeys.Windows) != 0 && windows is { IsEnabled: true } && windows.WindowsLauncher.IsEnabled &&
             windows.WindowsLauncher.Launchers.TryGetValue(definition.ShortcutKey, out var launcher) && !string.IsNullOrWhiteSpace(launcher.Path))
             return "Windows Launcher uses this shortcut.";
@@ -269,6 +303,22 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             Cancel("Stopped with F12.");
             return true;
         }
+        if (TryActivate(vk, null, down, previous, allowActivation)) return true;
+        _physical.ObserveKey(vk, down);
+        if (_physical.HasPhysicalKeyTakeover(vk) || MacroPhysicalState.WasTakeover(previous)) return false;
+        if (down && !MacroPhysicalState.WasSuppressed(previous) && _executor.IsMacroKeyOwned(vk))
+        {
+            _physical.TakeKey(vk);
+            if (MacroPhysicalState.ModifierForKey(vk) == ModifierKeys.None) Cancel("Physical input took over a macro key.");
+            _wake.Set();
+            return false;
+        }
+        if (IsBusy && (MacroPhysicalState.ModifierForKey(vk) != ModifierKeys.None || !down)) _wake.Set();
+        return null;
+    }
+
+    private bool TryActivate(int vk, MouseButton? button, bool down, int previous, bool allowActivation)
+    {
         if (allowActivation && Volatile.Read(ref _closing) == 0 && !IsRecording && down && !MacroPhysicalState.WasDown(previous) &&
             _runtime.AdvancedModeEnabled && _runtime.ProfileInputGenerationIsCurrent())
         {
@@ -276,8 +326,10 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             var lookup = Volatile.Read(ref _lookup);
             foreach (var entry in lookup)
             {
-                if (entry.VirtualKey != vk || entry.Definition.ShortcutModifiers != mods || !ReferenceEquals(entry.Owner, _runtime.ActiveProfile)) continue;
-                _physical.ObserveKey(vk, down, activation: true);
+                if (entry.Definition.ShortcutMouseButton != button || (button is null && entry.VirtualKey != vk) ||
+                    entry.Definition.ShortcutModifiers != mods || !ReferenceEquals(entry.Owner, _runtime.ActiveProfile)) continue;
+                if (button is { } mouse) _physical.ObserveButton(mouse, down, activation: true);
+                else _physical.ObserveKey(vk, down, activation: true);
                 if (Interlocked.CompareExchange(ref _busy, 1, 0) == 0)
                 {
                     Volatile.Write(ref _cancelled, 0);
@@ -298,21 +350,18 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 return true;
             }
         }
-        _physical.ObserveKey(vk, down);
-        if (_physical.HasPhysicalKeyTakeover(vk) || MacroPhysicalState.WasTakeover(previous)) return false;
-        if (down && !MacroPhysicalState.WasSuppressed(previous) && _executor.IsMacroKeyOwned(vk))
-        {
-            _physical.TakeKey(vk);
-            if (MacroPhysicalState.ModifierForKey(vk) == ModifierKeys.None) Cancel("Physical input took over a macro key.");
-            _wake.Set();
-            return false;
-        }
-        if (IsBusy && (MacroPhysicalState.ModifierForKey(vk) != ModifierKeys.None || !down)) _wake.Set();
-        return null;
+        return false;
     }
 
-    internal bool? HandleButton(MouseButton button, bool down, int previous)
+    internal bool? HandleButton(MouseButton button, bool down, int previous, bool allowActivation = true)
     {
+        if (MacroPhysicalState.WasActivation(previous))
+        {
+            _physical.ObserveButton(button, down, activation: true);
+            _wake.Set();
+            return true;
+        }
+        if (TryActivate(0, button, down, previous, allowActivation)) return true;
         if (_physical.HasPhysicalMouseTakeover(button) || MacroPhysicalState.WasTakeover(previous)) return false;
         if (down && !MacroPhysicalState.WasSuppressed(previous) && _executor.IsMacroMouseOwned(button))
         {
@@ -517,7 +566,9 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             else
             {
                 Publish(MacroSessionMode.WaitingForShortcutRelease);
-                while (_physical.IsRawKeyDown(_pending!.VirtualKey) || _physical.PhysicalModifiersDown) Wait(10);
+                while ((_pending!.Definition.ShortcutMouseButton is { } shortcutButton
+                    ? _physical.IsRawMouseButtonDown(shortcutButton) : _physical.IsRawKeyDown(_pending.VirtualKey)) ||
+                    _physical.PhysicalModifiersDown) Wait(10);
                 Array.Clear(_intendedModifiers);
                 var definition = _pending.Definition;
                 var steps = definition.Steps;

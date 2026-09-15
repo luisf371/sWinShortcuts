@@ -21,6 +21,9 @@ public sealed record MacroDefinition
     public bool ToggleMode { get; init; }
     public bool CancelOnMouseMovement { get; init; }
     public Key ShortcutKey { get; init; } = Key.None;
+    public MouseButton? ShortcutMouseButton { get; init; }
+    public InputTrigger ShortcutTrigger => ShortcutMouseButton is { } button
+        ? InputTrigger.FromMouseButton(button) : InputTrigger.FromKey(ShortcutKey);
     public ModifierKeys ShortcutModifiers { get; init; }
     public MacroStep[] Steps { get; init; } = [];
 
@@ -29,6 +32,7 @@ public sealed record MacroDefinition
         Id = Guid.NewGuid(),
         IsEnabled = false,
         ShortcutKey = Key.None,
+        ShortcutMouseButton = null,
         ShortcutModifiers = ModifierKeys.None,
         Steps = (MacroStep[])Steps.Clone()
     };

@@ -152,11 +152,50 @@ public sealed class MacroPersistenceTests : IDisposable
     }
 
     [Theory]
+    [InlineData(AppMouseButton.Left)]
+    [InlineData(AppMouseButton.Right)]
+    [InlineData(AppMouseButton.Middle)]
+    [InlineData(AppMouseButton.XButton1)]
+    [InlineData(AppMouseButton.XButton2)]
+    public async Task SaveAndLoad_MouseShortcutThenKeyboard_PreservesTargetAndRemovesInactiveField(AppMouseButton button)
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new()
+        {
+            ShortcutMouseButton = button,
+            ShortcutModifiers = ModifierKeys.Control | ModifierKeys.Alt,
+            Steps = [new() { Kind = MacroStepKind.Wait }]
+        }];
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Game");
+        var macro = Assert.Single(loaded.Macros.Definitions);
+        Assert.False(loaded.IsPersistenceSuspended);
+        Assert.Equal(Key.None, macro.ShortcutKey);
+        Assert.Equal(button, macro.ShortcutMouseButton);
+        Assert.Equal(InputTrigger.FromMouseButton(button), macro.ShortcutTrigger);
+        Assert.Equal(ModifierKeys.Control | ModifierKeys.Alt, macro.ShortcutModifiers);
+        Assert.Equal(button.ToString(), IniDocument.Load(loaded.SourcePath).GetValue("Macro0", "ShortcutMouseButton"));
+
+        loaded.Macros.Definitions = [macro with { ShortcutKey = Key.F6, ShortcutMouseButton = null }];
+        await _store.SaveProfileAsync(loaded, CancellationToken.None);
+        Assert.False(IniDocument.Load(loaded.SourcePath).TryGetSourceValue("Macro0", "ShortcutMouseButton", out _));
+        var keyboard = Assert.Single((await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Game").Macros.Definitions);
+        Assert.Equal(InputTrigger.FromKey(Key.F6), keyboard.ShortcutTrigger);
+        Assert.Null(keyboard.ShortcutMouseButton);
+    }
+
+    [Theory]
     [InlineData("[Macro0]\nStepCount=-1\n")]
     [InlineData("[Macro0]\nStepCount=1001\n")]
     [InlineData("[Macro0]\nShortcutModifiers=16\n")]
     [InlineData("[Macro0]\nShortcutModifiers=\n")]
     [InlineData("[Macro0]\nShortcutKey=\n")]
+    [InlineData("[Macro0]\nShortcutMouseButton=\n")]
+    [InlineData("[Macro0]\nShortcutMouseButton=broken\n")]
+    [InlineData("[Macro0]\nShortcutMouseButton=0\n")]
+    [InlineData("[Macro0]\nShortcutMouseButton=99\n")]
+    [InlineData("[Macro0]\nShortcutMouseButton=Middle\n")]
     [InlineData("[Macro0]\nToggleMode=\n")]
     [InlineData("[Macro0]\nToggleMode=broken\n")]
     [InlineData("[Macro0]\nCancelOnMouseMovement=\n")]
@@ -195,6 +234,8 @@ public sealed class MacroPersistenceTests : IDisposable
         Assert.Equal(0, Assert.Single(macro.Steps).DurationMs);
         Assert.False(macro.ToggleMode);
         Assert.False(macro.CancelOnMouseMovement);
+        Assert.Null(macro.ShortcutMouseButton);
+        Assert.Equal(InputTrigger.FromKey(Key.F6), macro.ShortcutTrigger);
     }
 
     [Fact]

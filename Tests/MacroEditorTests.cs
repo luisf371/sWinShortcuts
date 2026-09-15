@@ -9,6 +9,68 @@ namespace Tests;
 public sealed class MacroEditorTests
 {
     [Fact]
+    public void ShortcutTrigger_KeyboardMouseAndClear_PublishesEachTargetAtomically()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new() { ShortcutKey = Key.F6, ShortcutModifiers = ModifierKeys.Control | ModifierKeys.Alt }];
+        var beforePublish = new List<MacroDefinition>();
+        var published = new List<MacroDefinition>();
+        using var editor = new MacrosViewModel(profile, () => published.Add(profile.Macros.Definitions[0]));
+        editor.ConfigureRuntime(_ => Task.CompletedTask, () => { }, _ => { },
+            () => beforePublish.Add(profile.Macros.Definitions[0]), _ => null, () => { });
+        var macro = editor.SelectedMacro!;
+        var notifications = new List<string?>();
+        macro.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
+        var mouse = InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.Middle);
+
+        macro.ShortcutTrigger = mouse;
+        macro.ShortcutTrigger = mouse;
+
+        Assert.Equal(Key.None, macro.ShortcutKey);
+        Assert.Equal("Ctrl+Alt+Middle Mouse Button", macro.ShortcutText);
+        Assert.Single(beforePublish);
+        Assert.Equal(Key.F6, beforePublish[0].ShortcutKey);
+        Assert.Single(published);
+        Assert.Equal(Key.None, published[0].ShortcutKey);
+        Assert.Equal(sWinShortcuts.Models.MouseButton.Middle, published[0].ShortcutMouseButton);
+        Assert.Contains(nameof(MacroViewModel.ShortcutKey), notifications);
+        Assert.Contains(nameof(MacroViewModel.ShortcutTrigger), notifications);
+        Assert.Contains(nameof(MacroViewModel.ShortcutText), notifications);
+
+        macro.ShortcutTrigger = InputTrigger.FromKey(Key.F7);
+        Assert.Equal(Key.F7, macro.ShortcutKey);
+        Assert.Null(published[^1].ShortcutMouseButton);
+        Assert.Equal("Ctrl+Alt+F7", macro.ShortcutText);
+        macro.ShortcutTrigger = mouse;
+        macro.ShortcutKey = Key.F8;
+        Assert.Equal(InputTrigger.FromKey(Key.F8), macro.ShortcutTrigger);
+        Assert.Null(published[^1].ShortcutMouseButton);
+        macro.ShortcutTrigger = InputTrigger.None;
+        Assert.Equal("No shortcut", macro.ShortcutText);
+        Assert.Equal(5, published.Count);
+        Assert.Equal(5, beforePublish.Count);
+        Assert.All(published, current => Assert.Equal(ModifierKeys.Control | ModifierKeys.Alt, current.ShortcutModifiers));
+
+        macro.ShortcutTrigger = InputTrigger.FromWheel(MouseWheelDirection.Up);
+        macro.ShortcutTrigger = new(InputTriggerKind.MouseButton, Key.None, (sWinShortcuts.Models.MouseButton)99);
+        profile.IsEnabled = false;
+        macro.ShortcutTrigger = mouse;
+        Assert.Equal(InputTrigger.None, macro.ShortcutTrigger);
+        Assert.Equal(5, published.Count);
+    }
+
+    [Fact]
+    public void ShortcutOptions_IncludesExistingKeyboardChoicesAndAllFiveMouseButtons()
+    {
+        Assert.Equal(InputTrigger.None, MacroViewModel.ShortcutOptions[0]);
+        Assert.Equal(MacroViewModel.KeyOptions.Select(InputTrigger.FromKey),
+            MacroViewModel.ShortcutOptions.Where(trigger => trigger.Kind == InputTriggerKind.KeyboardKey));
+        Assert.Equal(Enum.GetValues<sWinShortcuts.Models.MouseButton>().Select(InputTrigger.FromMouseButton),
+            MacroViewModel.ShortcutOptions.Where(trigger => trigger.Kind == InputTriggerKind.MouseButton));
+        Assert.DoesNotContain(MacroViewModel.ShortcutOptions, trigger => trigger.Kind == InputTriggerKind.MouseWheel);
+    }
+
+    [Fact]
     public void ToggleMode_DefaultOff_CancelsBeforePublishingEachChangedValue()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");

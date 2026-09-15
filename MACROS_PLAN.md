@@ -16,7 +16,7 @@
 | Decision | Final scope |
 |---|---|
 | Macro scope | Per application profile; shortcuts operate only in its settled foreground app. Keep the new tab in the custom-profile editor. |
-| Playback | By default a fresh keyboard shortcut executes once. Optional per-macro ToggleMode repeats the sequence until the next fresh press of that same shortcut cancels it. Holding a shortcut never repeatedly toggles; initial playback still waits for key/modifier release. Other recognized shortcuts while busy stay consumed without restart or queue. No normal playback Stop button. |
+| Playback | By default a fresh keyboard or mouse-button shortcut executes once. Optional per-macro ToggleMode repeats the sequence until the next fresh press of that same shortcut cancels it. Holding a shortcut never repeatedly toggles; initial playback still waits for key/button/modifier release. Other recognized shortcuts while busy stay consumed without restart or queue. No normal playback Stop button. |
 | Coordinate system | Signed absolute physical screen pixels across the entire virtual desktop, including negative monitor origins. |
 | Mouse recording | Record button edges, click locations, and wheel input, without recording free cursor motion or drag trajectories. Manual MoveTo and button DOWN/UP remain available. |
 | Playback movement | Generate a quick path toward each required endpoint with an internal speed cap and slight path deviation. Land on the exact specified pixel. The speed cap determines the brief travel duration. |
@@ -405,7 +405,7 @@ git diff --check
 
 If restore exits 1 without diagnostics on this host, rerun it with -m:1 as documented in memory.md. Package scans, if run, use --no-restore so they do not replace the RID assets. Build/test expected result: no new warnings or failures. Publish expected result: the tested build produces a nontrivial single-file executable.
 
-Acceptance requires both editable manual sequences and editable recorded takes, default one-shot and optional toggle-loop per-profile keyboard activation, reliable timed down/up behavior, absolute endpoint clicks with speed-capped slightly curved travel, release-safe lifecycle/F12 cancellation, and saved macros surviving restart. The recorder has Stop recording; playback has no normal Stop button; its per-macro ToggleMode checkbox selects shortcut-controlled looping. A passing build alone does not validate WPF deferred templates or live hooks.
+Acceptance requires both editable manual sequences and editable recorded takes, default one-shot and optional toggle-loop per-profile keyboard/mouse-button activation, reliable timed down/up behavior, absolute endpoint clicks with speed-capped slightly curved travel, release-safe lifecycle/F12 cancellation, and saved macros surviving restart. The recorder has Stop recording; playback has no normal Stop button; its per-macro ToggleMode checkbox selects shortcut-controlled looping. A passing build alone does not validate WPF deferred templates or live hooks.
 
 ## Primary documentation checked for this plan
 
@@ -452,3 +452,12 @@ Checked 2026-09-13 through Context7 and page retrieval; recheck if implementatio
 - F12, foreground/owner/settings changes, master-off, mode-off, input failure and existing lifecycle cancellation stop the loop. Do not resume automatically after focus returns. Worker debug row entries include iteration and session diagnostics identify toggle mode.
 - Add a clearly explained per-macro UI option without disturbing the existing frame, naming popup, disabled body or compact viewport. Direct UI edits remain delegated; preserve returned changes in a commit before corrections.
 - Verify start-release/held-repeat behavior, multiple passes, mid-hold stop with keyboard/mouse cleanup, modifier chords, other busy shortcuts, native delivery in flight, cancellation and legacy/strict persistence. Then combined build/full tests, one published test EXE, exact-head green CI and a fresh Astra/xhigh code review with each correction committed separately. Leave PR25 open.
+
+## 2026-09-15 mouse shortcut follow-up
+
+- Support all five logical mouse buttons with the existing Ctrl/Alt/Shift/Win modifiers, including Ctrl+Alt+Middle click. Reuse InputTrigger in the shortcut picker and display converter; keyboard typing in its dropdown remains available. Mouse choices appear immediately after Unassigned.
+- Add optional ShortcutMouseButton to MacroDefinition and INI sections. Absence retains existing keyboard behavior; invalid/empty values or simultaneous keyboard and mouse targets preserve malformed-source protection. Switching targets publishes one atomic definition, and duplication clears both targets.
+- Share fresh activation and toggle cancellation between keyboard and mouse input. Consume the complete button pair, including repeats/UP after cancellation or during hook replacement. Initial playback waits for the physical button and modifiers to release. Synthetic macro clicks never activate shortcuts.
+- Distinguish raw held activation buttons from target-visible physical holds, allowing busy shortcut suppression and synthetic cleanup when a macro owns the same button. Preserve activation pairing through swapped-button recovery and confirmed missed releases. Consumed RMB input must not arm right-click mappings, hold-breath or crosshair observations, including recovery seeds.
+- Reject conflicts with another enabled macro, an applicable Alt+Mouse binding, Rapid Fire on Left, or Hold-Breath/early-cancel mouse bindings. Preserve unrelated clicks and keyboard behavior, source-compatible persistence, existing playback cancellation and recording.
+- Verify all five buttons, exact modifiers, start-release, one-shot/busy/toggle behavior, same-button native cleanup, lifecycle/recovery pairing, conflicts, strict persistence and actual WPF layout. Build/test/publish, push PR25, wait for exact-head green CI, then obtain fresh-context Astra/xhigh review and commit any corrections separately. Leave the PR open.

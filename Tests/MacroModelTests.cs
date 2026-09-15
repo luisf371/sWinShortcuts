@@ -26,14 +26,17 @@ public sealed class MacroModelTests
         Assert.Null(MacroValidation.GetPlaybackError(macro with { ShortcutModifiers = ModifierKeys.None }));
     }
 
-    [Fact]
-    public void Duplicate_EnabledAssignedMacro_CreatesDetachedDisabledDraft()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Duplicate_EnabledAssignedMacro_CreatesDetachedDisabledDraft(bool mouseShortcut)
     {
         var original = new MacroDefinition
         {
             Label = "Copy",
             IsEnabled = true,
-            ShortcutKey = Key.F6,
+            ShortcutKey = mouseShortcut ? Key.None : Key.F6,
+            ShortcutMouseButton = mouseShortcut ? AppMouseButton.Middle : null,
             ShortcutModifiers = ModifierKeys.Control,
             Steps = [new() { Kind = MacroStepKind.KeyPress, Key = Key.C }]
         };
@@ -45,9 +48,33 @@ public sealed class MacroModelTests
         Assert.Equal("Copy", copy.Label);
         Assert.False(copy.IsEnabled);
         Assert.Equal(Key.None, copy.ShortcutKey);
+        Assert.Null(copy.ShortcutMouseButton);
+        Assert.Equal(InputTrigger.None, copy.ShortcutTrigger);
         Assert.Equal(ModifierKeys.None, copy.ShortcutModifiers);
         Assert.NotSame(original.Steps, copy.Steps);
         Assert.Equal(original.Steps, copy.Steps);
+    }
+
+    [Theory]
+    [InlineData(AppMouseButton.Left)]
+    [InlineData(AppMouseButton.Right)]
+    [InlineData(AppMouseButton.Middle)]
+    [InlineData(AppMouseButton.XButton1)]
+    [InlineData(AppMouseButton.XButton2)]
+    public void GetPlaybackError_MouseShortcutWithModifiers_AcceptsAllFiveButtons(AppMouseButton button)
+    {
+        var macro = new MacroDefinition
+        {
+            ShortcutMouseButton = button,
+            ShortcutModifiers = ModifierKeys.Control | ModifierKeys.Alt,
+            Steps = [new() { Kind = MacroStepKind.Wait }]
+        };
+
+        Assert.Equal(InputTrigger.FromMouseButton(button), macro.ShortcutTrigger);
+        Assert.Null(MacroValidation.GetFormatError(macro));
+        Assert.Null(MacroValidation.GetPlaybackError(macro));
+        Assert.NotNull(MacroValidation.GetFormatError(macro with { ShortcutKey = Key.F6 }));
+        Assert.NotNull(MacroValidation.GetFormatError(macro with { ShortcutMouseButton = (AppMouseButton)99 }));
     }
 
     [Fact]

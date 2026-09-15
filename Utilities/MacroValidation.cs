@@ -61,6 +61,12 @@ public static class MacroValidation
             return "The macro shortcut key is unsupported.";
         }
 
+        if (macro.ShortcutMouseButton is { } button)
+        {
+            if (!Enum.IsDefined(button)) return "The macro shortcut mouse button is unsupported.";
+            if (macro.ShortcutKey != Key.None) return "A macro shortcut must use either a keyboard key or a mouse button.";
+        }
+
         if (!IsValidModifiers(macro.ShortcutModifiers))
         {
             return "Macro shortcut modifiers may only contain Ctrl, Alt, Shift, and Win.";
@@ -124,7 +130,7 @@ public static class MacroValidation
             return formatError;
         }
 
-        if (macro.ShortcutKey == Key.None)
+        if (macro.ShortcutTrigger.Kind == InputTriggerKind.None)
         {
             return "Assign a shortcut to play this macro.";
         }

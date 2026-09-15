@@ -28,20 +28,20 @@ public sealed class MacroEditorTemplateTests
         MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
         {
             using var macro = new MacroViewModel(new MacroDefinition { ShortcutKey = key }, () => true);
-            var picker = new ComboBox { ItemsSource = MacroViewModel.ShortcutKeyOptions };
+            var picker = new ComboBox { ItemsSource = MacroViewModel.ShortcutOptions };
             picker.SetBinding(System.Windows.Controls.Primitives.Selector.SelectedItemProperty,
-                new Binding(nameof(MacroViewModel.ShortcutKey)) { Source = macro, Mode = BindingMode.TwoWay });
+                new Binding(nameof(MacroViewModel.ShortcutTrigger)) { Source = macro, Mode = BindingMode.TwoWay });
             await Dispatcher.Yield(DispatcherPriority.DataBind);
 
             Assert.Equal(key, macro.ShortcutKey);
-            Assert.Equal(key, Assert.IsType<Key>(picker.SelectedItem));
-            picker.SelectedItem = Key.None;
+            Assert.Equal(InputTrigger.FromKey(key), Assert.IsType<InputTrigger>(picker.SelectedItem));
+            picker.SelectedItem = InputTrigger.None;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal(Key.None, macro.ShortcutKey);
-            picker.SelectedItem = key;
+            picker.SelectedItem = InputTrigger.FromKey(key);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal(key, macro.ShortcutKey);
-            Assert.Equal(key, Assert.IsType<Key>(picker.SelectedItem));
+            Assert.Equal(InputTrigger.FromKey(key), Assert.IsType<InputTrigger>(picker.SelectedItem));
         });
 
     [Fact]
@@ -159,7 +159,7 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.False(macro.IsEnabled);
             Assert.True(profile.Macros.IsEnabled);
-            Assert.True(Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut key").IsEnabled);
+            Assert.True(Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut").IsEnabled);
             // Names change only through the naming dialog: no permanent Name field, and both New entry points and
             // Rename request a name from the view model. A stand-in request replaces the modal window here.
             Assert.DoesNotContain(controls.OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Macro label");
@@ -181,17 +181,37 @@ public sealed class MacroEditorTemplateTests
             Assert.Equal(new string?[] { null, null, "New macro" }, requests);
             Assert.Same(macro, Assert.Single(profile.Macros.Definitions));
             Assert.Equal("Renamed", macro.Label);
-            var shortcutPicker = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut key");
+            var shortcutPicker = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut");
             Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(shortcutPicker));
             var keyPopup = (System.Windows.Controls.Primitives.Popup)shortcutPicker.Template.FindName("Popup", shortcutPicker);
             keyPopup.Child.Measure(new Size(240, 480));
             keyPopup.Child.Arrange(new Rect(0, 0, 240, keyPopup.Child.DesiredSize.Height));
             keyPopup.Child.UpdateLayout();
-            var unassigned = Assert.IsType<ComboBoxItem>(shortcutPicker.ItemContainerGenerator.ContainerFromItem(Key.None));
+            var unassigned = Assert.IsType<ComboBoxItem>(shortcutPicker.ItemContainerGenerator.ContainerFromItem(InputTrigger.None));
             Assert.True(unassigned.IsSelected);
             var unassignedText = Assert.Single(Descendants(unassigned).OfType<TextBlock>());
             Assert.Equal("Unassigned", unassignedText.Text);
             AssertReadableText(unassignedText, unassigned.Background);
+            foreach (var button in MacroViewModel.MouseButtons)
+            {
+                var trigger = InputTrigger.FromMouseButton(button);
+                shortcutPicker.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedItemProperty, trigger);
+                await Dispatcher.Yield(DispatcherPriority.DataBind);
+                Assert.Equal(trigger, macro.ShortcutTrigger);
+                Assert.Equal(Key.None, macro.ShortcutKey);
+                Assert.Equal(button, profile.Model.Macros.Definitions[0].ShortcutMouseButton);
+            }
+            macro.ControlModifier = true;
+            macro.AltModifier = true;
+            macro.ShortcutTrigger = InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.Middle);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal("Ctrl+Alt+Middle Mouse Button", macro.ShortcutText);
+            Assert.Equal(macro.ShortcutTrigger, shortcutPicker.SelectedItem);
+            host.UpdateLayout();
+            var shortcutBounds = shortcutPicker.TransformToAncestor(host).TransformBounds(new Rect(shortcutPicker.RenderSize));
+            Assert.True(new Rect(host.RenderSize).Contains(shortcutBounds));
+            macro.ControlModifier = false;
+            macro.AltModifier = false;
             var selector = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro");
             var originalEnabled = macro.IsEnabled;
             var originalDuration = macro.SelectedStep!.DurationText;

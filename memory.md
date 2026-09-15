@@ -262,3 +262,8 @@
 
 - Toggle mode reuses the current one-session worker/reservation and balanced sequence validation. The activation latch must consume the stop press through its physical UP after cleanup, so key repeats cannot start another loop; only the pending macro identity/owner may cancel via its shortcut. Keep one-shot and other busy shortcuts unchanged.
 - Toggle regression checks first reproduced all 11 playback failures and three strict-persistence failures. Reusing Cancel for the second fresh shortcut and a cancellable 10 ms gap between passes passed 511 focused checks and all 1,396 tests; no native input APIs or dependencies changed. The actual-template checkbox binding, disabled state and original minimum viewport also passed.
+
+# 2026-09-15 (Mouse macro activation)
+
+- Mouse activations reuse the keyboard activation latch but need separate raw/target-visible button queries. Keep consumed DOWN/repeat/UP pairs through cleanup and hook replacement, exclude them from macro physical takeover, and use logical-to-physical swapped-button mapping when recovering missed releases. Consumed RMB also stays excluded from right-click observation and RederivePhysicalModifierState; a regression reproduced that recovery otherwise re-armed right-click features.
+- The user chose direct local UI implementation after automatic approval review rejected the Claude network retry. The existing InputTrigger picker/display/typing behavior supports all five mouse buttons without a new capture service; optional ShortcutMouseButton persistence retains legacy keyboard assignments.

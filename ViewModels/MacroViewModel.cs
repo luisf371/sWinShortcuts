@@ -18,6 +18,7 @@ namespace sWinShortcuts.ViewModels;
 
 public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
 {
+    private static readonly InputTriggerDisplayConverter ShortcutDisplayConverter = new();
     private MacroDefinition _definition;
     private MacroDefinition _lastRepresentable;
     private readonly Func<bool> _canEdit;
@@ -67,13 +68,27 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public bool IsEnabled { get => _definition.IsEnabled; set => Change(_definition with { IsEnabled = value }, nameof(IsEnabled)); }
     public bool ToggleMode { get => _definition.ToggleMode; set => Change(_definition with { ToggleMode = value }, nameof(ToggleMode)); }
     public bool CancelOnMouseMovement { get => _definition.CancelOnMouseMovement; set => Change(_definition with { CancelOnMouseMovement = value }, nameof(CancelOnMouseMovement)); }
-    public Key ShortcutKey { get => _definition.ShortcutKey; set => Change(_definition with { ShortcutKey = value }, nameof(ShortcutKey)); }
+    public Key ShortcutKey { get => _definition.ShortcutKey; set => Change(_definition with { ShortcutKey = value, ShortcutMouseButton = null }, nameof(ShortcutKey)); }
+    public InputTrigger ShortcutTrigger
+    {
+        get => _definition.ShortcutTrigger;
+        set
+        {
+            if (value.Kind is not (InputTriggerKind.None or InputTriggerKind.KeyboardKey or InputTriggerKind.MouseButton) ||
+                (value.Kind == InputTriggerKind.MouseButton && !Enum.IsDefined(value.MouseButton))) return;
+            Change(_definition with
+            {
+                ShortcutKey = value.Kind == InputTriggerKind.KeyboardKey ? value.Key : Key.None,
+                ShortcutMouseButton = value.Kind == InputTriggerKind.MouseButton ? value.MouseButton : null
+            }, nameof(ShortcutTrigger));
+        }
+    }
     public ModifierKeys ShortcutModifiers { get => _definition.ShortcutModifiers; set => Change(_definition with { ShortcutModifiers = value }, nameof(ShortcutModifiers)); }
     public bool ControlModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Control); set => SetModifier(ModifierKeys.Control, value); }
     public bool AltModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Alt); set => SetModifier(ModifierKeys.Alt, value); }
     public bool ShiftModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Shift); set => SetModifier(ModifierKeys.Shift, value); }
     public bool WindowsModifier { get => ShortcutModifiers.HasFlag(ModifierKeys.Windows); set => SetModifier(ModifierKeys.Windows, value); }
-    public string ShortcutText => FormatShortcut(ShortcutKey, ShortcutModifiers);
+    public string ShortcutText => FormatShortcut(ShortcutTrigger, ShortcutModifiers);
     public ReadOnlyObservableCollection<MacroStepViewModel> Steps => _steps;
     public IReadOnlyList<MacroStepViewModel> VisibleSteps => _visibleSteps;
     public bool CollapseSteps
@@ -202,6 +217,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         Enum.GetValues<Key>().Where(key => MacroValidation.IsSupportedKey(key)).Distinct()).ToArray();
     public static IReadOnlyList<Key> ShortcutKeyOptions { get; } = KeyCatalog.SortKeys(KeyOptions.Append(Key.None)).ToArray();
     public static IReadOnlyList<MouseButton> MouseButtons { get; } = Enum.GetValues<MouseButton>();
+    public static IReadOnlyList<InputTrigger> ShortcutOptions { get; } =
+        [InputTrigger.None, .. MouseButtons.Select(InputTrigger.FromMouseButton), .. KeyOptions.Select(InputTrigger.FromKey)];
     public static IReadOnlyList<KeyValuePair<MacroStepKind, string>> ActionOptions { get; } =
     [
         new(MacroStepKind.KeyPress, "Key press"), new(MacroStepKind.KeyDown, "Key down"), new(MacroStepKind.KeyUp, "Key up"),
@@ -257,12 +274,12 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             : null;
     }
 
-    private static string FormatShortcut(Key key, ModifierKeys modifiers) => key == Key.None ? "No shortcut" :
+    private static string FormatShortcut(InputTrigger trigger, ModifierKeys modifiers) => trigger.Kind == InputTriggerKind.None ? "No shortcut" :
         (modifiers.HasFlag(ModifierKeys.Control) ? "Ctrl+" : string.Empty) +
         (modifiers.HasFlag(ModifierKeys.Alt) ? "Alt+" : string.Empty) +
         (modifiers.HasFlag(ModifierKeys.Shift) ? "Shift+" : string.Empty) +
         (modifiers.HasFlag(ModifierKeys.Windows) ? "Win+" : string.Empty) +
-        KeyDisplayConverter.ToDisplayText(key);
+        ShortcutDisplayConverter.Convert(trigger, typeof(string), null, CultureInfo.CurrentCulture);
 
     private void Change(MacroDefinition value, string propertyName)
     {
@@ -276,7 +293,9 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             OnPropertyChanged(nameof(ShiftModifier));
             OnPropertyChanged(nameof(WindowsModifier));
         }
-        if (propertyName is nameof(ShortcutKey) or nameof(ShortcutModifiers)) OnPropertyChanged(nameof(ShortcutText));
+        if (propertyName == nameof(ShortcutKey)) OnPropertyChanged(nameof(ShortcutTrigger));
+        if (propertyName == nameof(ShortcutTrigger)) OnPropertyChanged(nameof(ShortcutKey));
+        if (propertyName is nameof(ShortcutKey) or nameof(ShortcutTrigger) or nameof(ShortcutModifiers)) OnPropertyChanged(nameof(ShortcutText));
         PublishChange();
     }
 
