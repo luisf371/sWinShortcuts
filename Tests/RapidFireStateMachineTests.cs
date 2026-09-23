@@ -38,6 +38,85 @@ public sealed class RapidFireStateMachineTests
     }
 
     [Fact]
+    public void FirstPress_ReleasesPhysicalPressBeforeFirstSyntheticClick()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+
+            // The passed-through physical DOWN is released so the first synthetic DOWN is a real edge.
+            Assert.Equal((sWinShortcuts.Models.MouseButton.Left, false, false), Assert.Single(sender.MouseTransitions));
+            Assert.Single(sender.MouseClickThreadIds);
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void FirstPress_FirstClickDeadlineIsAnchoredToPhysicalPress()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            // The hook kick runs the real timer: release after a click hold, then arm the first click.
+            Assert.True(SpinWait.SpinUntil(() => !sender.MouseTransitions.IsEmpty, TimeSpan.FromSeconds(2)));
+            Assert.True(SpinWait.SpinUntil(() => ArmedDelay(rapidFire) > RapidFireStateMachine.HOLD_MAX_MS,
+                TimeSpan.FromSeconds(2)));
+
+            // Time already spent holding the physical press counts toward the first interval.
+            var delay = ArmedDelay(rapidFire);
+            Assert.InRange(delay, RapidFireStateMachine.RELEASE_GAP_MIN_MS,
+                profile.RapidFire.IntervalMilliseconds - RapidFireStateMachine.HOLD_MIN_MS);
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void FirstPress_TapReleasedBeforeHold_SendsNothing()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        rapidFire.FireTimerForTesting();
+
+        Assert.Empty(sender.MouseTransitions);
+        Assert.Empty(sender.MouseClickThreadIds);
+    }
+
+    [Theory]
+    [InlineData(15, 0, 15)]
+    [InlineData(90, 30.2, 60)]
+    [InlineData(90, 120, 1)]
+    public void CalculatePressRelativeDelay_SubtractsTimeSincePress(int target, double sincePress, int expected)
+    {
+        Assert.Equal(expected, RapidFireStateMachine.CalculatePressRelativeDelay(target, sincePress));
+    }
+
+    [Fact]
     public async Task Timer_NewPressDuringOldJitterCalculation_PreservesNewPressSchedule()
     {
         var profile = RapidFireProfile();
@@ -437,4 +516,9 @@ public sealed class RapidFireStateMachineTests
     }
 
     private static int Vk(Key key) => KeyInteropUtilities.ToVirtualKey(key);
+
+    private static int ArmedDelay(RapidFireStateMachine rapidFire) =>
+        (int)typeof(RapidFireStateMachine)
+            .GetField("_armedDelayMs", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(rapidFire)!;
 }

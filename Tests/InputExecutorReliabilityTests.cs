@@ -2050,18 +2050,21 @@ public sealed class InputExecutorReliabilityTests
             service.FireRapidFireTimerForTesting();
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
 
-            // PRESS STARTED: the first synthetic click is due one full interval after the physical
-            // press (the deliberate no-immediate-click rule) — the line must state it with the
-            // resolved delay, and must not be confusable with the sticky-arm "Rapid Fire armed" line.
+            // PRESS STARTED: the physical press is released after a click hold and the first synthetic
+            // click is due one full interval after the physical press (the deliberate no-immediate-click
+            // rule) — the line must state both, and must not be confusable with the sticky-arm
+            // "Rapid Fire armed" line.
             var pressStarted = Assert.Single(logger.Messages, m => m.StartsWith("Rapid Fire press started:"));
-            Assert.Contains($"first synthetic click due in {RapidFireSettings.MaxIntervalMilliseconds} ms", pressStarted);
+            Assert.Contains("physical press released in ", pressStarted);
+            Assert.Contains($"first synthetic click at +{RapidFireSettings.MaxIntervalMilliseconds} ms", pressStarted);
             Assert.Contains($"interval={RapidFireSettings.MaxIntervalMilliseconds}", pressStarted);
             Assert.Contains("jitter=0", pressStarted);
 
-            // FIRED: the timer's actual elapsed vs the delay it was armed for.
+            // FIRED: the timer's actual elapsed vs the delay it was armed for. The first click's delay
+            // is press-relative, so it is at most one interval.
             var fired = Assert.Single(logger.Messages, m => m.StartsWith("Rapid Fire timer fired:"));
             Assert.Contains("elapsed=", fired);
-            Assert.Contains($"armed delay={RapidFireSettings.MaxIntervalMilliseconds} ms", fired);
+            Assert.Contains("armed delay=", fired);
         }
         finally
         {

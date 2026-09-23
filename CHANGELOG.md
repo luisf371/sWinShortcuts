@@ -4,7 +4,17 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
-## September 15, 2026
+## September 23, 2026
+
+### Fixed & Improved
+- **Rapid Fire Cadence & First-Shot Reliability**:
+  - **Physical Press Release Phase**: When holding the left mouse button, the initial passed-through physical press is now cleanly released after a standard click hold (10–20 ms) before synthetic cadence clicks begin. This ensures the first synthetic click creates a real down edge instead of landing on an already-held button, eliminating the first-shot hitch and missed second shot in games.
+  - **Press-Relative Timing Anchor**: Anchored the first synthetic repeat deadline directly to the physical press timestamp recorded in the input hook, ensuring the second shot fires exactly on cadence regardless of thread-pool wake delays.
+  - **Edge Separation & Tap Protection**: Enforced a minimum release gap so consecutive button transitions never coalesce into stuck inputs, while preserving normal single clicks when tapping and releasing before the hold duration expires.
+
+---
+
+## September 15, 2026 (Build 142)
 
 ### Added
 - **Per-Profile Macro Engine & Automation**:

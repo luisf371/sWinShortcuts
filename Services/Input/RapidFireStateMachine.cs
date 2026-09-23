@@ -4,13 +4,16 @@ using System.Threading;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
+using MouseButton = sWinShortcuts.Models.MouseButton;
 using Timer = System.Threading.Timer;
 
 namespace sWinShortcuts.Services.Input;
 
 /// <summary>
 /// Sticky Rapid Fire ownership and one-shot click cadence. Hook entry points are synchronous;
-/// clicks run only on the timer thread. Mutations return whether status may have changed so the
+/// clicks run only on the timer thread. The physical DOWN passes through as shot 1, so each press
+/// first releases it after a normal click hold, then clicks on a cadence anchored to the press.
+/// Mutations return whether status may have changed so the
 /// dispatcher can raise its public event after releasing the profile lock.
 /// </summary>
 internal sealed class RapidFireStateMachine : IDisposable
@@ -22,6 +25,9 @@ internal sealed class RapidFireStateMachine : IDisposable
     internal const int HOLD_MIN_MS = 10;
     internal const int HOLD_MAX_MS = 20;
     private const double FIRE_TOLERANCE_MS = 2.0;
+    // Shortest release gap in steady cadence (MinIntervalMilliseconds - HOLD_MAX_MS); keeps a late
+    // initial release from merging into the first synthetic DOWN.
+    internal const int RELEASE_GAP_MIN_MS = RapidFireSettings.MinIntervalMilliseconds - HOLD_MAX_MS;
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
 
     private readonly InputRuntimeState _runtime;
@@ -46,6 +52,9 @@ internal sealed class RapidFireStateMachine : IDisposable
     private int _jitterMs;
     private int _timerState = TIMER_IDLE;
     private long _requestedPressGeneration;
+    private long _pressTick;
+    private bool _releasePending;
+    private int _firstClickDelayMs;
     private long _timerGeneration;
     private long _armedTick;
     private int _armedDelayMs;
@@ -192,6 +201,7 @@ internal sealed class RapidFireStateMachine : IDisposable
             RapidFireSettings.MinIntervalMilliseconds,
             RapidFireSettings.MaxIntervalMilliseconds);
         _jitterMs = Math.Clamp(profile.RapidFire.JitterMilliseconds, 0, RapidFireSettings.MaxJitterMilliseconds);
+        Volatile.Write(ref _pressTick, Stopwatch.GetTimestamp());
         // Publish the request after its settings. Only timer workers own cadence state.
         Volatile.Write(ref _requestedPressGeneration, generation);
         ChangeTimer(0, generation);
@@ -258,17 +268,30 @@ internal sealed class RapidFireStateMachine : IDisposable
             ? Math.Max(1, (int)Math.Ceiling(targetDelayMs - sendElapsedMs))
             : targetDelayMs;
 
+    internal static int CalculatePressRelativeDelay(int targetDelayMs, double sincePressMs) =>
+        Math.Max(1, (int)Math.Ceiling(targetDelayMs - sincePressMs));
+
     internal void FireTimerForTesting()
     {
         if (Volatile.Read(ref _requestedPressGeneration) != Volatile.Read(ref _timerGeneration))
         {
             OnTimerFired();
         }
+
+        // The physical-press release is its own timer phase ahead of the first click.
+        if (FastForwardAndFireForTesting())
+        {
+            FastForwardAndFireForTesting();
+        }
+    }
+
+    private bool FastForwardAndFireForTesting()
+    {
         Volatile.Write(
             ref _armedTick,
             Stopwatch.GetTimestamp() -
             (long)Math.Ceiling((_armedDelayMs + FIRE_TOLERANCE_MS) * Stopwatch.Frequency / 1000.0));
-        OnTimerFired();
+        return OnTimerFired();
     }
 
     internal void ConfigureForTesting(Profile profile, long foregroundGeneration, bool armed = true)
@@ -314,17 +337,33 @@ internal sealed class RapidFireStateMachine : IDisposable
         profile.IsEnabled &&
         profile.RapidFire.IsEnabled;
 
-    private void Schedule(long generation, double sendElapsedMs = 0, bool firstClick = false)
+    private void StartPress(long generation)
+    {
+        var sincePressMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _pressTick)) * TickToMilliseconds;
+        var holdMilliseconds = _random.Value!.Next(HOLD_MIN_MS, HOLD_MAX_MS + 1);
+        _firstClickDelayMs = NextTargetDelay();
+        var delay = CalculatePressRelativeDelay(holdMilliseconds, sincePressMs);
+        if (Arm(generation, delay, releasePhase: true) && _logger.IsEnabled)
+        {
+            _logger.Log($"Rapid Fire press started: physical press released in {delay} ms, first synthetic click at +{_firstClickDelayMs} ms (interval={_intervalMs}, jitter={_jitterMs})");
+        }
+    }
+
+    private void Schedule(long generation, double sendElapsedMs) =>
+        Arm(generation, CalculateSuccessorDelay(NextTargetDelay(), sendElapsedMs), releasePhase: false);
+
+    private int NextTargetDelay() => _intervalMs + (_jitterMs == 0 ? 0 : _random.Value!.Next(_jitterMs + 1));
+
+    private bool Arm(long generation, int delay, bool releasePhase)
     {
         var profile = _ownerProfile;
         var foregroundGeneration = Volatile.Read(ref _foregroundGeneration);
         if (profile is null || !IsCurrent(generation, profile, foregroundGeneration) || _runtime.IsDisposed)
         {
-            return;
+            return false;
         }
 
-        var targetDelay = _intervalMs + (_jitterMs == 0 ? 0 : _random.Value!.Next(_jitterMs + 1));
-        var delay = CalculateSuccessorDelay(targetDelay, sendElapsedMs);
+        _releasePending = releasePhase;
         Volatile.Write(ref _timerGeneration, generation);
         Volatile.Write(ref _armedTick, Stopwatch.GetTimestamp());
         Volatile.Write(ref _armedDelayMs, delay);
@@ -332,44 +371,41 @@ internal sealed class RapidFireStateMachine : IDisposable
         if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0)
         {
             Interlocked.Exchange(ref _timerState, TIMER_CANCELLED);
-            return;
-        }
-
-        if (firstClick && _logger.IsEnabled)
-        {
-            _logger.Log($"Rapid Fire press started: first synthetic click due in {delay} ms (interval={_intervalMs}, jitter={_jitterMs})");
+            return false;
         }
 
         ChangeTimer(delay, generation);
+        return true;
     }
 
-    private void OnTimerFired()
+    // Returns true only when this wakeup performed the initial physical-press release.
+    private bool OnTimerFired()
     {
         var requested = Volatile.Read(ref _requestedPressGeneration);
         if (requested != Volatile.Read(ref _generation) ||
-            (requested == Volatile.Read(ref _timerGeneration) && Volatile.Read(ref _timerState) != TIMER_ARMED)) return;
+            (requested == Volatile.Read(ref _timerGeneration) && Volatile.Read(ref _timerState) != TIMER_ARMED)) return false;
         // A new physical press may rearm while the previous DOWN/UP pair is still sending.
         // Only timer workers take this lock; hook cancellation and button handling never wait.
         using var callbackScope = _timerCallbackLock.EnterScope();
         requested = Volatile.Read(ref _requestedPressGeneration);
-        if (requested != Volatile.Read(ref _generation)) return;
+        if (requested != Volatile.Read(ref _generation)) return false;
         if (requested != Volatile.Read(ref _timerGeneration))
         {
-            Schedule(requested, firstClick: true);
-            return;
+            StartPress(requested);
+            return false;
         }
-        if (Volatile.Read(ref _timerState) != TIMER_ARMED) return;
+        if (Volatile.Read(ref _timerState) != TIMER_ARMED) return false;
         var delay = Volatile.Read(ref _armedDelayMs);
         var elapsedMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _armedTick)) * TickToMilliseconds;
         if (elapsedMs < delay - FIRE_TOLERANCE_MS)
         {
             // A delayed hook kick can replace the initialized deadline; restore its remaining wait.
             ChangeTimer(Math.Max(1, (int)Math.Ceiling(delay - elapsedMs)), requested);
-            return;
+            return false;
         }
         if (Interlocked.CompareExchange(ref _timerState, TIMER_FIRED, TIMER_ARMED) != TIMER_ARMED)
         {
-            return;
+            return false;
         }
 
         var generation = Volatile.Read(ref _timerGeneration);
@@ -377,7 +413,14 @@ internal sealed class RapidFireStateMachine : IDisposable
         var profile = _ownerProfile;
         if (profile is null || !IsCurrent(generation, profile, foregroundGeneration) || _runtime.IsDisposed)
         {
-            return;
+            return false;
+        }
+
+        if (_releasePending)
+        {
+            _releasePending = false;
+            ReleasePhysicalPress(generation, profile, foregroundGeneration);
+            return true;
         }
 
         if (_logger.IsEnabled)
@@ -386,21 +429,55 @@ internal sealed class RapidFireStateMachine : IDisposable
         }
 
         var clickStart = Stopwatch.GetTimestamp();
+        if (TrySend(generation, profile, foregroundGeneration, release: false))
+        {
+            Schedule(generation, (Stopwatch.GetTimestamp() - clickStart) * TickToMilliseconds);
+        }
+
+        return false;
+    }
+
+    private void ReleasePhysicalPress(long generation, Profile profile, long foregroundGeneration)
+    {
+        // Shot 1 is the passed-through physical DOWN. Releasing it after a normal hold gives the
+        // first synthetic DOWN a real edge instead of landing on an already-held button.
+        if (!TrySend(generation, profile, foregroundGeneration, release: true))
+        {
+            return;
+        }
+
+        var sincePressMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _pressTick)) * TickToMilliseconds;
+        Arm(generation,
+            Math.Max(RELEASE_GAP_MIN_MS, CalculatePressRelativeDelay(_firstClickDelayMs, sincePressMs)),
+            releasePhase: false);
+    }
+
+    private bool TrySend(long generation, Profile profile, long foregroundGeneration, bool release)
+    {
         try
         {
-            var holdMilliseconds = _random.Value!.Next(HOLD_MIN_MS, HOLD_MAX_MS + 1);
+            var holdMilliseconds = release ? 0 : _random.Value!.Next(HOLD_MIN_MS, HOLD_MAX_MS + 1);
             if (!_runtime.LiveForegroundMatches(profile, foregroundGeneration) ||
                 !IsCurrent(generation, profile, foregroundGeneration))
             {
-                return;
+                return false;
             }
 
             // WindowsInputSender logs which SendInput call failed; this bool adds no useful detail.
-            if (!_runtime.TryBeginAutomationOutput()) return;
+            if (!_runtime.TryBeginAutomationOutput()) return false;
             try
             {
                 if (IsCurrent(generation, profile, foregroundGeneration))
-                    _inputSender.SendLeftClick(holdMilliseconds);
+                {
+                    if (release)
+                    {
+                        _inputSender.SendMouseButton(MouseButton.Left, isDown: false);
+                    }
+                    else
+                    {
+                        _inputSender.SendLeftClick(holdMilliseconds);
+                    }
+                }
             }
             finally
             {
@@ -409,16 +486,11 @@ internal sealed class RapidFireStateMachine : IDisposable
         }
         catch (Exception ex)
         {
-            Log($"Rapid Fire click injection error: {ex.Message}");
-            return;
+            Log($"Rapid Fire {(release ? "press release" : "click")} injection error: {ex.Message}");
+            return false;
         }
 
-        if (_runtime.IsDisposed)
-        {
-            return;
-        }
-
-        Schedule(generation, (Stopwatch.GetTimestamp() - clickStart) * TickToMilliseconds);
+        return !_runtime.IsDisposed;
     }
 
     private void ChangeTimer(int dueTime, long generation)
