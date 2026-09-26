@@ -10,11 +10,12 @@ namespace sWinShortcuts.Views;
 // Status dot for the sticky Rapid Fire arm (driven by RapidFireStatusService). Top-left anchored
 // on the cursor's monitor, click-through, always-on-top, ~2 mm (8 raw pixels @96 dpi; approximate
 // at other DPIs — same acceptance as the crosshair overlay). Green = Ready, gray = ArmedNotReady;
-// hidden entirely while Off. All focus-stealing vectors are closed off (ShowActivated=false,
+// hidden entirely while Off. A black center marks a Ready dot whose right-button gate is on. All focus-stealing vectors are closed off (ShowActivated=false,
 // WS_EX_NOACTIVATE, SWP_NOACTIVATE, WS_EX_TRANSPARENT, Focusable=false, IsHitTestVisible=false).
 public partial class RapidFireStatusWindow : Window
 {
     private const double DotRawPixels = 8.0;
+    private const double GateDotRawPixels = 3.0;
     private const int MarginRawPixels = 12;
 
     private static readonly SolidColorBrush ReadyBrush = Frozen(0x2F, 0xBF, 0x2F);
@@ -56,7 +57,7 @@ public partial class RapidFireStatusWindow : Window
     // can move focus without the cursor — at the moment the state lands. That is the documented
     // contract: no mouse tracking, and switching between two non-owner apps (gray -> gray) does
     // not reposition.
-    public void ApplyState(bool ready)
+    public void ApplyState(bool ready, bool rightButtonGate)
     {
         // Create the HWND while still hidden so ex-styles are in place before the first Show.
         if (_hwnd == IntPtr.Zero)
@@ -71,11 +72,13 @@ public partial class RapidFireStatusWindow : Window
         if (device.M11 > 0)
         {
             Width = DotRawPixels / device.M11;
+            GateDot.Width = GateDotRawPixels / device.M11;
         }
 
         if (device.M22 > 0)
         {
             Height = DotRawPixels / device.M22;
+            GateDot.Height = GateDotRawPixels / device.M22;
         }
 
         var screen = WinForms.Screen.FromPoint(WinForms.Cursor.Position);
@@ -86,6 +89,7 @@ public partial class RapidFireStatusWindow : Window
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOSIZE);
 
         StatusDot.Fill = ready ? ReadyBrush : NotReadyBrush;
+        GateDot.Visibility = rightButtonGate ? Visibility.Visible : Visibility.Collapsed;
 
         Show();
     }

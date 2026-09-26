@@ -113,6 +113,64 @@ public sealed class MacroHookLifecycleTests
         Assert.Single(fixture.Sender.MouseTransitions, item => item.Button == button && !item.IsDown && item.MacroRelease);
     }
 
+    [Fact]
+    public async Task KeyboardCallback_TaggedUpWithoutInjectedFlag_IsNotSwallowed()
+    {
+        using var fixture = new CallbackFixture();
+        await fixture.StartHeldInput();
+        fixture.SetBoundary("stopped", mouse: false);
+        var forgedUp = (IntPtr)(-1);
+
+        fixture.Sender.KeyResult = (key, down, macroRelease) =>
+        {
+            if (key == Key.A && !down && macroRelease)
+            {
+                fixture.Keyboard(NativeMethods.WM_KEYDOWN);
+                // A release carrying our tag but not the OS injected flag is not ours; it must pass.
+                forgedUp = fixture.Keyboard(NativeMethods.WM_KEYUP, injected: false, macroRelease: true);
+            }
+            return true;
+        };
+
+        Assert.True(await fixture.Cleanup());
+        Assert.Equal(IntPtr.Zero, forgedUp);
+        Assert.False(fixture.Physical.HasPhysicalKeyTakeover(0x41));
+    }
+
+    [Theory]
+    [InlineData(MouseButton.Right)]
+    [InlineData(MouseButton.XButton2)]
+    public async Task MouseCallback_TaggedUpWithoutInjectedFlag_IsNotSwallowed(MouseButton button)
+    {
+        using var fixture = new CallbackFixture(button);
+        await fixture.StartHeldInput();
+        fixture.SetBoundary("stopped", mouse: true);
+        var forgedUp = (IntPtr)(-1);
+
+        fixture.Sender.MouseResult = (target, down, macroRelease) =>
+        {
+            if (target == button && !down && macroRelease)
+            {
+                fixture.Mouse(isDown: true);
+                forgedUp = fixture.Mouse(isDown: false, injected: false, macroRelease: true);
+            }
+            return true;
+        };
+
+        Assert.True(await fixture.Cleanup());
+        Assert.Equal(IntPtr.Zero, forgedUp);
+        Assert.False(fixture.Physical.HasPhysicalMouseTakeover(button));
+    }
+
+    [Fact]
+    public void InputTags_AreDistinctNonzeroAndNotLegacyConstants()
+    {
+        Assert.NotEqual(IntPtr.Zero, NativeMethods.INPUT_IGNORE);
+        Assert.NotEqual(IntPtr.Zero, NativeMethods.INPUT_MACRO_RELEASE);
+        Assert.NotEqual(NativeMethods.INPUT_IGNORE, NativeMethods.INPUT_MACRO_RELEASE);
+        Assert.NotEqual((IntPtr)12345, NativeMethods.INPUT_IGNORE);
+    }
+
     [Theory]
     [InlineData(false, "running")]
     [InlineData(false, "replacement")]

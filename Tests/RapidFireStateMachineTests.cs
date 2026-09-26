@@ -107,6 +107,347 @@ public sealed class RapidFireStateMachineTests
         Assert.Empty(sender.MouseClickThreadIds);
     }
 
+    [Fact]
+    public void FirstPress_ReleaseNotDelivered_SendsNoClicksAndIsNotReady()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender { MouseResult = (_, _, _) => false };
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        Assert.Equal(RapidFireArmStatus.Ready, rapidFire.GetStatus());
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+
+            // The first synthetic DOWN would land on the still-held physical press, so none is sent.
+            Assert.Single(sender.MouseTransitions);
+            Assert.Empty(sender.MouseClickThreadIds);
+            Assert.NotEqual(TIMER_ARMED, TimerState(rapidFire));
+            Assert.Equal(0L, OwedUpGeneration(rapidFire));
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, rapidFire.GetStatus());
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void Click_DownNotDelivered_StopsBurstWithoutOwedRelease()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender { ClickResult = () => LeftClickResult.DownFailed };
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+
+            Assert.Single(sender.MouseClickThreadIds);
+            Assert.NotEqual(TIMER_ARMED, TimerState(rapidFire));
+            Assert.Equal(0L, OwedUpGeneration(rapidFire));
+            Assert.Single(sender.MouseTransitions);
+            Assert.Equal(RapidFireArmStatus.ArmedNotReady, rapidFire.GetStatus());
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void Click_UpNotDeliveredWhileHeld_OwesReleaseUntilPhysicalUp()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender { ClickResult = () => LeftClickResult.UpFailed };
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+
+        rapidFire.FireTimerForTesting();
+
+        // Still physically held: the user's own UP will release the button, so no synthetic UP yet.
+        Assert.Single(sender.MouseClickThreadIds);
+        Assert.NotEqual(TIMER_ARMED, TimerState(rapidFire));
+        Assert.NotEqual(0L, OwedUpGeneration(rapidFire));
+        Assert.Single(sender.MouseTransitions);
+
+        rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+
+        Assert.Equal(0L, OwedUpGeneration(rapidFire));
+        Assert.Single(sender.MouseTransitions);
+    }
+
+    [Fact]
+    public void Click_UpNotDeliveredAfterPhysicalRelease_SendsOwedRelease()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        sender.ClickResult = () =>
+        {
+            // The physical UP races the click: nothing later will release our synthetic DOWN.
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+            return LeftClickResult.UpFailed;
+        };
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+
+        rapidFire.FireTimerForTesting();
+
+        Assert.Equal(
+            [(sWinShortcuts.Models.MouseButton.Left, false, false), (sWinShortcuts.Models.MouseButton.Left, false, false)],
+            sender.MouseTransitions.ToArray());
+        Assert.Equal(0L, OwedUpGeneration(rapidFire));
+    }
+
+    [Fact]
+    public void Click_UpNotDeliveredThenNewPhysicalPress_OwedReleaseCannotCutNewPress()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        sender.ClickResult = () =>
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+            rapidFire.HandleLeftButton(isDown: true, allowStart: false);
+            return LeftClickResult.UpFailed;
+        };
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+
+            // Only the initial physical-press release; the new press is left alone.
+            Assert.Single(sender.MouseTransitions);
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+
+        Assert.Equal(0L, OwedUpGeneration(rapidFire));
+        Assert.Single(sender.MouseTransitions);
+    }
+
+    [Fact]
+    public void Click_OwedReleaseNotDelivered_RetainsDebtUntilNextPhysicalClick()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var ups = 0;
+        var sender = new RecordingInputSender
+        {
+            // The initial physical-press release succeeds; the owed cleanup UP fails.
+            MouseResult = (_, isDown, _) => isDown || Interlocked.Increment(ref ups) == 1
+        };
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        sender.ClickResult = () =>
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+            return LeftClickResult.UpFailed;
+        };
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+
+        rapidFire.FireTimerForTesting();
+
+        Assert.Equal(2, sender.MouseTransitions.Count);
+        Assert.NotEqual(0L, OwedUpGeneration(rapidFire));
+
+        rapidFire.HandleLeftButton(isDown: true, allowStart: false);
+        Assert.Equal(0L, OwedUpGeneration(rapidFire));
+        rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+    }
+
+    [Fact]
+    public void DeliveryFailure_RaisesStatusChangeAndNextDeliveredPressRestoresReady()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var fail = true;
+        var sender = new RecordingInputSender
+        {
+            ClickResult = () => Volatile.Read(ref fail) ? LeftClickResult.DownFailed : LeftClickResult.Sent
+        };
+        var statusChanges = 0;
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = new RapidFireStateMachine(runtime, sender, random, new NullLoggerService(),
+            new object(), () => Interlocked.Increment(ref statusChanges));
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        rapidFire.FireTimerForTesting();
+        rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        Assert.Equal(RapidFireArmStatus.ArmedNotReady, rapidFire.GetStatus());
+        Assert.Equal(1, Volatile.Read(ref statusChanges));
+
+        Volatile.Write(ref fail, false);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+            Assert.Equal(RapidFireArmStatus.Ready, rapidFire.GetStatus());
+            Assert.Equal(2, Volatile.Read(ref statusChanges));
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void RightButtonGate_RightUpAtLeftPress_SendsNothingEvenIfRightPressedLater()
+    {
+        var (profile, sender, random, rapidFire, right) = CreateGated(rightHeld: false);
+        using var _r = random;
+        using var _f = rapidFire;
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+            right.Value = true;
+            rapidFire.FireTimerForTesting();
+
+            // Ordinary held fire: the physical press is untouched and nothing synthetic is sent.
+            Assert.Empty(sender.MouseTransitions);
+            Assert.Empty(sender.MouseClickThreadIds);
+            Assert.Equal(RapidFireArmStatus.Ready, rapidFire.GetStatus());
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void RightButtonGate_RightHeldAtLeftPress_ClicksNormally()
+    {
+        var (_, sender, random, rapidFire, _) = CreateGated(rightHeld: true);
+        using var _r = random;
+        using var _f = rapidFire;
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+
+            Assert.Single(sender.MouseTransitions);
+            Assert.Single(sender.MouseClickThreadIds);
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void RightButtonGate_RightReleasedBeforePhysicalRelease_LeavesHoldUntouched()
+    {
+        var (_, sender, random, rapidFire, right) = CreateGated(rightHeld: true);
+        using var _r = random;
+        using var _f = rapidFire;
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            right.Value = false;
+            rapidFire.HandleRightButtonReleased();
+            rapidFire.FireTimerForTesting();
+
+            Assert.Empty(sender.MouseTransitions);
+            Assert.Empty(sender.MouseClickThreadIds);
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void RightButtonGate_RightReleasedAndRepressedBetweenWakes_DoesNotResumeUntilFreshLeftPress()
+    {
+        var (_, sender, random, rapidFire, right) = CreateGated(rightHeld: true);
+        using var _r = random;
+        using var _f = rapidFire;
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        rapidFire.FireTimerForTesting();
+        Assert.Single(sender.MouseClickThreadIds);
+
+        // UP then DOWN before the next wake: a boolean check alone would let the burst continue.
+        right.Value = false;
+        rapidFire.HandleRightButtonReleased();
+        right.Value = true;
+        rapidFire.FireTimerForTesting();
+        Assert.Single(sender.MouseClickThreadIds);
+
+        rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+            Assert.Equal(2, sender.MouseClickThreadIds.Count);
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    [Fact]
+    public void RightButtonGate_Off_IgnoresRightButton()
+    {
+        var (profile, sender, random, rapidFire, right) = CreateGated(rightHeld: false);
+        using var _r = random;
+        using var _f = rapidFire;
+        profile.RapidFire.RequireRightButton = false;
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+            rapidFire.HandleRightButtonReleased();
+
+            Assert.Single(sender.MouseClickThreadIds);
+            Assert.Equal(TIMER_ARMED, TimerState(rapidFire));
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
+    private sealed class RightButtonState
+    {
+        public volatile bool Value;
+    }
+
+    private static (Profile Profile, RecordingInputSender Sender, ThreadLocal<Random> Random,
+        RapidFireStateMachine RapidFire, RightButtonState Right) CreateGated(bool rightHeld)
+    {
+        var profile = RapidFireProfile();
+        profile.RapidFire.RequireRightButton = true;
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        var random = new ThreadLocal<Random>(() => new Random(1));
+        var right = new RightButtonState { Value = rightHeld };
+        var rapidFire = new RapidFireStateMachine(runtime, sender, random, new NullLoggerService(),
+            new object(), isRightButtonHeld: () => right.Value);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        return (profile, sender, random, rapidFire, right);
+    }
+
     [Theory]
     [InlineData(15, 0, 15)]
     [InlineData(90, 30.2, 60)]
@@ -516,6 +857,18 @@ public sealed class RapidFireStateMachineTests
     }
 
     private static int Vk(Key key) => KeyInteropUtilities.ToVirtualKey(key);
+
+    private const int TIMER_ARMED = 1;
+
+    private static int TimerState(RapidFireStateMachine rapidFire) =>
+        (int)typeof(RapidFireStateMachine)
+            .GetField("_timerState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(rapidFire)!;
+
+    private static long OwedUpGeneration(RapidFireStateMachine rapidFire) =>
+        (long)typeof(RapidFireStateMachine)
+            .GetField("_owedUpGeneration", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(rapidFire)!;
 
     private static int ArmedDelay(RapidFireStateMachine rapidFire) =>
         (int)typeof(RapidFireStateMachine)

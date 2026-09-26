@@ -686,6 +686,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         profile.RapidFire.IsEnabled = true;
         profile.RapidFire.IntervalMilliseconds = 75;
         profile.RapidFire.JitterMilliseconds = 20;
+        profile.RapidFire.RequireRightButton = true;
 
         await _store.SaveProfileAsync(profile, CancellationToken.None);
         var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
@@ -694,6 +695,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.True(loaded.RapidFire.IsEnabled);
         Assert.Equal(75, loaded.RapidFire.IntervalMilliseconds);
         Assert.Equal(20, loaded.RapidFire.JitterMilliseconds);
+        Assert.True(loaded.RapidFire.RequireRightButton);
     }
 
     [Theory]
@@ -836,6 +838,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.False(loaded.RapidFire.IsEnabled);
         Assert.Equal(90, loaded.RapidFire.IntervalMilliseconds);
         Assert.Equal(10, loaded.RapidFire.JitterMilliseconds);
+        Assert.False(loaded.RapidFire.RequireRightButton);
     }
 
     [Theory]

@@ -348,9 +348,10 @@ directed at other elevated windows, and for the elevated autostart option. Every
 works unelevated.
 
 **Is it safe to use in competitive games?**
-Any global-hook utility is visible to anti-cheat systems. sWinShortcuts adds humanization
-(randomized jitter, variable press durations) to its injected input, but that is no
-guarantee — use your own judgment and follow each game's rules.
+Any global-hook utility is visible to anti-cheat systems, and every input sWinShortcuts
+sends is marked by Windows as injected. Its randomized timing (jitter, variable press
+durations) exists so input registers reliably — it is not ban protection. Use your own
+judgment and follow each game's rules.
 
 **Can I edit profiles without the UI?**
 Yes — they're standard INI files in `%APPDATA%\sWinShortcuts\Profiles\`. Edit, save,

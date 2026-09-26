@@ -148,7 +148,8 @@ internal static class ProfilePersistenceSnapshot
         {
             IsEnabled = source.IsEnabled,
             IntervalMilliseconds = source.IntervalMilliseconds,
-            JitterMilliseconds = source.JitterMilliseconds
+            JitterMilliseconds = source.JitterMilliseconds,
+            RequireRightButton = source.RequireRightButton
         };
     }
 

@@ -105,8 +105,11 @@ internal static class NativeMethods
     internal const int VK_CAPITAL = 0x14;
     internal const int VK_LBUTTON = 0x01;
     internal const int VK_RBUTTON = 0x02;
-    internal static readonly IntPtr INPUT_IGNORE = new(12345);
-    internal static readonly IntPtr INPUT_MACRO_RELEASE = new(12346);
+    // dwExtraInfo ownership tags for our own SendInput events: two distinct nonzero values chosen once
+    // per process, so a second instance or another tool cannot share fixed constants with us. These
+    // mark ownership only; the OS injected flag is what proves an event is synthetic.
+    internal static readonly IntPtr INPUT_IGNORE = new(Random.Shared.Next(1, int.MaxValue / 2) * 2);
+    internal static readonly IntPtr INPUT_MACRO_RELEASE = INPUT_IGNORE + 1;
     internal static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new(-4);
 
     // P9: GetAsyncKeyState reports PHYSICAL mouse buttons, unlike the LL hook's WM_RBUTTONDOWN which
@@ -195,9 +198,10 @@ internal static class NativeMethods
 
     // AutoHotkey ControlSend attaches the posting thread to the target window's input thread around the
     // PostMessage (source-confirmed) — WITHOUT this, many games (incl. GZW/UE5) ignore a posted
-    // WM_KEYDOWN even though it reaches the window. AttachThreadInput itself is non-blocking; we attach
-    // only for the single post and detach immediately. IsHungAppWindow is a NON-blocking guard so we
-    // never couple our input queue to a hung game's.
+    // WM_KEYDOWN even though it reaches the window. We attach only for the single post and detach
+    // immediately. IsHungAppWindow is a best-effort, non-blocking pre-check: the game can still hang
+    // after it returns, so the posting thread may briefly share a stalled input queue. Never call this
+    // path from a thread that must not block (e.g. the low-level hook callbacks).
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);

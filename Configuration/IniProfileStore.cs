@@ -702,6 +702,7 @@ public sealed class IniProfileStore : IProfileStore
             document.GetInt32("RapidFire", "JitterMilliseconds", settings.JitterMilliseconds),
             0,
             RapidFireSettings.MaxJitterMilliseconds);
+        settings.RequireRightButton = document.GetBoolean("RapidFire", "RequireRightButton", settings.RequireRightButton);
     }
 
     private static void DeserializeColorSettings(IniDocument document, ColorSettings settings)
@@ -838,6 +839,7 @@ public sealed class IniProfileStore : IProfileStore
         document.SetBoolean("RapidFire", "Enabled", rapidFire.IsEnabled);
         document.SetInt32("RapidFire", "IntervalMilliseconds", rapidFire.IntervalMilliseconds);
         document.SetInt32("RapidFire", "JitterMilliseconds", rapidFire.JitterMilliseconds);
+        document.SetBoolean("RapidFire", "RequireRightButton", rapidFire.RequireRightButton);
 
         var crosshair = profile.Crosshair;
         document.SetBoolean("Crosshair", "Enabled", crosshair.IsEnabled);

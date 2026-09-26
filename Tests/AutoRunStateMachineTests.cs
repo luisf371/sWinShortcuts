@@ -752,7 +752,7 @@ public sealed class AutoRunStateMachineTests
             Recording.SendMouseButton(button, isDown, macroRelease, canSend);
         public bool MoveMouseTo(int physicalX, int physicalY, Func<bool>? canSend = null) => Recording.MoveMouseTo(physicalX, physicalY, canSend);
         public bool SendMouseWheel(int delta, bool horizontal, Func<bool>? canSend = null) => Recording.SendMouseWheel(delta, horizontal, canSend);
-        public bool SendLeftClick(int holdMilliseconds) => Recording.SendLeftClick(holdMilliseconds);
+        public LeftClickResult SendLeftClick(int holdMilliseconds) => Recording.SendLeftClick(holdMilliseconds);
         public bool SendDummyKey() => Recording.SendDummyKey();
 
         public void Dispose()

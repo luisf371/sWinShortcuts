@@ -98,4 +98,31 @@ public sealed class RapidFireStatusServiceTests
         Assert.Equal(RapidFireArmStatus.Off, service.AppliedStatus);
         Assert.Equal(0, service.AppliedCount);
     }
+
+    [Fact]
+    public void RightButtonGate_MarksOnlyReadyDot_AndReappliesOnGateChange()
+    {
+        var input = new FakeInputHookService();
+        using var service = new RapidFireStatusService(new NullLoggerService(), input, enqueue: a => a());
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.RapidFire.RequireRightButton = true;
+
+        input.RapidFireArmStatus = RapidFireArmStatus.Ready;
+        input.RaiseActiveProfileChanged(profile);
+        Assert.True(service.AppliedRightButtonGate);
+        Assert.Equal(1, service.AppliedCount);
+
+        // A gate edit keeps the status Ready but still changes the visual, so it is not deduped.
+        profile.RapidFire.RequireRightButton = false;
+        input.RaiseRapidFireArmChanged();
+        Assert.False(service.AppliedRightButtonGate);
+        Assert.Equal(2, service.AppliedCount);
+
+        // Gray dot never shows the mark, even with the gate on.
+        profile.RapidFire.RequireRightButton = true;
+        input.RapidFireArmStatus = RapidFireArmStatus.ArmedNotReady;
+        input.RaiseRapidFireArmChanged();
+        Assert.Equal(RapidFireArmStatus.ArmedNotReady, service.AppliedStatus);
+        Assert.False(service.AppliedRightButtonGate);
+    }
 }

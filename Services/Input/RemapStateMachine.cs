@@ -17,8 +17,11 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     private const long GUARD_COMBINED = 1;
     private const long GUARD_CAPS = 2;
     private const long GUARD_LAUNCHER = 3;
+    private const long GUARD_CAPS_RELEASE = 4;
     private const int KEY_PRESS_DURATION_MIN_MS = 31;
     private const int KEY_PRESS_DURATION_MAX_MS = 53;
+    // Longest keyboard delay (1000 ms) plus margin for a late or coarse event timestamp.
+    private const uint CAPS_MISSED_UP_GAP_MS = 1500;
 
     private readonly InputRuntimeState _runtime;
     private readonly IInputQueue _queue;
@@ -43,8 +46,19 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     private Key? _capsSecondTapKey;
     private long _capsSecondTapToken;
     private long _capsTapTokenSequence;
+    // Where the current DoubleNormal pair's first tap was aimed; guarded by _capsLock.
+    private ForegroundIdentitySnapshot? _capsTapPairForeground;
+    private Profile? _capsTapPairProfile;
+    // A foreground change kept the release tap for the physical UP (guarded by _capsLock). Remapped
+    // output also records the window it must return to; Caps Lock state is global and needs none.
+    private bool _capsSecondTapRetained;
+    private CapsReleaseTarget? _capsRetainedTarget;
+    // Worker-read target of the last enqueued window-bound release tap; replaced, never mutated.
+    private volatile CapsReleaseTarget? _capsReleaseTarget;
     private bool _capsDownSuppressed;
     private bool _capsPhysicallyDown;
+    // KBDLLHOOKSTRUCT.time of the last physical Caps DOWN (0 = unknown); guarded by _capsLock.
+    private uint _capsLastDownTime;
     private long _capsConfigurationGeneration = 1;
 
     private readonly object _launcherLock = new();
@@ -117,9 +131,10 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         int virtualKey,
         bool isKeyDown,
         bool isKeyUp,
-        bool rightButtonPressed)
+        bool rightButtonPressed,
+        uint eventTime = 0)
     {
-        var handled = HandleCapsLock(virtualKey, isKeyDown, isKeyUp) ||
+        var handled = HandleCapsLock(virtualKey, isKeyDown, isKeyUp, eventTime) ||
                       HandleCombinedMapping(virtualKey, isKeyDown, isKeyUp, rightButtonPressed);
         return handled || HandleWindowsLauncher(virtualKey, isKeyDown, isKeyUp);
     }
@@ -153,8 +168,8 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     internal void ReleaseCombinedState(bool preservePhysicalPairing) =>
         ReleaseAllCombinedOverrides(preservePhysicalPairing);
 
-    internal void ReleaseCapsStateOnly(bool preservePhysicalPairing) =>
-        ReleaseCapsState(preservePhysicalPairing);
+    internal void ReleaseCapsStateOnly(bool preservePhysicalPairing, bool foregroundDeparture = false) =>
+        ReleaseCapsState(preservePhysicalPairing, foregroundDeparture);
 
     internal void ClearLauncherState()
     {
@@ -237,6 +252,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 ExpectedProfileIsCurrent(command.ExpectedProfile),
             GUARD_LAUNCHER =>
                 command.Generation == Volatile.Read(ref _launcherConfigurationGeneration),
+            GUARD_CAPS_RELEASE => CapsReleaseTargetIsForeground(in command),
             _ => false
         };
     }
@@ -379,7 +395,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         return suppression;
     }
 
-    private bool HandleCapsLock(int virtualKey, bool isKeyDown, bool isKeyUp)
+    private bool HandleCapsLock(int virtualKey, bool isKeyDown, bool isKeyUp, uint eventTime = 0)
     {
         if (virtualKey != VK_CAPITAL)
         {
@@ -390,25 +406,24 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         {
             lock (_capsLock)
             {
-                if (_capsHeldOutputKey is { } heldOutput)
-                {
-                    _queue.Enqueue(new InputCommand(heldOutput, IsDown: false, HoldOwner: InputHoldOwner.Caps));
-                    _capsHeldOutputKey = null;
-                    _capsHeldGeneration = 0;
-                    _capsHeldForegroundGeneration = 0;
-                    _capsHeldProfile = null;
-                }
-                if (_capsSecondTapKey is { } secondTap)
-                {
-                    EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false);
-                    _capsSecondTapKey = null;
-                    _capsSecondTapToken = 0;
-                }
+                return CompleteCapsRelease();
+            }
+        }
 
-                var suppressUp = _capsDownSuppressed;
-                _capsDownSuppressed = false;
-                _capsPhysicallyDown = false;
-                return suppressUp;
+        if (isKeyDown && eventTime != 0)
+        {
+            lock (_capsLock)
+            {
+                // Typematic repeats arrive at most one keyboard delay apart (1 s at the slowest
+                // setting). A "repeat" after a longer gap means the hook never saw the last UP, so
+                // settle that press first; otherwise the pairing shifts and the next press swaps.
+                if (_capsPhysicallyDown && _capsLastDownTime != 0 &&
+                    unchecked(eventTime - _capsLastDownTime) > CAPS_MISSED_UP_GAP_MS)
+                {
+                    CompleteCapsRelease();
+                    Log("Caps Lock: release was not observed; treating this press as new");
+                }
+                _capsLastDownTime = eventTime;
             }
         }
 
@@ -501,6 +516,8 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                     var tapPairToken = Interlocked.Increment(ref _capsTapTokenSequence);
                     _capsSecondTapKey = outputKey.Value;
                     _capsSecondTapToken = tapPairToken;
+                    _capsTapPairForeground = _runtime.ForegroundIdentity;
+                    _capsTapPairProfile = foregroundGeneration == 0 ? null : _runtime.ActiveProfile;
                     EnqueueCapsTap(
                         outputKey.Value,
                         tapPairToken,
@@ -514,6 +531,26 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         }
 
         return true;
+    }
+
+    // Caller holds _capsLock. Returns whether the physical UP should be suppressed.
+    private bool CompleteCapsRelease()
+    {
+        if (_capsHeldOutputKey is { } heldOutput)
+        {
+            _queue.Enqueue(new InputCommand(heldOutput, IsDown: false, HoldOwner: InputHoldOwner.Caps));
+            _capsHeldOutputKey = null;
+            _capsHeldGeneration = 0;
+            _capsHeldForegroundGeneration = 0;
+            _capsHeldProfile = null;
+        }
+        EnqueueCapsSecondTap();
+
+        var suppressUp = _capsDownSuppressed;
+        _capsDownSuppressed = false;
+        _capsPhysicallyDown = false;
+        _capsLastDownTime = 0;
+        return suppressUp;
     }
 
     private CapsLockSettings? GetEffectiveCapsLockSettings() => GetEffectiveCapsLockSettings(
@@ -538,7 +575,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         return active?.IsEnabled == true ? active : global?.IsEnabled == true ? global : null;
     }
 
-    private void ReleaseCapsState(bool preservePhysicalPairing = true)
+    private void ReleaseCapsState(bool preservePhysicalPairing = true, bool foregroundDeparture = false)
     {
         lock (_capsLock)
         {
@@ -551,18 +588,83 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 _capsHeldForegroundGeneration = 0;
                 _capsHeldProfile = null;
             }
-            if (_capsSecondTapKey is { } secondTap)
+            if (foregroundDeparture && preservePhysicalPairing && _capsPhysicallyDown)
             {
-                EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false);
-                _capsSecondTapKey = null;
-                _capsSecondTapToken = 0;
+                RetainCapsSecondTap();
+            }
+            else
+            {
+                EnqueueCapsSecondTap();
             }
             if (!preservePhysicalPairing)
             {
                 _capsPhysicallyDown = false;
                 _capsDownSuppressed = false;
+                _capsLastDownTime = 0;
             }
         }
+    }
+
+    // Caller holds _capsLock. Focus left mid-press (e.g. Win opened Start): completing the pair now
+    // would toggle early and, for remapped output, type into whatever took focus. Keep the release
+    // tap for the physical UP; a remapped one stays bound to the window its first tap reached.
+    private void RetainCapsSecondTap()
+    {
+        if (_capsSecondTapKey is not { } secondTap || _capsSecondTapRetained)
+        {
+            return;
+        }
+
+        _capsSecondTapRetained = true;
+        if (secondTap != Key.CapsLock)
+        {
+            var foreground = _capsTapPairForeground;
+            _capsRetainedTarget = new CapsReleaseTarget(
+                _capsSecondTapToken,
+                foreground?.WindowHandle ?? IntPtr.Zero,
+                foreground?.ProcessId ?? 0,
+                _capsTapPairProfile);
+        }
+        Log("Caps Lock: foreground changed mid-press; 2x release tap kept for the physical release");
+    }
+
+    // Caller holds _capsLock. Allocation-free: runs on the hook thread for a physical UP.
+    private void EnqueueCapsSecondTap()
+    {
+        if (_capsSecondTapKey is not { } secondTap)
+        {
+            return;
+        }
+
+        var target = _capsSecondTapRetained ? _capsRetainedTarget : null;
+        if (target is not null)
+        {
+            _capsReleaseTarget = target;
+        }
+        EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false, targetBound: target is not null);
+        _capsSecondTapKey = null;
+        _capsSecondTapToken = 0;
+        _capsSecondTapRetained = false;
+        _capsRetainedTarget = null;
+        _capsTapPairForeground = null;
+        _capsTapPairProfile = null;
+    }
+
+    // Worker only. A retained remapped release tap is dropped rather than sent to another window.
+    private bool CapsReleaseTargetIsForeground(in InputCommand command)
+    {
+        var target = _capsReleaseTarget;
+        if (target is not null && target.TapPairToken == command.TapPairToken &&
+            _runtime.LiveForegroundIsWindow(target.WindowHandle, target.ProcessId, target.Profile))
+        {
+            return true;
+        }
+
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Caps Lock: 2x release tap for {command.Key} dropped; its window is no longer in the foreground");
+        }
+        return false;
     }
 
     private void EnqueueCapsTap(
@@ -570,7 +672,8 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         long tapPairToken,
         bool isInitialTap,
         long foregroundGeneration = 0,
-        long generation = 0)
+        long generation = 0,
+        bool targetBound = false)
     {
         _queue.Enqueue(new InputCommand(
             key,
@@ -579,11 +682,11 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 KEY_PRESS_DURATION_MIN_MS,
                 KEY_PRESS_DURATION_MAX_MS + 1),
             Kind: InputCommandKind.KeyTap,
-            Guard: isInitialTap ? this : null,
+            Guard: isInitialTap || targetBound ? this : null,
             Generation: generation,
             ForegroundGeneration: foregroundGeneration,
             ExpectedProfile: foregroundGeneration == 0 ? null : _runtime.ActiveProfile,
-            Token: isInitialTap ? GUARD_CAPS : 0,
+            Token: isInitialTap ? GUARD_CAPS : targetBound ? GUARD_CAPS_RELEASE : 0,
             TapPairToken: tapPairToken,
             RequireTapPairToken: !isInitialTap));
     }
@@ -811,4 +914,10 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         Key TargetKey,
         bool SuppressOriginal,
         bool RightClickOnly);
+
+    private sealed record CapsReleaseTarget(
+        long TapPairToken,
+        IntPtr WindowHandle,
+        uint ProcessId,
+        Profile? Profile);
 }

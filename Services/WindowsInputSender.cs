@@ -78,7 +78,7 @@ public sealed class WindowsInputSender : IInputSender
         return SendInputLogged([down, up], SendInputKind.VirtualKeyTap, virtualKey: virtualKey);
     }
 
-    public bool SendLeftClick(int holdMilliseconds)
+    public LeftClickResult SendLeftClick(int holdMilliseconds)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(holdMilliseconds);
 
@@ -87,7 +87,7 @@ public sealed class WindowsInputSender : IInputSender
 
         if (!SendInputLogged([down], SendInputKind.LeftButtonDown))
         {
-            return false;
+            return LeftClickResult.DownFailed;
         }
 
         var released = false;
@@ -108,7 +108,7 @@ public sealed class WindowsInputSender : IInputSender
             }
         }
 
-        return released;
+        return released ? LeftClickResult.Sent : LeftClickResult.UpFailed;
     }
 
     public bool SendDummyKey()

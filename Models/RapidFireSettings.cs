@@ -13,4 +13,7 @@ public sealed class RapidFireSettings
     public int IntervalMilliseconds { get; set; } = DefaultIntervalMilliseconds;
 
     public int JitterMilliseconds { get; set; } = DefaultJitterMilliseconds;
+
+    // Only click while the right mouse button (logical, post-swap) is held, e.g. while aiming.
+    public bool RequireRightButton { get; set; }
 }

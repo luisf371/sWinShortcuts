@@ -208,6 +208,108 @@ public sealed class InputHookDispatcherTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RightButtonGatedRapidFire_RightHeldThenLeft_ClicksThroughDispatcher(bool holdBreath)
+    {
+        var sender = new RecordingInputSender();
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateRapidFireProfile();
+            profile.RapidFire.RequireRightButton = true;
+            profile.RightClickHoldBreath.IsEnabled = holdBreath;
+            service.ConfigureRapidFireForTesting(profile, foregroundGeneration: 1);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+
+            service.DispatchDecodedMouseEvent(NativeMethods.WM_RBUTTONDOWN, 0);
+            Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
+            service.FireRapidFireTimerForTesting();
+
+            Assert.Single(sender.MouseClickThreadIds);
+        }
+        finally
+        {
+            service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0);
+            service.DispatchDecodedMouseEvent(NativeMethods.WM_RBUTTONUP, 0);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Theory]
+    [InlineData("gate")]
+    [InlineData("interval")]
+    [InlineData("jitter")]
+    public void RapidFireSettingsEdit_KeepsArmButCancelsBurstInProgress(string setting)
+    {
+        var sender = new RecordingInputSender();
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateRapidFireProfile();
+            service.ConfigureRapidFireForTesting(profile, foregroundGeneration: 1);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+            Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
+            service.FireRapidFireTimerForTesting();
+            Assert.Single(sender.MouseClickThreadIds);
+
+            switch (setting)
+            {
+                case "gate": profile.RapidFire.RequireRightButton = true; break;
+                case "interval": profile.RapidFire.IntervalMilliseconds = RapidFireSettings.MinIntervalMilliseconds; break;
+                default: profile.RapidFire.JitterMilliseconds = 5; break;
+            }
+            service.ReconcileProfileSettings(profile, ProfileChangeKind.RapidFire);
+
+            // Sticky: still armed, but the burst started under the old values stops.
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+            service.FireRapidFireTimerForTesting();
+            Assert.Single(sender.MouseClickThreadIds);
+        }
+        finally
+        {
+            service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0);
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void RapidFireEnabledOffThenOn_KeepsArmAndRaisesStatusChanges()
+    {
+        var sender = new RecordingInputSender();
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateRapidFireProfile();
+            service.ConfigureRapidFireForTesting(profile, foregroundGeneration: 1);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+            var statuses = new List<RapidFireArmStatus>();
+            service.RapidFireArmChanged += (_, _) => statuses.Add(service.GetRapidFireArmStatus());
+
+            profile.RapidFire.IsEnabled = false;
+            service.ReconcileProfileSettings(profile, ProfileChangeKind.RapidFire);
+            Assert.Equal(RapidFireArmStatus.Off, service.GetRapidFireArmStatus());
+
+            profile.RapidFire.IsEnabled = true;
+            service.ReconcileProfileSettings(profile, ProfileChangeKind.RapidFire);
+
+            // Re-enabling resumes the same arm without pressing the toggle key again.
+            Assert.Equal(RapidFireArmStatus.Ready, service.GetRapidFireArmStatus());
+            Assert.Equal([RapidFireArmStatus.Off, RapidFireArmStatus.Ready], statuses);
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
     [Fact]
     public void ConsumedAltLeftPreventsRapidFireUntilFreshUnconsumedPress()
     {

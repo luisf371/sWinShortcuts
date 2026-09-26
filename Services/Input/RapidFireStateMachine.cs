@@ -59,19 +59,32 @@ internal sealed class RapidFireStateMachine : IDisposable
     private long _armedTick;
     private int _armedDelayMs;
     private int _disposed;
+    // Press generation whose synthetic DOWN was delivered without its UP; 0 when nothing is owed.
+    private long _owedUpGeneration;
+    // Set when a send fails, cleared by the next delivered one; keeps the status dot off Ready.
+    private volatile bool _deliveryFaulted;
+    private readonly Action? _statusChanged;
+    // Logical (post-swap) right-button state, read by the hook and timer threads.
+    private readonly Func<bool> _isRightButtonHeld;
+    // Whether the current press was started under "only while right button is held".
+    private volatile bool _pressRequiresRightButton;
 
     internal RapidFireStateMachine(
         InputRuntimeState runtime,
         IInputSender inputSender,
         ThreadLocal<Random> random,
         ILoggerService logger,
-        object profileLock)
+        object profileLock,
+        Action? statusChanged = null,
+        Func<bool>? isRightButtonHeld = null)
     {
         _runtime = runtime;
         _inputSender = inputSender;
         _random = random;
         _logger = logger;
         _profileLock = profileLock;
+        _statusChanged = statusChanged;
+        _isRightButtonHeld = isRightButtonHeld ?? (static () => false);
         _timer = new Timer(_ => OnTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
@@ -171,6 +184,8 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     internal void HandleLeftButton(bool isDown, bool allowStart)
     {
+        // Any physical transition settles an owed synthetic UP (see SettleOwedUp).
+        if (Volatile.Read(ref _owedUpGeneration) != 0) Interlocked.Exchange(ref _owedUpGeneration, 0);
         if (!isDown)
         {
             _physicalLeftDown = false;
@@ -194,6 +209,15 @@ internal sealed class RapidFireStateMachine : IDisposable
             return;
         }
 
+        // A gated press starts only with the right button already held; pressing it later while
+        // left is held does not start one (a fresh left press is required).
+        var requiresRightButton = profile.RapidFire.RequireRightButton;
+        if (requiresRightButton && !_isRightButtonHeld())
+        {
+            return;
+        }
+
+        _pressRequiresRightButton = requiresRightButton;
         var generation = Interlocked.Increment(ref _generation);
         Volatile.Write(ref _foregroundGeneration, _runtime.ActiveProfileGeneration);
         _intervalMs = Math.Clamp(
@@ -208,6 +232,13 @@ internal sealed class RapidFireStateMachine : IDisposable
     }
 
     internal void SeedPhysicalLeftButton(bool isDown) => _physicalLeftDown = isDown;
+
+    // Hook thread. Releasing the right button ends a gated press for good: cancelling latches it, so
+    // a quick release-and-re-press between timer wakes cannot resume the old burst.
+    internal void HandleRightButtonReleased()
+    {
+        if (_pressRequiresRightButton) CancelPress();
+    }
 
     internal void SeedTogglePhysicalState(Func<int, bool> isPhysicalKeyDown)
     {
@@ -229,6 +260,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         CancelPress();
         _armed = false;
         _ownerProfile = null;
+        _deliveryFaulted = false;
         if (!preservePhysicalPairing)
         {
             _physicalLeftDown = false;
@@ -240,6 +272,13 @@ internal sealed class RapidFireStateMachine : IDisposable
         }
 
         return wasArmed;
+    }
+
+    internal bool CancelPressOwnedBy(Profile profile)
+    {
+        if (!ReferenceEquals(_ownerProfile, profile)) return false;
+        CancelPress();
+        return true;
     }
 
     internal bool ReleaseOwnedBy(Profile profile)
@@ -258,7 +297,9 @@ internal sealed class RapidFireStateMachine : IDisposable
             return RapidFireArmStatus.Off;
         }
 
-        return _runtime.ProfileInputGenerationIsCurrent() && ReferenceEquals(_runtime.ActiveProfile, owner)
+        // A burst stopped by a delivery failure is armed but not delivering, so never report Ready.
+        return !_deliveryFaulted &&
+               _runtime.ProfileInputGenerationIsCurrent() && ReferenceEquals(_runtime.ActiveProfile, owner)
             ? RapidFireArmStatus.Ready
             : RapidFireArmStatus.ArmedNotReady;
     }
@@ -329,6 +370,7 @@ internal sealed class RapidFireStateMachine : IDisposable
         _runtime.AdvancedModeEnabled &&
         IsReady() &&
         _physicalLeftDown &&
+        (!_pressRequiresRightButton || _isRightButtonHeld()) &&
         generation == Volatile.Read(ref _generation) &&
         foregroundGeneration == _runtime.PublishedForegroundGeneration &&
         foregroundGeneration == _runtime.ActiveProfileGeneration &&
@@ -452,8 +494,10 @@ internal sealed class RapidFireStateMachine : IDisposable
             releasePhase: false);
     }
 
+    // Returns true only when the input was delivered; any delivery failure ends this press's burst.
     private bool TrySend(long generation, Profile profile, long foregroundGeneration, bool release)
     {
+        LeftClickResult? result = null;
         try
         {
             var holdMilliseconds = release ? 0 : _random.Value!.Next(HOLD_MIN_MS, HOLD_MAX_MS + 1);
@@ -463,20 +507,16 @@ internal sealed class RapidFireStateMachine : IDisposable
                 return false;
             }
 
-            // WindowsInputSender logs which SendInput call failed; this bool adds no useful detail.
             if (!_runtime.TryBeginAutomationOutput()) return false;
             try
             {
                 if (IsCurrent(generation, profile, foregroundGeneration))
                 {
-                    if (release)
-                    {
-                        _inputSender.SendMouseButton(MouseButton.Left, isDown: false);
-                    }
-                    else
-                    {
-                        _inputSender.SendLeftClick(holdMilliseconds);
-                    }
+                    result = release
+                        ? _inputSender.SendMouseButton(MouseButton.Left, isDown: false)
+                            ? LeftClickResult.Sent
+                            : LeftClickResult.UpFailed
+                        : _inputSender.SendLeftClick(holdMilliseconds);
                 }
             }
             finally
@@ -487,10 +527,81 @@ internal sealed class RapidFireStateMachine : IDisposable
         catch (Exception ex)
         {
             Log($"Rapid Fire {(release ? "press release" : "click")} injection error: {ex.Message}");
+            SetDeliveryFaulted(true);
             return false;
         }
 
+        if (result is { } failure && failure != LeftClickResult.Sent)
+        {
+            OnDeliveryFailed(generation, release, failure);
+            return false;
+        }
+
+        if (result is not null) SetDeliveryFaulted(false);
         return !_runtime.IsDisposed;
+    }
+
+    // WindowsInputSender already logs which SendInput call failed; this adds one line per stopped burst.
+    private void OnDeliveryFailed(long generation, bool release, LeftClickResult failure)
+    {
+        SetDeliveryFaulted(true);
+        if (release)
+        {
+            // The still-held DOWN is the user's physical press; their own UP releases it.
+            Log("Rapid Fire stopped: the physical press could not be released, so this press sends no clicks");
+            return;
+        }
+
+        if (failure == LeftClickResult.DownFailed)
+        {
+            Log("Rapid Fire stopped: a click DOWN was not delivered");
+            return;
+        }
+
+        // Our DOWN landed but its UP did not: the logical button may be held by us, not the user.
+        Volatile.Write(ref _owedUpGeneration, generation);
+        Log("Rapid Fire stopped: a click UP was not delivered");
+        SettleOwedUp(generation);
+    }
+
+    // Timer thread only (under _timerCallbackLock). HandleLeftButton clears the debt on any physical
+    // transition: a physical UP releases the button itself, and a new DOWN owns it until its own UP.
+    private void SettleOwedUp(long generation)
+    {
+        // Still held: the user's UP will release it (and clear the debt). Otherwise claim the debt
+        // before sending, so a physical DOWN that clears it first is never cut short by a stale UP.
+        if (_physicalLeftDown ||
+            Interlocked.CompareExchange(ref _owedUpGeneration, 0, generation) != generation)
+        {
+            return;
+        }
+
+        var released = false;
+        try
+        {
+            released = _inputSender.SendMouseButton(MouseButton.Left, isDown: false);
+        }
+        catch (Exception ex)
+        {
+            Log($"Rapid Fire owed release injection error: {ex.Message}");
+        }
+
+        if (released)
+        {
+            Log("Rapid Fire released the left button after a failed click UP");
+            return;
+        }
+
+        // Keep the debt unless a physical transition already settled it; the next physical click will.
+        Interlocked.CompareExchange(ref _owedUpGeneration, generation, 0);
+        Log("Rapid Fire could not release the left button; it may stay held until the next physical click");
+    }
+
+    private void SetDeliveryFaulted(bool faulted)
+    {
+        if (_deliveryFaulted == faulted) return;
+        _deliveryFaulted = faulted;
+        _statusChanged?.Invoke();
     }
 
     private void ChangeTimer(int dueTime, long generation)

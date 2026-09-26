@@ -20,7 +20,18 @@ public interface IInputSender
 
     bool SendVirtualKeyTap(int virtualKey);
 
-    bool SendLeftClick(int holdMilliseconds);
+    LeftClickResult SendLeftClick(int holdMilliseconds);
 
     bool SendDummyKey();
+}
+
+/// <summary>
+/// Which half of a synthetic left click failed. Only <see cref="UpFailed"/> can leave the logical
+/// button held, because its DOWN was delivered.
+/// </summary>
+public enum LeftClickResult
+{
+    Sent,
+    DownFailed,
+    UpFailed
 }

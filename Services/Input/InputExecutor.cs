@@ -119,6 +119,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     private const int DEFAULT_DRAIN_TIMEOUT_MS = 2000;
     private const int MAX_WHEEL_TAP_AGE_MS = 250;
     private const int WHEEL_KEY_UP_GAP_MS = 10;
+    private const int DEFERRED_RELEASE_TAP_MAX_MS = 1000;
 
     private readonly InputRuntimeState _runtime;
     private readonly IInputSender _inputSender;
@@ -139,6 +140,9 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     private readonly int[] _macroMouseOwned = new int[6];
     private long _macroReservationToken;
     private bool _macroCleanupRequested;
+    // Worker-thread only: a paired release tap waiting for its key to be released by another owner.
+    private InputCommand? _deferredReleaseTap;
+    private long _deferredReleaseTapTick;
     private readonly object _enqueueLock = new();
     private BlockingCollection<InputCommand>? _queue;
     private Thread? _worker;
@@ -358,11 +362,14 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
                 try
                 {
                     RetryPendingReleases();
+                    ProcessDeferredReleaseTap();
                     previousCommandSucceeded = Execute(
                         queue,
                         in command,
                         previousCommandSucceeded,
                         ref acknowledgedTapPairToken);
+                    // The command just run may have released the key a deferred tap waits on.
+                    ProcessDeferredReleaseTap();
                 }
                 catch (Exception ex)
                 {
@@ -393,6 +400,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         finally
         {
             RetryPendingReleases();
+            ProcessDeferredReleaseTap(final: true);
         }
     }
 
@@ -497,12 +505,40 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         if (((queue.IsAddingCompleted || _runtime.IsDisposed || _runtime.RecordingPaused) &&
              !acknowledgedCompensation) || !GuardAllows(in command) ||
             (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true) ||
-            !tapPairAcknowledged || IsBusyForTap(command.Key))
+            !tapPairAcknowledged)
         {
             command.Completion?.TrySetResult(false);
             return false;
         }
 
+        if (acknowledgedCompensation ? IsBusyForReleaseTap(command.Key) : IsBusyForTap(command.Key))
+        {
+            if (acknowledgedCompensation)
+            {
+                // Its paired DOWN tap was delivered, so dropping this one would leave the target
+                // toggled once. Wait briefly for the other owner to release the key instead.
+                acknowledgedTapPairToken = 0;
+                DeferReleaseTap(in command);
+                return false;
+            }
+
+            command.Completion?.TrySetResult(false);
+            return false;
+        }
+
+        var (downSent, upSent) = SendTap(in command, acknowledgedCompensation);
+        if (command.TapPairToken != 0)
+        {
+            acknowledgedTapPairToken = command.RequireTapPairToken
+                ? 0
+                : downSent ? command.TapPairToken : 0;
+        }
+        command.Completion?.TrySetResult(downSent && upSent);
+        return downSent && upSent;
+    }
+
+    private (bool DownSent, bool UpSent) SendTap(in InputCommand command, bool acknowledgedCompensation)
+    {
         var downSent = SendKey(command.Key, true, out var downAttempted,
             acknowledgedCompensation: acknowledgedCompensation);
         var upSent = false;
@@ -519,14 +555,68 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         {
             command.Acknowledgement?.MarkDownSent();
         }
-        if (command.TapPairToken != 0)
+        return (downSent, upSent);
+    }
+
+    private bool IsBusyForReleaseTap(Key key) =>
+        IsBusyForTap(key) || IsMacroKeyOwned(KeyInteropUtilities.ToVirtualKey(key));
+
+    private void DeferReleaseTap(in InputCommand command)
+    {
+        if (_deferredReleaseTap is { } older)
         {
-            acknowledgedTapPairToken = command.RequireTapPairToken
-                ? 0
-                : downSent ? command.TapPairToken : 0;
+            AbandonDeferredReleaseTap(older, "superseded by another busy release tap");
         }
-        command.Completion?.TrySetResult(downSent && upSent);
-        return downSent && upSent;
+
+        _deferredReleaseTap = command;
+        _deferredReleaseTapTick = _clock();
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Input: paired release tap for {command.Key} deferred; key is held by another feature");
+        }
+    }
+
+    // Worker thread only. Runs the deferred release tap once its key is free, or drops it after
+    // DEFERRED_RELEASE_TAP_MAX_MS so a late toggle never lands long after the physical release.
+    private void ProcessDeferredReleaseTap(bool final = false)
+    {
+        if (_deferredReleaseTap is not { } tap)
+        {
+            return;
+        }
+
+        if (Stopwatch.GetElapsedTime(_deferredReleaseTapTick, _clock()).TotalMilliseconds > DEFERRED_RELEASE_TAP_MAX_MS)
+        {
+            AbandonDeferredReleaseTap(tap, "key stayed busy past the wait limit");
+            return;
+        }
+
+        // A window-bound tap must still be admissible when it finally runs.
+        if (!GuardAllows(in tap))
+        {
+            AbandonDeferredReleaseTap(tap, "its guard no longer allows it");
+            return;
+        }
+
+        if (IsBusyForReleaseTap(tap.Key))
+        {
+            if (final) AbandonDeferredReleaseTap(tap, "executor stopped while the key was busy");
+            return;
+        }
+
+        _deferredReleaseTap = null;
+        var (downSent, upSent) = SendTap(in tap, acknowledgedCompensation: true);
+        tap.Completion?.TrySetResult(downSent && upSent);
+    }
+
+    private void AbandonDeferredReleaseTap(in InputCommand tap, string reason)
+    {
+        _deferredReleaseTap = null;
+        tap.Completion?.TrySetResult(false);
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Input: paired release tap for {tap.Key} dropped ({reason}); its target may stay toggled");
+        }
     }
 
     private bool ExecuteWheelTap(BlockingCollection<InputCommand> queue, in InputCommand command)

@@ -535,6 +535,20 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public bool RapidFireRequireRightButton
+    {
+        get => Model.RapidFire.RequireRightButton;
+        set
+        {
+            if (Model.RapidFire.RequireRightButton != value)
+            {
+                Model.RapidFire.RequireRightButton = value;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.RapidFire);
+            }
+        }
+    }
+
     public string RapidFireTimingRange =>
         $"{RapidFireIntervalMilliseconds}–{RapidFireIntervalMilliseconds + RapidFireJitterMilliseconds} ms";
 
@@ -1011,6 +1025,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.RapidFire.IsEnabled = RapidFireEnabled;
             Model.RapidFire.IntervalMilliseconds = RapidFireIntervalMilliseconds;
             Model.RapidFire.JitterMilliseconds = RapidFireJitterMilliseconds;
+            Model.RapidFire.RequireRightButton = RapidFireRequireRightButton;
             Model.Crosshair.IsEnabled = CrosshairEnabled;
             Model.Crosshair.HideWhileRightButtonHeld = CrosshairHideWhileRightButtonHeld;
             Model.Crosshair.SizeAdjustment = CrosshairSizeAdjustment;

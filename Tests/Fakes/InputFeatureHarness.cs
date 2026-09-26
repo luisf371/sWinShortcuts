@@ -202,12 +202,13 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
 
     internal void PanicDerivationRetireForTesting(long ticket) => _gestures.RetirePanicDerivation(ticket);
 
-    internal bool HandleCapsLockForTesting(bool isDown) =>
+    internal bool HandleCapsLockForTesting(bool isDown, uint eventTime = 0) =>
         _remaps.HandleKeyboardEvent(
             NativeMethods.VK_CAPITAL,
             isKeyDown: isDown,
             isKeyUp: !isDown,
-            rightButtonPressed: false);
+            rightButtonPressed: false,
+            eventTime);
 
     internal void ForceReleaseCapsLockForTesting(bool preservePhysicalPairing = true) =>
         _remaps.ReleaseCapsStateOnly(preservePhysicalPairing);
@@ -342,7 +343,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
 
     internal void ReleaseForegroundAutoRun() => _autoRun.Release(includeBackground: false);
 
-    internal void ReleaseForegroundState() => ReleaseAllState(preserveRapidFireArm: true);
+    internal void ReleaseForegroundState() => ReleaseAllState(preserveRapidFireArm: true, foregroundDeparture: true);
 
     internal void SetRapidFireToggleKey(Key? key)
     {
@@ -388,7 +389,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             generationChanged = !changed && _runtime.ActiveProfileGeneration != foregroundGeneration;
             if (changed)
             {
-                ReleaseAllState(preserveRapidFireArm: true);
+                ReleaseAllState(preserveRapidFireArm: true, foregroundDeparture: true);
             }
             _runtime.SetActiveProfile(profile, foregroundGeneration);
         }
@@ -411,7 +412,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             previous = _runtime.ActiveProfile;
             if (previous is not null)
             {
-                ReleaseAllState(preserveRapidFireArm: true);
+                ReleaseAllState(preserveRapidFireArm: true, foregroundDeparture: true);
             }
             _runtime.SetActiveProfile(null, foregroundGeneration);
         }
@@ -481,8 +482,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             _gestures.RederivePanicTriggerPhysicalState(_ => false);
         }
 
-        if ((changeKind & (ProfileChangeKind.RapidFire |
-                           ProfileChangeKind.Removed |
+        if ((changeKind & (ProfileChangeKind.Removed |
                            ProfileChangeKind.Identity)) != 0 ||
             ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
         {
@@ -490,6 +490,10 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             {
                 RaiseRapidFireArmChanged();
             }
+        }
+        else if ((changeKind & ProfileChangeKind.RapidFire) != 0 && _rapidFire.CancelPressOwnedBy(profile))
+        {
+            RaiseRapidFireArmChanged();
         }
 
         // Mirrors InputHookService: AntiAfk-kind edits (Mode/interval) must NOT release the retained
@@ -542,14 +546,15 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
     private bool ReleaseAllState(
         bool preservePhysicalPairing = true,
         bool preserveRapidFireArm = false,
-        string? rapidFireDisarmReason = null)
+        string? rapidFireDisarmReason = null,
+        bool foregroundDeparture = false)
     {
         var armChanged = preserveRapidFireArm
             ? CancelRapidFirePressAndKeepArm()
             : _rapidFire.Release(preservePhysicalPairing, rapidFireDisarmReason);
         _remaps.ReleaseCombinedState(preservePhysicalPairing);
         _gestures.ReleaseGestures(preservePhysicalPairing);
-        _remaps.ReleaseCapsStateOnly(preservePhysicalPairing);
+        _remaps.ReleaseCapsStateOnly(preservePhysicalPairing, foregroundDeparture);
         _gestures.ReleaseHoldBreath();
         _gestures.ReleasePanic(preservePhysicalPairing);
         _autoRun.Release(includeBackground: false);

@@ -422,7 +422,7 @@ public sealed class WheelInputExecutorTests
             throw new NotSupportedException();
         public bool MoveMouseTo(int physicalX, int physicalY, Func<bool>? canSend = null) => throw new NotSupportedException();
         public bool SendMouseWheel(int delta, bool horizontal, Func<bool>? canSend = null) => throw new NotSupportedException();
-        public bool SendLeftClick(int holdMilliseconds) => throw new NotSupportedException();
+        public LeftClickResult SendLeftClick(int holdMilliseconds) => throw new NotSupportedException();
         public bool SendDummyKey() => true;
     }
 }

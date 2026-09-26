@@ -3,6 +3,8 @@
 # .NET / C# build output
 bin/
 obj/
+TestResults/
+*.dmp
 
 # IDE cruft (optional but recommended)
 .vs/

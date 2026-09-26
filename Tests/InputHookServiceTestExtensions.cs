@@ -51,7 +51,7 @@ internal static class InputHookServiceTestExtensions
         Get<InputRuntimeState>(service, RuntimeField).IsRunning;
 
     internal static void ResetInputStateForTesting(this InputHookService service) =>
-        ReleaseAllStateMethod.Invoke(service, [true, true, null]);
+        ReleaseAllStateMethod.Invoke(service, [true, true, null, false]);
 
     internal static void StopInputExecutorForTesting(this InputHookService service)
     {
@@ -60,7 +60,7 @@ internal static class InputHookServiceTestExtensions
         {
             runtime.SetRunning(false);
             Get<InputExecutor>(service, ExecutorField).StopAndDrain(
-                () => ReleaseAllStateMethod.Invoke(service, [false, false, null]),
+                () => ReleaseAllStateMethod.Invoke(service, [false, false, null, false]),
                 TimeSpan.FromSeconds(2));
         }
     }

@@ -4,6 +4,38 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## September 25, 2026
+
+### Added
+- **Rapid Fire Right-Button Gating (Aim-Down-Sights Gate)**:
+  - **Right-Button Gate Setting**: Added a new per-profile option: *Only while right mouse button is held*.
+  - **Aim-Down-Sights (ADS) Fire Control**: When enabled, Rapid Fire clicks initiate only if the left mouse button is pressed while holding the right mouse button (such as when aiming down sights).
+  - **Instant Halting on Aim Release**: Releasing the right mouse button instantly stops the rapid-fire burst and latches cancel so button wobbles or releases never trigger unintended shots.
+  - **Status Dot Gate Indicator**: When armed and ready on a profile configured with right-button gating, the green status overlay dot displays a distinct high-contrast dark center mark (`GateDot`), distinguishing ADS-gated profiles from standard full-time rapid fire at a glance.
+
+### Changed & Improved
+- **Sticky Rapid Fire Arm on Settings Edits**:
+  - Editing Rapid Fire profile settings (click interval, jitter, right-button gate, or the profile enable checkbox) now retains the armed session state instead of disarming. In-flight bursts are cleanly cancelled so new timings and gates take effect on the next press, and toggling profile enable updates the status dot between Off and Ready immediately without requiring the global hotkey to be re-pressed.
+- **Injected Click Delivery Hardening & Stuck-Button Recovery**:
+  - `SendLeftClick` now tracks independent down and up delivery outcomes (`LeftClickResult`). If an injected button down fails, the burst terminates immediately with zero false debt.
+  - If a synthetic down succeeds but its paired up fails to deliver (e.g. system hitch or UIPI boundary), the engine records an owed-release debt and cleans it up via atomic comparison as soon as the user is not holding the physical button, preventing runaway firing or stuck mouse button dragging.
+  - Input delivery failures immediately transition the status overlay dot to gray (`ArmedNotReady`) so the user receives immediate visual feedback when input is blocked by an elevated or protected application.
+- **Self-Healing Caps Lock State**:
+  - Added timestamp-based missed-release recovery in the low-level keyboard hook. If a physical Caps Lock press arrives after a delay while still tracked as held (such as when Windows drops a key-up during UAC prompts, Alt-Tab transitions, or hook timeouts), the engine automatically settles the stale release before processing the press, preventing Caps Lock modifier and tap phase inversion.
+- **Caps Lock Focus Departure Protection**:
+  - Fixed an issue where switching focus mid-press (such as pressing the Windows key to open the Start menu while holding Caps Lock in DoubleNormal mode) caused teardown cleanup to prematurely fire the release tap into the newly focused window.
+  - The second tap is now retained until the physical key release arrives. For remapped outputs, the release tap is strictly bound to the originating game window and dropped safely if that window is no longer focused, preventing stray keystrokes from leaking into Start menu searches or other applications.
+- **Deferred Release Taps for Competing Key Owners**:
+  - Paired release taps for toggled features (such as Caps Lock) whose target key is temporarily held down by another feature (such as sprint or macro playback) are deferred on the input executor worker for up to 1000 ms to execute as soon as the competing key is released, preventing lost taps and inverted state.
+- **Synthetic Input Isolation & Ownership Security**:
+  - Low-level `dwExtraInfo` ownership tags (`INPUT_IGNORE` and `INPUT_MACRO_RELEASE`) are now randomized per-process, preventing tag collisions with other instances or third-party input tools.
+  - Macro release suppression now strictly verifies the Windows kernel-level injected flag (`LLKHF_INJECTED` / `LLMHF_INJECTED`) alongside the tag, ensuring physical releases are never swallowed.
+- **Documentation & Accuracy Polish**:
+  - Clarified that randomized timing and jitter ensure natural input registration reliability across variable game frame rates rather than anti-cheat detection protection, as Windows kernel flags all synthetic input.
+  - Updated Anti-AFK Background and Forced mode tooltips to clarify experimental status across games that discard unfocused input.
+
+---
+
 ## September 23, 2026
 
 ### Fixed & Improved
@@ -243,7 +275,7 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 ### Added
 - **Profile-Based Rapid Fire (Auto-Clicker)**:
   - Added rapid fire left-clicking for semi-automatic weapons with configurable click intervals (25 ms – 250 ms).
-  - Added subtle randomized timing jitter to simulate natural human input and prevent anti-cheat detection.
+  - Added subtle randomized timing jitter to vary click cadence. (Correction: an earlier version of this entry claimed it prevents anti-cheat detection; it does not — injected input is always marked by Windows.)
   - Added an app-wide toggle hotkey in Settings.
   - Added click hold duration and release retry logic to ensure every click registers reliably in-game without stuck mouse buttons.
 - **Single-Key Auto-Run Triggers**:

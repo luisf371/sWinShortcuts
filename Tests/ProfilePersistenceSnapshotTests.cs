@@ -72,6 +72,7 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.RapidFire.IsEnabled = true;
         profile.RapidFire.IntervalMilliseconds = 80;
         profile.RapidFire.JitterMilliseconds = 15;
+        profile.RapidFire.RequireRightButton = true;
         profile.AntiAfk.IsEnabled = true;
         profile.AntiAfk.SendMode = AntiAfkSendMode.Forced;
         profile.Crosshair.IsEnabled = true;
@@ -135,6 +136,7 @@ public sealed class ProfilePersistenceSnapshotTests
         Assert.True(snapshot.RapidFire.IsEnabled);
         Assert.Equal(80, snapshot.RapidFire.IntervalMilliseconds);
         Assert.Equal(15, snapshot.RapidFire.JitterMilliseconds);
+        Assert.True(snapshot.RapidFire.RequireRightButton);
         Assert.True(snapshot.AntiAfk.IsEnabled);
         Assert.Equal(AntiAfkSendMode.Forced, snapshot.AntiAfk.SendMode);
         Assert.True(snapshot.Crosshair.IsEnabled);

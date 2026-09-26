@@ -6,7 +6,8 @@ using sWinShortcuts.Views;
 namespace sWinShortcuts.Services;
 
 // Status dot for the sticky Rapid Fire arm: green = armed & ready (owner is the settled active
-// profile), gray = armed but not ready, hidden = off. See RapidFireArmStatus.
+// profile), gray = armed but not ready, hidden = off. See RapidFireArmStatus. A Ready dot gets a
+// small black center while the owner's "only while right button is held" gate is on.
 //
 // Dispatch contract: handlers are ENQUEUE-ONLY. RapidFireArmChanged fires from the foreground
 // watcher thread inside its publication lock and from the keyboard-hook dispatcher — building or
@@ -36,6 +37,12 @@ public sealed class RapidFireStatusService : IDisposable
 
     /// <summary>Last status ApplyLatest applied (dedup source). Internal for test observation.</summary>
     internal RapidFireArmStatus AppliedStatus => _appliedStatus;
+
+    // Dispatcher/test-thread-only: whether the applied Ready dot shows the right-button gate mark.
+    private volatile bool _appliedRightButtonGate;
+
+    /// <summary>Last right-button gate mark ApplyLatest applied. Internal for test observation.</summary>
+    internal bool AppliedRightButtonGate => _appliedRightButtonGate;
 
     // Count of ApplyLatest runs that passed the dedup — internal for test observation.
     private int _appliedCount;
@@ -112,7 +119,11 @@ public sealed class RapidFireStatusService : IDisposable
         try
         {
             var status = _inputHookService.GetRapidFireArmStatus();
-            if (status == _appliedStatus)
+            // Ready means the owner is the active profile, so its gate setting is the one in force.
+            // Gate edits on the owner raise RapidFireArmChanged, so this re-read stays current.
+            var rightButtonGate = status == RapidFireArmStatus.Ready &&
+                                  _inputHookService.ActiveProfile?.RapidFire.RequireRightButton == true;
+            if (status == _appliedStatus && rightButtonGate == _appliedRightButtonGate)
             {
                 // Dedup: spurious raises are contractual, and repositioning is pinned to visual
                 // state changes only.
@@ -120,6 +131,7 @@ public sealed class RapidFireStatusService : IDisposable
             }
 
             _appliedStatus = status;
+            _appliedRightButtonGate = rightButtonGate;
             Volatile.Write(ref _appliedCount, AppliedCount + 1);
 
             // Headless (unit tests, no Application.Current): the window layer is skipped — the
@@ -135,10 +147,10 @@ public sealed class RapidFireStatusService : IDisposable
                     _window?.HideOverlay();
                     break;
                 case RapidFireArmStatus.ArmedNotReady:
-                    (_window ??= new RapidFireStatusWindow()).ApplyState(ready: false);
+                    (_window ??= new RapidFireStatusWindow()).ApplyState(ready: false, rightButtonGate: false);
                     break;
                 case RapidFireArmStatus.Ready:
-                    (_window ??= new RapidFireStatusWindow()).ApplyState(ready: true);
+                    (_window ??= new RapidFireStatusWindow()).ApplyState(ready: true, rightButtonGate);
                     break;
             }
         }

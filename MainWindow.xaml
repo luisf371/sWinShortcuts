@@ -967,6 +967,10 @@
                                                 <Run Text="{Binding DataContext.RapidFireToggleKey, ElementName=RootWindow, Converter={StaticResource KeyDisplayConverter}, Mode=OneWay}" />
                                                 <Run Text=" — assigned in Settings" />
                                             </TextBlock>
+                                            <CheckBox Content="Only while right mouse button is held"
+                                                      IsChecked="{Binding RapidFireRequireRightButton}"
+                                                      ToolTip="Rapid Fire starts only when you press the left button while holding the right button (for example, while aiming). Releasing the right button stops the clicks."
+                                                      Margin="0,0,0,8" />
                                             <Grid Margin="0,0,0,8">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="140" />
@@ -1354,7 +1358,7 @@
                                                     <TextBlock Text="Mode"
                                                                VerticalAlignment="Center" />
                                                     <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                               ToolTip="Foreground: taps the keys only after you've gone AFK and the game is the focused window (classic behavior). Background: waits for the same AFK time, but sends the keys straight to the game window even while it's in the background. Forced: no AFK wait at all — sends the keys on the timer every interval, even while you're actively using your keyboard. Background and Forced work in most games but depend on the game accepting background input."
+                                                               ToolTip="Foreground: taps the keys only after you've gone AFK and the game is the focused window (classic behavior). Background: waits for the same AFK time, but sends the keys straight to the game window even while it's in the background. Forced: no AFK wait at all — sends the keys on the timer every interval, even while you're actively using your keyboard. Background and Forced are experimental: many games ignore input sent to an unfocused window, so test them before relying on them."
                                                                ToolTipService.InitialShowDelay="0"
                                                                ToolTipService.Placement="Right" />
                                                 </StackPanel>
@@ -1364,7 +1368,7 @@
                                                           ItemsSource="{Binding DataContext.AntiAfkSendModes, ElementName=RootWindow}"
                                                           SelectedItem="{Binding AntiAfkSendMode, Mode=TwoWay}" />
                                             </Grid>
-                                            <TextBlock Text="Foreground and Background only trigger after real KEYBOARD inactivity (mouse movement does not reset it). Forced ignores inactivity and fires on the timer. Background and Forced send straight to the game window so they keep working while the game is unfocused."
+                                            <TextBlock Text="Foreground and Background only trigger after real KEYBOARD inactivity (mouse movement does not reset it). Forced ignores inactivity and fires on the timer. Background and Forced send straight to the game window so they can work while the game is unfocused, if the game accepts that input."
                                                        TextWrapping="Wrap"
                                                        Margin="0,10,0,0"
                                                        FontSize="11"

@@ -116,11 +116,13 @@ sWinShortcuts/
 - Resets mouse button states
 - Clears override dictionaries
 
-### Anti-Cheat Humanization
-InputHookService includes timing jitter:
-- Thread-local `Random` with hybrid seeding
-- RNG warmup before key injection
-- Variable delays on key press duration
+### Timing Variance
+Synthetic input uses randomized hold/gap durations so presses register reliably and feel natural:
+- Thread-local `Random` shared by the input state machines
+- Variable key-press and click-hold durations; Rapid Fire adds 0–N ms to its base interval
+- This is NOT detection protection: every `SendInput` event carries the OS injected flag
+  (`LLKHF_INJECTED`/`LLMHF_INJECTED`) and a `dwExtraInfo` ownership tag. Do not describe or
+  extend it as anti-cheat evasion.
 
 ### Special Profiles
 - **Window [Default]** (`ProfileConstants.WindowsProfileName`): Global fallback and global color settings, undeletable
@@ -170,6 +172,6 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AddProfileAsync_Dupl
 ### App-Level Toggle Keys & Rapid Fire
 - `ColorToggleKey` and `RapidFireToggleKey` are app-level toggle keys persisted in `sWinShortcuts.ini` `[App]`, assigned via Settings, and shown read-only in profile panes — they are NOT per-profile settings
 - Rapid Fire arm is a sticky SINGLE-OWNER session state: it survives profile switches, same-profile republishes, watchdog hook reinstalls, and `ReleaseForegroundState`, and clicks only while its owner is the settled active profile (`ProfileInputGenerationIsCurrent` + owner == active). Toggling in another RF-capable app RE-TARGETS the owner; toggling in a settled non-eligible context (desktop, or a profile without Rapid Fire) DISARMS the live arm — the primary-key escape hatch for an owner whose game was quit, at the cost that an incidental press in an app binding the same key also disarms (pick a non-conflicting key); a toggle during a foreground-generation mismatch still fails closed
-- Full disarm happens ONLY on: toggle-off, toggle-key reassignment, owner RapidFire-config/Identity edits, owner removal or master-off (both `ReconcileProfileSettings` paths), Advanced Mode off, session switch, and Stop/Start
+- Full disarm happens ONLY on: toggle-off, toggle-key reassignment, owner Identity edits, owner removal or master-off (both `ReconcileProfileSettings` paths), Advanced Mode off, session switch, and Stop/Start. Rapid Fire settings edits (enable, interval, jitter, right-button gate) keep the arm and only cancel the owner's burst in progress
 - `RapidFireArmChanged` (may-change event; handlers re-query `GetRapidFireArmStatus` and dedup) feeds the status dot overlay (`RapidFireStatusService`): green = Ready, gray = ArmedNotReady, hidden = Off
 - All INI persist/parse goes through `Utilities/IniExtensions.cs` with `CultureInfo.InvariantCulture` — never use culture-sensitive formatting in new keys

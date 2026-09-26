@@ -224,7 +224,8 @@ public sealed class InputHookService : IInputHookService
             logger,
             () => _rightButtonPressed,
             clock);
-        _rapidFire = new RapidFireStateMachine(_runtime, inputSender, _random, logger, _profileLock);
+        _rapidFire = new RapidFireStateMachine(_runtime, inputSender, _random, logger, _profileLock,
+            RaiseRapidFireArmChanged, () => _rightButtonPressed);
         _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, _isPhysicalKeyDown);
         _macros = new MacroStateMachine(_runtime, _inputExecutor, _macroPhysical, _autoRun, logger,
             PrepareMacroRecording, OnHookThreadAsync);
@@ -1097,7 +1098,7 @@ public sealed class InputHookService : IInputHookService
                 // Sticky arm: preserved across the switch — it only ever clicks while its owner is
                 // the settled active profile, and the SetForegroundIdentity/this-method raises
                 // cover the status flips. No arm raise on THIS path (nothing about the arm changed).
-                ReleaseAllState(preserveRapidFireArm: true);
+                ReleaseAllState(preserveRapidFireArm: true, foregroundDeparture: true);
                 // Publish the incoming profile BEFORE scheduling the re-derivation (the panic-latch
                 // closure reads the live _runtime.ActiveProfile at dispatcher-execution time and must see
                 // the INCOMING trigger), but keep the GENERATION unsettled until Alt is restored
@@ -1147,7 +1148,7 @@ public sealed class InputHookService : IInputHookService
 
             // Sticky arm: preserved (the owner is simply no longer active -> not ready). The
             // preceding SetForegroundIdentity raise already flipped the dot to gray.
-            ReleaseAllState(preserveRapidFireArm: true);
+            ReleaseAllState(preserveRapidFireArm: true, foregroundDeparture: true);
             // Publish the profile first (see ActivateProfile); the generation settles only after
             // the physical baseline is restored. No active profile => no trigger to re-derive.
             _runtime.SetActiveProfileReference(null);
@@ -1271,16 +1272,23 @@ public sealed class InputHookService : IInputHookService
             }
         }
 
-        // Owner-scoped (NOT active-scoped): an RF-config edit of the ACTIVE profile must not kill
-        // a FOREIGN arm, and an edit of a non-active owner must still disarm it. Identity
-        // (executable edit) invalidates the owner because it changes what "its own app" means.
-        if ((changeKind & (ProfileChangeKind.RapidFire | ProfileChangeKind.Removed | ProfileChangeKind.Identity)) != 0 ||
+        // Owner-scoped (NOT active-scoped): an edit of the ACTIVE profile must not touch a FOREIGN
+        // arm. Identity (executable edit) invalidates the owner because it changes what "its own
+        // app" means; removal and master-off end it too.
+        if ((changeKind & (ProfileChangeKind.Removed | ProfileChangeKind.Identity)) != 0 ||
             ((changeKind & ProfileChangeKind.Master) != 0 && !profile.IsEnabled))
         {
             if (_rapidFire.ReleaseOwnedBy(profile))
             {
                 RaiseRapidFireArmChanged();
             }
+        }
+        else if ((changeKind & ProfileChangeKind.RapidFire) != 0 && _rapidFire.CancelPressOwnedBy(profile))
+        {
+            // Rapid Fire settings edits keep the arm (sticky). Settings are read at each press, so
+            // only a burst started under the old values is cancelled. Enabled on/off can change
+            // Ready/Off, so the may-change event still fires.
+            RaiseRapidFireArmChanged();
         }
 
         // Anti-AFK's retained background target: released ONLY on the identity/removal/master-disable
@@ -1480,7 +1488,9 @@ public sealed class InputHookService : IInputHookService
             data = *(NativeMethods.KBDLLHOOKSTRUCT*)lParam;
         }
 
+        // Only a genuinely injected UP may carry our macro-release tag; a tag alone must never swallow a release.
         if (data.dwExtraInfo == NativeMethods.INPUT_MACRO_RELEASE &&
+            (data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 &&
             message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP &&
             _macroPhysical.HasPhysicalKeyTakeover((int)data.vkCode)) return (IntPtr)1;
 
@@ -1503,14 +1513,15 @@ public sealed class InputHookService : IInputHookService
             return consume ? (IntPtr)1 : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
         }
 
-        return DispatchDecodedKeyboardEvent(vkCode, isKeyDown, isKeyUp, data.scanCode, (uint)data.flags)
+        return DispatchDecodedKeyboardEvent(vkCode, isKeyDown, isKeyUp, data.scanCode, (uint)data.flags, data.time)
             ? (IntPtr)1
             : NativeMethods.CallNextHookEx(_keyboardHookHandle, nCode, wParam, lParam);
     }
 
     // Hook-thread-only dispatcher. Native callbacks do liveness, replacement, running, message and
     // injected-event filtering before entering this allocation-free feature priority chain.
-    internal bool DispatchDecodedKeyboardEvent(int vkCode, bool isKeyDown, bool isKeyUp, uint scanCode = 0, uint flags = 0)
+    internal bool DispatchDecodedKeyboardEvent(int vkCode, bool isKeyDown, bool isKeyUp, uint scanCode = 0, uint flags = 0,
+        uint eventTime = 0)
     {
         if ((uint)vkCode >= 256 || (!isKeyDown && !isKeyUp)) return false;
         CompletePendingMacroRecovery();
@@ -1554,18 +1565,19 @@ public sealed class InputHookService : IInputHookService
                 {
                     // Retire every preheld feature latch, including unsuppressed pairs. A feature
                     // activated after Stop cannot newly consume a recorded pair's passed-through UP.
-                    var pairedHandled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
+                    var pairedHandled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent, eventTime);
                     if (MacroPhysicalState.WasSuppressed(previous)) handled = pairedHandled;
                 }
                 else _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
             }
-            else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent);
+            else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent, eventTime);
         }
         _macroPhysical.CompleteKey(vkCode, isKeyDown, handled, recordingPaused);
         return handled;
     }
 
-    private bool DispatchKeyboardFeatures(int vkCode, bool isKeyDown, bool isKeyUp, AutoRunStateMachine.PhysicalEvent autoRunPhysicalEvent)
+    private bool DispatchKeyboardFeatures(int vkCode, bool isKeyDown, bool isKeyUp,
+        AutoRunStateMachine.PhysicalEvent autoRunPhysicalEvent, uint eventTime)
     {
         var suppressEarlyCancelKey = _gestures.HandlePanicKey(
             vkCode,
@@ -1621,7 +1633,7 @@ public sealed class InputHookService : IInputHookService
         }
 
         // Handle features in priority order
-        return _remaps.HandleKeyboardEvent(vkCode, isKeyDown, isKeyUp, _rightButtonPressed);
+        return _remaps.HandleKeyboardEvent(vkCode, isKeyDown, isKeyUp, _rightButtonPressed, eventTime);
     }
 
     // Global color-variant toggle. Fires ColorVariantToggleRequested ONCE per physical press (typematic
@@ -1724,7 +1736,9 @@ public sealed class InputHookService : IInputHookService
             data = *(NativeMethods.MSLLHOOKSTRUCT*)lParam;
         }
 
+        // Only a genuinely injected UP may carry our macro-release tag; a tag alone must never swallow a release.
         if (data.dwExtraInfo == NativeMethods.INPUT_MACRO_RELEASE &&
+            (data.flags & NativeMethods.MouseLlFlags.LLMHF_INJECTED) != 0 &&
             MacroRecorder.TryDecodeButton(message, data.mouseData, out var releaseButton, out var releaseDown) && !releaseDown &&
             _macroPhysical.HasPhysicalMouseTakeover(releaseButton)) return (IntPtr)1;
 
@@ -1803,6 +1817,7 @@ public sealed class InputHookService : IInputHookService
         {
             if (_rightButtonPressed) _gestures.InvalidateWheel();
             _rightButtonPressed = false;
+            _rapidFire.HandleRightButtonReleased();
             if (_crosshairRightButtonWatch)
             {
                 RightButtonStateChanged?.Invoke(this, false);
@@ -1851,7 +1866,7 @@ public sealed class InputHookService : IInputHookService
                 return;
             }
 
-            ReleaseAllState(preserveRapidFireArm: true);
+            ReleaseAllState(preserveRapidFireArm: true, foregroundDeparture: true);
             RederivePhysicalModifierState();
         }
     }
@@ -1881,7 +1896,8 @@ public sealed class InputHookService : IInputHookService
     private bool ReleaseAllState(
         bool preservePhysicalPairing = true,
         bool preserveRapidFireArm = false,
-        string? rapidFireDisarmReason = null)
+        string? rapidFireDisarmReason = null,
+        bool foregroundDeparture = false)
     {
         _gestures.InvalidateWheel();
         var rapidFireArmCleared = preserveRapidFireArm
@@ -1890,7 +1906,8 @@ public sealed class InputHookService : IInputHookService
 
         _remaps.ReleaseCombinedState(preservePhysicalPairing);
         _gestures.ReleaseGestures(preservePhysicalPairing);
-        _remaps.ReleaseCapsStateOnly(preservePhysicalPairing);
+        // Focus changes keep a mid-press Caps 2x release tap for the physical UP (see RemapStateMachine).
+        _remaps.ReleaseCapsStateOnly(preservePhysicalPairing, foregroundDeparture);
         _gestures.ReleaseHoldBreath();
         _gestures.ReleasePanic(preservePhysicalPairing);
         _autoRun.Release(includeBackground: false);

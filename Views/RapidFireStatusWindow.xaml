@@ -18,5 +18,15 @@
          Ex-styles (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) are OR-ed in from
          code-behind once the HWND exists. Left/Top are pinned non-NaN so WPF's Manual startup
          location never re-cascades over our raw SetWindowPos positioning. -->
-    <Ellipse x:Name="StatusDot"/>
+    <Grid>
+        <Ellipse x:Name="StatusDot"/>
+        <!-- Right-button gate mark: a small black center (3 raw px, sized in code-behind), shown only on Ready. -->
+        <Ellipse x:Name="GateDot"
+                 Width="3"
+                 Height="3"
+                 Fill="Black"
+                 HorizontalAlignment="Center"
+                 VerticalAlignment="Center"
+                 Visibility="Collapsed"/>
+    </Grid>
 </Window>

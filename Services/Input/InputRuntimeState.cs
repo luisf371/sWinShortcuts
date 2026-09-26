@@ -135,4 +135,20 @@ internal sealed class InputRuntimeState
             ReferenceEquals(expected, ForegroundIdentity) &&
             ProfileInputGenerationIsCurrent(profile, foregroundGeneration);
     }
+
+    // Worker admission only: generation-free, so focus may leave and return to the same window.
+    // A non-null profile must also be the settled active profile.
+    internal bool LiveForegroundIsWindow(IntPtr windowHandle, uint processId, Profile? profile)
+    {
+        if (windowHandle == IntPtr.Zero || processId == 0 ||
+            (profile is not null &&
+             (!ReferenceEquals(ActiveProfile, profile) || !ProfileInputGenerationIsCurrent())))
+        {
+            return false;
+        }
+
+        var foreground = _foregroundTransport.GetForegroundWindow();
+        _foregroundTransport.GetWindowThreadProcessId(foreground, out var foregroundProcessId);
+        return foreground == windowHandle && foregroundProcessId == processId;
+    }
 }

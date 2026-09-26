@@ -1096,6 +1096,260 @@ public sealed class InputExecutorReliabilityTests
         }
     }
 
+    [Fact]
+    public async Task CapsLock_DoubleNormalMissedPhysicalUp_NextPressSettlesOwedTapFirst()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true, eventTime: 10_000));
+            // Press 1's UP never reaches the hook; press 2 arrives well past any typematic gap.
+            Assert.True(service.HandleCapsLockForTesting(isDown: true, eventTime: 14_000));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            // Press 1's owed release tap, then press 2's own tap: press 2 is not phase-swapped.
+            Assert.Equal(6, sender.Transitions.Count);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(
+                new[] { true, false, true, false, true, false, true, false },
+                sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Theory]
+    [InlineData(10_000u, 10_500u, 10_533u)]
+    [InlineData(10_000u, 11_000u, 11_400u)]
+    [InlineData(uint.MaxValue - 100, 200u, 233u)]
+    public async Task CapsLock_DoubleNormalTypematicRepeats_StayOnePress(uint first, uint second, uint third)
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true, eventTime: first));
+            Assert.True(service.HandleCapsLockForTesting(isDown: true, eventTime: second));
+            Assert.True(service.HandleCapsLockForTesting(isDown: true, eventTime: third));
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.Equal(new[] { true, false, true, false }, sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_DoubleNormalReleaseTapWhileTargetBusy_RunsWhenOtherOwnerReleases()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal, remapEnabled: true, Key.LeftShift),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            service.ConfigureCombinedOverrideForTesting(Key.F1, Key.LeftShift, suppressOriginal: true);
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            // The release tap waits instead of cutting the other owner's Shift hold short.
+            Assert.Equal(new[] { true, false, true }, sender.Transitions.Select(x => x.IsDown));
+
+            service.ForceReleaseCombinedForTesting();
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.All(sender.Transitions, item => Assert.Equal(Key.LeftShift, item.Key));
+            Assert.Equal(
+                new[] { true, false, true, false, true, false },
+                sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_DoubleNormalReleaseTapBusyPastWaitLimit_IsDropped()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsLockProfile(CapsLockMode.DoubleNormal, remapEnabled: true, Key.LeftShift),
+                foregroundGeneration: 1,
+                altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            service.ConfigureCombinedOverrideForTesting(Key.F1, Key.LeftShift, suppressOriginal: true);
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            await Task.Delay(1_200);
+            service.ForceReleaseCombinedForTesting();
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            // Past the limit a toggle would land far from the physical release, so it is dropped.
+            Assert.Equal(new[] { true, false, true, false }, sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapsLock_DoubleNormalFocusLeavesAndReturnsMidPress_ReleaseTapWaitsForPhysicalUp(bool remapEnabled)
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var output = remapEnabled ? Key.Escape : Key.CapsLock;
+            var profile = CreateCapsLockProfile(CapsLockMode.DoubleNormal, remapEnabled, Key.Escape);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+
+            // An accidental Win press opens Start mid-press, then focus returns to the game.
+            LeaveCapsGameForStart(service, foregroundGeneration: 2);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(2, sender.Transitions.Count);
+            ReturnToCapsGame(service, profile, foregroundGeneration: 3);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(2, sender.Transitions.Count);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.All(sender.Transitions, item => Assert.Equal(output, item.Key));
+            Assert.Equal(new[] { true, false, true, false }, sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapsLock_DoubleNormalReleasedWhileFocusAway_OnlyGlobalCapsLockCompletes(bool remapEnabled)
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateCapsLockProfile(CapsLockMode.DoubleNormal, remapEnabled, Key.Escape);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            LeaveCapsGameForStart(service, foregroundGeneration: 2);
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            // Caps Lock state is global, so it still completes; a remapped game key must not
+            // reach the window that took focus.
+            var expected = remapEnabled
+                ? new[] { true, false }
+                : new[] { true, false, true, false };
+            Assert.Equal(expected, sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task CapsLock_DoubleNormalDeferredReleaseTap_DroppedWhenFocusLeavesDuringWait()
+    {
+        var sender = new RecordingInputSender();
+        using var service = new InputFeatureHarness(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            var profile = CreateCapsLockProfile(CapsLockMode.DoubleNormal, remapEnabled: true, Key.LeftShift);
+            service.ConfigureActiveProfileForTesting(profile, foregroundGeneration: 1, altPressed: false);
+
+            Assert.True(service.HandleCapsLockForTesting(isDown: true));
+            await WaitForAsync(() => sender.Transitions.Count == 2);
+            LeaveCapsGameForStart(service, foregroundGeneration: 2);
+            ReturnToCapsGame(service, profile, foregroundGeneration: 3);
+
+            service.ConfigureCombinedOverrideForTesting(Key.F1, Key.LeftShift, suppressOriginal: true);
+            Assert.True(service.HandleCapsLockForTesting(isDown: false));
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(new[] { true, false, true }, sender.Transitions.Select(x => x.IsDown));
+
+            // Leaving releases the Combined Shift; the waiting tap must re-check its window.
+            LeaveCapsGameForStart(service, foregroundGeneration: 4);
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.All(sender.Transitions, item => Assert.Equal(Key.LeftShift, item.Key));
+            Assert.Equal(new[] { true, false, true, false }, sender.Transitions.Select(x => x.IsDown));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    // Production order: the watcher publishes identity before the worker (de)activates.
+    private static void LeaveCapsGameForStart(InputFeatureHarness service, long foregroundGeneration)
+    {
+        service.SetForegroundIdentity((IntPtr)0x500, 500u, "startmenuexperiencehost.exe", foregroundGeneration);
+        service.DeactivateProfile(foregroundGeneration);
+    }
+
+    private static void ReturnToCapsGame(InputFeatureHarness service, Profile profile, long foregroundGeneration)
+    {
+        service.SetForegroundIdentity((IntPtr)100, 42u, profile.NormalizedExecutable, foregroundGeneration);
+        service.ActivateProfile(profile, foregroundGeneration);
+    }
+
     [Theory]
     [InlineData(ProfileChangeKind.Master, true, true)]
     [InlineData(ProfileChangeKind.Identity, true, true)]

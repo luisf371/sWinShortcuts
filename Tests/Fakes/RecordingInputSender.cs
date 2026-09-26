@@ -76,7 +76,9 @@ internal sealed class RecordingInputSender(
 
     public bool SendVirtualKeyTap(int virtualKey) => true;
 
-    public bool SendLeftClick(int holdMilliseconds)
+    public Func<LeftClickResult>? ClickResult { get; set; }
+
+    public LeftClickResult SendLeftClick(int holdMilliseconds)
     {
         if (throwMouse)
         {
@@ -86,7 +88,8 @@ internal sealed class RecordingInputSender(
         MouseHoldMilliseconds.Enqueue(holdMilliseconds);
         MouseClickThreadIds.Enqueue(Environment.CurrentManagedThreadId);
         MouseEntered.Set();
-        return !blockMouse || ReleaseMouse.Wait(TimeSpan.FromSeconds(2));
+        if (blockMouse && !ReleaseMouse.Wait(TimeSpan.FromSeconds(2))) return LeftClickResult.UpFailed;
+        return ClickResult?.Invoke() ?? LeftClickResult.Sent;
     }
 
     public bool SendDummyKey()
