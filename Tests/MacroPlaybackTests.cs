@@ -13,6 +13,21 @@ namespace Tests;
 
 public sealed class MacroPlaybackTests
 {
+    [Fact]
+    public void Playback_InputFails_RetainsFailingStepAfterCleanup()
+    {
+        var sender = new RecordingInputSender(failFirstDown: true);
+        using var service = Create(sender, out _,
+            new MacroStep { Kind = MacroStepKind.Wait },
+            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+
+        Press(service, 0x75);
+        WaitUntil(() => service.GetMacroSession() is { SessionId: 1, Mode: MacroSessionMode.Idle });
+
+        Assert.Equal("Step 2/2 (KeyPress): Macro input was refused or could not be inserted.",
+            service.GetMacroSession().FailureReason);
+    }
+
     [Theory]
     [InlineData(Key.LeftAlt, false, false)]
     [InlineData(Key.RightAlt, false, false)]

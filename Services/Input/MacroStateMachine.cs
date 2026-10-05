@@ -585,7 +585,14 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                         Publish(MacroSessionMode.Playing, i + 1);
                         if (_logger.IsEnabled)
                             _logger.Log($"[Macros] Playback session={_sessionId} row={i + 1}/{steps.Length} action={steps[i].Kind} iteration={iteration}");
-                        Play(steps[i]);
+                        try
+                        {
+                            Play(steps[i]);
+                        }
+                        catch (Exception exception) when (exception is not OperationCanceledException)
+                        {
+                            throw new InvalidOperationException($"Step {i + 1}/{steps.Length} ({steps[i].Kind}): {exception.Message}", exception);
+                        }
                     }
                     if (!definition.ToggleMode) break;
                     // Yield between passes even when every step completes without a delay.
