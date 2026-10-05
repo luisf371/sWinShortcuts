@@ -245,7 +245,7 @@ public sealed class ProfileActivationReliabilityTests
     }
 
     [Fact]
-    public async Task ForegroundChanges_LogsInputDecisionsFromSnapshots()
+    public async Task ForegroundChanges_LogsTransitionsWhileProcessingEverySnapshot()
     {
         var store = new InMemoryProfileStore();
         var enabledProfile = ProfileFactory.CreateCustomProfile("Enabled Game", "enabled.exe");
@@ -270,19 +270,15 @@ public sealed class ProfileActivationReliabilityTests
         await service.StartAsync(CancellationToken.None);
         try
         {
+            var initialGeneration = input.LastForegroundIdentity!.Value.Generation;
+            await WaitForAsync(() => input.DeactivationGenerations.Contains(initialGeneration));
+            Assert.Single(logger.Messages, message => message.Contains("Foreground decision=no-match"));
+
             watcher.RaiseForegroundChanged("other.exe", 321);
             var noMatchGeneration = input.LastForegroundIdentity!.Value.Generation;
             await WaitForAsync(() => input.DeactivationGenerations.Contains(noMatchGeneration));
 
-            Assert.Contains(
-                logger.Messages,
-                message => message.Contains("Foreground decision=no-match") &&
-                           message.Contains("generation=") &&
-                           message.Contains("hwnd=0x0") &&
-                           message.Contains("pid=321") &&
-                           message.Contains("process=other.exe") &&
-                           message.Contains("normalized=other") &&
-                           message.Contains("profile=<none>"));
+            Assert.Single(logger.Messages, message => message.Contains("Foreground decision=no-match"));
 
             watcher.RaiseForegroundChanged("enabled.exe", 322);
             var enabledGeneration = input.LastForegroundIdentity!.Value.Generation;
@@ -300,6 +296,19 @@ public sealed class ProfileActivationReliabilityTests
                            message.Contains("normalized=enabled") &&
                            message.Contains("profile=Enabled Game"));
 
+            watcher.RaiseForegroundChanged("other.exe", 321);
+            var departureGeneration = input.LastForegroundIdentity!.Value.Generation;
+            await WaitForAsync(() => input.DeactivationGenerations.Contains(departureGeneration));
+            Assert.Contains(
+                logger.Messages,
+                message => message.Contains("Foreground decision=no-match") &&
+                           message.Contains($"generation={departureGeneration} ") &&
+                           message.Contains("hwnd=0x0") &&
+                           message.Contains("pid=321") &&
+                           message.Contains("process=other.exe") &&
+                           message.Contains("normalized=other") &&
+                           message.Contains("profile=<none>"));
+
             watcher.RaiseForegroundChanged("disabled.exe", 323);
             var disabledGeneration = input.LastForegroundIdentity!.Value.Generation;
             await WaitForAsync(() => input.DeactivationGenerations.Contains(disabledGeneration));
@@ -313,6 +322,19 @@ public sealed class ProfileActivationReliabilityTests
                            message.Contains("process=disabled.exe") &&
                            message.Contains("normalized=disabled") &&
                            message.Contains("profile=Disabled Game"));
+
+            watcher.RaiseForegroundChanged("other.exe", 321);
+            var disabledDepartureGeneration = input.LastForegroundIdentity!.Value.Generation;
+            await WaitForAsync(() => input.DeactivationGenerations.Contains(disabledDepartureGeneration));
+            Assert.Contains(logger.Messages, message =>
+                message.Contains("Foreground decision=no-match") &&
+                message.Contains($"generation={disabledDepartureGeneration} "));
+
+            watcher.RaiseForegroundChanged("notepad++.exe", 324);
+            var unmatchedGeneration = input.LastForegroundIdentity!.Value.Generation;
+            await WaitForAsync(() => input.DeactivationGenerations.Contains(unmatchedGeneration));
+            Assert.Equal(3, logger.Messages.Count(message => message.Contains("Foreground decision=no-match")));
+            Assert.DoesNotContain(logger.Messages, message => message.Contains("process=notepad++.exe"));
         }
         finally
         {

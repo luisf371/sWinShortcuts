@@ -612,6 +612,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         Channel<ForegroundSnapshot> channel,
         CancellationToken cancellationToken)
     {
+        var previousWasUnmatched = false;
         await foreach (var snapshot in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             try
@@ -632,15 +633,20 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                 }
                 else
                 {
-                    var decision = snapshot.Profile is null ? "no-match" : "profile-disabled";
-                    _logger.Log(
-                        $"[Input] Foreground decision={decision} generation={snapshot.Generation} " +
-                        $"hwnd=0x{snapshot.WindowHandle.ToInt64():X} pid={snapshot.ProcessId} " +
-                        $"process={snapshot.ProcessName ?? "<empty>"} " +
-                        $"normalized={snapshot.NormalizedExecutable ?? "<empty>"} " +
-                        $"profile={snapshot.Profile?.Name ?? "<none>"}");
+                    // Keep the first unmatched decision and departures from configured profiles.
+                    if (snapshot.Profile is not null || !previousWasUnmatched)
+                    {
+                        var decision = snapshot.Profile is null ? "no-match" : "profile-disabled";
+                        _logger.Log(
+                            $"[Input] Foreground decision={decision} generation={snapshot.Generation} " +
+                            $"hwnd=0x{snapshot.WindowHandle.ToInt64():X} pid={snapshot.ProcessId} " +
+                            $"process={snapshot.ProcessName ?? "<empty>"} " +
+                            $"normalized={snapshot.NormalizedExecutable ?? "<empty>"} " +
+                            $"profile={snapshot.Profile?.Name ?? "<none>"}");
+                    }
                     _inputHookService.DeactivateProfile(snapshot.Generation);
                 }
+                previousWasUnmatched = snapshot.Profile is null;
 
                 // Input transitions stay lossless; only the latest foreground may publish an overlay.
                 // Share the edit publication gate so a paused edit cannot overwrite a later profile.
