@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
@@ -62,26 +63,42 @@ public sealed class RapidFireStateMachineTests
     }
 
     [Fact]
-    public void FirstPress_FirstClickDeadlineIsAnchoredToPhysicalPress()
+    public void FirstPress_HeldPress_ReleasedAtFirstDeadlineThenClicksAfterHandoffGap()
     {
         var profile = RapidFireProfile();
+        profile.RapidFire.IntervalMilliseconds = RapidFireSettings.MinIntervalMilliseconds;
         var runtime = RunningRuntime(profile);
         var sender = new RecordingInputSender();
+        long releaseTick = 0;
+        long clickTick = 0;
+        sender.MouseResult = (_, isDown, _) =>
+        {
+            if (!isDown) Interlocked.CompareExchange(ref releaseTick, Stopwatch.GetTimestamp(), 0);
+            return true;
+        };
+        sender.ClickResult = () =>
+        {
+            Interlocked.CompareExchange(ref clickTick, Stopwatch.GetTimestamp(), 0);
+            return LeftClickResult.Sent;
+        };
         using var random = new ThreadLocal<Random>(() => new Random(1));
         using var rapidFire = Create(runtime, sender, random);
         rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        var pressTick = Stopwatch.GetTimestamp();
         rapidFire.HandleLeftButton(isDown: true, allowStart: true);
         try
         {
-            // The hook kick runs the real timer: release after a click hold, then arm the first click.
-            Assert.True(SpinWait.SpinUntil(() => !sender.MouseTransitions.IsEmpty, TimeSpan.FromSeconds(2)));
-            Assert.True(SpinWait.SpinUntil(() => ArmedDelay(rapidFire) > RapidFireStateMachine.HOLD_MAX_MS,
-                TimeSpan.FromSeconds(2)));
+            // The hook kick runs the real timer through release and the first click. Lower bounds only,
+            // so a loaded machine can make them late but never flaky.
+            Assert.True(SpinWait.SpinUntil(() => Interlocked.Read(ref clickTick) != 0, TimeSpan.FromSeconds(2)));
+            var pressToRelease = Stopwatch.GetElapsedTime(pressTick, Interlocked.Read(ref releaseTick));
+            var releaseToClick = Stopwatch.GetElapsedTime(Interlocked.Read(ref releaseTick), Interlocked.Read(ref clickTick));
 
-            // Time already spent holding the physical press counts toward the first interval.
-            var delay = ArmedDelay(rapidFire);
-            Assert.InRange(delay, RapidFireStateMachine.RELEASE_GAP_MIN_MS,
-                profile.RapidFire.IntervalMilliseconds - RapidFireStateMachine.HOLD_MIN_MS);
+            // The physical press stays untouched until the first-shot deadline (early-fire tolerance aside).
+            Assert.True(pressToRelease.TotalMilliseconds >= RapidFireSettings.MinIntervalMilliseconds - 2,
+                $"press released after {pressToRelease.TotalMilliseconds:F1} ms");
+            Assert.True(releaseToClick.TotalMilliseconds >= RapidFireStateMachine.HANDOFF_GAP_MS,
+                $"first click {releaseToClick.TotalMilliseconds:F1} ms after release");
         }
         finally
         {
@@ -90,7 +107,7 @@ public sealed class RapidFireStateMachineTests
     }
 
     [Fact]
-    public void FirstPress_TapReleasedBeforeHold_SendsNothing()
+    public void FirstPress_QuickTapBeforeFirstDeadline_RemainsEntirelyPhysical()
     {
         var profile = RapidFireProfile();
         var runtime = RunningRuntime(profile);
@@ -100,11 +117,45 @@ public sealed class RapidFireStateMachineTests
         rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
 
         rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        // The hook kick starts the press on the real timer; wait for its release deadline to arm.
+        Assert.True(SpinWait.SpinUntil(() => TimerState(rapidFire) == TIMER_ARMED, TimeSpan.FromSeconds(2)));
+
+        // The release waits for the first-shot deadline, not a 10-20 ms click hold, so an ordinary
+        // tap that outlives a click hold still reaches the target at its natural length.
+        Assert.Equal(TIMER_ARMED, TimerState(rapidFire));
+        Assert.InRange(ArmedDelay(rapidFire), profile.RapidFire.IntervalMilliseconds - 50,
+            profile.RapidFire.IntervalMilliseconds);
+
         rapidFire.HandleLeftButton(isDown: false, allowStart: false);
         rapidFire.FireTimerForTesting();
 
         Assert.Empty(sender.MouseTransitions);
         Assert.Empty(sender.MouseClickThreadIds);
+    }
+
+    [Fact]
+    public void FirstPress_PhysicalReleaseDuringHandoff_SendsNoSyntheticClick()
+    {
+        var profile = RapidFireProfile();
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        // The user lets go while the press release is being delivered.
+        sender.MouseResult = (_, isDown, _) =>
+        {
+            if (!isDown) rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+            return true;
+        };
+
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        rapidFire.FireTimerForTesting();
+        rapidFire.FireTimerForTesting();
+
+        Assert.Single(sender.MouseTransitions);
+        Assert.Empty(sender.MouseClickThreadIds);
+        Assert.NotEqual(TIMER_ARMED, TimerState(rapidFire));
     }
 
     [Fact]
@@ -363,6 +414,8 @@ public sealed class RapidFireStateMachineTests
         rapidFire.HandleLeftButton(isDown: true, allowStart: true);
         try
         {
+            // Release the right button while the physical-press release is pending.
+            Assert.True(SpinWait.SpinUntil(() => TimerState(rapidFire) == TIMER_ARMED, TimeSpan.FromSeconds(2)));
             right.Value = false;
             rapidFire.HandleRightButtonReleased();
             rapidFire.FireTimerForTesting();

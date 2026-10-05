@@ -11,8 +11,9 @@ namespace sWinShortcuts.Services.Input;
 
 /// <summary>
 /// Sticky Rapid Fire ownership and one-shot click cadence. Hook entry points are synchronous;
-/// clicks run only on the timer thread. The physical DOWN passes through as shot 1, so each press
-/// first releases it after a normal click hold, then clicks on a cadence anchored to the press.
+/// clicks run only on the timer thread. The physical DOWN passes through as shot 1 and stays
+/// untouched until the first-shot deadline, so a quick tap reaches the target exactly as pressed; a
+/// press still held there is released, then clicks begin after a fixed handoff gap.
 /// Mutations return whether status may have changed so the
 /// dispatcher can raise its public event after releasing the profile lock.
 /// </summary>
@@ -25,9 +26,9 @@ internal sealed class RapidFireStateMachine : IDisposable
     internal const int HOLD_MIN_MS = 10;
     internal const int HOLD_MAX_MS = 20;
     private const double FIRE_TOLERANCE_MS = 2.0;
-    // Shortest release gap in steady cadence (MinIntervalMilliseconds - HOLD_MAX_MS); keeps a late
-    // initial release from merging into the first synthetic DOWN.
-    internal const int RELEASE_GAP_MIN_MS = RapidFireSettings.MinIntervalMilliseconds - HOLD_MAX_MS;
+    // UP-to-DOWN gap between releasing the held physical press and the first synthetic click. Fixed
+    // (the cadence already has jitter) and long enough for a 60 fps state poll to see the button up.
+    internal const int HANDOFF_GAP_MS = 20;
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
 
     private readonly InputRuntimeState _runtime;
@@ -54,7 +55,6 @@ internal sealed class RapidFireStateMachine : IDisposable
     private long _requestedPressGeneration;
     private long _pressTick;
     private bool _releasePending;
-    private int _firstClickDelayMs;
     private long _timerGeneration;
     private long _armedTick;
     private int _armedDelayMs;
@@ -381,13 +381,13 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     private void StartPress(long generation)
     {
+        // A physical UP before this deadline cancels the press, leaving the tap entirely physical.
         var sincePressMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _pressTick)) * TickToMilliseconds;
-        var holdMilliseconds = _random.Value!.Next(HOLD_MIN_MS, HOLD_MAX_MS + 1);
-        _firstClickDelayMs = NextTargetDelay();
-        var delay = CalculatePressRelativeDelay(holdMilliseconds, sincePressMs);
+        var firstShotDelayMs = NextTargetDelay();
+        var delay = CalculatePressRelativeDelay(firstShotDelayMs, sincePressMs);
         if (Arm(generation, delay, releasePhase: true) && _logger.IsEnabled)
         {
-            _logger.Log($"Rapid Fire press started: physical press released in {delay} ms, first synthetic click at +{_firstClickDelayMs} ms (interval={_intervalMs}, jitter={_jitterMs})");
+            _logger.Log($"Rapid Fire press started: physical press released at +{firstShotDelayMs} ms if still held, first synthetic click {HANDOFF_GAP_MS} ms later (interval={_intervalMs}, jitter={_jitterMs})");
         }
     }
 
@@ -481,17 +481,16 @@ internal sealed class RapidFireStateMachine : IDisposable
 
     private void ReleasePhysicalPress(long generation, Profile profile, long foregroundGeneration)
     {
-        // Shot 1 is the passed-through physical DOWN. Releasing it after a normal hold gives the
-        // first synthetic DOWN a real edge instead of landing on an already-held button.
+        // Shot 1 is the passed-through physical DOWN, held until the first-shot deadline. Releasing
+        // it gives the first synthetic DOWN a real edge instead of landing on an already-held button.
         if (!TrySend(generation, profile, foregroundGeneration, release: true))
         {
             return;
         }
 
-        var sincePressMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref _pressTick)) * TickToMilliseconds;
-        Arm(generation,
-            Math.Max(RELEASE_GAP_MIN_MS, CalculatePressRelativeDelay(_firstClickDelayMs, sincePressMs)),
-            releasePhase: false);
+        // Timed from the delivered UP so a late release wake cannot shorten the gap; the tolerance
+        // offsets OnTimerFired's early-fire allowance.
+        Arm(generation, HANDOFF_GAP_MS + (int)FIRE_TOLERANCE_MS, releasePhase: false);
     }
 
     // Returns true only when the input was delivered; any delivery failure ends this press's burst.

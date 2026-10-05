@@ -2304,18 +2304,17 @@ public sealed class InputExecutorReliabilityTests
             service.FireRapidFireTimerForTesting();
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
 
-            // PRESS STARTED: the physical press is released after a click hold and the first synthetic
-            // click is due one full interval after the physical press (the deliberate no-immediate-click
-            // rule) — the line must state both, and must not be confusable with the sticky-arm
+            // PRESS STARTED: a still-held physical press is released one full interval after the press
+            // (the deliberate no-immediate-click rule), then the first synthetic click follows the fixed
+            // handoff gap — the line must state both, and must not be confusable with the sticky-arm
             // "Rapid Fire armed" line.
             var pressStarted = Assert.Single(logger.Messages, m => m.StartsWith("Rapid Fire press started:"));
-            Assert.Contains("physical press released in ", pressStarted);
-            Assert.Contains($"first synthetic click at +{RapidFireSettings.MaxIntervalMilliseconds} ms", pressStarted);
+            Assert.Contains($"physical press released at +{RapidFireSettings.MaxIntervalMilliseconds} ms if still held", pressStarted);
+            Assert.Contains($"first synthetic click {RapidFireStateMachine.HANDOFF_GAP_MS} ms later", pressStarted);
             Assert.Contains($"interval={RapidFireSettings.MaxIntervalMilliseconds}", pressStarted);
             Assert.Contains("jitter=0", pressStarted);
 
-            // FIRED: the timer's actual elapsed vs the delay it was armed for. The first click's delay
-            // is press-relative, so it is at most one interval.
+            // FIRED: the timer's actual elapsed vs the delay it was armed for (the handoff gap here).
             var fired = Assert.Single(logger.Messages, m => m.StartsWith("Rapid Fire timer fired:"));
             Assert.Contains("elapsed=", fired);
             Assert.Contains("armed delay=", fired);
