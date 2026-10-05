@@ -25,6 +25,9 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 - **Caps Lock Focus Departure Protection**:
   - Fixed an issue where switching focus mid-press (such as pressing the Windows key to open the Start menu while holding Caps Lock in DoubleNormal mode) caused teardown cleanup to prematurely fire the release tap into the newly focused window.
   - The second tap is now retained until the physical key release arrives. For remapped outputs, the release tap is strictly bound to the originating game window and dropped safely if that window is no longer focused, preventing stray keystrokes from leaking into Start menu searches or other applications.
+- **Windows Key Blocked During Remapped 2x Holds**:
+  - While Caps Lock is held in 2x Normal mode with **Remap Key** enabled (for example, a "hold to view map" key that toggles M), an accidental Windows key press is swallowed along with its repeats and release. The Start menu no longer steals focus mid-hold, so the closing tap reaches the game instead of leaving the map stuck open, and the closing tap can no longer combine with Win into a shortcut such as Win+M (minimize all windows).
+  - A Windows key already held before Caps Lock passes through untouched, Caps Lock output (no remap) is not affected, and swallowed presses stay invisible to macros and the recorder. Missed releases fail open, so the Windows key can never be left stuck down.
 - **Deferred Release Taps for Competing Key Owners**:
   - Paired release taps for toggled features (such as Caps Lock) whose target key is temporarily held down by another feature (such as sprint or macro playback) are deferred on the input executor worker for up to 1000 ms to execute as soon as the competing key is released, preventing lost taps and inverted state.
 - **Synthetic Input Isolation & Ownership Security**:

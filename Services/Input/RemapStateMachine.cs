@@ -55,6 +55,8 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     private CapsReleaseTarget? _capsRetainedTarget;
     // Worker-read target of the last enqueued window-bound release tap; replaced, never mutated.
     private volatile CapsReleaseTarget? _capsReleaseTarget;
+    // Hook-read: a remapped DoubleNormal pair is held (Caps Lock output is global and not blocked).
+    private int _capsWinKeyBlock;
     private bool _capsDownSuppressed;
     private bool _capsPhysicallyDown;
     // KBDLLHOOKSTRUCT.time of the last physical Caps DOWN (0 = unknown); guarded by _capsLock.
@@ -167,6 +169,9 @@ internal sealed class RemapStateMachine : IInputCommandGuard
 
     internal void ReleaseCombinedState(bool preservePhysicalPairing) =>
         ReleaseAllCombinedOverrides(preservePhysicalPairing);
+
+    /// <summary>Hook-thread read: a physical Win press starting now should be swallowed.</summary>
+    internal bool BlocksWinKey => Volatile.Read(ref _capsWinKeyBlock) != 0;
 
     internal void ReleaseCapsStateOnly(bool preservePhysicalPairing, bool foregroundDeparture = false) =>
         ReleaseCapsState(preservePhysicalPairing, foregroundDeparture);
@@ -518,6 +523,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                     _capsSecondTapToken = tapPairToken;
                     _capsTapPairForeground = _runtime.ForegroundIdentity;
                     _capsTapPairProfile = foregroundGeneration == 0 ? null : _runtime.ActiveProfile;
+                    Volatile.Write(ref _capsWinKeyBlock, outputKey.Value == Key.CapsLock ? 0 : 1);
                     EnqueueCapsTap(
                         outputKey.Value,
                         tapPairToken,
@@ -644,6 +650,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false, targetBound: target is not null);
         _capsSecondTapKey = null;
         _capsSecondTapToken = 0;
+        Volatile.Write(ref _capsWinKeyBlock, 0);
         _capsSecondTapRetained = false;
         _capsRetainedTarget = null;
         _capsTapPairForeground = null;

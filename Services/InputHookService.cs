@@ -40,6 +40,7 @@ public sealed class InputHookService : IInputHookService
     private readonly AutoRunStateMachine _autoRun;
     private readonly AntiAfkStateMachine _antiAfk;
     private readonly RemapStateMachine _remaps;
+    private readonly CapsHoldWinKeyBlocker _winKeyBlocker = new();
     private readonly MacroPhysicalState _macroPhysical;
     private readonly MacroStateMachine _macros;
     private int _macroPhysicalRecoveryPending;
@@ -1384,6 +1385,7 @@ public sealed class InputHookService : IInputHookService
         _colorToggleDownLatched = colorToggleVk != 0 && _isPhysicalKeyDown(colorToggleVk);
         _hookSeenToggleVk = colorToggleVk;
         _rapidFire.SeedTogglePhysicalState(_isPhysicalKeyDown);
+        _winKeyBlocker.Reset(_isPhysicalKeyDown);
 
         var state = Volatile.Read(ref _crosshairOffsetToggleState);
         var vk = state & TOGGLE_VK_MASK;
@@ -1507,6 +1509,7 @@ public sealed class InputHookService : IInputHookService
 
         if (!featuresActive)
         {
+            _winKeyBlocker.ObserveUnfiltered(vkCode, isKeyDown, isKeyUp);
             CompletePendingMacroRecovery();
             var consume = (uint)vkCode < 256 &&
                 _macros.HandleKey(vkCode, isKeyDown, _macroPhysical.KeyState(vkCode), allowActivation: false) == true;
@@ -1527,6 +1530,13 @@ public sealed class InputHookService : IInputHookService
         CompletePendingMacroRecovery();
         var previous = _macroPhysical.KeyState(vkCode);
         _antiAfk.NotePhysicalKeyboardActivity(Stopwatch.GetTimestamp());
+        // An accidental Win during a remapped Caps 2x hold would open Start (focus leaves before the
+        // closing tap) or turn that tap into Win+key. Swallowed pairs never reach macros or features.
+        if (CapsHoldWinKeyBlocker.IsWinKey(vkCode) &&
+            _winKeyBlocker.Handle(vkCode, isKeyDown, isKeyUp, eventTime, _remaps.BlocksWinKey))
+        {
+            return true;
+        }
         // Observe physical W/S exactly once, even when recording or a macro owns the event.
         // The feature chain still decides activation and honors any completed W-UP handoff.
         var autoRunPhysicalEvent = _autoRun.ObservePhysicalEvent(vkCode, isKeyDown, isKeyUp);

@@ -683,6 +683,148 @@ public sealed class InputHookDispatcherTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapsDoubleNormalRemapped_AccidentalWinDuringHold_IsSwallowedAndClosingTapCompletes(
+        bool releaseCapsFirst)
+    {
+        var sender = new RecordingInputSender();
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsDoubleNormalProfile(remapEnabled: true), foregroundGeneration: 1, altPressed: false);
+
+            Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: true, isKeyUp: false, eventTime: 1_000));
+            Assert.True(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 1_200));
+            Assert.True(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 1_700));
+            // The swallowed pair is invisible to macro modifier tracking and recording.
+            Assert.False(GetMacroPhysical(service).IsRawKeyDown(LWIN));
+
+            if (releaseCapsFirst)
+            {
+                Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: false, isKeyUp: true, eventTime: 1_900));
+                Assert.True(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 1_933));
+                Assert.True(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: false, isKeyUp: true, eventTime: 2_000));
+            }
+            else
+            {
+                Assert.True(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: false, isKeyUp: true, eventTime: 1_900));
+                Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: false, isKeyUp: true, eventTime: 2_000));
+            }
+            Assert.True(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(2)));
+
+            Assert.All(sender.Transitions, item => Assert.Equal(Key.M, item.Key));
+            Assert.Equal(new[] { true, false, true, false }, sender.Transitions.Select(item => item.IsDown));
+
+            // Outside a hold, Win is untouched again.
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 9_000));
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: false, isKeyUp: true, eventTime: 9_100));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void CapsDoubleNormalCapsLockOutput_WinDuringHold_PassesThrough()
+    {
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(
+            new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsDoubleNormalProfile(remapEnabled: false), foregroundGeneration: 1, altPressed: false);
+
+            Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: true, isKeyUp: false, eventTime: 1_000));
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 1_200));
+            Assert.True(GetMacroPhysical(service).IsRawKeyDown(LWIN));
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: false, isKeyUp: true, eventTime: 1_300));
+            Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: false, isKeyUp: true, eventTime: 1_400));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void CapsDoubleNormalRemapped_WinHeldBeforeCaps_PassesThroughUntouched()
+    {
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(
+            new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsDoubleNormalProfile(remapEnabled: true), foregroundGeneration: 1, altPressed: false);
+
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 1_000));
+            Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: true, isKeyUp: false, eventTime: 1_100));
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 1_600));
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: false, isKeyUp: true, eventTime: 1_700));
+            Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: false, isKeyUp: true, eventTime: 1_800));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    [Fact]
+    public void CapsDoubleNormalRemapped_SwallowedWinAcrossSessionUnlock_UpFailsOpen()
+    {
+        using var service = InputHookServiceTestExtensions.CreateWithFakeForeground(
+            new NullLoggerService(), new RecordingInputSender());
+        service.StartInputExecutorForTesting();
+
+        try
+        {
+            service.ConfigureActiveProfileForTesting(
+                CreateCapsDoubleNormalProfile(remapEnabled: true), foregroundGeneration: 1, altPressed: false);
+
+            Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: true, isKeyUp: false, eventTime: 1_000));
+            Assert.True(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: true, isKeyUp: false, eventTime: 1_200));
+            Assert.True(service.DispatchDecodedKeyboardEvent(CAPS, isKeyDown: false, isKeyUp: true, eventTime: 1_300));
+
+            // A stream boundary may have hidden the UP; the stale debt must never eat a real Win UP.
+            RaiseSessionSwitch(service, SessionSwitchReason.SessionUnlock);
+            Assert.False(service.DispatchDecodedKeyboardEvent(LWIN, isKeyDown: false, isKeyUp: true, eventTime: 1_400));
+        }
+        finally
+        {
+            service.StopInputExecutorForTesting();
+        }
+    }
+
+    private const int CAPS = 0x14;
+    private const int LWIN = 0x5B;
+
+    private static Profile CreateCapsDoubleNormalProfile(bool remapEnabled) => new()
+    {
+        Name = "Game",
+        Executable = "game.exe",
+        CapsLock =
+        {
+            IsEnabled = true,
+            Mode = CapsLockMode.DoubleNormal,
+            IsRemapEnabled = remapEnabled,
+            RemapTarget = Key.M
+        }
+    };
+
+    private static MacroPhysicalState GetMacroPhysical(InputHookService service) =>
+        (MacroPhysicalState)typeof(InputHookService)
+            .GetField("_macroPhysical", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(service)!;
+
     private static AutoRunStateMachine GetAutoRun(InputHookService service) =>
         (AutoRunStateMachine)typeof(InputHookService)
             .GetField("_autoRun", BindingFlags.Instance | BindingFlags.NonPublic)!

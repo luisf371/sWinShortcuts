@@ -61,7 +61,8 @@ moment that program comes to the foreground.
   includes Wheel Up/Down in its shortcut dropdown; wheel rows use **Tap**, with **Hold** disabled.
 - **Caps Lock repurposing** — **Normal** mirrors Caps Lock down/up; **2x Normal** sends
   one full key tap on press and another on release; **Disabled** suppresses the key.
-  **Remap Key** substitutes your chosen output key for Caps Lock.
+  **Remap Key** substitutes your chosen output key for Caps Lock. While a remapped 2x press is
+  held, the Windows key is ignored so an accidental press cannot pull focus away mid-hold.
 - **Windows Launcher** — `Win + Numpad` shortcuts launch any program, file, or folder, with
   optional arguments and run-as-admin.
   - *Example: `Win+Numpad1` launches your main game with its launch options.*
