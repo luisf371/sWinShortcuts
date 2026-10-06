@@ -328,4 +328,148 @@ public sealed class MacroEditorTests
         macro.AddStepCommand.Execute(MacroStepKind.Wait);
         Assert.Single(macro.Steps);
     }
+
+    [Fact]
+    public void NewMacro_StartsEnabled_ReportsWhatIsMissing_DuplicateStillStartsOff()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var editor = new MacrosViewModel(profile, () => { });
+        editor.NewMacroCommand.Execute(null);
+        var macro = editor.SelectedMacro!;
+
+        Assert.True(macro.IsEnabled);
+        Assert.True(profile.Macros.Definitions[0].IsEnabled);
+        Assert.Equal("Assign a shortcut to play this macro.", macro.ValidationMessage);
+        macro.ShortcutKey = Key.F6;
+        Assert.Equal("Add at least one step to play this macro.", macro.ValidationMessage);
+        macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
+        Assert.True(macro.IsPlayable);
+
+        editor.DuplicateMacroCommand.Execute(null);
+        Assert.False(editor.SelectedMacro!.IsEnabled);
+    }
+
+    [Fact]
+    public void Insertion_DefaultsToEnd_AndContinuesAfterEachInsertedTake()
+    {
+        MacroStep Press(Key key) => new() { Kind = MacroStepKind.KeyPress, Key = key };
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [Press(Key.A), new() { Kind = MacroStepKind.KeyDown, Key = Key.B },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 5 }, new() { Kind = MacroStepKind.KeyUp, Key = Key.B }]
+        }, () => true);
+
+        // The last visible row is selected: the collapsed B press, whose raw end is the end of the macro.
+        Assert.Same(macro.Steps[1], macro.SelectedStep);
+        Assert.Equal("at the end", macro.InsertionHint);
+
+        // A take lands at the end and leaves its last row selected, so the next take follows it.
+        macro.InsertRecording(macro.RecordingInsertionIndex, [Press(Key.C), new() { Kind = MacroStepKind.Wait, DurationMs = 7 }, Press(Key.D)]);
+        Assert.Same(macro.Steps[6], macro.SelectedStep);
+        Assert.Equal("at the end", macro.InsertionHint);
+        macro.InsertRecording(macro.RecordingInsertionIndex, [Press(Key.E)]);
+        Assert.Equal(new[] { Key.A, Key.B, Key.None, Key.B, Key.C, Key.None, Key.D, Key.E }, macro.ToDefinition().Steps.Select(step => step.Key));
+
+        // Selecting a row still inserts after it.
+        macro.SelectedStep = macro.Steps[0];
+        macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
+        Assert.Equal(1, macro.SelectedIndex);
+        Assert.Equal("after step 2", macro.InsertionHint);
+    }
+
+    [Fact]
+    public void AddStep_StartsWithAVisibleWaitAndTheNearestEarlierPosition()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveTo, X = -1280, Y = 300 }, new() { Kind = MacroStepKind.KeyPress, Key = Key.A }]
+        }, () => true);
+
+        macro.AddStepCommand.Execute(MacroStepKind.Wait);
+        Assert.Equal(100, macro.SelectedStep!.DurationMs);
+        macro.AddStepCommand.Execute(MacroStepKind.MouseClick);
+        Assert.Equal((-1280, 300), (macro.SelectedStep!.X, macro.SelectedStep.Y));
+        macro.SelectedStep.SetPosition(40, 50);
+        macro.AddStepCommand.Execute(MacroStepKind.MoveTo);
+        Assert.Equal((40, 50), (macro.SelectedStep!.X, macro.SelectedStep.Y));
+        macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
+        Assert.Equal(0, macro.SelectedStep!.DurationMs);
+
+        using var empty = new MacroViewModel(new MacroDefinition(), () => true);
+        empty.AddStepCommand.Execute(MacroStepKind.MoveTo);
+        Assert.Equal((0, 0), (empty.SelectedStep!.X, empty.SelectedStep.Y));
+    }
+
+    [Fact]
+    public void ClearSteps_AsksFirst_AndKeepsNameShortcutAndOptions()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new MacroDefinition
+        {
+            Label = "Combo", IsEnabled = true, ToggleMode = true, ShortcutKey = Key.F6,
+            Steps = [new() { Kind = MacroStepKind.KeyPress, Key = Key.A }, new() { Kind = MacroStepKind.Wait, DurationMs = 5 }]
+        }];
+        var edits = 0;
+        using var editor = new MacrosViewModel(profile, () => edits++);
+        var requests = new List<MacroConfirmation>();
+        var answer = false;
+        editor.ConfigureConfirmation(request => { requests.Add(request); return answer; });
+        Assert.True(editor.ClearStepsCommand.CanExecute(null));
+
+        editor.ClearStepsCommand.Execute(null);
+
+        Assert.Equal(2, profile.Macros.Definitions[0].Steps.Length);
+        Assert.Equal(0, edits);
+        var request = Assert.Single(requests);
+        Assert.Equal("Clear all steps?", request.Title);
+        Assert.Equal("Clear steps", request.ActionText);
+        Assert.Equal("All 2 steps in \"Combo\" will be removed. Its name, shortcut, and options stay.", request.Message);
+
+        answer = true;
+        editor.ClearStepsCommand.Execute(null);
+
+        var cleared = profile.Macros.Definitions[0];
+        Assert.Empty(cleared.Steps);
+        Assert.Equal(("Combo", Key.F6, true, true), (cleared.Label, cleared.ShortcutKey, cleared.ToggleMode, cleared.IsEnabled));
+        Assert.Null(editor.SelectedMacro!.SelectedStep);
+        Assert.Equal("at the end", editor.SelectedMacro.InsertionHint);
+        Assert.Equal(1, edits);
+        Assert.False(editor.ClearStepsCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void DeleteMacro_WithSteps_AsksFirst_EmptyMacroDoesNot_AndChangedTargetIsKept()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new MacroDefinition { Label = "Keep", Steps = [new() { Kind = MacroStepKind.KeyPress, Key = Key.A }] },
+            new MacroDefinition { Label = "Empty" }];
+        using var editor = new MacrosViewModel(profile, () => { });
+        var requests = new List<MacroConfirmation>();
+        Func<bool> answer = () => false;
+        editor.ConfigureConfirmation(request => { requests.Add(request); return answer(); });
+
+        editor.DeleteMacroCommand.Execute(null);
+
+        Assert.Equal(2, editor.Definitions.Count);
+        var request = Assert.Single(requests);
+        Assert.Equal(("Delete macro?", "Delete"), (request.Title, request.ActionText));
+        Assert.Equal("\"Keep\" and its 1 step will be permanently deleted.", request.Message);
+
+        // The modal dialog keeps dispatching: a selection change while it is open keeps the original target.
+        answer = () => { editor.SelectedMacro = editor.Definitions[1]; return true; };
+        editor.SelectedMacro = editor.Definitions[0];
+        editor.DeleteMacroCommand.Execute(null);
+        Assert.Equal(2, editor.Definitions.Count);
+
+        // Selected after the previous answer: an empty macro is deleted without asking.
+        Assert.Equal("Empty", editor.SelectedMacro!.Label);
+        editor.DeleteMacroCommand.Execute(null);
+        Assert.Equal(2, requests.Count);
+        Assert.Equal("Keep", Assert.Single(profile.Macros.Definitions).Label);
+
+        answer = () => true;
+        editor.DeleteMacroCommand.Execute(null);
+        Assert.Empty(editor.Definitions);
+        Assert.Empty(profile.Macros.Definitions);
+    }
 }

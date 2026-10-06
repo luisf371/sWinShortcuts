@@ -112,4 +112,29 @@ public sealed class MacroStatusTests(ITestOutputHelper output)
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         Assert.Equal("Idle", editor.SessionStatus);
     });
+
+    [Fact]
+    public Task RecordingWaitingForOwner_NamesTheProfileInsteadOfTimingTheWait() => MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.Macros.Definitions = [new MacroDefinition()];
+        var store = new InMemoryProfileStore();
+        store.Profiles.Add(profile);
+        var input = new FakeInputHookService();
+        using var vm = new MainViewModel(new ProfileManager(store), new FakeDialogService(), new FakeDisplayService(),
+            new RecordingColorControlService(), inputHookService: input, dispatcher: Dispatcher.CurrentDispatcher);
+        await vm.InitializeAsync();
+        var editor = vm.Profiles.Single(p => ReferenceEquals(p.Model, profile)).Macros;
+
+        input.MacroSession = new(1, profile, profile.Macros.Definitions[0].Id, MacroSessionMode.WaitingForRecordingTarget, TimeSpan.FromSeconds(9), 0);
+        input.RaiseMacroSessionChanged();
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+
+        Assert.Equal("Switch to Game to start recording", editor.SessionStatus);
+        Assert.False(editor.IsPlaying);
+        input.MacroSession = input.MacroSession with { Mode = MacroSessionMode.Recording, Elapsed = TimeSpan.FromSeconds(1), RowCount = 3 };
+        input.RaiseMacroSessionChanged();
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal("Recording · 00:01 · 3 rows", editor.SessionStatus);
+    });
 }

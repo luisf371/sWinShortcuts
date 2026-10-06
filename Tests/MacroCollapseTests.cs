@@ -92,6 +92,7 @@ public sealed class MacroCollapseTests
     public void InvalidWaitText_CorrectionKeepsGroupedEditorAndSelection()
     {
         using var macro = Create([.. Press(Key.A, 25), Wait(77)]);
+        macro.SelectedStep = macro.Steps[0];
         var visible = macro.VisibleSteps;
         var representative = macro.SelectedStep!;
         var wait = representative.CollapsedWait!;
@@ -129,6 +130,8 @@ public sealed class MacroCollapseTests
     public void AddAndRecord_AfterCollapsedPress_UseItsRawEndIndex()
     {
         using var macro = Create([.. Press(Key.A), Wait(77)]);
+        Assert.Equal("at the end", macro.InsertionHint);
+        macro.SelectedStep = macro.Steps[0];
         Assert.Equal("after step 3", macro.InsertionHint);
         var insertionIndex = macro.RecordingInsertionIndex;
         macro.InsertRecording(insertionIndex, [KeyRow(MacroStepKind.KeyPress, Key.B)]);
@@ -148,6 +151,7 @@ public sealed class MacroCollapseTests
     public void DuplicateAndDelete_GroupedPress_OperateOnAllSourcesOnce()
     {
         using var macro = Create([.. Press(Key.A), Wait(77)]);
+        macro.SelectedStep = macro.Steps[0];
         var original = macro.Steps.ToArray();
         var changes = 0;
         macro.Changed += (_, _) => changes++;
@@ -213,6 +217,7 @@ public sealed class MacroCollapseTests
     public void DuplicateStep_CollapsedPress_RequiresThreeRawSlots(int freeSlots, bool canDuplicate)
     {
         using var macro = Create([.. Press(Key.A), .. Enumerable.Repeat(Wait(1), MacroValidation.MaxSteps - freeSlots - 3)]);
+        macro.SelectedStep = macro.Steps[0];
         var before = macro.Steps.Count;
         Assert.Equal(canDuplicate, macro.DuplicateStepCommand.CanExecute(null));
 
@@ -223,7 +228,7 @@ public sealed class MacroCollapseTests
     }
 
     [Fact]
-    public void SetAllWaitTimes_RefreshesGroupedTimingOnce_WithoutReplacingVisibleRows()
+    public void SetWaitTimes_RefreshesGroupedTimingOnce_WithoutReplacingVisibleRows()
     {
         using var macro = Create([.. Press(Key.A, 5), Wait(77), .. Press(Key.B, 10)]);
         var visible = macro.VisibleSteps;
@@ -235,7 +240,7 @@ public sealed class MacroCollapseTests
         first.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MacroStepViewModel.DisplayTimingText)) timingChanges++; };
         second.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MacroStepViewModel.DisplayTimingText)) timingChanges++; };
 
-        macro.SetAllWaitTimes(0);
+        macro.SetWaitTimes(MacroWaitScope.AllWaits, 0);
 
         Assert.Same(visible, macro.VisibleSteps);
         Assert.Equal(1, changes);
@@ -243,7 +248,7 @@ public sealed class MacroCollapseTests
         Assert.Equal("0 ms hold", first.DisplayTimingText);
         Assert.Equal("0 ms hold", second.DisplayTimingText);
         Assert.All(macro.Steps.Where(row => row.Kind == MacroStepKind.Wait), row => Assert.Equal("0", row.DurationText));
-        macro.SetAllWaitTimes(0);
+        macro.SetWaitTimes(MacroWaitScope.AllWaits, 0);
         Assert.Equal(1, changes);
         Assert.Equal(2, timingChanges);
     }
@@ -310,6 +315,7 @@ public sealed class MacroCollapseTests
     {
         var canEdit = true;
         using var macro = new MacroViewModel(new MacroDefinition { ShortcutKey = Key.F6, Steps = [.. Press(Key.A), .. Press(Key.B)] }, () => canEdit);
+        macro.SelectedStep = macro.Steps[0];
         var notifications = new List<string?>();
         macro.PropertyChanged += (_, e) => notifications.Add(e.PropertyName);
 

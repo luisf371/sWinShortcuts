@@ -378,7 +378,12 @@
 
                     <!-- Pinned tab strip; each tab page brings its own ScrollViewer so the
                          strip never scrolls away. Direct-content TabItems keep state (scroll
-                         position, DataGrid selection) across tab switches. -->
+                         position, DataGrid selection) across tab switches.
+                         The profile switch disables and shades each page's own StackPanel, not its
+                         TabItem: a TabControl presents the selected content outside the TabItem, so a
+                         disabled TabItem never reaches its page. Tabs stay clickable for reviewing a
+                         disabled profile while its pages scroll; Macros gates itself so Stop recording
+                         stays reachable. -->
                     <TabControl Margin="0,6,0,0"
                                 Style="{StaticResource SettingsTabControlStyle}"
                                 ItemContainerStyle="{StaticResource SettingsTabItemStyle}"
@@ -386,11 +391,11 @@
                         <!-- Launcher is built-in-only (hosts the Windows Launcher group) and first
                              in the strip, so the built-in default opens on it: Launcher, Display,
                              System. Local Visibility binding — same pattern as Keys below. -->
-                        <TabItem Header="Launcher" IsEnabled="{Binding CanEditContent}"
+                        <TabItem Header="Launcher"
                                  Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfTrue}}">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
-                                <StackPanel>
+                                <StackPanel IsEnabled="{Binding CanEditContent}" Style="{StaticResource DisabledContentShadeStyle}">
                                     <GroupBox Padding="16" Margin="0,0,0,8">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal" MinHeight="22">
@@ -433,11 +438,11 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
-                        <TabItem Header="Keys" IsEnabled="{Binding CanEditContent}"
+                        <TabItem Header="Keys"
                                  Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
-                                <StackPanel>
+                                <StackPanel IsEnabled="{Binding CanEditContent}" Style="{StaticResource DisabledContentShadeStyle}">
                                     <!-- Combined Key Mappings (Global + Right-click) -->
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
@@ -912,7 +917,7 @@
                              the sibling local bindings behave). With Advanced Mode off the tab
                              stays clickable at full contrast: the page is gated + shaded (root
                              panel gate + LockedContentShadeStyle) with a lock notice up top. -->
-                        <TabItem IsEnabled="{Binding CanEditContent}" Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
+                        <TabItem Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                             <TabItem.Header>
                                 <StackPanel Orientation="Horizontal"
                                             AutomationProperties.Name="Advanced">
@@ -921,7 +926,7 @@
                             </TabItem.Header>
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
-                                <StackPanel>
+                                <StackPanel IsEnabled="{Binding CanEditContent}" Style="{StaticResource DisabledContentShadeStyle}">
                                     <!-- Lock notice: sits OUTSIDE the gated panel below so it stays
                                          full-contrast while the options are shaded. -->
                                     <Border Visibility="{Binding DataContext.AdvancedModeEnabled, ElementName=RootWindow, Converter={StaticResource VisibleIfFalse}}"
@@ -1385,10 +1390,10 @@
                             <views:MacrosView DataContext="{Binding Macros}" />
                         </TabItem>
 
-                        <TabItem Header="Display" IsEnabled="{Binding CanEditContent}">
+                        <TabItem Header="Display">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
-                                <StackPanel>
+                                <StackPanel IsEnabled="{Binding CanEditContent}" Style="{StaticResource DisabledContentShadeStyle}">
                                     <GroupBox Padding="16" Margin="0,0,0,8"
                                               Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
                                         <GroupBox.Header>
@@ -1841,10 +1846,10 @@
                         <!-- System is always visible: Caps Lock applies to every profile kind.
                              (The built-in-only Windows Launcher group lives in its own Launcher
                              tab at the head of the strip.) -->
-                        <TabItem Header="System" IsEnabled="{Binding CanEditContent}">
+                        <TabItem Header="System">
                             <ScrollViewer Style="{StaticResource SettingsScrollViewerStyle}"
                                           Padding="24,16,28,24">
-                                <StackPanel>
+                                <StackPanel IsEnabled="{Binding CanEditContent}" Style="{StaticResource DisabledContentShadeStyle}">
                                     <GroupBox Padding="16" Margin="0,0,0,8">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal" MinHeight="22">

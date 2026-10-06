@@ -11,7 +11,10 @@ internal readonly record struct RecordedMacroEvent(
     long Timestamp, int Message, int VirtualKey, uint ScanCode,
     uint Flags, uint MouseData, int X, int Y, int WheelDelta);
 
-/// <summary>One hook-thread writer; cancellation only closes admission. Rows are built off the hook.</summary>
+/// <summary>
+/// One hook-thread writer; cancellation only closes admission. Rows are built off the hook. A deferred
+/// begin captures nothing until Start; edges before it only update the preheld set.
+/// </summary>
 internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
 {
     private const int CAPTURING = -1;
@@ -29,10 +32,14 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
     private int _rows;
     private int _heldCount;
     private int _writing;
+    private int _started;
     // One atomic publication closes admission and carries the first stop reason together.
     private int _stopReason = (int)MacroRecordingEndReason.Stopped;
 
     internal bool IsCapturing => Volatile.Read(ref _stopReason) == CAPTURING;
+    internal bool HasStarted => Volatile.Read(ref _started) != 0;
+    // Begin timestamp until Start, then the start; written before the started flag is published.
+    internal long StartTimestamp => Volatile.Read(ref _start);
     internal int Count => Volatile.Read(ref _count);
     internal MacroRecordingEndReason EndReason
     {
@@ -43,7 +50,7 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
         }
     }
 
-    internal void Begin(long timestamp, bool[] preheldKeys, bool[] preheldButtons)
+    internal void Begin(long timestamp, bool[] preheldKeys, bool[] preheldButtons, bool startNow = true)
     {
         if (IsCapturing) throw new InvalidOperationException("A recording is already in progress.");
         if (preheldKeys.Length != _preheldKeys.Length || preheldButtons.Length != _preheldButtons.Length)
@@ -53,8 +60,37 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
         Array.Clear(_heldKeys);
         Array.Clear(_heldButtons);
         _count = _rows = _heldCount = 0;
-        _start = _previous = timestamp;
+        _previous = timestamp;
+        Volatile.Write(ref _start, timestamp);
+        Volatile.Write(ref _started, startNow ? 1 : 0);
         Volatile.Write(ref _stopReason, _availableRows == 0 ? (int)MacroRecordingEndReason.RowLimit : CAPTURING);
+    }
+
+    // Hook thread only. Duration and the first gap count from here; the wait before it is not part of the take.
+    internal void Start(long timestamp)
+    {
+        if (!IsCapturing || HasStarted) return;
+        _previous = timestamp;
+        Volatile.Write(ref _start, timestamp);
+        Volatile.Write(ref _started, 1);
+    }
+
+    // Hook thread only. Before Start an edge only updates the preheld set, so a pair that straddles the
+    // start is never half-recorded; nothing is stored or budgeted.
+    internal void ObserveBeforeStart(in RecordedMacroEvent input)
+    {
+        if (!IsCapturing || HasStarted || !TryDecode(input, out var step, out _)) return;
+        var isDown = step.Kind is MacroStepKind.KeyDown or MacroStepKind.MouseDown;
+        if (step.Kind is MacroStepKind.KeyDown or MacroStepKind.KeyUp)
+        {
+            int index = KeyInteropUtilities.ToVirtualKey(step.Key);
+            if ((uint)index < (uint)_preheldKeys.Length) _preheldKeys[index] = isDown;
+        }
+        else if (step.Kind is MacroStepKind.MouseDown or MacroStepKind.MouseUp)
+        {
+            var index = (int)(step.MouseButton ?? 0);
+            if ((uint)index < (uint)_preheldButtons.Length) _preheldButtons[index] = isDown;
+        }
     }
 
     internal void RequestStop(MacroRecordingEndReason reason)
@@ -64,7 +100,7 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
 
     internal void CheckDuration(long timestamp)
     {
-        if ((timestamp - _start) / (double)_timestampFrequency >= 600)
+        if ((timestamp - Volatile.Read(ref _start)) / (double)_timestampFrequency >= 600)
             RequestStop(MacroRecordingEndReason.DurationLimit);
     }
 
@@ -94,7 +130,7 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
 
     internal void Capture(in RecordedMacroEvent input)
     {
-        if (!IsCapturing) return;
+        if (!IsCapturing || !HasStarted) return;
         Volatile.Write(ref _writing, 1);
         try
         {

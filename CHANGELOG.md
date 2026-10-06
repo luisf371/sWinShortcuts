@@ -4,6 +4,27 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## October 5, 2026
+
+### Changed & Improved
+- **Macro Page Regrouped by Purpose**:
+  - The macro list now sits with **New…**, **Rename…**, **Duplicate**, and **Delete…**; the macro's own **Enabled** switch leads the shortcut row, in line with **Toggle loop**, **Cancel on mouse movement**, and the status line below it. The sequence toolbar holds **Record**, **Add step**, and **Wait times…** beside the step commands, and **Clear…** sits beside the step count.
+  - With the profile's Macros switch off, an empty page now says to turn it on instead of showing only a disabled **New macro…** button.
+- **Recording Starts When the Game Is in Front**:
+  - Choosing **Record** now waits until the profile's application is the active window before capturing, and the banner names the application while it waits. The Alt+Tab or click used to switch to the game is no longer recorded, and an input already held at that moment is skipped until released. The 10-minute limit and the elapsed timer count from the start of the take.
+- **New Steps Go at the End**:
+  - Opening a macro no longer inserts new steps after step 1, and finishing a recording leaves its last row selected, so **Add step** and the next **Record** continue after the take instead of landing inside it. Selecting a step still inserts after it, and the toolbar shows where new steps will go.
+- **Wait Times by Scope**:
+  - **Set all waits…** became **Wait times…** with three choices: **Press holds** (the Wait inside each press plus Key press and Mouse click holds), **Between steps** (pauses between actions), or **All**. It opens on press holds with a suggested 50 ms, so presses can be shortened without changing the macro's rhythm. Recorded mouse clicks count as press holds, and Wait rows that hold a press are labeled as holds in the list.
+- **Safer Deletes and Re-recording**:
+  - Deleting a macro that has steps now asks first, because the change is saved immediately. **Clear…** removes every step from a macro, after asking, while keeping its name, shortcut, and options.
+- **Better Defaults for New Macros and Steps**:
+  - New macros start enabled, since a macro cannot fire until it has a shortcut and steps; duplicates still start off. A new Wait step starts at 100 ms instead of 0, and a new Move to or Mouse click starts at the macro's nearest earlier position instead of the screen's top-left corner.
+
+### Fixed
+- **Turning a Profile Off Grays Every Tab Again**:
+  - Since the macro editor update, switching a game profile off only disabled the tab headers, which never reached the page on screen, so Keys, Advanced, Display, System, and Launcher stayed fully editable. Each page is now disabled and shaded again, as it was before. Every tab stays clickable and every page still scrolls, so a disabled profile can be reviewed; the Macros tab keeps its own gating so Stop recording stays reachable.
+
 ## September 25, 2026
 
 ### Added

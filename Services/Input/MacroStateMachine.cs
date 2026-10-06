@@ -375,7 +375,28 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         return null;
     }
 
-    internal void Capture(in RecordedMacroEvent input) => Volatile.Read(ref _recorder)?.Capture(input);
+    // Hook thread. A take starts at the first input once its owner is the settled active profile, so the click
+    // or Alt+Tab that brought the window forward is never recorded; earlier edges only seed preheld state.
+    internal void Capture(in RecordedMacroEvent input)
+    {
+        var recorder = Volatile.Read(ref _recorder);
+        if (recorder is null) return;
+        if (!recorder.HasStarted)
+        {
+            if (!RecordingOwnerIsActive())
+            {
+                recorder.ObserveBeforeStart(input);
+                return;
+            }
+            recorder.Start(input.Timestamp);
+            _wake.Set();
+        }
+        recorder.Capture(input);
+    }
+
+    private bool RecordingOwnerIsActive() => Volatile.Read(ref _recordRequest) is { } request &&
+        ReferenceEquals(_runtime.ActiveProfile, request.Owner) && _runtime.ProfileInputGenerationIsCurrent();
+
     internal void StopRecording()
     {
         Volatile.Write(ref _recordStopRequested, 1);
@@ -545,20 +566,30 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 {
                     if (!Current() || Volatile.Read(ref _recordStopRequested) != 0) return;
                     var held = _physical.CaptureHeld();
-                    recorder.Begin(Stopwatch.GetTimestamp(), held.Keys, held.Buttons);
+                    // An owner already in front starts now; otherwise the first input after it settles does.
+                    recorder.Begin(Stopwatch.GetTimestamp(), held.Keys, held.Buttons, startNow: RecordingOwnerIsActive());
                     Volatile.Write(ref _recorder, recorder);
                     if (!Current() || Volatile.Read(ref _recordStopRequested) != 0) recorder.RequestStop(MacroRecordingEndReason.Interrupted);
                 });
                 if (!begin.Wait(Math.Max(1, 2000 - (int)Stopwatch.GetElapsedTime(deadline).TotalMilliseconds)))
                     throw new InvalidOperationException("The input dispatcher could not start recording.");
                 begin.GetAwaiter().GetResult();
-                Publish(MacroSessionMode.Recording);
+                var started = false;
                 var lastCount = -1;
+                if (recorder.IsCapturing && !recorder.HasStarted) Publish(MacroSessionMode.WaitingForRecordingTarget);
                 while (recorder.IsCapturing)
                 {
                     if (!Current()) recorder.RequestStop(MacroRecordingEndReason.Interrupted);
                     recorder.CheckDuration(Stopwatch.GetTimestamp());
-                    if (lastCount != recorder.Count) { lastCount = recorder.Count; Publish(MacroSessionMode.Recording, lastCount); }
+                    if (!started && recorder.HasStarted)
+                    {
+                        started = true;
+                        // Elapsed reports the take itself, not the wait for the owner's window.
+                        Volatile.Write(ref _startedAt, recorder.StartTimestamp);
+                        if (_logger.IsEnabled)
+                            _logger.Log($"[Macros] Recording session={_sessionId} capture started with the owner in front");
+                    }
+                    if (started && lastCount != recorder.Count) { lastCount = recorder.Count; Publish(MacroSessionMode.Recording, lastCount); }
                     _wake.WaitOne(50);
                 }
                 var (steps, balanced) = recorder.BuildSteps();

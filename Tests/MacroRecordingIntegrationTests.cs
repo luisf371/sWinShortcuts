@@ -377,6 +377,64 @@ public sealed class MacroRecordingIntegrationTests
     }
 
     [Fact]
+    public async Task RecordMacroAsync_OwnerNotInFront_WaitsThenCapturesOnceOwnerSettles()
+    {
+        var sender = new RecordingInputSender();
+        using var service = MacroPlaybackTests.Create(sender, out var profile);
+        service.DeactivateProfile(1);
+        var recording = service.RecordMacroAsync(profile, profile.Macros.Definitions[0].Id, 30);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.WaitingForRecordingTarget);
+
+        // Alt+Tab and the focusing click reach the hook before the owner's window settles in front.
+        service.DispatchDecodedKeyboardEvent(0xA4, true, false);
+        service.DispatchDecodedKeyboardEvent(0x09, true, false);
+        service.DispatchDecodedKeyboardEvent(0x09, false, true);
+        service.DispatchDecodedKeyboardEvent(0xA4, false, true);
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0, 10, 20));
+        Thread.Sleep(400);
+        var waiting = service.GetMacroSession();
+        Assert.Equal(MacroSessionMode.WaitingForRecordingTarget, waiting.Mode);
+        Assert.Equal(0, waiting.RowCount);
+
+        service.ConfigureActiveProfileForTesting(profile, 2, false);
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0, 10, 20));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x42, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x42, false, true));
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession() is { Mode: MacroSessionMode.Recording, RowCount: 2 });
+        // Elapsed restarts with the take instead of counting the wait for the owner's window.
+        Assert.True(service.GetMacroSession().Elapsed < waiting.Elapsed);
+        service.StopMacroRecording();
+
+        var result = await recording.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(MacroRecordingEndReason.Stopped, result.EndReason);
+        Assert.False(result.AppendedBalancingReleases);
+        Assert.Equal(new[] { (MacroStepKind.KeyDown, Key.B), (MacroStepKind.KeyUp, Key.B) },
+            result.Steps.Where(step => step.Kind != MacroStepKind.Wait).Select(step => (step.Kind, step.Key)));
+        Assert.Empty(sender.Transitions);
+    }
+
+    [Fact]
+    public async Task RecordMacroAsync_StoppedWhileWaitingForOwner_CompletesWithEmptyTake()
+    {
+        var sender = new RecordingInputSender();
+        using var service = MacroPlaybackTests.Create(sender, out var profile);
+        service.DeactivateProfile(1);
+        var recording = service.RecordMacroAsync(profile, profile.Macros.Definitions[0].Id, 30);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.WaitingForRecordingTarget);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x42, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x42, false, true));
+        service.StopMacroRecording();
+
+        var result = await recording.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(MacroRecordingEndReason.Stopped, result.EndReason);
+        Assert.Empty(result.Steps);
+        Assert.False(result.AppendedBalancingReleases);
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Idle);
+    }
+
+    [Fact]
     public async Task RecordMacroAsync_CancelledWhilePriorDownIsBlocked_CompletesWithoutAbandoningOwedUp()
     {
         using var downEntered = new ManualResetEventSlim();

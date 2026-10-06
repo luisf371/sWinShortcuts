@@ -19,6 +19,10 @@ namespace sWinShortcuts.ViewModels;
 public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
 {
     private static readonly InputTriggerDisplayConverter ShortcutDisplayConverter = new();
+    // New Wait steps start as a visible pause; 0 would add a row that does nothing.
+    private const int DEFAULT_WAIT_MS = 100;
+    // The wait-time editor suggests this press hold: long enough for games to register a press.
+    private const int SUGGESTED_PRESS_HOLD_MS = 50;
     private MacroDefinition _definition;
     private MacroDefinition _lastRepresentable;
     private readonly Func<bool> _canEdit;
@@ -35,8 +39,11 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     private bool _collapseSteps = true;
     private bool _refreshingVisibleSteps;
     private bool _isWaitEditorOpen;
-    private string _allWaitDurationText = string.Empty;
+    private string _waitDurationText = string.Empty;
     private string? _waitEditResult;
+    private MacroWaitScope _waitScope = MacroWaitScope.PressHolds;
+    private int _holdWaitCount;
+    private int _compactHoldCount;
 
     public MacroViewModel(MacroDefinition definition, Func<bool> canEdit)
     {
@@ -45,7 +52,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         _canEdit = canEdit;
         _steps = new(new(definition.Steps.Select(CreateStep)));
         RenumberSteps();
-        _selectedStep = Steps.FirstOrDefault();
+        // New steps and takes append by default; selecting a row inserts after it instead.
+        _selectedStep = Steps.LastOrDefault();
         InsertStepCommand = new RelayCommand(InsertStep, () => CanAddStep);
         AddStepCommand = new RelayCommand<MacroStepKind>(AddStep, _ => CanAddStep);
         DuplicateStepCommand = new RelayCommand(DuplicateStep, () => CanEdit && SelectedStep is not null && Steps.Count + SelectedStep.SourceStepCount <= MacroValidation.MaxSteps);
@@ -55,9 +63,9 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         PickCoordinatesCommand = new AsyncRelayCommand(PickCoordinatesAsync, () => CanEdit && SelectedStep?.HasCoordinates == true && _coordinatePick is null);
         ShowProblemStepCommand = new RelayCommand(ShowProblemStep, () => CanEdit && ProblemStepNumber <= Steps.Count);
         ExpandSelectedStepCommand = new RelayCommand(() => CollapseSteps = false, () => CanEdit && SelectedStep?.IsCollapsedPress == true);
-        ShowWaitEditorCommand = new RelayCommand(ShowWaitEditor, () => CanEdit && WaitStepCount > 0);
+        ShowWaitEditorCommand = new RelayCommand(ShowWaitEditor, () => CanEdit && WaitTargetCount(MacroWaitScope.AllWaits) > 0);
         CloseWaitEditorCommand = new RelayCommand(CloseWaitEditor, () => IsWaitEditorOpen);
-        ApplyAllWaitTimesCommand = new RelayCommand(ApplyAllWaitTimes, CanApplyAllWaitTimes);
+        ApplyWaitTimesCommand = new RelayCommand(ApplyWaitTimes, CanApplyWaitTimes);
         RefreshValidation(null);
     }
 
@@ -102,31 +110,51 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         }
     }
     public int WaitStepCount => Steps.Count(step => step.Kind == MacroStepKind.Wait);
+    // How long each key or button is held: the Wait inside a press plus every Key press and Mouse click hold.
+    public int PressHoldCount => _holdWaitCount + _compactHoldCount;
+    // Wait steps that pause between actions instead of holding a press.
+    public int BetweenWaitCount => WaitStepCount - _holdWaitCount;
     public string StepCountText => $"{Steps.Count} {(Steps.Count == 1 ? "step" : "steps")}";
     public bool IsWaitEditorOpen => _isWaitEditorOpen;
-    public string AllWaitDurationText
+    public MacroWaitScope WaitScope
     {
-        get => _allWaitDurationText;
+        get => _waitScope;
         set
         {
-            if (!CanEdit || !IsWaitEditorOpen || !SetProperty(ref _allWaitDurationText, value ?? string.Empty)) return;
+            if (!CanEdit || !IsWaitEditorOpen || !Enum.IsDefined(value) || !SetProperty(ref _waitScope, value)) return;
+            _waitEditResult = null;
+            NotifyWaitScope();
+            NotifyWaitEditor();
+        }
+    }
+    // Radio-button projections of WaitScope; clearing one is ignored because choosing another sets the scope.
+    public bool IsPressHoldScope { get => WaitScope == MacroWaitScope.PressHolds; set { if (value) WaitScope = MacroWaitScope.PressHolds; } }
+    public bool IsBetweenStepsScope { get => WaitScope == MacroWaitScope.BetweenSteps; set { if (value) WaitScope = MacroWaitScope.BetweenSteps; } }
+    public bool IsAllWaitsScope { get => WaitScope == MacroWaitScope.AllWaits; set { if (value) WaitScope = MacroWaitScope.AllWaits; } }
+    public string WaitDurationText
+    {
+        get => _waitDurationText;
+        set
+        {
+            if (!CanEdit || !IsWaitEditorOpen || !SetProperty(ref _waitDurationText, value ?? string.Empty)) return;
             _waitEditResult = null;
             NotifyWaitEditor();
         }
     }
-    public bool HasWaitEditError => AllWaitDurationText.Length > 0 && !TryGetAllWaitDuration(out _);
+    public bool HasWaitEditError => WaitDurationText.Length > 0 && !TryGetWaitDuration(out _);
     public bool WaitEditApplied => _waitEditResult is not null;
     public string WaitEditMessage
     {
         get
         {
-            var count = WaitStepCount;
-            if (count == 0) return "This macro has no Wait steps.";
+            if (WaitTargetCount(WaitScope) == 0) return WaitScope switch
+            {
+                MacroWaitScope.PressHolds => "This macro has no press holds.",
+                MacroWaitScope.BetweenSteps => "This macro has no Wait steps between actions.",
+                _ => "This macro has no waits or holds."
+            };
             if (HasWaitEditError) return $"Enter a whole number from 0 to {MacroValidation.MaxDurationMs.ToString(CultureInfo.InvariantCulture)}.";
-            if (_waitEditResult is not null) return _waitEditResult;
-            var holds = VisibleSteps.Count(step => step.IsCollapsedPress);
-            var holdText = holds == 0 ? string.Empty : $", including {holds} press {(holds == 1 ? "hold" : "holds")}";
-            return $"Applies to {count} Wait {(count == 1 ? "step" : "steps")}{holdText}.";
+            return _waitEditResult ?? $"Applies to {DescribeWaitTargets(WaitScope)}.";
         }
     }
     public MacroStepViewModel? SelectedStep
@@ -197,7 +225,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public string this[string columnName] => columnName switch
     {
         nameof(Label) => Error,
-        nameof(AllWaitDurationText) when HasWaitEditError => WaitEditMessage,
+        nameof(WaitDurationText) when HasWaitEditError => WaitEditMessage,
         _ => string.Empty
     };
     public string CoordinatePickStatus { get => _coordinatePickStatus; private set => SetProperty(ref _coordinatePickStatus, value); }
@@ -212,7 +240,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public IRelayCommand ExpandSelectedStepCommand { get; }
     public IRelayCommand ShowWaitEditorCommand { get; }
     public IRelayCommand CloseWaitEditorCommand { get; }
-    public IRelayCommand ApplyAllWaitTimesCommand { get; }
+    public IRelayCommand ApplyWaitTimesCommand { get; }
     public static IReadOnlyList<Key> KeyOptions { get; } = KeyCatalog.SortKeys(
         Enum.GetValues<Key>().Where(key => MacroValidation.IsSupportedKey(key)).Distinct()).ToArray();
     public static IReadOnlyList<Key> ShortcutKeyOptions { get; } = KeyCatalog.SortKeys(KeyOptions.Append(Key.None)).ToArray();
@@ -320,16 +348,39 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     }
     private void InsertStep() => AddStep(MacroStepKind.KeyPress);
 
-    private bool TryGetAllWaitDuration(out int duration) =>
-        int.TryParse(AllWaitDurationText, NumberStyles.Integer, CultureInfo.InvariantCulture, out duration) &&
+    private bool TryGetWaitDuration(out int duration) =>
+        int.TryParse(WaitDurationText, NumberStyles.Integer, CultureInfo.InvariantCulture, out duration) &&
         duration is >= 0 and <= MacroValidation.MaxDurationMs;
 
-    private bool CanApplyAllWaitTimes() => CanEdit && IsWaitEditorOpen && WaitStepCount > 0 && TryGetAllWaitDuration(out _);
+    private bool CanApplyWaitTimes() => CanEdit && IsWaitEditorOpen && WaitTargetCount(WaitScope) > 0 && TryGetWaitDuration(out _);
+
+    private int WaitTargetCount(MacroWaitScope scope) => scope switch
+    {
+        MacroWaitScope.PressHolds => PressHoldCount,
+        MacroWaitScope.BetweenSteps => BetweenWaitCount,
+        _ => PressHoldCount + BetweenWaitCount
+    };
+
+    private string DescribeWaitTargets(MacroWaitScope scope)
+    {
+        var holds = scope == MacroWaitScope.BetweenSteps ? 0 : PressHoldCount;
+        var waits = scope == MacroWaitScope.PressHolds ? 0 : BetweenWaitCount;
+        var holdText = $"{holds} press {(holds == 1 ? "hold" : "holds")}";
+        var waitText = $"{waits} Wait {(waits == 1 ? "step" : "steps")} between actions";
+        return holds == 0 ? waitText : waits == 0 ? holdText : $"{holdText} and {waitText}";
+    }
 
     private void ShowWaitEditor()
     {
-        if (!CanEdit || WaitStepCount == 0 || IsWaitEditorOpen) return;
+        if (!CanEdit || WaitTargetCount(MacroWaitScope.AllWaits) == 0 || IsWaitEditorOpen) return;
+        // Open on press holds when there are any, suggesting a short uniform hold that still registers in games
+        // without touching the pauses that give the macro its rhythm.
+        _waitScope = PressHoldCount > 0 ? MacroWaitScope.PressHolds : MacroWaitScope.BetweenSteps;
+        _waitDurationText = _waitScope == MacroWaitScope.PressHolds
+            ? SUGGESTED_PRESS_HOLD_MS.ToString(CultureInfo.InvariantCulture) : string.Empty;
         SetProperty(ref _isWaitEditorOpen, true, nameof(IsWaitEditorOpen));
+        NotifyWaitScope();
+        OnPropertyChanged(nameof(WaitDurationText));
         NotifyWaitEditor();
     }
 
@@ -337,18 +388,26 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     {
         if (!IsWaitEditorOpen) return;
         SetProperty(ref _isWaitEditorOpen, false, nameof(IsWaitEditorOpen));
-        SetProperty(ref _allWaitDurationText, string.Empty, nameof(AllWaitDurationText));
+        SetProperty(ref _waitDurationText, string.Empty, nameof(WaitDurationText));
         _waitEditResult = null;
         NotifyWaitEditor();
     }
 
-    private void ApplyAllWaitTimes()
+    private void ApplyWaitTimes()
     {
-        if (!CanApplyAllWaitTimes() || !TryGetAllWaitDuration(out var duration)) return;
-        var count = WaitStepCount;
-        SetAllWaitTimes(duration);
-        _waitEditResult = $"Set {count} Wait {(count == 1 ? "step" : "steps")} to {duration.ToString(CultureInfo.InvariantCulture)} ms.";
+        if (!CanApplyWaitTimes() || !TryGetWaitDuration(out var duration)) return;
+        var targets = DescribeWaitTargets(WaitScope);
+        SetWaitTimes(WaitScope, duration);
+        _waitEditResult = $"Set {targets} to {duration.ToString(CultureInfo.InvariantCulture)} ms.";
         NotifyWaitEditor();
+    }
+
+    private void NotifyWaitScope()
+    {
+        OnPropertyChanged(nameof(WaitScope));
+        OnPropertyChanged(nameof(IsPressHoldScope));
+        OnPropertyChanged(nameof(IsBetweenStepsScope));
+        OnPropertyChanged(nameof(IsAllWaitsScope));
     }
 
     private void NotifyWaitEditor()
@@ -358,7 +417,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         OnPropertyChanged(nameof(WaitEditApplied));
         ShowWaitEditorCommand.NotifyCanExecuteChanged();
         CloseWaitEditorCommand.NotifyCanExecuteChanged();
-        ApplyAllWaitTimesCommand.NotifyCanExecuteChanged();
+        ApplyWaitTimesCommand.NotifyCanExecuteChanged();
     }
 
     private void ChangeSelectedPressTarget(Key key, MouseButton? button)
@@ -389,9 +448,10 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         }
     }
 
-    public void SetAllWaitTimes(int durationMs)
+    // One duration for every timing row in the scope, published once; other rows keep their raw editor text.
+    public void SetWaitTimes(MacroWaitScope scope, int durationMs)
     {
-        if (!CanEdit || durationMs is < 0 or > MacroValidation.MaxDurationMs) return;
+        if (!CanEdit || !Enum.IsDefined(scope) || durationMs is < 0 or > MacroValidation.MaxDurationMs) return;
         var text = durationMs.ToString(CultureInfo.InvariantCulture);
         var changed = false;
         _batchChangingSteps = true;
@@ -399,7 +459,9 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         {
             foreach (var step in Steps)
             {
-                if (step.Kind != MacroStepKind.Wait || step.DurationText == text) continue;
+                var hold = step.IsPressHold || step.HasHold;
+                if ((step.Kind != MacroStepKind.Wait && !step.HasHold) || (scope == MacroWaitScope.PressHolds && !hold) ||
+                    (scope == MacroWaitScope.BetweenSteps && hold) || step.DurationText == text) continue;
                 changed = true;
                 step.DurationText = text;
             }
@@ -413,7 +475,22 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     private void AddStep(MacroStepKind kind)
     {
         if (!CanAddStep || !Enum.IsDefined(kind)) return;
-        InsertRecording(RecordingInsertionIndex, [new MacroStep { Kind = kind, Key = Key.A, MouseButton = MouseButton.Left, WheelDelta = 120 }]);
+        var index = RecordingInsertionIndex;
+        var step = new MacroStep { Kind = kind, Key = Key.A, MouseButton = MouseButton.Left, WheelDelta = 120 };
+        if (kind == MacroStepKind.Wait) step = step with { DurationMs = DEFAULT_WAIT_MS };
+        else if (kind is MacroStepKind.MoveTo or MacroStepKind.MouseClick && FindPositionBefore(index) is { } position)
+            step = step with { X = position.X, Y = position.Y };
+        InsertRecording(index, [step]);
+    }
+
+    // A new Move to or Mouse click starts where this macro last pointed instead of the screen's top-left corner.
+    private (int X, int Y)? FindPositionBefore(int index)
+    {
+        for (var i = Math.Min(index, Steps.Count) - 1; i >= 0; i--)
+        {
+            if (Steps[i].HasCoordinates) return (Steps[i].X, Steps[i].Y);
+        }
+        return null;
     }
     private void DuplicateStep()
     {
@@ -457,7 +534,15 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         if (rows.Count == 0) return;
         var result = Steps.ToList();
         result.InsertRange(index, rows.Select(CreateStep));
-        ReplaceSteps(result, index);
+        // Select the last inserted row so the next Add step or Record continues after this insertion.
+        ReplaceSteps(result, index + rows.Count - 1);
+    }
+
+    // Removes every step while the name, shortcut, and options stay; the editor confirms first.
+    internal void ClearSteps()
+    {
+        if (!CanEdit || Steps.Count == 0) return;
+        ReplaceSteps([], -1);
     }
 
     private void ReplaceSteps(IReadOnlyList<MacroStepViewModel> rows, int selectedIndex)
@@ -505,11 +590,69 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
               up.MouseButton == button && !heldButtons.Contains(button)));
     }
 
+    // A press hold is the one Wait between a fresh Down and its matching Up; a recorded click may move the cursor
+    // (Move to rows) before releasing. Waits inside repeats, longer holds, or around other input pause between steps.
+    private void RefreshPressHolds()
+    {
+        var holds = new bool[Steps.Count];
+        HashSet<ushort> heldKeys = [];
+        HashSet<MouseButton> heldButtons = [];
+        for (var i = 0; i < Steps.Count; i++)
+        {
+            var row = Steps[i];
+            switch (row.Kind)
+            {
+                case MacroStepKind.KeyDown when MacroValidation.IsSupportedKey(row.Key):
+                    if (heldKeys.Add(KeyInteropUtilities.ToVirtualKey(row.Key))) MarkPressHold(holds, i);
+                    break;
+                case MacroStepKind.KeyUp when MacroValidation.IsSupportedKey(row.Key):
+                    heldKeys.Remove(KeyInteropUtilities.ToVirtualKey(row.Key));
+                    break;
+                case MacroStepKind.MouseDown when row.MouseButton is MouseButton downButton:
+                    if (heldButtons.Add(downButton)) MarkPressHold(holds, i);
+                    break;
+                case MacroStepKind.MouseUp when row.MouseButton is MouseButton upButton:
+                    heldButtons.Remove(upButton);
+                    break;
+            }
+        }
+        var holdWaits = 0;
+        var compactHolds = 0;
+        for (var i = 0; i < Steps.Count; i++)
+        {
+            Steps[i].SetPressHold(holds[i]);
+            if (holds[i]) holdWaits++;
+            else if (Steps[i].HasHold) compactHolds++;
+        }
+        _holdWaitCount = holdWaits;
+        _compactHoldCount = compactHolds;
+    }
+
+    private void MarkPressHold(bool[] holds, int downIndex)
+    {
+        var down = Steps[downIndex];
+        if (downIndex + 2 >= Steps.Count || Steps[downIndex + 1].Kind != MacroStepKind.Wait) return;
+        var upIndex = downIndex + 2;
+        if (down.Kind == MacroStepKind.MouseDown)
+        {
+            while (upIndex < Steps.Count && Steps[upIndex].Kind == MacroStepKind.MoveTo) upIndex++;
+        }
+        if (upIndex >= Steps.Count) return;
+        var up = Steps[upIndex];
+        if (down.Kind == MacroStepKind.KeyDown
+            ? up.Kind == MacroStepKind.KeyUp && up.Key == down.Key
+            : up.Kind == MacroStepKind.MouseUp && up.MouseButton == down.MouseButton)
+        {
+            holds[downIndex + 1] = true;
+        }
+    }
+
     private void RefreshVisibleSteps()
     {
         _refreshingVisibleSteps = true;
         try
         {
+            RefreshPressHolds();
             var visible = new List<MacroStepViewModel>(Steps.Count);
             HashSet<ushort> heldKeys = [];
             HashSet<MouseButton> heldButtons = [];
@@ -614,4 +757,12 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         CancelCoordinatePick();
         foreach (var step in Steps) step.Changed -= OnStepChanged;
     }
+}
+
+// Which timing rows the wait-time editor changes.
+public enum MacroWaitScope
+{
+    PressHolds,
+    BetweenSteps,
+    AllWaits
 }

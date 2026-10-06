@@ -22,8 +22,13 @@ public partial class MacrosView : UserControl
         {
             previous.LeaveEditor();
             previous.ConfigureNaming(null);
+            previous.ConfigureConfirmation(null);
         }
-        if (e.NewValue is MacrosViewModel editor) editor.ConfigureNaming(label => RequestMacroName(editor, label));
+        if (e.NewValue is MacrosViewModel editor)
+        {
+            editor.ConfigureNaming(label => RequestMacroName(editor, label));
+            editor.ConfigureConfirmation(request => RequestConfirmation(editor, request));
+        }
     }
 
     // New and Rename ask through a modal dialog owned by this window. A name comes back only while this view
@@ -33,6 +38,14 @@ public partial class MacrosView : UserControl
         var dialog = new MacroNameDialog { Owner = Window.GetWindow(this) };
         dialog.Configure(currentLabel);
         return dialog.ShowDialog() == true && ReferenceEquals(DataContext, editor) ? dialog.MacroName : null;
+    }
+
+    // Delete and Clear ask through the same owned modal convention; the view model rechecks its target afterward.
+    private bool RequestConfirmation(MacrosViewModel editor, MacroConfirmation request)
+    {
+        var dialog = new MacroConfirmDialog { Owner = Window.GetWindow(this) };
+        dialog.Configure(request);
+        return dialog.ShowDialog() == true && ReferenceEquals(DataContext, editor);
     }
 
     private void StopRecording_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) => (DataContext as MacrosViewModel)?.BeginStopGesture();
@@ -56,10 +69,10 @@ public partial class MacrosView : UserControl
     private void WaitEditor_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: MacroViewModel macro } || e.KeyboardDevice.Modifiers != ModifierKeys.None) return;
-        if (e.Key == Key.Enter && !AllWaitDurationField.IsKeyboardFocusWithin) return;
+        if (e.Key == Key.Enter && !WaitDurationField.IsKeyboardFocusWithin) return;
         var command = e.Key switch
         {
-            Key.Enter => macro.ApplyAllWaitTimesCommand,
+            Key.Enter => macro.ApplyWaitTimesCommand,
             Key.Escape => macro.CloseWaitEditorCommand,
             _ => null
         };
@@ -74,15 +87,15 @@ public partial class MacrosView : UserControl
     // Button Click is raised before its command runs, so move focus after bindings update.
     private void FocusWaitDuration() => Dispatcher.InvokeAsync(() =>
     {
-        if (!AllWaitDurationField.IsVisible || !AllWaitDurationField.IsEnabled) return;
-        AllWaitDurationField.Focus();
-        AllWaitDurationField.SelectAll();
+        if (!WaitDurationField.IsVisible || !WaitDurationField.IsEnabled) return;
+        WaitDurationField.Focus();
+        WaitDurationField.SelectAll();
     }, DispatcherPriority.Loaded);
 
     private void FocusWaitEditorButton() => Dispatcher.InvokeAsync(() =>
     {
-        if (!AllWaitEditorButton.IsVisible) return;
-        if (AllWaitEditorButton.IsEnabled) AllWaitEditorButton.Focus();
+        if (!WaitEditorButton.IsVisible) return;
+        if (WaitEditorButton.IsEnabled) WaitEditorButton.Focus();
         else StepList.Focus();
     }, DispatcherPriority.Loaded);
 

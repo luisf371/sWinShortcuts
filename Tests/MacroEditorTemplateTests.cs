@@ -383,6 +383,9 @@ public sealed class MacroEditorTemplateTests
                 new() { Kind = MacroStepKind.KeyUp, Key = Key.A },
                 new() { Kind = MacroStepKind.Wait, DurationMs = 50 }
             ]);
+            // A take leaves its last row selected so the next one follows it; select the press to edit it.
+            Assert.Same(grouped.Steps[3], grouped.SelectedStep);
+            grouped.SelectedStep = grouped.Steps[0];
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
             Assert.Equal(2, list.Items.Count);
@@ -407,35 +410,55 @@ public sealed class MacroEditorTemplateTests
                 Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(Assert.IsType<StackPanel>(hold.Parent).Parent).Visibility);
             }
 
-            var bulk = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Set all Wait step durations");
+            // Wait times sits in the sequence toolbar beside Add step; Clear sits beside the step count it removes.
+            var bulk = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Set wait times");
+            Assert.Same(add.Parent, bulk.Parent);
             var collapse = Assert.Single(Descendants(view).OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Collapse presses");
+            var clear = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Clear all steps");
             Assert.True(collapse.IsChecked);
+            Assert.True(clear.IsEnabled);
+            Assert.Same(profile.Macros.ClearStepsCommand, clear.Command);
             bulk.Command.Execute(null);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
-            var duration = Assert.Single(Descendants(view).OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Duration for all Wait steps in milliseconds");
-            var apply = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Apply duration to all Wait steps");
-            var close = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Close all Wait editor");
-            var status = Assert.Single(Descendants(view).OfType<TextBlock>(), block => AutomationProperties.GetName(block) == "All Wait edit status");
-            Assert.Equal("Applies to 2 Wait steps, including 1 press hold.", status.Text);
-            Assert.False(apply.IsEnabled);
+            var duration = Assert.Single(Descendants(view).OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Wait time in milliseconds");
+            var apply = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Apply wait time");
+            var close = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Close wait time editor");
+            var status = Assert.Single(Descendants(view).OfType<TextBlock>(), block => AutomationProperties.GetName(block) == "Wait time edit status");
+            var scopes = Descendants(view).OfType<RadioButton>().ToArray();
+            Assert.Equal(new[] { "Change press holds", "Change Wait steps between actions", "Change press holds and Wait steps" },
+                scopes.Select(AutomationProperties.GetName));
+            // Press holds open first with the suggested 50 ms; the Wait after the press keeps its own timing.
+            Assert.Equal(new bool?[] { true, false, false }, scopes.Select(scope => scope.IsChecked));
+            Assert.Equal("50", duration.Text);
+            Assert.Equal("Applies to 1 press hold.", status.Text);
+            Assert.True(apply.IsEnabled);
             duration.SetCurrentValue(TextBox.TextProperty, "invalid");
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.True(Validation.GetHasError(duration));
+            Assert.False(apply.IsEnabled);
             Assert.Equal(120, grouped.Steps[1].DurationMs);
-            duration.SetCurrentValue(TextBox.TextProperty, "50");
+            duration.SetCurrentValue(TextBox.TextProperty, "40");
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.True(apply.IsEnabled);
             apply.Command.Execute(null);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
-            Assert.Equal("Set 2 Wait steps to 50 ms.", status.Text);
+            Assert.Equal("Set 1 press hold to 40 ms.", status.Text);
             Assert.True(grouped.IsWaitEditorOpen);
-            Assert.Equal(50, grouped.Steps[1].DurationMs);
+            Assert.Equal(40, grouped.Steps[1].DurationMs);
             Assert.Equal(50, grouped.Steps[3].DurationMs);
+            // The actual radio bindings retarget the editor.
+            scopes[1].SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal(MacroWaitScope.BetweenSteps, grouped.WaitScope);
+            Assert.Equal(new bool?[] { false, true, false }, scopes.Select(scope => scope.IsChecked));
+            Assert.Equal("Applies to 1 Wait step between actions.", status.Text);
+            host.UpdateLayout();
             var sequencePanel = Assert.IsType<Border>(Assert.IsType<Grid>(Assert.IsType<Grid>(list.Parent).Parent).Parent);
             var panelBounds = sequencePanel.TransformToAncestor(host).TransformBounds(new Rect(sequencePanel.RenderSize));
-            foreach (var control in new FrameworkElement[] { bulk, collapse, duration, apply, close })
+            FrameworkElement[] panelControls = [clear, collapse, duration, apply, close, .. scopes];
+            foreach (var control in panelControls)
             {
                 var bounds = control.TransformToAncestor(host).TransformBounds(new Rect(control.RenderSize));
                 Assert.True(panelBounds.Contains(bounds), $"{AutomationProperties.GetName(control)} exceeds the sequence panel {panelBounds}: {bounds}.");
@@ -475,6 +498,18 @@ public sealed class MacroEditorTemplateTests
             host.UpdateLayout();
             Assert.Contains(Descendants(host).OfType<TextBlock>(), block => block.Visibility == Visibility.Visible &&
                 block.ActualHeight > 0 && block.Text == brokenModel.Macros.LoadError);
+            // A read-only profile locks the section switch too, so the first-macro hint stays hidden there.
+            const string enableHint = "Turn on Macros above to create one.";
+            Assert.DoesNotContain(Descendants(host).OfType<TextBlock>(), block => block.Text == enableHint && block.Visibility == Visibility.Visible);
+
+            using var fresh = new ProfileViewModel(ProfileFactory.CreateCustomProfile("Fresh", "fresh.exe"),
+                new FakeDisplayService(), new RecordingColorControlService());
+            host.Content = fresh;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.False(fresh.Macros.IsEnabled);
+            Assert.Contains(Descendants(host).OfType<TextBlock>(), block => block.Text == enableHint &&
+                block.Visibility == Visibility.Visible && block.ActualHeight > 0);
         });
 
     private static void AssertReadableText(TextBlock text, Brush background)

@@ -73,7 +73,8 @@ public enum MacroSessionMode
     PreparingRecording,
     Recording,
     Finishing,
-    Faulted
+    Faulted,
+    WaitingForRecordingTarget
 }
 
 public readonly record struct MacroSessionSnapshot(

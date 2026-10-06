@@ -24,6 +24,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     private Action? _beforePublish;
     private Action? _leaveEditor;
     private Func<string?, string?>? _requestName;
+    private Func<MacroConfirmation, bool>? _confirm;
     private Func<Guid, string?>? _shortcutError;
     private bool _disposed;
     private bool _disposeRequested;
@@ -42,6 +43,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         RenameMacroCommand = new RelayCommand(RenameSelectedMacro, () => CanEdit && SelectedMacro is not null);
         DuplicateMacroCommand = new RelayCommand(DuplicateMacro, () => CanEdit && SelectedMacro is not null && Definitions.Count < MacroValidation.MaxDefinitions);
         DeleteMacroCommand = new RelayCommand(DeleteMacro, () => CanEdit && SelectedMacro is not null);
+        ClearStepsCommand = new RelayCommand(ClearSelectedSteps, () => CanEdit && SelectedMacro is { Steps.Count: > 0 });
         RecordCommand = new AsyncRelayCommand(RecordAsync, CanRecord);
         StopRecordingCommand = new RelayCommand(() => _stop?.Invoke(), () => IsRecording);
     }
@@ -86,6 +88,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     public IRelayCommand RenameMacroCommand { get; }
     public IRelayCommand DuplicateMacroCommand { get; }
     public IRelayCommand DeleteMacroCommand { get; }
+    public IRelayCommand ClearStepsCommand { get; }
     public IAsyncRelayCommand RecordCommand { get; }
     public IRelayCommand StopRecordingCommand { get; }
 
@@ -106,6 +109,10 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     // The editor view supplies its modal naming dialog: the current label (null for a new macro) in, the
     // accepted label out, or null when cancelled.
     internal void ConfigureNaming(Func<string?, string?>? requestName) => _requestName = requestName;
+
+    // The editor view also supplies its confirmation dialog for destructive edits: true proceeds. Programmatic
+    // callers without an attached view proceed unasked, as they do for naming.
+    internal void ConfigureConfirmation(Func<MacroConfirmation, bool>? confirm) => _confirm = confirm;
 
     // Label rules only: a clean temporary definition keeps unrelated draft errors from blocking a name.
     internal static string? GetLabelError(string? label) =>
@@ -141,7 +148,8 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     internal MacroViewModel? AddMacro(string label)
     {
         if (!CanAddMacro() || GetLabelError(label) is not null) return null;
-        var macro = CreateMacro(new MacroDefinition { Label = label.Trim() });
+        // New macros start on: without a shortcut one cannot fire, so Off would only add a step once it has one.
+        var macro = CreateMacro(new MacroDefinition { Label = label.Trim(), IsEnabled = true });
         _definitions.Add(macro);
         SelectedMacro = macro;
         Publish();
@@ -196,12 +204,30 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     {
         if (!DeleteMacroCommand.CanExecute(null)) return;
         var macro = SelectedMacro!;
+        var count = macro.Steps.Count;
+        if (count > 0 && _confirm is not null && !_confirm(new MacroConfirmation("Delete macro?",
+                $"\"{macro.Label}\" and its {count} {(count == 1 ? "step" : "steps")} will be permanently deleted.", "Delete")))
+            return;
+        // The modal dialog keeps dispatching lifecycle changes; delete only the macro it asked about.
+        if (!ReferenceEquals(SelectedMacro, macro) || !DeleteMacroCommand.CanExecute(null)) return;
         var index = _definitions.IndexOf(macro);
         macro.Changed -= OnMacroChanged;
         _definitions.Remove(macro);
         macro.Dispose();
         SelectedMacro = _definitions.Count == 0 ? null : _definitions[Math.Min(index, _definitions.Count - 1)];
         Publish();
+    }
+    private void ClearSelectedSteps()
+    {
+        if (!ClearStepsCommand.CanExecute(null)) return;
+        var macro = SelectedMacro!;
+        var count = macro.Steps.Count;
+        if (_confirm is not null && !_confirm(new MacroConfirmation("Clear all steps?",
+                $"All {count} {(count == 1 ? "step" : "steps")} in \"{macro.Label}\" will be removed. Its name, shortcut, and options stay.",
+                "Clear steps")))
+            return;
+        if (!ReferenceEquals(SelectedMacro, macro) || !ClearStepsCommand.CanExecute(null)) return;
+        macro.ClearSteps();
     }
     private bool CanRecord() => CanEdit && !_sessionBusy && _record is not null && SelectedMacro is { } macro &&
         macro.Steps.Count < MacroValidation.MaxSteps && string.IsNullOrEmpty(macro.Error);
@@ -243,8 +269,13 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
             MacroSessionMode.Faulted => "Faulted",
             _ => "Idle"
         };
-        SessionStatus = snapshot.Mode == MacroSessionMode.Idle ? status :
-            $"{status} · {snapshot.Elapsed:mm\\:ss} · {snapshot.RowCount} rows";
+        SessionStatus = snapshot.Mode switch
+        {
+            MacroSessionMode.Idle => status,
+            // A take starts once its profile's app is in front; until then there is nothing to time or count.
+            MacroSessionMode.WaitingForRecordingTarget => $"Switch to {snapshot.OwnerProfile?.Name ?? _profile.Name} to start recording",
+            _ => $"{status} · {snapshot.Elapsed:mm\\:ss} · {snapshot.RowCount} rows"
+        };
         if (!string.IsNullOrEmpty(snapshot.FailureReason)) SessionStatus += $" · {snapshot.FailureReason}";
         if (_sessionBusy != wasBusy) RefreshAvailability();
     }
@@ -253,7 +284,9 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         var detail = result.AppendedBalancingReleases ? " Held inputs were released in the saved take." : string.Empty;
         SessionStatus = result.FailureReason is { Length: > 0 } failure
             ? $"Recording finished: {failure}{detail}"
-            : $"Recording saved · {result.Steps.Length} rows · {result.EndReason}.{detail}";
+            : result.Steps.Length == 0
+                ? "Recording stopped before anything was captured."
+                : $"Recording saved · {result.Steps.Length} rows · {result.EndReason}.{detail}";
     }
     internal void ShowFailure(string message) => SessionStatus = message;
     public void RefreshValidation()
@@ -266,6 +299,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         NewMacroCommand.NotifyCanExecuteChanged();
         DuplicateMacroCommand.NotifyCanExecuteChanged();
         DeleteMacroCommand.NotifyCanExecuteChanged();
+        ClearStepsCommand.NotifyCanExecuteChanged();
         RenameMacroCommand.NotifyCanExecuteChanged();
         RecordCommand.NotifyCanExecuteChanged();
         StopRecordingCommand.NotifyCanExecuteChanged();
@@ -288,3 +322,6 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         }
     }
 }
+
+// A destructive edit the view confirms: the question, what is lost, and the specific action button text.
+internal readonly record struct MacroConfirmation(string Title, string Message, string ActionText);

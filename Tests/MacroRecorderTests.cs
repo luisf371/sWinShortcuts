@@ -277,6 +277,85 @@ public sealed class MacroRecorderTests
         Assert.Equal(MacroRecordingEndReason.DurationLimit, recorder.EndReason);
     }
 
+    [Fact]
+    public void Capture_DeferredBegin_RecordsNothingBeforeStartAndSkipsPairsHeldAcrossIt()
+    {
+        var recorder = new MacroRecorder(20, 1000);
+        recorder.Begin(0, new bool[256], new bool[6], startNow: false);
+        Assert.True(recorder.IsCapturing);
+        Assert.False(recorder.HasStarted);
+
+        // Alt+Tab into the target window, then a key and the focusing click still held when it settles.
+        recorder.ObserveBeforeStart(new(10, NativeMethods.WM_SYSKEYDOWN, 0xA4, 0, 0, 0, 0, 0, 0));
+        recorder.ObserveBeforeStart(new(20, NativeMethods.WM_SYSKEYDOWN, 0x09, 0, 0, 0, 0, 0, 0));
+        recorder.ObserveBeforeStart(new(30, NativeMethods.WM_SYSKEYUP, 0x09, 0, 0, 0, 0, 0, 0));
+        recorder.ObserveBeforeStart(new(40, NativeMethods.WM_KEYUP, 0xA4, 0, 0, 0, 0, 0, 0));
+        recorder.ObserveBeforeStart(new(50, NativeMethods.WM_KEYDOWN, 0x57, 0, 0, 0, 0, 0, 0));
+        recorder.ObserveBeforeStart(new(60, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 5, 6, 0));
+        recorder.Capture(new(70, NativeMethods.WM_KEYDOWN, 0x41, 0, 0, 0, 0, 0, 0));
+        Assert.Equal(0, recorder.Count);
+
+        recorder.Start(500);
+        recorder.Start(900);
+        Assert.True(recorder.HasStarted);
+        Assert.Equal(500, recorder.StartTimestamp);
+        recorder.Capture(new(510, NativeMethods.WM_KEYDOWN, 0x57, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(520, NativeMethods.WM_LBUTTONUP, 0, 0, 0, 0, 5, 6, 0));
+        recorder.Capture(new(530, NativeMethods.WM_KEYUP, 0x57, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(600, NativeMethods.WM_KEYDOWN, 0x42, 0, 0, 0, 0, 0, 0));
+        recorder.Capture(new(640, NativeMethods.WM_KEYUP, 0x42, 0, 0, 0, 0, 0, 0));
+        recorder.RequestStop(MacroRecordingEndReason.Stopped);
+
+        var (steps, balanced) = recorder.BuildSteps();
+
+        Assert.False(balanced);
+        Assert.Collection(steps,
+            down => { Assert.Equal(MacroStepKind.KeyDown, down.Kind); Assert.Equal(Key.B, down.Key); },
+            wait => { Assert.Equal(MacroStepKind.Wait, wait.Kind); Assert.Equal(40, wait.DurationMs); },
+            up => { Assert.Equal(MacroStepKind.KeyUp, up.Kind); Assert.Equal(Key.B, up.Key); });
+    }
+
+    [Fact]
+    public void CheckDuration_DeferredBegin_LimitsWaitFromBeginAndTakeFromStart()
+    {
+        var waiting = new MacroRecorder(10, 1000);
+        waiting.Begin(0, new bool[256], new bool[6], startNow: false);
+        waiting.CheckDuration(599_999);
+        Assert.True(waiting.IsCapturing);
+        waiting.CheckDuration(600_000);
+        Assert.Equal(MacroRecordingEndReason.DurationLimit, waiting.EndReason);
+
+        var recorder = new MacroRecorder(10, 1000);
+        recorder.Begin(0, new bool[256], new bool[6], startNow: false);
+        recorder.Start(500_000);
+        recorder.CheckDuration(1_099_999);
+        Assert.True(recorder.IsCapturing);
+        recorder.CheckDuration(1_100_000);
+        Assert.False(recorder.IsCapturing);
+        Assert.Equal(MacroRecordingEndReason.DurationLimit, recorder.EndReason);
+    }
+
+    [Fact]
+    public void ObserveBeforeStart_HotPath_DoesNotAllocate()
+    {
+        var recorder = new MacroRecorder(10, 1000);
+        recorder.Begin(0, new bool[256], new bool[6], startNow: false);
+        var down = new RecordedMacroEvent(0, NativeMethods.WM_KEYDOWN, 0x41, 0, 0, 0, 0, 0, 0);
+        var click = new RecordedMacroEvent(0, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 5, 6, 0);
+        recorder.ObserveBeforeStart(down);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 256; index++)
+        {
+            recorder.ObserveBeforeStart(down);
+            recorder.ObserveBeforeStart(click);
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(0, allocated);
+        Assert.Equal(0, recorder.Count);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]

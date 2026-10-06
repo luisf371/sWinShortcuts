@@ -22,6 +22,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     private MacroStepViewModel? _collapsedWait;
     private int _collapsedDurationMs;
     private string _collapsedError = string.Empty;
+    private bool _isPressHold;
 
     public MacroStepViewModel(MacroStep step, Func<bool> canEdit)
     {
@@ -94,9 +95,11 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public string TimingText => Kind switch
     {
         MacroStepKind.KeyPress or MacroStepKind.MouseClick => DurationMs == 0 ? "auto hold" : $"{MillisecondsText} hold",
-        MacroStepKind.Wait => MillisecondsText,
+        MacroStepKind.Wait => IsPressHold ? $"{MillisecondsText} hold" : MillisecondsText,
         _ => string.Empty
     };
+    // A Wait that holds a press (between its Down and matching Up) rather than pausing between steps.
+    public bool IsPressHold => _isPressHold;
     public MacroStepViewModel? CollapsedWait => _collapsedWait;
     public bool IsCollapsedPress => CollapsedWait is not null;
     public int SourceStepCount => IsCollapsedPress ? 3 : 1;
@@ -135,6 +138,17 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public string this[string columnName] => Error;
 
     public void SetPosition(int x, int y) => Change(_step with { X = x, Y = y }, string.Empty);
+
+    // Presentation only, like SetCollapsedWait: the editor classifies holds from the surrounding rows.
+    internal void SetPressHold(bool value)
+    {
+        if (_isPressHold == value) return;
+        _isPressHold = value;
+        OnPropertyChanged(nameof(IsPressHold));
+        OnPropertyChanged(nameof(TimingText));
+        OnPropertyChanged(nameof(DisplayTimingText));
+        OnPropertyChanged(nameof(Summary));
+    }
 
     // Presentation only: preserve each source row and its unparsed editor text.
     internal void SetCollapsedWait(MacroStepViewModel? wait)

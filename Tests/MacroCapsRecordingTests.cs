@@ -30,7 +30,8 @@ public sealed class MacroCapsRecordingTests
         if (record)
         {
             recording = service.RecordMacroAsync(destination, destination.Macros.Definitions[0].Id, 30);
-            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+            // Global Caps runs with no active profile, so the take waits for its owner's window.
+            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.WaitingForRecordingTarget);
             Assert.False(await service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
         }
         else
@@ -78,7 +79,7 @@ public sealed class MacroCapsRecordingTests
             MacroPlaybackTests.WaitUntil(() => runtime.RecordingPaused);
             sender.ReleaseDummy.Set();
             if (blocker is not null) Assert.True(await blocker.WaitAsync(TimeSpan.FromSeconds(3)));
-            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.WaitingForRecordingTarget);
             Assert.True(service.DispatchDecodedKeyboardEvent(0x14, false, true));
             service.StopMacroRecording();
             var result = await recording.WaitAsync(TimeSpan.FromSeconds(3));
@@ -109,9 +110,9 @@ public sealed class MacroCapsRecordingTests
             Assert.True(sender.DownEntered.Wait(TimeSpan.FromSeconds(2)));
             var recording = service.RecordMacroAsync(destination, destination.Macros.Definitions[0].Id, 30);
             MacroPlaybackTests.WaitUntil(() => runtime.RecordingPaused);
-            Assert.NotEqual(MacroSessionMode.Recording, service.GetMacroSession().Mode);
+            Assert.Equal(MacroSessionMode.PreparingRecording, service.GetMacroSession().Mode);
             sender.ReleaseDown.Set();
-            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.Recording);
+            MacroPlaybackTests.WaitUntil(() => service.GetMacroSession().Mode == MacroSessionMode.WaitingForRecordingTarget);
 
             Assert.Equal(new[] { (target, true), (target, false), (target, true), (target, false) },
                 sender.Transitions.Select(edge => (edge.Key, edge.IsDown)));
