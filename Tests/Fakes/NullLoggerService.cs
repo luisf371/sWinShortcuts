@@ -15,7 +15,11 @@ public sealed class NullLoggerService : ILoggerService
     {
         if (IsEnabled)
         {
-            Messages.Add(message);
+            // The input executor logs from its worker thread while tests log from theirs.
+            lock (Messages)
+            {
+                Messages.Add(message);
+            }
         }
     }
 }

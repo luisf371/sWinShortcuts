@@ -224,7 +224,8 @@ public sealed class InputHookService : IInputHookService
             _random,
             logger,
             () => _rightButtonPressed,
-            clock);
+            clock,
+            keyState);
         _rapidFire = new RapidFireStateMachine(_runtime, inputSender, _random, logger, _profileLock,
             RaiseRapidFireArmChanged, () => _rightButtonPressed);
         _remaps = new RemapStateMachine(_runtime, _inputExecutor, _random, logger, _isPhysicalKeyDown);
@@ -1490,6 +1491,14 @@ public sealed class InputHookService : IInputHookService
             data = *(NativeMethods.KBDLLHOOKSTRUCT*)lParam;
         }
 
+        // Windows counts this app's own Alt holds (hold-breath, macros, mappings) as held; the gesture latch
+        // records them so a re-baseline never mistakes one for a physical Alt press.
+        if (data.vkCode is 0xA4 or 0xA5 && (data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 &&
+            (data.dwExtraInfo == NativeMethods.INPUT_IGNORE || data.dwExtraInfo == NativeMethods.INPUT_MACRO_RELEASE))
+        {
+            _gestures.ObserveInjectedAlt((int)data.vkCode, message is NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN);
+        }
+
         // Only a genuinely injected UP may carry our macro-release tag; a tag alone must never swallow a release.
         if (data.dwExtraInfo == NativeMethods.INPUT_MACRO_RELEASE &&
             (data.flags & NativeMethods.KbdLlFlags.LLKHF_INJECTED) != 0 &&
@@ -1556,7 +1565,7 @@ public sealed class InputHookService : IInputHookService
         {
             handled = macroDecision.Value;
             // Passed-through takeover pairs still drive Alt gestures; consumed shortcuts do not.
-            if (!handled) _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
+            if (!handled) _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp);
             if (isKeyUp && MacroPhysicalState.WasSuppressed(previous)) _remaps.ReleaseOwnedKeyUp(vkCode);
         }
         else
@@ -1578,7 +1587,7 @@ public sealed class InputHookService : IInputHookService
                     var pairedHandled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent, eventTime);
                     if (MacroPhysicalState.WasSuppressed(previous)) handled = pairedHandled;
                 }
-                else _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp, _isPhysicalKeyDown);
+                else _gestures.ObserveAlt(vkCode, isKeyDown, isKeyUp);
             }
             else handled = DispatchKeyboardFeatures(vkCode, isKeyDown, isKeyUp, autoRunPhysicalEvent, eventTime);
         }
@@ -1606,8 +1615,7 @@ public sealed class InputHookService : IInputHookService
         _gestures.ObserveAlt(
             vkCode,
             isKeyDown,
-            isKeyUp,
-            _isPhysicalKeyDown);
+            isKeyUp);
 
         if (suppressEarlyCancelKey)
         {
@@ -1953,7 +1961,7 @@ public sealed class InputHookService : IInputHookService
 
     private void RederivePhysicalModifierState()
     {
-        _gestures.SeedAltPressed(_isPhysicalKeyDown(0xA4) || _isPhysicalKeyDown(0xA5));
+        _gestures.AdoptHeldAltFromWindows(_isPhysicalKeyDown);
         SchedulePanicDerivation(() =>
         {
             _gestures.RederiveAltKeyboardPhysicalState(_isPhysicalKeyDown);

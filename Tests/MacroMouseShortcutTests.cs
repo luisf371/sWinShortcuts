@@ -391,6 +391,9 @@ public sealed class MacroMouseShortcutTests
     {
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, down, !down));
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA4, down, !down));
+        // Windows' key state follows once the hook has seen each edge.
+        service.SetWindowsKeyDownForTesting(0xA2, down);
+        service.SetWindowsKeyDownForTesting(0xA4, down);
     }
 
     private static bool Button(InputHookService service, MouseButton button, bool down) => service.DispatchDecodedMouseEvent(button switch

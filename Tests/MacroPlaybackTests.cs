@@ -54,6 +54,7 @@ public sealed class MacroPlaybackTests
                 WaitUntil(() => sender.Transitions.Any(edge => edge.Key == alt && edge.IsDown));
             }
             Assert.False(service.DispatchDecodedKeyboardEvent(vk, true, false));
+            service.SetWindowsKeyDownForTesting(vk, true);
             if (retireBeforeGesture)
             {
                 Press(service, 0x7B);
@@ -63,6 +64,7 @@ public sealed class MacroPlaybackTests
             Assert.True(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0));
             WaitUntil(() => sender.Transitions.Any(edge => edge.Key == Key.B && !edge.IsDown));
 
+            // Windows can still report the macro's own hold here; only the physical release counts.
             Assert.False(service.DispatchDecodedKeyboardEvent(vk, false, true));
             Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONDOWN, 0));
             Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_LBUTTONUP, 0));

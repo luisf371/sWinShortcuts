@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Windows.Input;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
@@ -226,6 +227,107 @@ public sealed class InputExecutorTests
     }
 
     [Fact]
+    public async Task CapsDoubleNormal_DebugLog_RecordsEachTapWithTimingAndModifiers()
+    {
+        var runtime = RunningRuntime(DoubleNormalProfile(Key.M));
+        var logger = new NullLoggerService { IsEnabled = true };
+        var keys = new bool[256];
+        using var executor = new InputExecutor(runtime, new RecordingInputSender(), logger,
+            keyState: vk => Volatile.Read(ref keys[vk]));
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new RemapStateMachine(runtime, executor, random, logger);
+        executor.Start();
+
+        try
+        {
+            Assert.True(HandleCaps(remaps, isDown: true));
+            Assert.True(await EnqueueFence(executor));
+            // Shift held at the release turns the closing tap into Shift+M for the game.
+            Volatile.Write(ref keys[0x10], true);
+            Assert.True(HandleCaps(remaps, isDown: false));
+            Assert.True(await EnqueueFence(executor));
+
+            // Hook-side and worker lines come from two threads, so only each line's presence is fixed.
+            var messages = Snapshot(logger);
+            Assert.Equal(4, messages.Length);
+            Assert.Contains("Caps Lock 2x: Caps down → press tap M queued (pair 1)", messages);
+            Assert.Single(messages, message => Regex.IsMatch(message,
+                @"^Input: paired press tap M \(pair 1\) sent; held \d+ ms; modifiers held: none$"));
+            Assert.Single(messages, message => Regex.IsMatch(message,
+                @"^Caps Lock 2x: Caps up after \d+ ms → release tap M queued \(pair 1\)$"));
+            Assert.Single(messages, message => Regex.IsMatch(message,
+                @"^Input: paired release tap M \(pair 1\) sent; held \d+ ms, \d+ ms after its press tap; modifiers held: Shift$"));
+        }
+        finally
+        {
+            runtime.SetRunning(false);
+            executor.StopAndDrain();
+        }
+    }
+
+    [Fact]
+    public async Task CapsDoubleNormal_PressTapDroppedWhileTargetHeld_LogsDropAndSkippedRelease()
+    {
+        var runtime = RunningRuntime(DoubleNormalProfile(Key.M));
+        var sender = new RecordingInputSender();
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var executor = new InputExecutor(runtime, sender, logger, keyState: _ => false);
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new RemapStateMachine(runtime, executor, random, logger);
+        executor.Start();
+
+        try
+        {
+            // Another owner holds M, so neither tap of the pair may run.
+            Assert.True(executor.Enqueue(new InputCommand(Key.M, IsDown: true)));
+            Assert.True(HandleCaps(remaps, isDown: true));
+            Assert.True(HandleCaps(remaps, isDown: false));
+            Assert.True(executor.Enqueue(new InputCommand(Key.M, IsDown: false)));
+            Assert.True(await EnqueueFence(executor));
+
+            Assert.Equal(new[] { (Key.M, true), (Key.M, false) },
+                sender.Transitions.Select(item => (item.Key, item.IsDown)).ToArray());
+            var messages = Snapshot(logger);
+            Assert.Contains("Input: paired press tap M (pair 1) dropped; M is held by another feature", messages);
+            Assert.Contains("Input: paired release tap M (pair 1) skipped; its press tap was not sent", messages);
+        }
+        finally
+        {
+            runtime.SetRunning(false);
+            executor.StopAndDrain();
+        }
+    }
+
+    [Fact]
+    public void CapsDoubleNormal_DebugLog_RecordsEarlyAndMissedReleases()
+    {
+        var runtime = RunningRuntime(DoubleNormalProfile(Key.M));
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var remaps = new RemapStateMachine(runtime, new RecordingInputQueue(), random, logger);
+
+        // A settings edit mid-press sends the release tap before the physical Caps up.
+        Assert.True(HandleCaps(remaps, isDown: true));
+        remaps.ReleaseCapsStateOnly(preservePhysicalPairing: true);
+        Assert.True(HandleCaps(remaps, isDown: false));
+        // The hook never sees this press's Caps up; the next press settles it first.
+        Assert.True(HandleCaps(remaps, isDown: true, eventTime: 1000));
+        Assert.True(HandleCaps(remaps, isDown: true, eventTime: 3000));
+
+        Assert.Collection(logger.Messages,
+            message => Assert.Equal("Caps Lock 2x: Caps down → press tap M queued (pair 1)", message),
+            message => Assert.Matches(
+                @"^Caps Lock 2x: input state released before the Caps up after \d+ ms → release tap M queued \(pair 1\)$", message),
+            message => Assert.Matches(@"^Caps Lock: Caps up after \d+ ms; nothing left to send$", message),
+            message => Assert.Equal("Caps Lock 2x: Caps down → press tap M queued (pair 2)", message),
+            message => Assert.Equal(
+                "Caps Lock: release was not observed (no Caps event for 2000 ms); treating this press as new", message),
+            message => Assert.Matches(
+                @"^Caps Lock 2x: missed Caps up settled after \d+ ms → release tap M queued \(pair 2\)$", message),
+            message => Assert.Equal("Caps Lock 2x: Caps down → press tap M queued (pair 3)", message));
+    }
+
+    [Fact]
     public async Task KeyTap_CompletesAtomicallyBeforeFollowingTransition()
     {
         var runtime = RunningRuntime();
@@ -365,23 +467,34 @@ public sealed class InputExecutorTests
         return runtime;
     }
 
-    private static Profile DoubleNormalProfile() => new()
+    private static Profile DoubleNormalProfile(Key? remapTarget = null) => new()
     {
         Name = "Game",
         Executable = "game.exe",
         CapsLock =
         {
             IsEnabled = true,
-            Mode = CapsLockMode.DoubleNormal
+            Mode = CapsLockMode.DoubleNormal,
+            IsRemapEnabled = remapTarget is not null,
+            RemapTarget = remapTarget
         }
     };
 
-    private static bool HandleCaps(RemapStateMachine remaps, bool isDown) =>
+    private static bool HandleCaps(RemapStateMachine remaps, bool isDown, uint eventTime = 0) =>
         remaps.HandleKeyboardEvent(
             KeyInteropUtilities.ToVirtualKey(Key.CapsLock),
             isKeyDown: isDown,
             isKeyUp: !isDown,
-            rightButtonPressed: false);
+            rightButtonPressed: false,
+            eventTime);
+
+    private static string[] Snapshot(NullLoggerService logger)
+    {
+        lock (logger.Messages)
+        {
+            return [.. logger.Messages];
+        }
+    }
 
     private static TaskCompletionSource<bool> Completion() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);

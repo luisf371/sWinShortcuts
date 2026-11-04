@@ -37,6 +37,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private const long WHEEL_RIGHT_CLICK_ONLY = 2;
     private const long WHEEL_SUPPRESS = 4;
     private const int MAX_PENDING_WHEEL_TAPS = 4;
+    private const int LEFT_ALT = 1;
+    private const int RIGHT_ALT = 2;
     private static readonly double TickToMilliseconds = 1000.0 / Stopwatch.Frequency;
 
     private readonly InputRuntimeState _runtime;
@@ -45,12 +47,16 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private readonly ILoggerService _logger;
     private readonly Func<bool> _isRightButtonPressed;
     private readonly Func<long> _clock;
+    private readonly Func<int, bool>? _isWindowsKeyDown;
     private readonly Dictionary<MouseButton, MouseState> _mouseStates;
     private readonly Dictionary<Key, KeyboardState> _keyboardStates;
     private readonly object _holdBreathLock = new();
     private readonly Timer _holdBreathTimer;
 
-    private volatile bool _altPressed;
+    // Alt sides the hook saw physically pressed, kept apart from sides this app holds through SendInput:
+    // Windows' key state counts both, and only physical Alt may arm a gesture.
+    private int _physicalAlt;
+    private int _injectedAlt;
     private long _altMouseGeneration = 1;
     private long _altKeyboardGeneration = 1;
     private long _pressTokenSequence;
@@ -83,7 +89,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         ThreadLocal<Random> random,
         ILoggerService logger,
         Func<bool> isRightButtonPressed,
-        Func<long>? clock = null)
+        Func<long>? clock = null,
+        Func<int, bool>? isWindowsKeyDown = null)
     {
         _runtime = runtime;
         _inputQueue = inputQueue;
@@ -91,6 +98,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         _logger = logger;
         _isRightButtonPressed = isRightButtonPressed;
         _clock = clock ?? Stopwatch.GetTimestamp;
+        // Null skips the trigger-time check against Windows (unit tests that drive the latch directly).
+        _isWindowsKeyDown = isWindowsKeyDown;
         _holdBreathTimer = new Timer(_ => OnHoldBreathTimerFired(), null, Timeout.Infinite, Timeout.Infinite);
 
         _mouseStates = new Dictionary<MouseButton, MouseState>
@@ -112,34 +121,37 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         }
     }
 
-    internal bool AltPressed => _altPressed;
+    internal bool AltPressed => Volatile.Read(ref _physicalAlt) != 0;
 
     internal bool PanicDerivationPending => Volatile.Read(ref _panicDerivationEpoch) != 0;
 
-    internal void SeedAltPressed(bool isPressed)
+    internal void SeedAltPressedForTesting(bool isPressed)
     {
         InvalidateWheel();
-        _altPressed = isPressed;
+        Volatile.Write(ref _physicalAlt, isPressed ? LEFT_ALT : 0);
     }
 
     internal void InvalidateWheel() => Interlocked.Increment(ref _wheelEpoch);
 
-    internal void ObserveAlt(int vkCode, bool isKeyDown, bool isKeyUp, Func<int, bool> isPhysicallyDown)
+    internal void ObserveAlt(int vkCode, bool isKeyDown, bool isKeyUp)
     {
         if (_runtime.IsDisposed || Volatile.Read(ref _disposed) != 0)
         {
             return;
         }
 
-        if (vkCode is not (0xA4 or 0xA5 or 0x12))
+        var side = vkCode switch { 0xA4 or 0x12 => LEFT_ALT, 0xA5 => RIGHT_ALT, _ => 0 };
+        if (side == 0)
         {
             return;
         }
 
         if (isKeyDown)
         {
-            if (!_altPressed) InvalidateWheel();
-            _altPressed = true;
+            var before = Interlocked.Or(ref _physicalAlt, side);
+            if (before == 0) InvalidateWheel();
+            if ((before & side) == 0 && _logger.IsEnabled)
+                _logger.Log($"Alt latch: {DescribeAlt(side)} down (held={DescribeAlt(before | side)})");
             return;
         }
 
@@ -148,20 +160,87 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             return;
         }
 
-        var altPressed = vkCode switch
-        {
-            0xA4 => isPhysicallyDown(0xA5),
-            0xA5 => isPhysicallyDown(0xA4),
-            _ => false
-        };
-        if (altPressed != _altPressed) InvalidateWheel();
-        _altPressed = altPressed;
-        if (!_altPressed)
+        // The other side counts only if the hook saw it pressed. Windows' key state also reports Alt this app
+        // holds (hold-breath, macros), which kept the latch on after a LeftAlt release.
+        var released = vkCode == 0x12 ? LEFT_ALT | RIGHT_ALT : side;
+        var previous = Interlocked.And(ref _physicalAlt, ~released);
+        var held = previous & ~released;
+        if (previous != 0 && held == 0) InvalidateWheel();
+        if (_logger.IsEnabled) _logger.Log($"Alt latch: {DescribeAlt(side)} up (held={DescribeAlt(held)})");
+        if (held == 0)
         {
             ResetMouseStates(preserveSuppressedUps: true);
             ResetKeyboardStates(preserveSuppressedUps: true);
         }
     }
+
+    // Hook thread: this app's own tagged Alt events, so a re-baseline never adopts them as a physical press.
+    internal void ObserveInjectedAlt(int vkCode, bool isKeyDown)
+    {
+        var side = vkCode switch { 0xA4 => LEFT_ALT, 0xA5 => RIGHT_ALT, _ => 0 };
+        if (side == 0)
+        {
+            return;
+        }
+
+        var before = isKeyDown ? Interlocked.Or(ref _injectedAlt, side) : Interlocked.And(ref _injectedAlt, ~side);
+        if (((before & side) != 0) != isKeyDown && _logger.IsEnabled)
+            _logger.Log($"Alt latch: app {(isKeyDown ? "pressed" : "released")} {DescribeAlt(side)} (injected, not a physical Alt)");
+    }
+
+    // Re-baseline after a boundary that can hide a press from the hook (start, unlock, hook reinstall, focus
+    // change). It only adds: a release the hook missed is cleared at the next trigger by ConfirmAltHeld.
+    internal void AdoptHeldAltFromWindows(Func<int, bool> isWindowsKeyDown)
+    {
+        // A re-baseline is a wheel boundary even when Alt is unchanged.
+        InvalidateWheel();
+        var windows = (isWindowsKeyDown(0xA4) ? LEFT_ALT : 0) | (isWindowsKeyDown(0xA5) ? RIGHT_ALT : 0);
+        var injected = Volatile.Read(ref _injectedAlt);
+        var adopt = windows & ~injected;
+        var before = adopt == 0 ? Volatile.Read(ref _physicalAlt) : Interlocked.Or(ref _physicalAlt, adopt);
+        var adopted = adopt & ~before;
+        var ignored = windows & injected & ~before;
+        if ((adopted | ignored) != 0 && _logger.IsEnabled)
+            _logger.Log($"Alt latch: re-derived from Windows; adopted={DescribeAlt(adopted)}, ignored app-held={DescribeAlt(ignored)}, held={DescribeAlt(before | adopt)}");
+    }
+
+    // Hook thread, inside a non-Alt event: Windows finishes updating earlier keys before the next event reaches
+    // the hook, so an Alt it reports up here was released where the hook could not see it (secure desktop,
+    // another program's hook). App-held Alt still reads down, so this check only ever clears.
+    private bool ConfirmAltHeld<T>(T trigger) where T : struct, Enum
+    {
+        var held = Volatile.Read(ref _physicalAlt);
+        if (held == 0 || _isWindowsKeyDown is null)
+        {
+            return held != 0;
+        }
+
+        var missed = ((held & LEFT_ALT) != 0 && !_isWindowsKeyDown(0xA4) ? LEFT_ALT : 0) |
+            ((held & RIGHT_ALT) != 0 && !_isWindowsKeyDown(0xA5) ? RIGHT_ALT : 0);
+        if (missed == 0)
+        {
+            return true;
+        }
+
+        var remaining = Interlocked.And(ref _physicalAlt, ~missed) & ~missed;
+        if (_logger.IsEnabled)
+            _logger.Log($"Alt latch: cleared {DescribeAlt(missed)} at {trigger}; Windows reports it up, so its release never reached the hook (held={DescribeAlt(remaining)})");
+        if (remaining == 0)
+        {
+            InvalidateWheel();
+            ResetMouseStates(preserveSuppressedUps: true);
+            ResetKeyboardStates(preserveSuppressedUps: true);
+        }
+        return remaining != 0;
+    }
+
+    private static string DescribeAlt(int sides) => sides switch
+    {
+        LEFT_ALT => "LeftAlt",
+        RIGHT_ALT => "RightAlt",
+        LEFT_ALT | RIGHT_ALT => "LeftAlt+RightAlt",
+        _ => "none"
+    };
 
     internal bool HandleWheel(int message, uint mouseData)
     {
@@ -173,6 +252,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         // MSLLHOOKSTRUCT carries signed distance in its high word. Widen before Abs(-32768).
         int delta = unchecked((short)(mouseData >> 16));
         var direction = delta > 0 ? MouseWheelDirection.Up : MouseWheelDirection.Down;
+        if (delta != 0) ConfirmAltHeld(direction);
         if (delta == 0 || !TryResolveWheel(direction, out var context))
         {
             _wheelRemainder = 0;
@@ -250,7 +330,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
         var directionToken = direction == MouseWheelDirection.Down ? WHEEL_DOWN : 0;
         var altKey = direction == MouseWheelDirection.Up ? profile.AltMouse.WheelUpKey : profile.AltMouse.WheelDownKey;
-        if (_altPressed && profile.AltMouse.IsEnabled && altKey is { } key && IsWheelTarget(key))
+        if (AltPressed && profile.AltMouse.IsEnabled && altKey is { } key && IsWheelTarget(key))
         {
             context = new(profile, foregroundGeneration, epoch, key,
                 TOKEN_ALT_WHEEL | directionToken | WHEEL_SUPPRESS);
@@ -322,7 +402,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             return HandleMouseUp(button.Value, state);
         }
 
-        if (!IsMouseDown(message) || !_altPressed || !_runtime.ProfileInputGenerationIsCurrent())
+        if (!IsMouseDown(message) || !AltPressed || !_runtime.ProfileInputGenerationIsCurrent())
         {
             return false;
         }
@@ -334,6 +414,11 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             !profile.AltMouse.Bindings.TryGetValue(button.Value, out var binding) ||
             binding is null ||
             (!binding.TapKey.HasValue && !binding.HoldKey.HasValue))
+        {
+            return false;
+        }
+
+        if (!ConfirmAltHeld(button.Value))
         {
             return false;
         }
@@ -399,7 +484,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         }
 
         state.PhysicallyDown = true;
-        if (!_altPressed || !_runtime.ProfileInputGenerationIsCurrent())
+        if (!AltPressed || !_runtime.ProfileInputGenerationIsCurrent())
         {
             return false;
         }
@@ -411,6 +496,11 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             !profile.AltKeyboard.Bindings.TryGetValue(key.Value, out var binding) ||
             binding is null ||
             (!binding.TapKey.HasValue && !binding.HoldKey.HasValue))
+        {
+            return false;
+        }
+
+        if (!ConfirmAltHeld(key.Value))
         {
             return false;
         }
@@ -687,7 +777,8 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         ReleaseAltKeyboard(preserveSuppressedUps);
         if (!preserveSuppressedUps)
         {
-            _altPressed = false;
+            Volatile.Write(ref _physicalAlt, 0);
+            Volatile.Write(ref _injectedAlt, 0);
         }
     }
 
@@ -736,7 +827,7 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
     internal void RederivePhysicalState(Func<int, bool> isPhysicallyDown)
     {
-        SeedAltPressed(isPhysicallyDown(0xA4) || isPhysicallyDown(0xA5));
+        AdoptHeldAltFromWindows(isPhysicallyDown);
         RederiveAltKeyboardPhysicalState(isPhysicallyDown);
         RederivePanicTriggerPhysicalState(isPhysicallyDown);
     }
@@ -824,17 +915,15 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         }
 
         var elapsedMs = (_clock() - press.DownTick) * TickToMilliseconds;
-        if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
+        var hold = press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs;
+        var output = hold ? press.HoldKey : press.TapKey;
+        if (output is { } outputKey)
         {
-            EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation,
-                TOKEN_ALT_MOUSE | (long)button);
-        }
-        else if (press.TapKey.HasValue)
-        {
-            EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation,
+            EnqueueTap(outputKey, press.Profile, press.ForegroundGeneration, press.Generation,
                 TOKEN_ALT_MOUSE | (long)button);
         }
 
+        if (_logger.IsEnabled) LogGesture("Alt+Mouse", button, output, hold, timer: false, elapsedMs, press.HoldThresholdMs);
         return suppressUp;
     }
 
@@ -851,17 +940,15 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         }
 
         var elapsedMs = (_clock() - press.DownTick) * TickToMilliseconds;
-        if (press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs)
+        var hold = press.HoldKey.HasValue && elapsedMs >= press.HoldThresholdMs;
+        var output = hold ? press.HoldKey : press.TapKey;
+        if (output is { } outputKey)
         {
-            EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
-                acknowledgement: press);
-        }
-        else if (press.TapKey.HasValue)
-        {
-            EnqueueTap(press.TapKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
+            EnqueueTap(outputKey, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
                 acknowledgement: press);
         }
 
+        if (_logger.IsEnabled) LogGesture("Alt+Keyboard", key, output, hold, timer: false, elapsedMs, press.HoldThresholdMs);
         return suppressUp;
     }
 
@@ -880,6 +967,9 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
         EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation,
             TOKEN_ALT_MOUSE | (long)button);
+        if (_logger.IsEnabled)
+            LogGesture("Alt+Mouse", button, press.HoldKey, hold: true, timer: true,
+                (_clock() - press.DownTick) * TickToMilliseconds, press.HoldThresholdMs);
     }
 
     private void OnKeyboardTimerFired(Key key, KeyboardState state)
@@ -897,11 +987,20 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
 
         EnqueueTap(press.HoldKey.Value, press.Profile, press.ForegroundGeneration, press.Generation, press.Token,
             acknowledgement: press);
+        if (_logger.IsEnabled)
+            LogGesture("Alt+Keyboard", key, press.HoldKey, hold: true, timer: true,
+                (_clock() - press.DownTick) * TickToMilliseconds, press.HoldThresholdMs);
     }
+
+    private void LogGesture<T>(string feature, T trigger, Key? output, bool hold, bool timer, double elapsedMs,
+        int holdThresholdMs) where T : struct, Enum =>
+        _logger.Log(output is { } key
+            ? $"{feature}: {trigger} → {key} ({(hold ? "hold" : "tap")}: {(timer ? "timer" : "released")} at {(int)Math.Round(elapsedMs)} ms; hold threshold {holdThresholdMs} ms)"
+            : $"{feature}: {trigger} released at {(int)Math.Round(elapsedMs)} ms, before the {holdThresholdMs} ms hold threshold; no tap key bound");
 
     private bool GestureIsCurrent(Profile profile, long foregroundGeneration, long generation, bool altKeyboard) =>
         Volatile.Read(ref _disposed) == 0 &&
-        _altPressed &&
+        AltPressed &&
         _runtime.ProfileInputGenerationIsCurrent(profile, foregroundGeneration) &&
         (altKeyboard
             ? profile.AltKeyboard.IsEnabled && generation == Volatile.Read(ref _altKeyboardGeneration)
@@ -1074,10 +1173,11 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private void ResetMouseStates(bool preserveSuppressedUps)
     {
         Interlocked.Increment(ref _altMouseGeneration);
-        foreach (var state in _mouseStates.Values)
+        foreach (var (button, state) in _mouseStates)
         {
             TryCancelTimer(state.Timer);
-            Interlocked.Exchange(ref state.ActivePress, null);
+            if (Interlocked.Exchange(ref state.ActivePress, null) is { CompletionClaimed: 0 } && _logger.IsEnabled)
+                _logger.Log($"Alt+Mouse: {button} press cancelled before its release; no key sent");
             if (!preserveSuppressedUps)
             {
                 Interlocked.Exchange(ref state.SuppressNextUp, 0);
@@ -1088,10 +1188,11 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
     private void ResetKeyboardStates(bool preserveSuppressedUps)
     {
         Interlocked.Increment(ref _altKeyboardGeneration);
-        foreach (var state in _keyboardStates.Values)
+        foreach (var (key, state) in _keyboardStates)
         {
             TryCancelTimer(state.Timer);
-            Interlocked.Exchange(ref state.ActivePress, null);
+            if (Interlocked.Exchange(ref state.ActivePress, null) is { CompletionClaimed: 0 } && _logger.IsEnabled)
+                _logger.Log($"Alt+Keyboard: {key} press cancelled before its release; no key sent");
             if (!preserveSuppressedUps)
             {
                 Interlocked.Exchange(ref state.SuppressNextUp, 0);

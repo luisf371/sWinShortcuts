@@ -120,6 +120,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     private const int MAX_WHEEL_TAP_AGE_MS = 250;
     private const int WHEEL_KEY_UP_GAP_MS = 10;
     private const int DEFERRED_RELEASE_TAP_MAX_MS = 1000;
+    private static readonly string[] ModifierNames = ["Shift", "Ctrl", "Alt", "Win"];
 
     private readonly InputRuntimeState _runtime;
     private readonly IInputSender _inputSender;
@@ -143,6 +144,9 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
     // Worker-thread only: a paired release tap waiting for its key to be released by another owner.
     private InputCommand? _deferredReleaseTap;
     private long _deferredReleaseTapTick;
+    // Worker-thread only: the last paired press tap that went down and when its UP was sent.
+    private long _pairedPressTapToken;
+    private long _pairedPressTapUpTick;
     private readonly object _enqueueLock = new();
     private BlockingCollection<InputCommand>? _queue;
     private Thread? _worker;
@@ -502,11 +506,17 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             (command.TapPairToken != 0 &&
              command.TapPairToken == acknowledgedTapPairToken);
         var acknowledgedCompensation = command.RequireTapPairToken && tapPairAcknowledged;
-        if (((queue.IsAddingCompleted || _runtime.IsDisposed || _runtime.RecordingPaused) &&
-             !acknowledgedCompensation) || !GuardAllows(in command) ||
+        var stopping = queue.IsAddingCompleted || _runtime.IsDisposed || _runtime.RecordingPaused;
+        if ((stopping && !acknowledgedCompensation) || !GuardAllows(in command) ||
             (command.RequireAcknowledgement && command.Acknowledgement?.DownSent != true) ||
             !tapPairAcknowledged)
         {
+            if (command.TapPairToken != 0 && _logger.IsEnabled)
+            {
+                LogPairedTap(in command, !tapPairAcknowledged ? "skipped; its press tap was not sent"
+                    : stopping && !acknowledgedCompensation ? "dropped; input is stopping or a recording is in progress"
+                    : "dropped; its profile, window or Caps Lock settings changed before it ran");
+            }
             command.Completion?.TrySetResult(false);
             return false;
         }
@@ -522,11 +532,17 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
                 return false;
             }
 
+            if (command.TapPairToken != 0 && _logger.IsEnabled)
+            {
+                LogPairedTap(in command, $"dropped; {command.Key} is held by another feature");
+            }
             command.Completion?.TrySetResult(false);
             return false;
         }
 
-        var (downSent, upSent) = SendTap(in command, acknowledgedCompensation);
+        var (downSent, upSent) = command.TapPairToken != 0
+            ? SendPairedTap(in command, acknowledgedCompensation)
+            : SendTap(in command, acknowledgedCompensation);
         if (command.TapPairToken != 0)
         {
             acknowledgedTapPairToken = command.RequireTapPairToken
@@ -558,6 +574,43 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         return (downSent, upSent);
     }
 
+    // Worker thread only. Logs what the target saw: the target reads a held modifier as part of
+    // the tap (Shift+M is not M), and taps that run together can merge into one press.
+    private (bool DownSent, bool UpSent) SendPairedTap(in InputCommand command, bool acknowledgedCompensation)
+    {
+        var log = _logger.IsEnabled;
+        var modifiers = log ? HeldModifiers() : 0;
+        var gapMs = log && command.RequireTapPairToken && command.TapPairToken == _pairedPressTapToken
+            ? (int)Stopwatch.GetElapsedTime(_pairedPressTapUpTick, _clock()).TotalMilliseconds
+            : -1;
+        var (downSent, upSent) = SendTap(in command, acknowledgedCompensation);
+        if (!command.RequireTapPairToken)
+        {
+            _pairedPressTapToken = downSent ? command.TapPairToken : 0;
+            _pairedPressTapUpTick = _clock();
+        }
+
+        if (log)
+        {
+            LogPairedTap(in command, !downSent ? "not sent; its DOWN was refused"
+                : !upSent ? $"DOWN sent but its UP failed; {command.Key} stays down until a retry succeeds"
+                : $"sent; held {command.DelayBeforeMs} ms{(gapMs < 0 ? "" : $", {gapMs} ms after its press tap")}; modifiers held: {DescribeModifiers(modifiers)}");
+        }
+        return (downSent, upSent);
+    }
+
+    // Windows' view, physical and injected alike, which is what the target window reads.
+    private int HeldModifiers() =>
+        (_keyState(0x10) ? 1 : 0) | (_keyState(0x11) ? 2 : 0) | (_keyState(0x12) ? 4 : 0) |
+        (_keyState(0x5B) || _keyState(0x5C) ? 8 : 0);
+
+    private static string DescribeModifiers(int modifiers) => modifiers == 0
+        ? "none"
+        : string.Join("+", ModifierNames.Where((_, index) => (modifiers & (1 << index)) != 0));
+
+    private void LogPairedTap(in InputCommand command, string outcome) =>
+        _logger.Log($"Input: paired {(command.RequireTapPairToken ? "release" : "press")} tap {command.Key} (pair {command.TapPairToken}) {outcome}");
+
     private bool IsBusyForReleaseTap(Key key) =>
         IsBusyForTap(key) || IsMacroKeyOwned(KeyInteropUtilities.ToVirtualKey(key));
 
@@ -572,7 +625,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         _deferredReleaseTapTick = _clock();
         if (_logger.IsEnabled)
         {
-            _logger.Log($"Input: paired release tap for {command.Key} deferred; key is held by another feature");
+            LogPairedTap(in command, $"deferred; {command.Key} is held by another feature");
         }
     }
 
@@ -605,7 +658,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         }
 
         _deferredReleaseTap = null;
-        var (downSent, upSent) = SendTap(in tap, acknowledgedCompensation: true);
+        var (downSent, upSent) = SendPairedTap(in tap, acknowledgedCompensation: true);
         tap.Completion?.TrySetResult(downSent && upSent);
     }
 
@@ -615,7 +668,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         tap.Completion?.TrySetResult(false);
         if (_logger.IsEnabled)
         {
-            _logger.Log($"Input: paired release tap for {tap.Key} dropped ({reason}); its target may stay toggled");
+            LogPairedTap(in tap, $"dropped ({reason}); its target may stay toggled");
         }
     }
 

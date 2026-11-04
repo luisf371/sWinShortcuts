@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Windows.Input;
 using sWinShortcuts.Models;
@@ -25,8 +26,28 @@ internal static class InputHookServiceTestExtensions
         "ReleaseAllState",
         BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-    internal static InputHookService CreateWithFakeForeground(ILoggerService logger, IInputSender sender) =>
-        new(logger, sender, Stopwatch.GetTimestamp, _ => false, FakeAutoRunTransport.MatchingForeground());
+    // Windows' key state for services made by CreateWithFakeForeground. Alt gestures confirm Alt with Windows
+    // at trigger time, so a seeded Alt must read as held here too.
+    private static readonly ConditionalWeakTable<InputHookService, bool[]> WindowsKeys = new();
+
+    internal static InputHookService CreateWithFakeForeground(ILoggerService logger, IInputSender sender)
+    {
+        var keys = new bool[256];
+        var service = new InputHookService(logger, sender, Stopwatch.GetTimestamp,
+            vk => (uint)vk < 256 && Volatile.Read(ref keys[vk]), FakeAutoRunTransport.MatchingForeground());
+        WindowsKeys.Add(service, keys);
+        return service;
+    }
+
+    internal static void SetWindowsKeyDownForTesting(this InputHookService service, int vk, bool down)
+    {
+        if (!WindowsKeys.TryGetValue(service, out var keys))
+        {
+            throw new InvalidOperationException("Only services from CreateWithFakeForeground have a fake key state.");
+        }
+
+        Volatile.Write(ref keys[vk], down);
+    }
 
     internal static void StartInputExecutorForTesting(this InputHookService service)
     {
@@ -78,7 +99,8 @@ internal static class InputHookServiceTestExtensions
             42,
             profile.NormalizedExecutable,
             foregroundGeneration);
-        Get<GestureChordStateMachine>(service, GesturesField).SeedAltPressed(altPressed);
+        if (WindowsKeys.TryGetValue(service, out var keys)) Volatile.Write(ref keys[0xA4], altPressed);
+        Get<GestureChordStateMachine>(service, GesturesField).SeedAltPressedForTesting(altPressed);
     }
 
     internal static void ConfigureCombinedOverrideForTesting(

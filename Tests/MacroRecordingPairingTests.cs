@@ -51,11 +51,13 @@ public sealed class MacroRecordingPairingTests
         await recording.WaitAsync(TimeSpan.FromSeconds(3));
 
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA4, true, false));
+        service.SetWindowsKeyDownForTesting(0xA4, true);
         Assert.True(service.DispatchDecodedKeyboardEvent(0x51, true, false));
         Assert.True(service.DispatchDecodedKeyboardEvent(0x51, false, true));
         await Drain(service);
         Assert.Equal(new[] { (Key.B, true), (Key.B, false) }, sender.Transitions.Select(edge => (edge.Key, edge.IsDown)));
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA4, false, true));
+        service.SetWindowsKeyDownForTesting(0xA4, false);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
@@ -61,6 +62,8 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     private bool _capsPhysicallyDown;
     // KBDLLHOOKSTRUCT.time of the last physical Caps DOWN (0 = unknown); guarded by _capsLock.
     private uint _capsLastDownTime;
+    // Stopwatch tick of the current physical Caps press (0 = none); debug-log hold times only.
+    private long _capsPressTick;
     private long _capsConfigurationGeneration = 1;
 
     private readonly object _launcherLock = new();
@@ -411,7 +414,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         {
             lock (_capsLock)
             {
-                return CompleteCapsRelease();
+                return CompleteCapsRelease("Caps up");
             }
         }
 
@@ -425,8 +428,11 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 if (_capsPhysicallyDown && _capsLastDownTime != 0 &&
                     unchecked(eventTime - _capsLastDownTime) > CAPS_MISSED_UP_GAP_MS)
                 {
-                    CompleteCapsRelease();
-                    Log("Caps Lock: release was not observed; treating this press as new");
+                    if (_logger.IsEnabled)
+                    {
+                        _logger.Log($"Caps Lock: release was not observed (no Caps event for {unchecked(eventTime - _capsLastDownTime)} ms); treating this press as new");
+                    }
+                    CompleteCapsRelease("missed Caps up settled");
                 }
                 _capsLastDownTime = eventTime;
             }
@@ -447,9 +453,11 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             {
                 if (generation != Volatile.Read(ref _capsConfigurationGeneration))
                 {
+                    Log("Caps Lock: Caps down passed through; input state was released during the press");
                     return false;
                 }
                 _capsPhysicallyDown = true;
+                _capsPressTick = Stopwatch.GetTimestamp();
                 _capsDownSuppressed = settings is { IsEnabled: true } &&
                     (settings.Mode != CapsLockMode.Normal || settings.IsRemapEnabled);
             }
@@ -480,16 +488,21 @@ internal sealed class RemapStateMachine : IInputCommandGuard
 
         if (!suppressDown)
         {
+            Log(_runtime.ProfileInputGenerationIsCurrent()
+                ? "Caps Lock: Caps down passed through unchanged"
+                : "Caps Lock: Caps down passed through; a profile switch had not settled, so the profile's Caps Lock setting was skipped");
             return false;
         }
         if (settings!.Mode == CapsLockMode.Disabled)
         {
+            Log("Caps Lock: Caps down blocked (Disabled mode)");
             return true;
         }
 
         var outputKey = settings.IsRemapEnabled ? settings.RemapTarget : Key.CapsLock;
         if (outputKey is null)
         {
+            Log("Caps Lock: Caps down blocked; remapping is on but has no target key");
             return true;
         }
 
@@ -498,6 +511,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
             if (!isKeyDown || !_runtime.IsRunning ||
                 generation != Volatile.Read(ref _capsConfigurationGeneration))
             {
+                Log("Caps Lock: Caps down blocked without output; input stopped or was released during the press");
                 return true;
             }
 
@@ -516,6 +530,10 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                         ForegroundGeneration: foregroundGeneration,
                         ExpectedProfile: foregroundGeneration == 0 ? null : _runtime.ActiveProfile,
                         Token: GUARD_CAPS, HoldOwner: InputHoldOwner.Caps));
+                    if (_logger.IsEnabled)
+                    {
+                        _logger.Log($"Caps Lock: Caps down → holding {outputKey.Value}");
+                    }
                     break;
                 case CapsLockMode.DoubleNormal:
                     var tapPairToken = Interlocked.Increment(ref _capsTapTokenSequence);
@@ -524,12 +542,16 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                     _capsTapPairForeground = _runtime.ForegroundIdentity;
                     _capsTapPairProfile = foregroundGeneration == 0 ? null : _runtime.ActiveProfile;
                     Volatile.Write(ref _capsWinKeyBlock, outputKey.Value == Key.CapsLock ? 0 : 1);
-                    EnqueueCapsTap(
+                    var queued = EnqueueCapsTap(
                         outputKey.Value,
                         tapPairToken,
                         isInitialTap: true,
                         foregroundGeneration,
                         generation);
+                    if (_logger.IsEnabled)
+                    {
+                        _logger.Log($"Caps Lock 2x: Caps down → press tap {outputKey.Value} {(queued ? "queued" : "refused by the input queue")} (pair {tapPairToken})");
+                    }
                     break;
                 default:
                     return false;
@@ -540,24 +562,45 @@ internal sealed class RemapStateMachine : IInputCommandGuard
     }
 
     // Caller holds _capsLock. Returns whether the physical UP should be suppressed.
-    private bool CompleteCapsRelease()
+    private bool CompleteCapsRelease(string cause)
     {
-        if (_capsHeldOutputKey is { } heldOutput)
+        if (_capsHeldOutputKey is null && _capsSecondTapKey is null && _capsDownSuppressed && _logger.IsEnabled)
         {
-            _queue.Enqueue(new InputCommand(heldOutput, IsDown: false, HoldOwner: InputHoldOwner.Caps));
-            _capsHeldOutputKey = null;
-            _capsHeldGeneration = 0;
-            _capsHeldForegroundGeneration = 0;
-            _capsHeldProfile = null;
+            _logger.Log($"Caps Lock: {cause} after {CapsHeldMs()} ms; nothing left to send");
         }
-        EnqueueCapsSecondTap();
+        ReleaseCapsHeldOutput(cause);
+        EnqueueCapsSecondTap(cause);
 
         var suppressUp = _capsDownSuppressed;
         _capsDownSuppressed = false;
         _capsPhysicallyDown = false;
         _capsLastDownTime = 0;
+        _capsPressTick = 0;
         return suppressUp;
     }
+
+    // Caller holds _capsLock.
+    private void ReleaseCapsHeldOutput(string cause)
+    {
+        if (_capsHeldOutputKey is not { } heldOutput)
+        {
+            return;
+        }
+
+        _queue.Enqueue(new InputCommand(heldOutput, IsDown: false, HoldOwner: InputHoldOwner.Caps));
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Caps Lock: {cause} after {CapsHeldMs()} ms → {heldOutput} released");
+        }
+        _capsHeldOutputKey = null;
+        _capsHeldGeneration = 0;
+        _capsHeldForegroundGeneration = 0;
+        _capsHeldProfile = null;
+    }
+
+    // Debug-log only; caller holds _capsLock.
+    private int CapsHeldMs() =>
+        _capsPressTick == 0 ? -1 : (int)Stopwatch.GetElapsedTime(_capsPressTick).TotalMilliseconds;
 
     private CapsLockSettings? GetEffectiveCapsLockSettings() => GetEffectiveCapsLockSettings(
         _runtime.ProfileInputGenerationIsCurrent() ? _runtime.ActiveProfile : null, _windowsProfile);
@@ -586,27 +629,21 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         lock (_capsLock)
         {
             Interlocked.Increment(ref _capsConfigurationGeneration);
-            if (_capsHeldOutputKey is { } heldOutput)
-            {
-                _queue.Enqueue(new InputCommand(heldOutput, IsDown: false, HoldOwner: InputHoldOwner.Caps));
-                _capsHeldOutputKey = null;
-                _capsHeldGeneration = 0;
-                _capsHeldForegroundGeneration = 0;
-                _capsHeldProfile = null;
-            }
+            ReleaseCapsHeldOutput("input state released before the Caps up");
             if (foregroundDeparture && preservePhysicalPairing && _capsPhysicallyDown)
             {
                 RetainCapsSecondTap();
             }
             else
             {
-                EnqueueCapsSecondTap();
+                EnqueueCapsSecondTap("input state released before the Caps up");
             }
             if (!preservePhysicalPairing)
             {
                 _capsPhysicallyDown = false;
                 _capsDownSuppressed = false;
                 _capsLastDownTime = 0;
+                _capsPressTick = 0;
             }
         }
     }
@@ -631,11 +668,14 @@ internal sealed class RemapStateMachine : IInputCommandGuard
                 foreground?.ProcessId ?? 0,
                 _capsTapPairProfile);
         }
-        Log("Caps Lock: foreground changed mid-press; 2x release tap kept for the physical release");
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Caps Lock 2x: focus changed mid-press; release tap {secondTap} (pair {_capsSecondTapToken}) kept for the physical Caps up");
+        }
     }
 
-    // Caller holds _capsLock. Allocation-free: runs on the hook thread for a physical UP.
-    private void EnqueueCapsSecondTap()
+    // Caller holds _capsLock. Allocation-free unless debug logging is on: runs on the hook thread for a physical UP.
+    private void EnqueueCapsSecondTap(string cause)
     {
         if (_capsSecondTapKey is not { } secondTap)
         {
@@ -647,7 +687,11 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         {
             _capsReleaseTarget = target;
         }
-        EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false, targetBound: target is not null);
+        var queued = EnqueueCapsTap(secondTap, _capsSecondTapToken, isInitialTap: false, targetBound: target is not null);
+        if (_logger.IsEnabled)
+        {
+            _logger.Log($"Caps Lock 2x: {cause} after {CapsHeldMs()} ms → release tap {secondTap} {(queued ? "queued" : "refused by the input queue")} (pair {_capsSecondTapToken}{(target is null ? "" : "; sent only if the pressed window is in front")})");
+        }
         _capsSecondTapKey = null;
         _capsSecondTapToken = 0;
         Volatile.Write(ref _capsWinKeyBlock, 0);
@@ -669,12 +713,12 @@ internal sealed class RemapStateMachine : IInputCommandGuard
 
         if (_logger.IsEnabled)
         {
-            _logger.Log($"Caps Lock: 2x release tap for {command.Key} dropped; its window is no longer in the foreground");
+            _logger.Log($"Caps Lock 2x: release tap {command.Key} (pair {command.TapPairToken}) dropped; its window is no longer in the foreground");
         }
         return false;
     }
 
-    private void EnqueueCapsTap(
+    private bool EnqueueCapsTap(
         Key key,
         long tapPairToken,
         bool isInitialTap,
@@ -682,7 +726,7 @@ internal sealed class RemapStateMachine : IInputCommandGuard
         long generation = 0,
         bool targetBound = false)
     {
-        _queue.Enqueue(new InputCommand(
+        return _queue.Enqueue(new InputCommand(
             key,
             IsDown: isInitialTap,
             DelayBeforeMs: _random.Value!.Next(

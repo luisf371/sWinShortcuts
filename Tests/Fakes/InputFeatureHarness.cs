@@ -162,7 +162,7 @@ internal sealed class InputFeatureHarness : IInputCommandGuard, IDisposable
             42,
             profile.NormalizedExecutable,
             foregroundGeneration);
-        _gestures.SeedAltPressed(altPressed);
+        _gestures.SeedAltPressedForTesting(altPressed);
     }
 
     internal bool HandleAltMouseForTesting(sWinShortcuts.Models.MouseButton button, bool isDown)

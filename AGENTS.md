@@ -124,6 +124,15 @@ Synthetic input uses randomized hold/gap durations so presses register reliably 
   (`LLKHF_INJECTED`/`LLMHF_INJECTED`) and a `dwExtraInfo` ownership tag. Do not describe or
   extend it as anti-cheat evasion.
 
+### Alt Gesture Latch
+Alt gestures arm only on *physical* Alt, tracked per side in `GestureChordStateMachine`:
+- Physical Alt sides change only from non-injected hook events. The app's own tagged Alt holds
+  (hold-breath, macros, mappings) are tracked apart, because `GetAsyncKeyState` counts both
+- Each Alt trigger confirms the latched side with `GetAsyncKeyState`, which is exact inside a
+  non-Alt event; a side Windows reports up had its release missed, so it is cleared
+- Boundary re-baselines (`AdoptHeldAltFromWindows`) only add sides the app is not holding
+- Tests that press Alt must also set Windows' fake key state (`SetWindowsKeyDownForTesting`)
+
 ### Special Profiles
 - **Window [Default]** (`ProfileConstants.WindowsProfileName`): Global fallback and global color settings, undeletable
 

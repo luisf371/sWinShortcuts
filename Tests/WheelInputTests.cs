@@ -423,6 +423,7 @@ public sealed class WheelInputTests
         internal readonly RecordingInputSender Sender;
         internal readonly InputHookService Service;
         internal long NowTicks;
+        private bool _leftAltDown;
         internal GestureChordStateMachine Gestures => Service.GetGesturesForTesting();
         internal int Pending => (int)typeof(GestureChordStateMachine).GetField("_pendingWheelTaps", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Gestures)!;
         internal (Key, bool)[] Transitions => Sender.Transitions.Select(item => (item.Key, item.IsDown)).ToArray();
@@ -430,14 +431,21 @@ public sealed class WheelInputTests
         internal ServiceFixture(bool blockWorker = false, bool blockFirstDown = false, Func<int, bool>? keyState = null)
         {
             Sender = new RecordingInputSender(blockDummy: blockWorker, blockFirstDown: blockFirstDown);
-            Service = new InputHookService(new NullLoggerService(), Sender, () => Volatile.Read(ref NowTicks), keyState ?? (_ => false),
+            // Windows' key state follows the physical LeftAlt this fixture dispatches.
+            Service = new InputHookService(new NullLoggerService(), Sender, () => Volatile.Read(ref NowTicks),
+                vk => (vk == 0xA4 && Volatile.Read(ref _leftAltDown)) || keyState?.Invoke(vk) == true,
                 FakeAutoRunTransport.MatchingForeground());
             Service.StartInputExecutorForTesting();
             Service.ConfigureActiveProfileForTesting(Profile, 1, altPressed: false);
         }
 
         internal bool Wheel(int delta) => Service.DispatchDecodedMouseEvent(0x020A, MouseData(delta));
-        internal void Alt(bool down) => Service.DispatchDecodedKeyboardEvent(0xA4, down, !down);
+        internal void Alt(bool down)
+        {
+            Service.DispatchDecodedKeyboardEvent(0xA4, down, !down);
+            // Windows updates its key state only after the hook has seen the event.
+            Volatile.Write(ref _leftAltDown, down);
+        }
         internal void Right(bool down) => Service.DispatchDecodedMouseEvent(down ? NativeMethods.WM_RBUTTONDOWN : NativeMethods.WM_RBUTTONUP, 0);
         internal async Task Drain() => Assert.True(await Service.EnqueueDummyForTesting().WaitAsync(TimeSpan.FromSeconds(3)));
 

@@ -41,7 +41,7 @@ public sealed class GestureChordStateMachineTests
                 }
                 return capturedTick;
             });
-        machine.SeedAltPressed(true);
+        machine.SeedAltPressedForTesting(true);
 
         bool Handle(bool down) => keyboard
             ? machine.HandleAltKeyboard(KeyInterop.VirtualKeyFromKey(Key.Q), down, !down)
@@ -89,7 +89,7 @@ public sealed class GestureChordStateMachineTests
         long tick = 1;
         using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random,
             new NullLoggerService(), () => false, () => tick);
-        machine.SeedAltPressed(true);
+        machine.SeedAltPressedForTesting(true);
         bool Handle(bool down) => keyboard
             ? machine.HandleAltKeyboard(KeyInterop.VirtualKeyFromKey(Key.Q), down, !down)
             : machine.HandleAltMouse(down ? NativeMethods.WM_MBUTTONDOWN : NativeMethods.WM_MBUTTONUP, 0);
@@ -133,7 +133,7 @@ public sealed class GestureChordStateMachineTests
         long clock = 100;
         using var machine = new GestureChordStateMachine(runtime, queue, random,
             new NullLoggerService(), () => false, () => ++clock);
-        machine.SeedAltPressed(true);
+        machine.SeedAltPressedForTesting(true);
 
         Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(short.MinValue)));
         Assert.Equal(4, queue.Commands.Count);
@@ -165,7 +165,7 @@ public sealed class GestureChordStateMachineTests
         using var random = new ThreadLocal<Random>(() => new Random(1));
         using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random,
             new NullLoggerService(), () => false);
-        machine.SeedAltPressed(true);
+        machine.SeedAltPressedForTesting(true);
 
         Assert.Equal(acceptedBeforeFailure != 0, machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(270)));
         Assert.Equal(acceptedBeforeFailure, queue.Commands.Count);
@@ -188,7 +188,7 @@ public sealed class GestureChordStateMachineTests
         using var random = new ThreadLocal<Random>(() => new Random(1));
         using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random,
             new NullLoggerService(), () => false);
-        machine.SeedAltPressed(true);
+        machine.SeedAltPressedForTesting(true);
         for (var i = 0; i < 10; i++)
             Assert.True(machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(240)));
         Assert.Equal(20, queue.Commands.Count);
@@ -248,7 +248,7 @@ public sealed class GestureChordStateMachineTests
             random,
             new NullLoggerService(),
             () => false);
-        machine.SeedAltPressed(true);
+        machine.SeedAltPressedForTesting(true);
 
         Assert.True(machine.HandleAltMouse(NativeMethods.WM_MBUTTONDOWN, 0));
         Assert.True(machine.HandleAltMouse(NativeMethods.WM_MBUTTONUP, 0));
@@ -415,6 +415,141 @@ public sealed class GestureChordStateMachineTests
         Assert.Empty(queue.Commands);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ObserveAlt_LeftAltReleasedWhileRightAltHeld_LatchFollowsPhysicalRightAlt(bool rightAltPhysical)
+    {
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var windowsKeys = new bool[256];
+        using var machine = CreateAltLatchMachine(queue, random, new NullLoggerService(), vk => windowsKeys[vk]);
+        // Physical RightAlt, or this app holding it (hold-breath bound to RightAlt): Windows reports it held either way.
+        if (rightAltPhysical) machine.ObserveAlt(0xA5, isKeyDown: true, isKeyUp: false);
+        else machine.ObserveInjectedAlt(0xA5, isKeyDown: true);
+        windowsKeys[0xA5] = true;
+
+        machine.ObserveAlt(0xA4, isKeyDown: true, isKeyUp: false);
+        windowsKeys[0xA4] = true;
+        machine.ObserveAlt(0xA4, isKeyDown: false, isKeyUp: true);
+        windowsKeys[0xA4] = false;
+
+        Assert.Equal(rightAltPhysical, machine.AltPressed);
+        Assert.Equal(rightAltPhysical,
+            machine.HandleAltKeyboard(KeyInterop.VirtualKeyFromKey(Key.Q), isKeyDown: true, isKeyUp: false));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void AltTrigger_WindowsReportsAltUp_PassesThroughAndLogsMissedRelease(bool keyboard, bool windowsAltDown)
+    {
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var logger = new NullLoggerService { IsEnabled = true };
+        using var machine = CreateAltLatchMachine(queue, random, logger, vk => windowsAltDown && vk == 0xA4);
+        // The press reached the hook. When Windows reports Alt up, its release did not (secure desktop, another hook).
+        machine.ObserveAlt(0xA4, isKeyDown: true, isKeyUp: false);
+
+        var consumed = keyboard
+            ? machine.HandleAltKeyboard(KeyInterop.VirtualKeyFromKey(Key.Q), isKeyDown: true, isKeyUp: false)
+            : machine.HandleAltMouse(NativeMethods.WM_MBUTTONDOWN, 0);
+
+        Assert.Equal(windowsAltDown, consumed);
+        Assert.Equal(windowsAltDown, machine.AltPressed);
+        Assert.Equal(!windowsAltDown, logger.Messages.Any(message => message.StartsWith(
+            $"Alt latch: cleared LeftAlt at {(keyboard ? "Q" : "Middle")};", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AdoptHeldAltFromWindows_AppHeldAlt_IsNeverAdopted(bool appHolds)
+    {
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var machine = CreateAltLatchMachine(queue, random, new NullLoggerService(), vk => vk == 0xA5);
+        if (appHolds) machine.ObserveInjectedAlt(0xA5, isKeyDown: true);
+
+        machine.AdoptHeldAltFromWindows(vk => vk == 0xA5);
+
+        Assert.Equal(!appHolds, machine.AltPressed);
+    }
+
+    [Fact]
+    public void AltMouseGesture_DebugLog_RecordsDecisionAndElapsedTime()
+    {
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        var logger = new NullLoggerService { IsEnabled = true };
+        long tick = 0;
+        var profile = CreateAltLatchProfile();
+        using var machine = new GestureChordStateMachine(ConfigureRuntime(profile), queue, random, logger, () => false,
+            () => Volatile.Read(ref tick), _ => true);
+        machine.ObserveAlt(0xA4, isKeyDown: true, isKeyUp: false);
+
+        Assert.True(machine.HandleAltMouse(NativeMethods.WM_MBUTTONDOWN, 0));
+        Volatile.Write(ref tick, Stopwatch.Frequency / 10);
+        Assert.True(machine.HandleAltMouse(NativeMethods.WM_MBUTTONUP, 0));
+
+        Assert.Contains("Alt latch: LeftAlt down (held=LeftAlt)", logger.Messages);
+        Assert.Contains("Alt+Mouse: Middle → A (tap: released at 100 ms; hold threshold 150 ms)", logger.Messages);
+    }
+
+    [Fact]
+    public void AltLatch_HotPathWithLoggingDisabled_DoesNotAllocate()
+    {
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var machine = CreateAltLatchMachine(queue, random, new NullLoggerService(), _ => false);
+        var q = KeyInterop.VirtualKeyFromKey(Key.Q);
+        void Cycle()
+        {
+            machine.ObserveInjectedAlt(0xA5, isKeyDown: true);
+            // Windows reports Alt up throughout, so every trigger clears a missed release and passes through.
+            machine.ObserveAlt(0xA4, isKeyDown: true, isKeyUp: false);
+            machine.HandleAltKeyboard(q, isKeyDown: true, isKeyUp: false);
+            machine.HandleAltKeyboard(q, isKeyDown: false, isKeyUp: true);
+            machine.ObserveAlt(0xA4, isKeyDown: true, isKeyUp: false);
+            machine.HandleAltMouse(NativeMethods.WM_MBUTTONDOWN, 0);
+            machine.HandleAltMouse(NativeMethods.WM_MBUTTONUP, 0);
+            machine.ObserveAlt(0xA4, isKeyDown: true, isKeyUp: false);
+            machine.HandleWheel(NativeMethods.WM_MOUSEWHEEL, WheelData(120));
+            machine.ObserveAlt(0xA4, isKeyDown: false, isKeyUp: true);
+            machine.ObserveInjectedAlt(0xA5, isKeyDown: false);
+            machine.AdoptHeldAltFromWindows(_ => false);
+        }
+        Cycle();
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 256; index++) Cycle();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(0, allocated);
+        Assert.Empty(queue.Commands);
+    }
+
+    private static GestureChordStateMachine CreateAltLatchMachine(
+        RecordingInputQueue queue,
+        ThreadLocal<Random> random,
+        NullLoggerService logger,
+        Func<int, bool> isWindowsKeyDown) =>
+        new(ConfigureRuntime(CreateAltLatchProfile()), queue, random, logger, () => false,
+            isWindowsKeyDown: isWindowsKeyDown);
+
+    private static Profile CreateAltLatchProfile()
+    {
+        var profile = CreateProfile();
+        profile.AltMouse.IsEnabled = true;
+        profile.AltMouse.HoldThresholdMilliseconds = 150;
+        profile.AltMouse.Bindings[sWinShortcuts.Models.MouseButton.Middle] = new() { TapKey = Key.A, HoldKey = Key.B };
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.Bindings[Key.Q] = new() { TapKey = Key.A };
+        return profile;
+    }
+
     private static GestureChordStateMachine CreateMachine(
         Profile profile,
         RecordingInputQueue queue,
@@ -428,7 +563,7 @@ public sealed class GestureChordStateMachineTests
             random,
             new NullLoggerService(),
             () => rightButtonPressed);
-        machine.SeedAltPressed(true);
+        machine.SeedAltPressedForTesting(true);
         return machine;
     }
 
