@@ -254,7 +254,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         {
             if ((mods & ModifierKeys.Alt) != 0 && profile.AltMouse.IsEnabled &&
                 profile.AltMouse.Bindings.TryGetValue(button, out var mouseBinding) && mouseBinding.SuppressOriginalWhileAltIsHeld)
-                return "Alt + Mouse uses this shortcut.";
+                return "An Alt + Shortcut binding uses this shortcut.";
             if (button == MouseButton.Right && profile.RightClickHoldBreath.IsEnabled)
                 return "Hold-Breath uses the right mouse button.";
             if (button == MouseButton.Left && profile.RapidFire.IsEnabled)
@@ -272,7 +272,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             return "Windows Launcher uses this shortcut.";
         if ((mods & ModifierKeys.Alt) != 0 && profile.AltKeyboard.IsEnabled &&
             profile.AltKeyboard.Bindings.TryGetValue(definition.ShortcutKey, out var binding) && (binding.TapKey.HasValue || binding.HoldKey.HasValue))
-            return "Alt + Keyboard uses this shortcut.";
+            return "An Alt + Shortcut binding uses this shortcut.";
         if (profile.CombinedMappings.IsEnabled && profile.CombinedMappings.Mappings.Any(m =>
             m.Source.Kind == InputTriggerKind.KeyboardKey && m.Source.Key == definition.ShortcutKey))
             return "Key Mapping uses this key.";

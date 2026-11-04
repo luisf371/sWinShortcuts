@@ -315,6 +315,20 @@ public sealed class MacroMouseShortcutTests
     }
 
     [Fact]
+    public void AltKeyboardConflict_ReportsAltShortcutBindingOnlyWhileBound()
+    {
+        using var service = Create(new RecordingInputSender(), out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = Key.Q, ShortcutModifiers = ModifierKeys.Alt }];
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.Bindings = new() { [Key.Q] = new AltKeyboardBinding { HoldKey = Key.B } };
+        var id = profile.Macros.Definitions[0].Id;
+
+        Assert.Equal("An Alt + Shortcut binding uses this shortcut.", service.GetMacroShortcutError(profile, id));
+        profile.AltKeyboard.Bindings = new() { [Key.Q] = new AltKeyboardBinding() };
+        Assert.Null(service.GetMacroShortcutError(profile, id));
+    }
+
+    [Fact]
     public void AltMouseConflict_KeepsOriginalBindingAndExcludesMacro()
     {
         var sender = new RecordingInputSender();
@@ -322,7 +336,7 @@ public sealed class MacroMouseShortcutTests
         profile.AltMouse.IsEnabled = true;
         profile.AltMouse.Bindings[MouseButton.Middle] = new MouseButtonBinding { TapKey = Key.B };
         Configure(service, profile, MouseButton.Middle, ModifierKeys.Control | ModifierKeys.Alt);
-        Assert.Contains("Alt + Mouse", service.GetMacroShortcutError(profile, profile.Macros.Definitions[0].Id));
+        Assert.Equal("An Alt + Shortcut binding uses this shortcut.", service.GetMacroShortcutError(profile, profile.Macros.Definitions[0].Id));
         Modifiers(service, true);
         Assert.True(Button(service, MouseButton.Middle, true));
         Assert.True(Button(service, MouseButton.Middle, false));

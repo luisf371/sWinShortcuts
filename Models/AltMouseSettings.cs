@@ -26,9 +26,9 @@ public sealed class AltMouseSettings
     }
 
     /// <summary>
-    /// Tap-hold split threshold in milliseconds.
+    /// Tap-hold split threshold in milliseconds, shared by the whole Alt + Shortcut section.
     /// </summary>
-    public const int DefaultHoldThresholdMilliseconds = 150;
+    public const int DefaultHoldThresholdMilliseconds = 200;
 
     public int HoldThresholdMilliseconds { get; set; } = DefaultHoldThresholdMilliseconds;
 }

@@ -1,6 +1,8 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -55,6 +57,79 @@ public sealed class ProfileEditorTabsTemplateTests
                 }
             }
         });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AltShortcut_IsOneSection_ToggleGatesContent_WheelRowsDisableHold(bool windowsProfile) =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var host = LoadProfileTabs();
+            var model = windowsProfile ? ProfileFactory.CreateWindowsProfile() : ProfileFactory.CreateCustomProfile("Game", "game.exe");
+            model.AltMouse.Bindings[sWinShortcuts.Models.MouseButton.Left] = new() { TapKey = System.Windows.Input.Key.F, HoldKey = System.Windows.Input.Key.G };
+            model.AltMouse.WheelUpKey = System.Windows.Input.Key.E;
+            using var profile = new ProfileViewModel(model, new FakeDisplayService(), new RecordingColorControlService());
+            host.Content = profile;
+            host.ContentTemplate = (DataTemplate)host.Resources["ProfileTabs"];
+            host.Measure(new Size(900, 700));
+            host.Arrange(new Rect(0, 0, 900, 700));
+            host.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            var tabs = Assert.Single(Descendants(host).OfType<TabControl>());
+            var keysTab = tabs.Items.OfType<TabItem>().Single(item => (item.Header as string) == "Keys");
+            tabs.SelectedItem = keysTab;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+
+            // Logical tree: a collapsed section is never templated, so its header is absent from the visual tree.
+            var toggles = LogicalDescendants(keysTab).OfType<CheckBox>().ToArray();
+            Assert.DoesNotContain(toggles, box => box.Content is string text && (text.StartsWith("Alt + Mouse") || text.StartsWith("Alt + Keyboard")));
+            var toggle = Assert.Single(toggles, box => (box.Content as string) == "Alt + Shortcut");
+            var section = Assert.Single(LogicalDescendants(keysTab).OfType<GroupBox>(),
+                box => LogicalDescendants(box).Contains(toggle));
+            if (windowsProfile)
+            {
+                Assert.Equal(Visibility.Collapsed, keysTab.Visibility);
+                Assert.Equal(Visibility.Collapsed, section.Visibility);
+                return;
+            }
+
+            Assert.Single(Descendants(section).OfType<CheckBox>());
+            Assert.Single(Descendants(section).OfType<Slider>());
+            var grid = Assert.Single(Descendants(section).OfType<DataGrid>());
+            var content = (StackPanel)section.Content;
+            var page = Assert.IsType<StackPanel>(Assert.IsType<ScrollViewer>(keysTab.Content).Content);
+
+            Assert.False(content.IsEnabled);
+            profile.AltShortcut.IsEnabled = true;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.True(content.IsEnabled);
+            Assert.True(toggle.IsEnabled);
+
+            grid.UpdateLayout();
+            var holdPickers = Descendants(grid).OfType<ComboBox>()
+                .Where(box => BindingOperations.GetBindingExpression(box, Selector.SelectedItemProperty)?.ParentBinding.Path.Path == "HoldKey")
+                .ToDictionary(box => ((AltShortcutBindingEntryViewModel)box.DataContext).Source.Kind);
+            Assert.Equal(2, holdPickers.Count);
+            Assert.True(holdPickers[sWinShortcuts.Models.InputTriggerKind.MouseButton].IsEnabled);
+            Assert.False(holdPickers[sWinShortcuts.Models.InputTriggerKind.MouseWheel].IsEnabled);
+
+            // The profile switch still gates the whole page, including an enabled Alt section.
+            profile.IsEnabled = false;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.False(page.IsEnabled);
+            Assert.False(content.IsEnabled);
+            Assert.False(toggle.IsEnabled);
+        });
+
+    private static IEnumerable<DependencyObject> LogicalDescendants(DependencyObject root)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+        {
+            yield return child;
+            foreach (var descendant in LogicalDescendants(child)) yield return descendant;
+        }
+    }
 
     // The actual tab strip with the app's resources in one lexical scope, as MacroEditorTemplateTests loads the
     // Macros tab: no Application, hooks, or user settings are initialized.

@@ -55,6 +55,10 @@ public sealed class Profile
     // with those defaults, so IniProfileStore.SaveProfileAsync skips it while this flag is set.
     public bool IsPersistenceSuspended { get; set; }
 
+    // Set when [AltShortcut]/[AltShortcutBindings] could not be read; Alt then stays off with no rows
+    // and IsPersistenceSuspended keeps autosave from overwriting the source.
+    public string? AltShortcutLoadError { get; set; }
+
     // F-007: built-in identity is an IMMUTABLE kind assigned at the load origin / factory, NOT derived
     // from the mutable display Name. A custom INI declaring Name="Window [Default]" therefore stays
     // Custom and can never route its save/delete onto Win.ini or bypass deletion guards.

@@ -15,6 +15,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 {
     private readonly IReadOnlyList<Key> _keyOptions;
     private readonly IReadOnlyList<InputTrigger> _combinedSourceOptions;
+    private readonly IReadOnlyList<InputTrigger> _altShortcutSourceOptions;
     private bool _isSyncing;
 
     // F-014/F-015: set by MainViewModel (under its _saveSync) when this VM is detached because its profile
@@ -38,22 +39,20 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             .Concat([InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down)])
             .ToArray();
 
-        AltMouse = new AltMouseViewModel(Model.AltMouse);
-        AltMouse.Changed += (_, _) =>
-        {
-            UpdateSelectableAltMouseSources();
-            OnPropertyChanged(nameof(AvailableAltMouseSources));
-            OnProfileChanged(ProfileChangeKind.AltMouse);
-        };
-        UpdateSelectableAltMouseSources();
+        // Mouse buttons and wheel directions first, so they are not buried after ~95 keys. Alt itself is the modifier.
+        _altShortcutSourceOptions = Enum.GetValues<Models.MouseButton>().Select(InputTrigger.FromMouseButton)
+            .Concat([InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down)])
+            .Concat(_keyOptions.Where(k => k is not (Key.None or Key.LeftAlt or Key.RightAlt)).Distinct().Select(InputTrigger.FromKey))
+            .ToArray();
 
-        AltKeyboard = new AltKeyboardViewModel(Model.AltKeyboard);
-        AltKeyboard.Changed += (_, _) =>
+        AltShortcut = new AltShortcutViewModel(Model.AltMouse, Model.AltKeyboard);
+        AltShortcut.Changed += (_, e) =>
         {
-            OnPropertyChanged(nameof(AvailableTriggerKeys));
-            OnProfileChanged(ProfileChangeKind.AltKeyboard);
+            UpdateSelectableAltShortcutSources();
+            OnPropertyChanged(nameof(AvailableAltShortcutSources));
+            OnProfileChanged(e.Kind);
         };
-        AltKeyboard.Bindings.CollectionChanged += (_, _) => OnPropertyChanged(nameof(AvailableTriggerKeys));
+        UpdateSelectableAltShortcutSources();
 
         CombinedMappings = new ObservableCollection<CombinedMappingEntryViewModel>(
             Model.CombinedMappings.Mappings.Select(e => new CombinedMappingEntryViewModel
@@ -208,40 +207,31 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
     public bool IsPersistenceSuspended => Model.IsPersistenceSuspended;
 
-    public string PersistenceWarning => Model.Macros.LoadError is { Length: > 0 } error
-        ? $"Macros could not be loaded: {error} This profile is read-only to preserve its file."
-        : "This profile could not be read. Changes are disabled to preserve its file; restart after correcting it.";
-
-    public AltMouseViewModel AltMouse { get; }
-
-    public ObservableCollection<AltMouseBindingEntryViewModel> AltMouseBindings => AltMouse.Bindings;
-
-    public AltKeyboardViewModel AltKeyboard { get; }
-
-    public ObservableCollection<AltKeyboardBindingEntryViewModel> AltKeyboardBindings => AltKeyboard.Bindings;
-
-    // Trigger keys = common catalog minus the Alt keys (they ARE the modifier) minus keys already
-    // bound in another row. None never appears (a row always has a concrete trigger).
-    public IReadOnlyList<Key> AvailableTriggerKeys
+    public string PersistenceWarning
     {
         get
         {
-            var used = AltKeyboard.Bindings.Select(b => b.TriggerKey).ToHashSet();
-            return _keyOptions
-                .Where(k => k != Key.LeftAlt && k != Key.RightAlt && !used.Contains(k))
-                .ToList();
+            // Both load errors can occur together; show every one.
+            var errors = new List<string>(2);
+            if (Model.AltShortcutLoadError is { Length: > 0 } altError) errors.Add($"Alt + Shortcut settings could not be loaded: {altError}");
+            if (Model.Macros.LoadError is { Length: > 0 } macroError) errors.Add($"Macros could not be loaded: {macroError}");
+            return errors.Count == 0
+                ? "This profile could not be read. Changes are disabled to preserve its file; restart after correcting it."
+                : string.Join(" ", errors) + " This profile is read-only to preserve its file.";
         }
     }
 
-    public IReadOnlyList<InputTrigger> AvailableAltMouseSources
+    public AltShortcutViewModel AltShortcut { get; }
+
+    public ObservableCollection<AltShortcutBindingEntryViewModel> AltShortcutBindings => AltShortcut.Bindings;
+
+    // Triggers no row uses yet, in catalog order (mouse, wheel, then keys). None never appears.
+    public IReadOnlyList<InputTrigger> AvailableAltShortcutSources
     {
         get
         {
-            var used = AltMouse.Bindings.Select(row => row.Source).ToHashSet();
-            return Enum.GetValues<Models.MouseButton>()
-                .Select(InputTrigger.FromMouseButton)
-                .Concat([InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down)])
-                .Where(source => !used.Contains(source)).ToList();
+            var used = AltShortcut.Bindings.Select(row => row.Source).ToHashSet();
+            return _altShortcutSourceOptions.Where(source => !used.Contains(source)).ToList();
         }
     }
 
@@ -797,84 +787,45 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public void AddAltMouseBinding()
+    // Adds an empty row with the first free trigger (Mouse Left first); does nothing when all are used.
+    public void AddAltShortcutBinding()
     {
-        var availableSources = AvailableAltMouseSources;
+        var availableSources = AvailableAltShortcutSources;
         if (availableSources.Count == 0)
         {
             return;
         }
 
-        AltMouse.Bindings.Add(new AltMouseBindingEntryViewModel(availableSources[0], null, null));
+        AltShortcut.Bindings.Add(new AltShortcutBindingEntryViewModel(availableSources[0], null, null));
     }
 
-    public void RemoveAltMouseBinding(AltMouseBindingEntryViewModel? entry)
+    public void RemoveAltShortcutBinding(AltShortcutBindingEntryViewModel? entry)
     {
         if (entry is null)
         {
             return;
         }
 
-        AltMouse.Bindings.Remove(entry);
+        AltShortcut.Bindings.Remove(entry);
     }
 
-    public void RemoveAllAltMouseBindings()
+    public void RemoveAllAltShortcutBindings()
     {
-        while (AltMouse.Bindings.Count > 0)
+        while (AltShortcut.Bindings.Count > 0)
         {
-            RemoveAltMouseBinding(AltMouse.Bindings[0]);
+            RemoveAltShortcutBinding(AltShortcut.Bindings[0]);
         }
     }
 
-    private void UpdateSelectableAltMouseSources()
+    // Each row lists the triggers no other row uses, plus its own, which it keeps even when it is outside
+    // the catalog (such as F13 loaded from a file). Refreshing raises no profile event.
+    private void UpdateSelectableAltShortcutSources()
     {
-        var available = AvailableAltMouseSources;
-        foreach (var row in AltMouse.Bindings)
+        var used = AltShortcut.Bindings.Select(row => row.Source).ToHashSet();
+        foreach (var row in AltShortcut.Bindings)
         {
-            row.SelectableSources = available.Prepend(row.Source).ToArray();
-        }
-    }
-
-    public void AddAltKeyboardBinding()
-    {
-        var availableKeys = AvailableTriggerKeys;
-        if (availableKeys.Count == 0)
-        {
-            return;
-        }
-
-        var entry = new AltKeyboardBindingEntryViewModel(availableKeys[0], null, null);
-
-        entry.PropertyChanged += (s, e) =>
-        {
-            if (e.PropertyName == nameof(AltKeyboardBindingEntryViewModel.TriggerKey))
-            {
-                OnPropertyChanged(nameof(AvailableTriggerKeys));
-            }
-        };
-
-        AltKeyboard.Bindings.Add(entry);
-        OnPropertyChanged(nameof(AvailableTriggerKeys));
-    }
-
-    public void RemoveAltKeyboardBinding(AltKeyboardBindingEntryViewModel? entry)
-    {
-        if (entry is null)
-        {
-            return;
-        }
-
-        if (AltKeyboard.Bindings.Remove(entry))
-        {
-            OnPropertyChanged(nameof(AvailableTriggerKeys));
-        }
-    }
-
-    public void RemoveAllAltKeyboardBindings()
-    {
-        while (AltKeyboard.Bindings.Count > 0)
-        {
-            RemoveAltKeyboardBinding(AltKeyboard.Bindings[0]);
+            var sources = _altShortcutSourceOptions.Where(source => source == row.Source || !used.Contains(source));
+            row.SelectableSources = (_altShortcutSourceOptions.Contains(row.Source) ? sources : sources.Prepend(row.Source)).ToArray();
         }
     }
 

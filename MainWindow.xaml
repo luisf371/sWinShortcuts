@@ -38,7 +38,6 @@
         <conv:BooleanNegationConverter x:Key="NotConverter" />
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
         <conv:InputTriggerDisplayConverter x:Key="InputTriggerDisplayConverter" />
-        <conv:AvailableTriggerKeysConverter x:Key="AvailableTriggerKeysConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
         
@@ -588,19 +587,19 @@
                                               Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
                                         <GroupBox.Header>
                                             <StackPanel Orientation="Horizontal" MinHeight="22">
-                                                <CheckBox Content="Alt + Mouse Shortcuts"
-                                                          IsChecked="{Binding AltMouse.IsEnabled}"
+                                                <CheckBox Content="Alt + Shortcut"
+                                                          IsChecked="{Binding AltShortcut.IsEnabled}"
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Hold Alt and click for tap/hold actions, or scroll for a wheel tap. Alt stays held, so the app may receive Alt plus the target key. Wheel taps skip detected held targets and discard overload or old input. Avoid targets held by Background Auto-Run movement/sprint: wheel taps can interrupt those posted holds."
+                                                           ToolTip="Hold Alt and press a key or mouse button for tap/hold actions, or scroll for a wheel tap. Releasing before the hold threshold sends Tap; reaching it sends Hold once. Alt stays held, so the app may receive Alt plus the target key. Wheel taps skip detected held targets and discard overload or old input. Avoid targets held by Background Auto-Run movement/sprint: wheel taps can interrupt those posted holds."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                             </StackPanel>
                                         </GroupBox.Header>
                                         <StackPanel Margin="0,8,0,0"
-                                                    IsEnabled="{Binding AltMouse.IsEnabled}"
-                                                    Tag="{Binding AltMouse.IsEnabled}"
+                                                    IsEnabled="{Binding AltShortcut.IsEnabled}"
+                                                    Tag="{Binding AltShortcut.IsEnabled}"
                                                     Style="{StaticResource FeatureToggleContentStyle}">
                                             <!-- Setting rows are Grids: 140px label column + * control
                                                  column, so every group's controls span the full card
@@ -619,7 +618,7 @@
                                                         <ColumnDefinition Width="*" />
                                                         <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
-                                                    <Slider Value="{Binding AltMouse.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}"
+                                                    <Slider Value="{Binding AltShortcut.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}"
                                                             Minimum="10"
                                                             Maximum="1000"
                                                             TickFrequency="5"
@@ -627,7 +626,7 @@
                                                             VerticalAlignment="Center"
                                                             Margin="0,0,8,0" />
                                                     <TextBlock Grid.Column="1"
-                                                               Text="{Binding AltMouse.HoldThresholdMilliseconds, StringFormat='{}{0} ms'}"
+                                                               Text="{Binding AltShortcut.HoldThresholdMilliseconds, StringFormat='{}{0} ms'}"
                                                                VerticalAlignment="Center"
                                                                Width="60"
                                                                TextAlignment="Left"
@@ -636,12 +635,12 @@
                                                 </Grid>
                                                 <Button Grid.Column="2"
                                                         Content="Reset"
-                                                        Command="{Binding AltMouse.ResetHoldThresholdCommand}"
+                                                        Command="{Binding AltShortcut.ResetHoldThresholdCommand}"
                                                         Width="70"
                                                         HorizontalAlignment="Right" />
                                             </Grid>
 
-                                            <DataGrid ItemsSource="{Binding AltMouseBindings}"
+                                            <DataGrid ItemsSource="{Binding AltShortcutBindings}"
                                                       AutoGenerateColumns="False"
                                                       HeadersVisibility="Column"
                                                       CanUserAddRows="False"
@@ -657,7 +656,8 @@
                                                             <DataTemplate>
                                                                 <ComboBox ItemsSource="{Binding SelectableSources}"
                                                                           SelectedItem="{Binding Source, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          IsSynchronizedWithCurrentItem="False">
+                                                                          IsSynchronizedWithCurrentItem="False"
+                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
                                                                     <ComboBox.ItemTemplate>
                                                                         <DataTemplate>
                                                                             <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
@@ -713,7 +713,7 @@
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
                                                                 <Button Content="✕"
-                                                                        Command="{Binding DataContext.RemoveAltMouseBindingCommand, ElementName=RootWindow}"
+                                                                        Command="{Binding DataContext.RemoveAltShortcutBindingCommand, ElementName=RootWindow}"
                                                                         CommandParameter="{Binding}"
                                                                         Width="30"
                                                                         Height="24"
@@ -735,171 +735,12 @@
                                                 </Grid.ColumnDefinitions>
                                                 <Button Grid.Column="0"
                                                         Content="Add Binding"
-                                                        Command="{Binding DataContext.AddAltMouseBindingCommand, ElementName=RootWindow}"
+                                                        Command="{Binding DataContext.AddAltShortcutBindingCommand, ElementName=RootWindow}"
                                                         Width="130"
                                                         Height="32" />
                                                 <Button Grid.Column="1"
                                                         Content="Remove All Bindings"
-                                                        Command="{Binding DataContext.RemoveAllAltMouseBindingsCommand, ElementName=RootWindow}"
-                                                        Width="170"
-                                                        Margin="16,0,0,0"
-                                                        Height="32"
-                                                        HorizontalAlignment="Right" />
-                                            </Grid>
-                                        </StackPanel>
-                                    </GroupBox>
-
-                                    <GroupBox Padding="16" Margin="0,0,0,8"
-                                              Visibility="{Binding IsWindowsProfile, Converter={StaticResource VisibleIfFalse}}">
-                                        <GroupBox.Header>
-                                            <StackPanel Orientation="Horizontal" MinHeight="22">
-                                                <CheckBox Content="Alt + Keyboard Shortcuts"
-                                                          IsChecked="{Binding AltKeyboard.IsEnabled}"
-                                                          Margin="0"
-                                                          VerticalAlignment="Center" />
-                                                <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Hold Alt and press keyboard keys to trigger tap/hold actions. Configure key mappings and hold threshold below."
-                                                           ToolTipService.InitialShowDelay="0"
-                                                           ToolTipService.Placement="Right" />
-                                            </StackPanel>
-                                        </GroupBox.Header>
-                                        <StackPanel Margin="0,8,0,0"
-                                                    IsEnabled="{Binding AltKeyboard.IsEnabled}"
-                                                    Tag="{Binding AltKeyboard.IsEnabled}"
-                                                    Style="{StaticResource FeatureToggleContentStyle}">
-                                            <!-- Setting rows are Grids: 140px label column + * control
-                                                 column, so every group's controls span the full card
-                                                 width like the Keys tab DataGrid instead of stopping
-                                                 at each control's fixed width. -->
-                                            <Grid Margin="0,0,0,8">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="140" />
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="Hold threshold (ms)"
-                                                           VerticalAlignment="Center" />
-                                                <Grid Grid.Column="1">
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="*" />
-                                                        <ColumnDefinition Width="Auto" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <Slider Value="{Binding AltKeyboard.HoldThresholdMilliseconds, UpdateSourceTrigger=PropertyChanged}"
-                                                            Minimum="10"
-                                                            Maximum="1000"
-                                                            TickFrequency="5"
-                                                            IsSnapToTickEnabled="True"
-                                                            VerticalAlignment="Center"
-                                                            Margin="0,0,8,0" />
-                                                    <TextBlock Grid.Column="1"
-                                                               Text="{Binding AltKeyboard.HoldThresholdMilliseconds, StringFormat='{}{0} ms'}"
-                                                               VerticalAlignment="Center"
-                                                               Width="60"
-                                                               TextAlignment="Left"
-                                                               Foreground="{StaticResource AccentBrush}"
-                                                               FontWeight="SemiBold" />
-                                                </Grid>
-                                                <Button Grid.Column="2"
-                                                        Content="Reset"
-                                                        Command="{Binding AltKeyboard.ResetHoldThresholdCommand}"
-                                                        Width="70"
-                                                        HorizontalAlignment="Right" />
-                                            </Grid>
-
-                                            <DataGrid ItemsSource="{Binding AltKeyboardBindings}"
-                                                      AutoGenerateColumns="False"
-                                                      HeadersVisibility="Column"
-                                                      CanUserAddRows="False"
-                                                      CanUserReorderColumns="False"
-                                                      CanUserResizeColumns="False"
-                                                      CanUserDeleteRows="False"
-                                                      Margin="0,0,0,8"
-                                                      RowHeight="32"
-                                                      BorderThickness="0">
-                                                <DataGrid.Columns>
-                                                    <DataGridTemplateColumn Header="Key" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <ComboBox SelectedItem="{Binding TriggerKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, Delay=100}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                                                          IsSynchronizedWithCurrentItem="False">
-                                                                    <ComboBox.ItemsSource>
-                                                                        <MultiBinding Converter="{StaticResource AvailableTriggerKeysConverter}" UpdateSourceTrigger="PropertyChanged">
-                                                                            <Binding Path="DataContext.SelectedProfile.AvailableTriggerKeys" ElementName="RootWindow" Mode="OneWay" />
-                                                                            <Binding Path="TriggerKey" Mode="OneWay" />
-                                                                        </MultiBinding>
-                                                                    </ComboBox.ItemsSource>
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="Tap" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding TapKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="Hold" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding HoldKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="🗑️" Width="Auto">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Button Content="✕"
-                                                                        Command="{Binding DataContext.RemoveAltKeyboardBindingCommand, ElementName=RootWindow}"
-                                                                        CommandParameter="{Binding}"
-                                                                        Width="30"
-                                                                        Height="24"
-                                                                        Padding="0"
-                                                                        FontSize="14"
-                                                                        ToolTip="Remove this binding"
-                                                                        ToolTipService.InitialShowDelay="0"
-                                                                        ToolTipService.Placement="Right" />
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                </DataGrid.Columns>
-                                            </DataGrid>
-
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-                                                <Button Grid.Column="0"
-                                                        Content="Add Binding"
-                                                        Command="{Binding DataContext.AddAltKeyboardBindingCommand, ElementName=RootWindow}"
-                                                        Width="130"
-                                                        Height="32" />
-                                                <Button Grid.Column="1"
-                                                        Content="Remove All Bindings"
-                                                        Command="{Binding DataContext.RemoveAllAltKeyboardBindingsCommand, ElementName=RootWindow}"
+                                                        Command="{Binding DataContext.RemoveAllAltShortcutBindingsCommand, ElementName=RootWindow}"
                                                         Width="170"
                                                         Margin="16,0,0,0"
                                                         Height="32"

@@ -62,11 +62,57 @@ public sealed class RapidFireStateMachineTests
         }
     }
 
+    [Theory]
+    [InlineData(RapidFireSettings.MinIntervalMilliseconds, 14, 12, 12)]
+    [InlineData(RapidFireSettings.MaxIntervalMilliseconds, 22, 20, 30)]
+    public void FirstPress_HeldPress_FirstClickLandsOneIntervalAfterPress(
+        int interval, int expectedLead, int minHold, int maxHold)
+    {
+        var profile = RapidFireProfile();
+        profile.RapidFire.IntervalMilliseconds = interval;
+        var runtime = RunningRuntime(profile);
+        var sender = new RecordingInputSender();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var rapidFire = Create(runtime, sender, random);
+        rapidFire.ConfigureForTesting(profile, foregroundGeneration: 1);
+        // Each send runs while its own phase's delay is still the armed one.
+        var releaseDelay = 0;
+        var clickDelay = 0;
+        sender.MouseResult = (_, isDown, _) =>
+        {
+            if (!isDown) Interlocked.CompareExchange(ref releaseDelay, ArmedDelay(rapidFire), 0);
+            return true;
+        };
+        sender.ClickResult = () =>
+        {
+            Interlocked.CompareExchange(ref clickDelay, ArmedDelay(rapidFire), 0);
+            return LeftClickResult.Sent;
+        };
+
+        rapidFire.HandleLeftButton(isDown: true, allowStart: true);
+        try
+        {
+            rapidFire.FireTimerForTesting();
+            Assert.True(SpinWait.SpinUntil(() => Volatile.Read(ref clickDelay) != 0, TimeSpan.FromSeconds(2)));
+
+            // The release is armed press-relative and the first click one lead after it, so shot 2 is
+            // due one interval after the press (jitter 0), not one handoff gap late.
+            Assert.Equal(expectedLead, clickDelay);
+            Assert.InRange(releaseDelay + clickDelay, interval - 50, interval);
+            Assert.All(sender.MouseHoldMilliseconds, hold => Assert.InRange(hold, minHold, maxHold));
+        }
+        finally
+        {
+            rapidFire.HandleLeftButton(isDown: false, allowStart: false);
+        }
+    }
+
     [Fact]
-    public void FirstPress_HeldPress_ReleasedAtFirstDeadlineThenClicksAfterHandoffGap()
+    public void FirstPress_HeldPress_ReleasedBeforeFirstDeadlineThenClicksAfterHandoffGap()
     {
         var profile = RapidFireProfile();
         profile.RapidFire.IntervalMilliseconds = RapidFireSettings.MinIntervalMilliseconds;
+        var lead = RapidFireStateMachine.HandoffLeadMilliseconds(RapidFireSettings.MinIntervalMilliseconds);
         var runtime = RunningRuntime(profile);
         var sender = new RecordingInputSender();
         long releaseTick = 0;
@@ -94,10 +140,11 @@ public sealed class RapidFireStateMachineTests
             var pressToRelease = Stopwatch.GetElapsedTime(pressTick, Interlocked.Read(ref releaseTick));
             var releaseToClick = Stopwatch.GetElapsedTime(Interlocked.Read(ref releaseTick), Interlocked.Read(ref clickTick));
 
-            // The physical press stays untouched until the first-shot deadline (early-fire tolerance aside).
-            Assert.True(pressToRelease.TotalMilliseconds >= RapidFireSettings.MinIntervalMilliseconds - 2,
+            // The physical press stays untouched until one lead before the first-shot deadline, and the
+            // UP-to-DOWN gap is never shortened (early-fire tolerance aside in both).
+            Assert.True(pressToRelease.TotalMilliseconds >= RapidFireSettings.MinIntervalMilliseconds - lead - 2,
                 $"press released after {pressToRelease.TotalMilliseconds:F1} ms");
-            Assert.True(releaseToClick.TotalMilliseconds >= RapidFireStateMachine.HANDOFF_GAP_MS,
+            Assert.True(releaseToClick.TotalMilliseconds >= lead - 2,
                 $"first click {releaseToClick.TotalMilliseconds:F1} ms after release");
         }
         finally
@@ -120,11 +167,12 @@ public sealed class RapidFireStateMachineTests
         // The hook kick starts the press on the real timer; wait for its release deadline to arm.
         Assert.True(SpinWait.SpinUntil(() => TimerState(rapidFire) == TIMER_ARMED, TimeSpan.FromSeconds(2)));
 
-        // The release waits for the first-shot deadline, not a 10-20 ms click hold, so an ordinary
-        // tap that outlives a click hold still reaches the target at its natural length.
+        // The release waits until one handoff lead before the first-shot deadline, not a 20-30 ms click
+        // hold, so an ordinary tap that outlives a click hold still reaches the target at its natural length.
+        var releaseAt = profile.RapidFire.IntervalMilliseconds -
+            RapidFireStateMachine.HandoffLeadMilliseconds(profile.RapidFire.IntervalMilliseconds);
         Assert.Equal(TIMER_ARMED, TimerState(rapidFire));
-        Assert.InRange(ArmedDelay(rapidFire), profile.RapidFire.IntervalMilliseconds - 50,
-            profile.RapidFire.IntervalMilliseconds);
+        Assert.InRange(ArmedDelay(rapidFire), releaseAt - 50, releaseAt);
 
         rapidFire.HandleLeftButton(isDown: false, allowStart: false);
         rapidFire.FireTimerForTesting();

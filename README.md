@@ -41,15 +41,13 @@ moment that program comes to the foreground.
 
 ### Remapping & Input
 
-- **Alt + Mouse shortcuts** — while Alt is held, every mouse button becomes two shortcuts:
-  *tapping* it and *holding* it, each mappable to any key (150 ms threshold by default
-  decides which one you meant).
-  - *FPS example: Alt + tap Mouse4 → throw grenade · Alt + hold Mouse5 → hold melee.*
-- **Alt + Keyboard shortcuts** — the same tap/hold idea driven by keys instead of mouse
-  buttons: while Alt is held, *tapping* a bound key and *holding* it each fire their own
-  mapped key (same 150 ms threshold). Handy when a game reads mouse input in a way that
-  sidesteps Alt+Mouse suppression.
-  - *FPS example: Alt + tap `Q` → throw grenade · Alt + hold `E` → hold melee.*
+- **Alt + Shortcut** — while Alt is held, a bound key or mouse button becomes two shortcuts:
+  *tapping* it and *holding* it, each mappable to any key. One hold threshold (200 ms for
+  new profiles and **Reset**) decides which one you meant: releasing before it sends Tap,
+  reaching it sends Hold. Hold sends one tap of its key; it is not held until you release.
+  One switch turns key, mouse button and wheel triggers on or off together, and one grid
+  lists them all (mouse buttons and wheel directions first, then keys).
+  - *FPS example: Alt + tap Mouse4 → throw grenade · Alt + hold `Q` → quick melee.*
 - **Key remaps** — map any key to any other key. The original key is suppressed by default,
   so the remap fully replaces it (you can let the original through if you want both
   behaviors). Remaps can also be scoped to **only while right mouse is held** — your normal
@@ -57,8 +55,8 @@ moment that program comes to the foreground.
   - *FPS example: while aiming, `E` → `4` to pull out equipment — the rest of the time `E`
     still does its normal interact.*
 - **Mouse wheel shortcuts** — select **Wheel Up** or **Wheel Down** as a Key Mapping
-  source to tap a key, optionally with **Right Click Only** checked. Alt + Mouse also
-  includes Wheel Up/Down in its shortcut dropdown; wheel rows use **Tap**, with **Hold** disabled.
+  source to tap a key, optionally with **Right Click Only** checked. Alt + Shortcut also
+  includes Wheel Up/Down in its trigger dropdown; wheel rows use **Tap**, with **Hold** disabled.
 - **Caps Lock repurposing** — **Normal** mirrors Caps Lock down/up; **2x Normal** sends
   one full key tap on press and another on release; **Disabled** suppresses the key.
   **Remap Key** substitutes your chosen output key for Caps Lock. While a remapped 2x press is
@@ -161,7 +159,7 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
 
 1. **Create a profile** — click *Add*, give it a name, and pick (or browse to) the target
    executable. Every setting below becomes a per-profile option.
-2. **Configure** — enable the features you want for that app: Alt+Mouse / Alt+Keyboard
+2. **Configure** — enable the features you want for that app: Alt + Shortcut
    bindings, remaps, auto-run, rapid fire, color presets, etc. Changes save automatically.
 3. **Switch** — focus the target application and the profile activates on its own. The
    tray icon and title reflect what's active.
@@ -175,8 +173,8 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
 In a custom profile, enable **Key Mapping**, add a row, and choose **Wheel Up** or
 **Wheel Down** as its source. Choose a keyboard target and check **Right Click Only**
 if it should work only while the right mouse button is held. For an Alt gesture,
-enable **Alt + Mouse**, add a binding, choose **Wheel Up** or **Wheel Down** in its
-shortcut dropdown, and set **Tap** to the target key. **Hold** is disabled for wheel
+enable **Alt + Shortcut**, add a binding, choose **Wheel Up** or **Wheel Down** in its
+trigger dropdown, and set **Tap** to the target key. **Hold** is disabled for wheel
 rows. An assigned Alt gesture takes priority while Alt is held; otherwise an eligible
 Key Mapping can run.
 
@@ -324,11 +322,36 @@ Everything lives under `%APPDATA%\sWinShortcuts\`:
 |---|---|
 | `sWinShortcuts.ini` | App-level settings (`[App]` toggle keys, start-minimized) and window state |
 | `Profiles\<Name>.ini` | One file per profile — all feature settings |
+| `Profiles\<Name>.ini.pre-alt-shortcut.bak` | One-time copy of a profile from before the Alt + Shortcut merge |
 | `Win.ini` | The built-in `Window [Default]` global profile, including display color settings |
 | `debug.log` | Verbose debug output (when enabled in Settings) |
 | `crash.log` | Crash reports |
 
 Profiles are plain INI — edit them directly, then restart the app to apply.
+
+### Alt + Shortcut conversion
+
+Alt + Shortcut settings are stored in `[AltShortcut]` (`Version`, `Enabled`, `HoldThreshold`)
+and `[AltShortcutBindings]` (`Mouse:Left=F|G`, `Wheel:Up=E|`, `Key:Q=Z|X`; `Tap|Hold`, either
+side empty). Profiles saved by older builds have separate `[AltMouse]` and `[AltKeyboard]`
+sections; they are converted when loaded, and nothing changes on disk until the next save:
+
+- **On/off:** a section counts only if it has a row with a target. If both had rows and only
+  one was on, Alt + Shortcut is on and the rows of the section that was off are removed
+  (they never ran).
+- **Hold threshold:** the value that affected Hold rows is kept. If both sections had Hold
+  rows with different values, the Alt + Mouse value is used for both. A missing value reads
+  as the old 150 ms.
+- Mouse rows for buttons that do not exist are dropped. Every removal or replaced threshold
+  is written to `debug.log` when debug logging is on.
+
+The first save after conversion copies the original file to `<Name>.ini.pre-alt-shortcut.bak`
+once; that copy is never replaced. Older builds do not read the new sections: they show the
+profile's Alt shortcuts as off and empty, and saving there drops them. To roll back, close the
+app and rename the backup over the `.ini` file.
+
+If `[AltShortcut]` or `[AltShortcutBindings]` contains an error, the profile loads with Alt +
+Shortcut off and becomes read-only so the file is not overwritten; fix the file and restart.
 
 ## Project Layout
 

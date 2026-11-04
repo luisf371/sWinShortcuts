@@ -379,49 +379,21 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
-    private void AddAltMouseBinding()
+    private void AddAltShortcutBinding()
     {
-        SelectedProfile?.AddAltMouseBinding();
+        SelectedProfile?.AddAltShortcutBinding();
     }
 
     [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
-    private void RemoveAltMouseBinding(AltMouseBindingEntryViewModel? entry)
+    private void RemoveAltShortcutBinding(AltShortcutBindingEntryViewModel? entry)
     {
-        if (SelectedProfile is null)
-        {
-            return;
-        }
-
-        SelectedProfile.RemoveAltMouseBinding(entry);
+        SelectedProfile?.RemoveAltShortcutBinding(entry);
     }
 
     [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
-    private void RemoveAllAltMouseBindings()
+    private void RemoveAllAltShortcutBindings()
     {
-        SelectedProfile?.RemoveAllAltMouseBindings();
-    }
-
-    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
-    private void AddAltKeyboardBinding()
-    {
-        SelectedProfile?.AddAltKeyboardBinding();
-    }
-
-    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
-    private void RemoveAltKeyboardBinding(AltKeyboardBindingEntryViewModel? entry)
-    {
-        if (SelectedProfile is null)
-        {
-            return;
-        }
-
-        SelectedProfile.RemoveAltKeyboardBinding(entry);
-    }
-
-    [RelayCommand(CanExecute = nameof(CanEditCustomProfileFeatures))]
-    private void RemoveAllAltKeyboardBindings()
-    {
-        SelectedProfile?.RemoveAllAltKeyboardBindings();
+        SelectedProfile?.RemoveAllAltShortcutBindings();
     }
 
     [RelayCommand(CanExecute = nameof(CanModifyProfile))]
@@ -546,12 +518,9 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         RemoveProfileCommand.NotifyCanExecuteChanged();
         SaveProfileCommand.NotifyCanExecuteChanged();
-        AddAltMouseBindingCommand.NotifyCanExecuteChanged();
-        RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
-        RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
-        AddAltKeyboardBindingCommand.NotifyCanExecuteChanged();
-        RemoveAltKeyboardBindingCommand.NotifyCanExecuteChanged();
-        RemoveAllAltKeyboardBindingsCommand.NotifyCanExecuteChanged();
+        AddAltShortcutBindingCommand.NotifyCanExecuteChanged();
+        RemoveAltShortcutBindingCommand.NotifyCanExecuteChanged();
+        RemoveAllAltShortcutBindingsCommand.NotifyCanExecuteChanged();
         ModifyProfileCommand.NotifyCanExecuteChanged();
         AddCombinedMappingCommand.NotifyCanExecuteChanged();
         RemoveCombinedMappingCommand.NotifyCanExecuteChanged();
@@ -874,10 +843,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
             {
                 AddCombinedMappingCommand.NotifyCanExecuteChanged();
             }
-            RemoveAltMouseBindingCommand.NotifyCanExecuteChanged();
-            RemoveAllAltMouseBindingsCommand.NotifyCanExecuteChanged();
-            RemoveAltKeyboardBindingCommand.NotifyCanExecuteChanged();
-            RemoveAllAltKeyboardBindingsCommand.NotifyCanExecuteChanged();
+            RemoveAltShortcutBindingCommand.NotifyCanExecuteChanged();
+            RemoveAllAltShortcutBindingsCommand.NotifyCanExecuteChanged();
             RemoveCombinedMappingCommand.NotifyCanExecuteChanged();
             RemoveAllCombinedMappingsCommand.NotifyCanExecuteChanged();
         }

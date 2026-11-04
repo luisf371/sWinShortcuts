@@ -2250,7 +2250,7 @@ public sealed class InputExecutorReliabilityTests
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
 
             Assert.Equal(2, sender.MouseClickThreadIds.Count);
-            Assert.All(sender.MouseHoldMilliseconds, hold => Assert.InRange(hold, 10, 20));
+            Assert.All(sender.MouseHoldMilliseconds, hold => Assert.InRange(hold, 20, 30));
         }
         finally
         {
@@ -2304,13 +2304,15 @@ public sealed class InputExecutorReliabilityTests
             service.FireRapidFireTimerForTesting();
             service.HandleRapidFireLeftButtonForTesting(isDown: false);
 
-            // PRESS STARTED: a still-held physical press is released one full interval after the press
-            // (the deliberate no-immediate-click rule), then the first synthetic click follows the fixed
-            // handoff gap — the line must state both, and must not be confusable with the sticky-arm
-            // "Rapid Fire armed" line.
+            // PRESS STARTED: a still-held physical press is released one handoff lead before the first
+            // deadline (the deliberate no-immediate-click rule), and the first synthetic click lands one
+            // full interval after the press — the line must state both, and must not be confusable with
+            // the sticky-arm "Rapid Fire armed" line.
             var pressStarted = Assert.Single(logger.Messages, m => m.StartsWith("Rapid Fire press started:"));
-            Assert.Contains($"physical press released at +{RapidFireSettings.MaxIntervalMilliseconds} ms if still held", pressStarted);
-            Assert.Contains($"first synthetic click {RapidFireStateMachine.HANDOFF_GAP_MS} ms later", pressStarted);
+            var releaseAt = RapidFireSettings.MaxIntervalMilliseconds -
+                RapidFireStateMachine.HandoffLeadMilliseconds(RapidFireSettings.MaxIntervalMilliseconds);
+            Assert.Contains($"physical press released at +{releaseAt} ms if still held", pressStarted);
+            Assert.Contains($"first synthetic click at +{RapidFireSettings.MaxIntervalMilliseconds} ms", pressStarted);
             Assert.Contains($"interval={RapidFireSettings.MaxIntervalMilliseconds}", pressStarted);
             Assert.Contains("jitter=0", pressStarted);
 

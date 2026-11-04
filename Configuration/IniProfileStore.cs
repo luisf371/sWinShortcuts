@@ -159,6 +159,11 @@ public sealed class IniProfileStore : IProfileStore
             ? SerializeWindowsProfile(profile)
             : SerializeProfile(profile);
 
+        if (!profile.IsWindowsProfile)
+        {
+            BackUpSplitAltProfile(path);
+        }
+
         document.Save(path);
         profile.SourcePath = path;
 
@@ -250,8 +255,7 @@ public sealed class IniProfileStore : IProfileStore
         profile.SourcePath = path;
         profile.IsEnabled = document.GetBoolean("Profile", "Enabled", true);
 
-        DeserializeAltMouse(document, profile.AltMouse);
-        DeserializeAltKeyboard(document, profile.AltKeyboard);
+        LoadAltShortcut(document, profile);
         DeserializeCombinedMappings(document, profile.CombinedMappings);
         DeserializeRightClickHoldBreath(document, profile.RightClickHoldBreath);
         DeserializeAutoRun(document, profile.AutoRun);
@@ -590,6 +594,247 @@ public sealed class IniProfileStore : IProfileStore
         }
     }
 
+    private static bool HasAltShortcutSections(IniDocument document) =>
+        document.ContainsSection("AltShortcut") || document.ContainsSection("AltShortcutBindings");
+
+    private static bool HasSplitAltSections(IniDocument document) =>
+        document.ContainsSection("AltMouse") || document.ContainsSection("AltMouseBindings") ||
+        document.ContainsSection("AltKeyboard") || document.ContainsSection("AltKeyboardBindings");
+
+    // Section presence picks the format: the combined sections win over stale split ones, and a file with
+    // only split sections converts in memory. Loading never writes; the next save writes the new format.
+    private void LoadAltShortcut(IniDocument document, Profile profile)
+    {
+        if (HasAltShortcutSections(document))
+        {
+            try
+            {
+                ReadAltShortcutV1(document, profile.AltMouse, profile.AltKeyboard);
+            }
+            catch (FormatException ex)
+            {
+                // Like LoadMacros: the models keep their fresh defaults (off, no rows) and the source is preserved.
+                profile.AltShortcutLoadError = ex.Message;
+                profile.IsPersistenceSuspended = true;
+                _logger?.Log($"[Profile] Invalid Alt + Shortcut settings in '{profile.SourcePath}': {ex.Message}. Persistence suspended to preserve the source.");
+            }
+            return;
+        }
+
+        if (!HasSplitAltSections(document))
+        {
+            return; // defaults: off, 200 ms, no rows
+        }
+
+        // Historical fallback, not the new default: the split readers kept the current value when a
+        // threshold was missing or unreadable, and that value was 150 ms.
+        profile.AltMouse.HoldThresholdMilliseconds = profile.AltKeyboard.HoldThresholdMilliseconds = 150;
+        DeserializeAltMouse(document, profile.AltMouse);
+        DeserializeAltKeyboard(document, profile.AltKeyboard);
+        foreach (var note in MergeLegacyAlt(profile.AltMouse, profile.AltKeyboard))
+        {
+            _logger?.Log($"[Profile] Alt + Shortcut conversion of '{profile.SourcePath}': {note}");
+        }
+    }
+
+    // Folds the two split toggles and thresholds into one, keeping what actually affected input. Mutates
+    // the freshly loaded dictionaries in place, which is safe because they are not published yet.
+    private static List<string> MergeLegacyAlt(AltMouseSettings mouse, AltKeyboardSettings keyboard)
+    {
+        var notes = new List<string>();
+        foreach (var button in mouse.Bindings.Keys.Where(button => !Enum.IsDefined(button)).ToList())
+        {
+            mouse.Bindings.Remove(button); // inert: the hook only tracks the five defined buttons
+            notes.Add(FormattableString.Invariant($"removed undefined mouse button {(int)button}"));
+        }
+
+        static bool Bound(Key? tap, Key? hold) => tap is not null || hold is not null;
+        var mouseLive = mouse.WheelUpKey is not null || mouse.WheelDownKey is not null ||
+            mouse.Bindings.Values.Any(binding => Bound(binding.TapKey, binding.HoldKey));
+        var keyLive = keyboard.Bindings.Values.Any(binding => Bound(binding.TapKey, binding.HoldKey));
+
+        var enabled = (mouseLive, keyLive) switch
+        {
+            (true, false) => mouse.IsEnabled,
+            (false, true) => keyboard.IsEnabled,
+            _ => mouse.IsEnabled || keyboard.IsEnabled
+        };
+        if (mouseLive && keyLive && mouse.IsEnabled != keyboard.IsEnabled)
+        {
+            // The switched-off family never ran; turning the shared toggle on must not start it.
+            if (mouse.IsEnabled)
+            {
+                notes.Add(FormattableString.Invariant($"removed {keyboard.Bindings.Count} Alt + Keyboard rows that were switched off"));
+                keyboard.Bindings.Clear();
+            }
+            else
+            {
+                notes.Add(FormattableString.Invariant($"removed {mouse.Bindings.Count} Alt + Mouse rows and the wheel targets that were switched off"));
+                mouse.Bindings.Clear();
+                mouse.WheelUpKey = mouse.WheelDownKey = null;
+            }
+        }
+
+        var mouseHold = mouse.Bindings.Values.Any(binding => binding.HoldKey is not null);
+        var keyHold = keyboard.Bindings.Values.Any(binding => binding.HoldKey is not null);
+        var (m, k) = (mouse.HoldThresholdMilliseconds, keyboard.HoldThresholdMilliseconds);
+        var threshold = m == k || mouseHold || !keyHold ? m : k;
+        if (m != k && mouseHold && keyHold)
+        {
+            notes.Add(FormattableString.Invariant($"Alt + Keyboard hold threshold {k} ms replaced by {m} ms"));
+        }
+
+        mouse.IsEnabled = keyboard.IsEnabled = enabled;
+        mouse.HoldThresholdMilliseconds = keyboard.HoldThresholdMilliseconds = threshold;
+        return notes;
+    }
+
+    // Strict: everything is parsed into locals and assigned only after every row passes, so a bad file
+    // leaves Alt off with no rows. Never falls back to the split sections.
+    private static void ReadAltShortcutV1(IniDocument document, AltMouseSettings mouse, AltKeyboardSettings keyboard)
+    {
+        if (!document.ContainsSection("AltShortcut"))
+        {
+            throw new FormatException("[AltShortcutBindings] requires an [AltShortcut] section.");
+        }
+
+        if (!document.TryGetInt32("AltShortcut", "Version", out var version) || version != 1)
+        {
+            throw new FormatException("The [AltShortcut] Version is missing or unsupported.");
+        }
+
+        if (!document.TryGetBoolean("AltShortcut", "Enabled", out var enabled))
+        {
+            throw new FormatException("[AltShortcut] Enabled is missing or malformed.");
+        }
+
+        if (!document.TryGetInt32("AltShortcut", "HoldThreshold", out var threshold))
+        {
+            throw new FormatException("[AltShortcut] HoldThreshold is missing or malformed.");
+        }
+
+        var buttons = new Dictionary<Models.MouseButton, MouseButtonBinding>();
+        var keys = new Dictionary<Key, AltKeyboardBinding>();
+        Key? wheelUp = null, wheelDown = null;
+        var sources = new HashSet<InputTrigger>();
+        // Blank values never get here: IniDocument drops them, so "Key:Q=" deletes the row and "Key:Q=|" keeps a draft.
+        foreach (var (name, value) in document.GetSection("AltShortcutBindings"))
+        {
+            // Commas are rejected first: Enum.TryParse ORs comma lists ("Mouse:Left, Right" would read as Middle).
+            var source = name.Contains(',') ? InputTrigger.None : InputTriggerSerializer.Deserialize(name);
+            if (source.Kind == InputTriggerKind.None || source.Key is Key.LeftAlt or Key.RightAlt)
+            {
+                throw new FormatException($"[AltShortcutBindings] {name} is not a supported trigger.");
+            }
+
+            var fields = value.Split('|');
+            if (value.Contains(',') || fields.Length != 2 ||
+                !TryReadAltTarget(fields[0], out var tap) || !TryReadAltTarget(fields[1], out var hold))
+            {
+                throw new FormatException($"[AltShortcutBindings] {name} must be Tap|Hold with valid keys.");
+            }
+
+            if (!sources.Add(source))
+            {
+                throw new FormatException($"[AltShortcutBindings] {name} repeats the trigger of another row.");
+            }
+
+            switch (source.Kind)
+            {
+                case InputTriggerKind.MouseButton:
+                    buttons[source.MouseButton] = new MouseButtonBinding { TapKey = tap, HoldKey = hold };
+                    break;
+                case InputTriggerKind.KeyboardKey:
+                    keys[source.Key] = new AltKeyboardBinding { TapKey = tap, HoldKey = hold };
+                    break;
+                default:
+                    if (hold is not null)
+                    {
+                        throw new FormatException($"[AltShortcutBindings] {name} is a wheel trigger and supports Tap only.");
+                    }
+
+                    if (source.Wheel == MouseWheelDirection.Up) wheelUp = tap; else wheelDown = tap;
+                    break;
+            }
+        }
+
+        mouse.IsEnabled = keyboard.IsEnabled = enabled;
+        mouse.HoldThresholdMilliseconds = keyboard.HoldThresholdMilliseconds = Math.Max(10, threshold);
+        mouse.Bindings = buttons;
+        mouse.WheelUpKey = wheelUp;
+        mouse.WheelDownKey = wheelDown;
+        keyboard.Bindings = keys;
+    }
+
+    // An empty or None field is unassigned; anything else must be a key the serializer accepts.
+    private static bool TryReadAltTarget(string field, out Key? key)
+    {
+        key = KeySerializer.Deserialize(field);
+        return key is not null || string.IsNullOrWhiteSpace(field) ||
+            field.Trim().Equals("None", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void WriteAltShortcut(IniDocument document, AltMouseSettings mouse, AltKeyboardSettings keyboard)
+    {
+        // The loader and editor keep both runtime objects in step; a mismatch is a programming error.
+        if (mouse.IsEnabled != keyboard.IsEnabled || mouse.HoldThresholdMilliseconds != keyboard.HoldThresholdMilliseconds)
+        {
+            throw new InvalidOperationException("Alt + Shortcut mouse and keyboard settings disagree on the toggle or hold threshold.");
+        }
+
+        // Metadata is always written, so an empty or switched-off setup stays authoritative over split sections.
+        document.SetInt32("AltShortcut", "Version", 1);
+        document.SetBoolean("AltShortcut", "Enabled", mouse.IsEnabled);
+        document.SetInt32("AltShortcut", "HoldThreshold", mouse.HoldThresholdMilliseconds);
+
+        // Fixed row order (buttons, wheel up, wheel down, keys) so saving twice gives identical bytes.
+        foreach (var (button, binding) in mouse.Bindings.OrderBy(pair => pair.Key))
+        {
+            WriteRow(InputTrigger.FromMouseButton(button), binding.TapKey, binding.HoldKey);
+        }
+
+        if (mouse.WheelUpKey is { } wheelUp) WriteRow(InputTrigger.FromWheel(MouseWheelDirection.Up), wheelUp, null);
+        if (mouse.WheelDownKey is { } wheelDown) WriteRow(InputTrigger.FromWheel(MouseWheelDirection.Down), wheelDown, null);
+
+        var keys = keyboard.Bindings;
+        foreach (var key in KeyCatalog.SortKeys(keys.Keys))
+        {
+            WriteRow(InputTrigger.FromKey(key), keys[key].TapKey, keys[key].HoldKey);
+        }
+
+        void WriteRow(InputTrigger source, Key? tap, Key? hold)
+        {
+            var name = InputTriggerSerializer.Serialize(source);
+            var value = FormatTapHold(tap, hold); // "|" keeps an empty draft row: SetValue drops empty values
+            if (source.Kind == InputTriggerKind.None || source.Key is Key.LeftAlt or Key.RightAlt ||
+                InputTriggerSerializer.Deserialize(name) != source || !RoundTrips(tap) || !RoundTrips(hold))
+            {
+                throw new InvalidOperationException($"The Alt + Shortcut row '{name}={value}' would not read back as saved.");
+            }
+
+            document.SetString("AltShortcutBindings", name, value);
+        }
+
+        static bool RoundTrips(Key? key) => key is null || KeySerializer.Deserialize(KeySerializer.Serialize(key)) == key;
+    }
+
+    // First save of a profile still in the split format: keep the original once, for rollback to an older
+    // build. Never replaced; a failed copy fails the save. The .bak extension keeps it out of the *.ini scan.
+    private static void BackUpSplitAltProfile(string path)
+    {
+        var backup = path + ".pre-alt-shortcut.bak";
+        if (!File.Exists(path) || File.Exists(backup))
+        {
+            return;
+        }
+
+        var onDisk = IniDocument.Load(path);
+        if (HasSplitAltSections(onDisk) && !HasAltShortcutSections(onDisk))
+        {
+            File.Copy(path, backup);
+        }
+    }
+
     private static void DeserializeCombinedMappings(IniDocument document, CombinedMappingsSettings settings)
     {
         settings.Mappings.Clear();
@@ -780,31 +1025,7 @@ public sealed class IniProfileStore : IProfileStore
         document.SetString("Profile", "Executable", profile.Executable);
         document.SetBoolean("Profile", "Enabled", profile.IsEnabled);
 
-        var altMouse = profile.AltMouse;
-        document.SetBoolean("AltMouse", "Enabled", altMouse.IsEnabled);
-        document.SetKey("AltMouse", "WheelUp", altMouse.WheelUpKey);
-        document.SetKey("AltMouse", "WheelDown", altMouse.WheelDownKey);
-        document.SetInt32("AltMouse", "HoldThreshold", altMouse.HoldThresholdMilliseconds);
-        
-        foreach (var binding in altMouse.Bindings)
-        {
-            document.SetString(
-                "AltMouseBindings",
-                binding.Key.ToString(),
-                FormatTapHold(binding.Value.TapKey, binding.Value.HoldKey));
-        }
-
-        var altKeyboard = profile.AltKeyboard;
-        document.SetBoolean("AltKeyboard", "Enabled", altKeyboard.IsEnabled);
-        document.SetInt32("AltKeyboard", "HoldThreshold", altKeyboard.HoldThresholdMilliseconds);
-
-        foreach (var binding in altKeyboard.Bindings)
-        {
-            document.SetString(
-                "AltKeyboardBindings",
-                binding.Key.ToString(),
-                FormatTapHold(binding.Value.TapKey, binding.Value.HoldKey));
-        }
+        WriteAltShortcut(document, profile.AltMouse, profile.AltKeyboard);
 
         var mappings = profile.CombinedMappings;
         document.SetBoolean("KeyMappings", "Enabled", mappings.IsEnabled);

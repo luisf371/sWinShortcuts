@@ -34,6 +34,7 @@ internal static class ProfilePersistenceSnapshot
             WindowsLauncher = CloneWindowsLauncher(source.WindowsLauncher),
             SourcePath = source.SourcePath,
             IsPersistenceSuspended = source.IsPersistenceSuspended,
+            AltShortcutLoadError = source.AltShortcutLoadError,
             Kind = source.Kind
         };
 

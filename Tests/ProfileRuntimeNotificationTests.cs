@@ -69,52 +69,147 @@ public sealed class ProfileRuntimeNotificationTests
     }
 
     [Fact]
-    public void AltMouseSources_ExhaustionDoesNotDuplicate_RowsRetainOwnSource()
+    public void AltShortcutSources_MouseAndWheelFirst_ExhaustionDoesNotDuplicate_RowsRetainOwnSource()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService(),
+            keyOptions: [Key.B, Key.A, Key.LeftAlt, Key.RightAlt, Key.None, Key.B]);
+
+        for (var i = 0; i < 10; i++) viewModel.AddAltShortcutBinding();
+
+        Assert.Equal(
+            Enum.GetValues<AppMouseButton>().Select(InputTrigger.FromMouseButton)
+                .Concat([InputTrigger.FromWheel(MouseWheelDirection.Up), InputTrigger.FromWheel(MouseWheelDirection.Down),
+                    InputTrigger.FromKey(Key.B), InputTrigger.FromKey(Key.A)]),
+            viewModel.AltShortcutBindings.Select(row => row.Source));
+        Assert.Empty(viewModel.AvailableAltShortcutSources);
+        Assert.All(viewModel.AltShortcutBindings, row => Assert.Equal(row.Source, Assert.Single(row.SelectableSources)));
+        var removed = viewModel.AltShortcutBindings[5];
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), removed.Source);
+        removed.TapKey = Key.E;
+        Assert.Equal(Key.E, profile.AltMouse.WheelUpKey);
+        viewModel.RemoveAltShortcutBinding(removed);
+        Assert.Null(profile.AltMouse.WheelUpKey);
+        Assert.Equal(removed.Source, Assert.Single(viewModel.AvailableAltShortcutSources));
+        Assert.All(viewModel.AltShortcutBindings, row => Assert.Contains(removed.Source, row.SelectableSources));
+    }
+
+    [Fact]
+    public void AltShortcutSources_DefaultCatalog_ListsMouseThenWheelThenKeysWithoutAlt()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
 
-        for (var i = 0; i < 8; i++) viewModel.AddAltMouseBinding();
+        var sources = viewModel.AvailableAltShortcutSources;
+        Assert.All(sources.Take(5), source => Assert.Equal(InputTriggerKind.MouseButton, source.Kind));
+        Assert.All(sources.Skip(5).Take(2), source => Assert.Equal(InputTriggerKind.MouseWheel, source.Kind));
+        Assert.All(sources.Skip(7), source => Assert.Equal(InputTriggerKind.KeyboardKey, source.Kind));
+        Assert.DoesNotContain(InputTrigger.FromKey(Key.LeftAlt), sources);
+        Assert.DoesNotContain(InputTrigger.FromKey(Key.RightAlt), sources);
+        Assert.DoesNotContain(InputTrigger.None, sources);
 
-        Assert.Equal(7, viewModel.AltMouseBindings.Count);
-        Assert.Empty(viewModel.AvailableAltMouseSources);
-        Assert.All(viewModel.AltMouseBindings, row => Assert.Equal(row.Source, Assert.Single(row.SelectableSources)));
-        var removed = viewModel.AltMouseBindings[5];
-        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), removed.Source);
-        removed.TapKey = Key.E;
-        viewModel.RemoveAltMouseBinding(removed);
-        Assert.Null(profile.AltMouse.WheelUpKey);
-        Assert.Equal(removed.Source, Assert.Single(viewModel.AvailableAltMouseSources));
-        Assert.All(viewModel.AltMouseBindings, row => Assert.Contains(removed.Source, row.SelectableSources));
+        viewModel.AddAltShortcutBinding();
+        Assert.Equal(InputTrigger.FromMouseButton(AppMouseButton.Left), Assert.Single(viewModel.AltShortcutBindings).Source);
     }
 
     [Fact]
-    public void AltMouse_SavedWheelTargets_LoadAsTapOnlyRows()
+    public void AltShortcut_SavedRows_LoadAsOneGridWithWheelsTapOnly()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         profile.AltMouse.Bindings[AppMouseButton.Left] = new() { TapKey = Key.A, HoldKey = Key.B };
         profile.AltMouse.WheelUpKey = Key.E;
         profile.AltMouse.WheelDownKey = Key.Q;
+        profile.AltKeyboard.Bindings[Key.F13] = new() { TapKey = Key.Z, HoldKey = Key.X };
         using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
 
-        Assert.Equal(3, viewModel.AltMouseBindings.Count);
-        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), Assert.Single(viewModel.AltMouseBindings, row => row.TapKey == Key.E).Source);
-        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Down), Assert.Single(viewModel.AltMouseBindings, row => row.TapKey == Key.Q).Source);
-        Assert.Equal(Key.B, Assert.Single(viewModel.AltMouseBindings, row => row.TapKey == Key.A).HoldKey);
-        Assert.All(viewModel.AltMouseBindings, row => Assert.Contains(row.Source, row.SelectableSources));
-        Assert.All(viewModel.AltMouseBindings.Where(row => row.Source.Kind == InputTriggerKind.MouseWheel),
+        Assert.Equal(4, viewModel.AltShortcutBindings.Count);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), Assert.Single(viewModel.AltShortcutBindings, row => row.TapKey == Key.E).Source);
+        Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Down), Assert.Single(viewModel.AltShortcutBindings, row => row.TapKey == Key.Q).Source);
+        Assert.Equal(Key.B, Assert.Single(viewModel.AltShortcutBindings, row => row.TapKey == Key.A).HoldKey);
+        var keyRow = Assert.Single(viewModel.AltShortcutBindings, row => row.TapKey == Key.Z);
+        Assert.True(keyRow.CanHold);
+        Assert.Equal(Key.X, keyRow.HoldKey);
+        // F13 is outside the editor's list, so only its own row offers it, first.
+        Assert.Equal(InputTrigger.FromKey(Key.F13), keyRow.SelectableSources.First());
+        Assert.DoesNotContain(InputTrigger.FromKey(Key.F13), viewModel.AvailableAltShortcutSources);
+        Assert.All(viewModel.AltShortcutBindings, row => Assert.Contains(row.Source, row.SelectableSources));
+        Assert.All(viewModel.AltShortcutBindings.Where(row => row.Source.Kind == InputTriggerKind.MouseWheel),
             row => { Assert.False(row.CanHold); Assert.Equal(Key.None, row.HoldKey); });
+    }
+
+    [Fact]
+    public void AltShortcut_ToggleThresholdAndReset_WriteBothObjectsWithOneEvent()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
+        var changes = new List<ProfileChangeKind>();
+        viewModel.ProfileChanged += (_, e) => changes.Add(e.Kind);
+        const ProfileChangeKind both = ProfileChangeKind.AltMouse | ProfileChangeKind.AltKeyboard;
+
+        viewModel.AltShortcut.IsEnabled = true;
+        Assert.True(profile.AltMouse.IsEnabled && profile.AltKeyboard.IsEnabled);
+        Assert.Equal(both, Assert.Single(changes));
+
+        viewModel.AltShortcut.HoldThresholdMilliseconds = 5;
+        Assert.Equal(10, viewModel.AltShortcut.HoldThresholdMilliseconds);
+        Assert.Equal((10, 10), (profile.AltMouse.HoldThresholdMilliseconds, profile.AltKeyboard.HoldThresholdMilliseconds));
+
+        viewModel.AltShortcut.ResetHoldThresholdCommand.Execute(null);
+        Assert.Equal((200, 200), (profile.AltMouse.HoldThresholdMilliseconds, profile.AltKeyboard.HoldThresholdMilliseconds));
+        Assert.Equal(new[] { both, both, both }, changes);
+
+        viewModel.AltShortcut.IsEnabled = false;
+        Assert.False(profile.AltMouse.IsEnabled || profile.AltKeyboard.IsEnabled);
+        Assert.Equal(4, changes.Count);
+    }
+
+    [Fact]
+    public void AltShortcut_TriggerEdits_ReportTheFamiliesTheyTouch()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.AltKeyboard.Bindings[Key.Q] = new() { TapKey = Key.E, HoldKey = Key.F };
+        using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
+        var row = Assert.Single(viewModel.AltShortcutBindings);
+        var changes = new List<ProfileChangeKind>();
+        viewModel.ProfileChanged += (_, e) => changes.Add(e.Kind);
+        const ProfileChangeKind both = ProfileChangeKind.AltMouse | ProfileChangeKind.AltKeyboard;
+
+        row.HoldKey = Key.G;
+        row.Source = InputTrigger.FromKey(Key.W);
+        Assert.Equal(new[] { ProfileChangeKind.AltKeyboard, ProfileChangeKind.AltKeyboard }, changes);
+        Assert.Equal(Key.G, Assert.Single(profile.AltKeyboard.Bindings, pair => pair.Key == Key.W).Value.HoldKey);
+
+        // Key -> mouse button: Tap/Hold kept, the old key entry is gone, both families are reported.
+        row.Source = InputTrigger.FromMouseButton(AppMouseButton.Middle);
+        Assert.Equal(both, changes[^1]);
+        Assert.Empty(profile.AltKeyboard.Bindings);
+        Assert.Equal((Key.E, Key.G), (profile.AltMouse.Bindings[AppMouseButton.Middle].TapKey!.Value, profile.AltMouse.Bindings[AppMouseButton.Middle].HoldKey!.Value));
+
+        // Mouse -> key -> wheel: Hold is cleared before the wheel edit is reported.
+        row.Source = InputTrigger.FromKey(Key.R);
+        Assert.Equal(both, changes[^1]);
+        Assert.Empty(profile.AltMouse.Bindings);
+        row.Source = InputTrigger.FromWheel(MouseWheelDirection.Down);
+        Assert.Equal(both, changes[^1]);
+        Assert.Equal(Key.None, row.HoldKey);
+        Assert.Empty(profile.AltKeyboard.Bindings);
+        Assert.Equal(Key.E, profile.AltMouse.WheelDownKey);
+        Assert.Equal(5, changes.Count);
+
+        // A picker refresh changes no model and raises no profile event.
+        row.SelectableSources = [];
+        Assert.Equal(5, changes.Count);
     }
 
     [Theory]
     [InlineData(MouseWheelDirection.Up)]
     [InlineData(MouseWheelDirection.Down)]
-    public void AltMouse_ChangingBetweenButtonAndWheel_MovesTapAndClearsHold(MouseWheelDirection direction)
+    public void AltShortcut_ChangingBetweenButtonAndWheel_MovesTapAndClearsHold(MouseWheelDirection direction)
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
         profile.AltMouse.Bindings[AppMouseButton.Left] = new() { TapKey = Key.E, HoldKey = Key.F };
         using var viewModel = new ProfileViewModel(profile, new FakeDisplayService(), new RecordingColorControlService());
-        var row = Assert.Single(viewModel.AltMouseBindings);
+        var row = Assert.Single(viewModel.AltShortcutBindings);
         var changes = new List<ProfileChangeKind>();
         viewModel.ProfileChanged += (_, e) => changes.Add(e.Kind);
         var otherDirection = direction == MouseWheelDirection.Up ? MouseWheelDirection.Down : MouseWheelDirection.Up;
@@ -127,7 +222,7 @@ public sealed class ProfileRuntimeNotificationTests
         Assert.Empty(profile.AltMouse.Bindings);
         Assert.Equal(Key.E, direction == MouseWheelDirection.Up ? profile.AltMouse.WheelUpKey : profile.AltMouse.WheelDownKey);
         Assert.Contains(row.Source, row.SelectableSources);
-        Assert.Contains(InputTrigger.FromMouseButton(AppMouseButton.Left), viewModel.AvailableAltMouseSources);
+        Assert.Contains(InputTrigger.FromMouseButton(AppMouseButton.Left), viewModel.AvailableAltShortcutSources);
         row.HoldKey = Key.F;
         Assert.Equal(Key.None, row.HoldKey);
         Assert.Single(changes);
@@ -138,7 +233,7 @@ public sealed class ProfileRuntimeNotificationTests
         row.TapKey = Key.None;
         Assert.Null(profile.AltMouse.WheelUpKey);
         Assert.Null(profile.AltMouse.WheelDownKey);
-        Assert.Single(viewModel.AltMouseBindings);
+        Assert.Single(viewModel.AltShortcutBindings);
         row.TapKey = Key.Q;
 
         row.Source = InputTrigger.FromMouseButton(AppMouseButton.Right);
@@ -218,14 +313,14 @@ public sealed class ProfileRuntimeNotificationTests
             new FakeDisplayService(), new RecordingColorControlService(), runtime);
         await viewModel.InitializeAsync();
         var game = Assert.Single(viewModel.Profiles, vm => ReferenceEquals(vm.Model, profile));
-        var upRow = Assert.Single(game.AltMouseBindings);
+        var upRow = Assert.Single(game.AltShortcutBindings);
         Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), upRow.Source);
         Assert.Equal(Key.R, upRow.TapKey);
         Assert.Empty(runtime.Changes);
 
         upRow.TapKey = Key.E;
-        var downRow = new AltMouseBindingEntryViewModel(InputTrigger.FromWheel(MouseWheelDirection.Down), Key.Q, null);
-        game.AltMouseBindings.Add(downRow);
+        var downRow = new AltShortcutBindingEntryViewModel(InputTrigger.FromWheel(MouseWheelDirection.Down), Key.Q, null);
+        game.AltShortcutBindings.Add(downRow);
         game.AddCombinedMapping();
         var row = Assert.Single(game.CombinedMappings);
         row.Source = InputTrigger.FromWheel(MouseWheelDirection.Down);
@@ -310,6 +405,7 @@ public sealed class ProfileRuntimeNotificationTests
     [InlineData(ProfileChangeKind.Identity)]
     [InlineData(ProfileChangeKind.AltMouse)]
     [InlineData(ProfileChangeKind.AltKeyboard)]
+    [InlineData(ProfileChangeKind.AltMouse | ProfileChangeKind.AltKeyboard)]
     [InlineData(ProfileChangeKind.CombinedMappings)]
     [InlineData(ProfileChangeKind.HoldBreath)]
     [InlineData(ProfileChangeKind.AutoRun)]
@@ -393,10 +489,13 @@ public sealed class ProfileRuntimeNotificationTests
                 profile.Executable = "other.exe";
                 break;
             case ProfileChangeKind.AltMouse:
-                profile.AltMouse.IsEnabled = true;
+                profile.AltShortcutBindings.Add(new AltShortcutBindingEntryViewModel(InputTrigger.FromMouseButton(AppMouseButton.Left), Key.E, null));
                 break;
             case ProfileChangeKind.AltKeyboard:
-                profile.AltKeyboard.IsEnabled = true;
+                profile.AltShortcutBindings.Add(new AltShortcutBindingEntryViewModel(InputTrigger.FromKey(Key.Q), Key.E, null));
+                break;
+            case ProfileChangeKind.AltMouse | ProfileChangeKind.AltKeyboard:
+                profile.AltShortcut.IsEnabled = true;
                 break;
             case ProfileChangeKind.CombinedMappings:
                 profile.CombinedKeyMappingsEnabled = true;
@@ -590,26 +689,32 @@ public sealed class ProfileRuntimeNotificationTests
         viewModel.SelectedProfile = game;
 
         var removedCombined = game.CombinedMappings.ToArray();
-        var removedAltMouse = game.AltMouseBindings.ToArray();
-        var removedAltKeyboard = game.AltKeyboardBindings.ToArray();
+        var removedAlt = game.AltShortcutBindings.ToArray();
+        Assert.Equal(6, removedAlt.Length);
         var changes = new List<ProfileChangeKind>();
         game.ProfileChanged += (_, e) => changes.Add(e.Kind);
 
         viewModel.RemoveAllCombinedMappingsCommand.Execute(null);
-        viewModel.RemoveAllAltMouseBindingsCommand.Execute(null);
-        viewModel.RemoveAllAltKeyboardBindingsCommand.Execute(null);
+        viewModel.RemoveAllAltShortcutBindingsCommand.Execute(null);
 
         Assert.Empty(profile.CombinedMappings.Mappings);
         Assert.Empty(profile.AltMouse.Bindings);
         Assert.Null(profile.AltMouse.WheelUpKey);
         Assert.Null(profile.AltMouse.WheelDownKey);
         Assert.Empty(profile.AltKeyboard.Bindings);
+        // One event per removed row, each naming that row's family.
+        Assert.Equal(
+            new[] { ProfileChangeKind.AltMouse, ProfileChangeKind.AltMouse, ProfileChangeKind.AltMouse, ProfileChangeKind.AltMouse,
+                ProfileChangeKind.AltKeyboard, ProfileChangeKind.AltKeyboard },
+            changes.Where(kind => kind != ProfileChangeKind.CombinedMappings));
+        viewModel.RemoveAllAltShortcutBindingsCommand.Execute(null);
+        Assert.Equal(8, changes.Count);
 
         changes.Clear();
         removedCombined[0].TargetKey = Key.Z;
-        removedAltMouse[0].TapKey = Key.Z;
-        removedAltMouse[^1].TapKey = Key.Z;
-        removedAltKeyboard[0].HoldKey = Key.Z;
+        removedAlt[0].TapKey = Key.Z;
+        removedAlt[2].TapKey = Key.Z;
+        removedAlt[^1].HoldKey = Key.Z;
 
         Assert.Empty(profile.CombinedMappings.Mappings);
         Assert.Empty(profile.AltMouse.Bindings);

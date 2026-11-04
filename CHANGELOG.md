@@ -4,6 +4,24 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## November 4, 2026
+
+### Changed & Improved
+- **Alt + Mouse and Alt + Keyboard Are Now One Section: Alt + Shortcut**:
+  - The Keys tab has one **Alt + Shortcut** section with one on/off switch, one hold threshold, and one binding grid. Its trigger dropdown lists the mouse buttons, Wheel Up and Wheel Down first, then the keys; typing a key selects it. **Add Binding** starts with the first free trigger (Left Mouse Button first). Wheel rows still support **Tap** only.
+  - New profiles and **Reset** now use a **200 ms** hold threshold (was 150 ms). Saved thresholds are kept. With both Tap and Hold set, a press of 150–199 ms on a new or reset setup now sends Tap instead of Hold. Hold sends one tap of its key; it is not held down until release.
+  - Input behavior is otherwise unchanged. Turning the switch on enables key, button and wheel triggers together, and changing the switch or the threshold cancels pending presses of both kinds.
+- **Profiles Convert Automatically**:
+  - Settings now live in `[AltShortcut]` and `[AltShortcutBindings]`. Older files convert when loaded and are rewritten on the next save. If both old sections had bound rows and only one was on, the section that was off loses its rows, since they never ran. If both had Hold rows with different thresholds, the Alt + Mouse value is used. Mouse rows for buttons that do not exist are dropped. Each change is logged.
+  - The first save keeps a one-time copy of the original as `<Name>.ini.pre-alt-shortcut.bak`. Older builds show converted Alt shortcuts as off and empty; to roll back, close the app and rename the backup over the `.ini` file.
+  - A damaged `[AltShortcut]` section loads with Alt + Shortcut off and makes the profile read-only, so autosave cannot overwrite it. The profile warning names the problem, together with any macro error.
+- **Macro Conflict Message**: a macro shortcut that an Alt binding already uses now reports "An Alt + Shortcut binding uses this shortcut."
+- **Rapid Fire Clicks Are Longer and Evenly Spaced**:
+  - Each Rapid Fire click now holds the button for 20–30 ms (was 10–20 ms), so a game that checks the mouse once per frame is less likely to miss one. Below a 60 ms interval the hold is capped at half the interval, so the button still comes up between clicks. Macro mouse clicks with a 0 ms hold use the same timing.
+  - The second shot of a held press no longer comes about 20 ms late. A press still held 22 ms before the first deadline (the interval plus jitter) is released at that point, and the first synthetic click lands on the deadline, so the gap from your press to the next shot matches every later gap. Under a 40 ms interval the 22 ms shrinks to half the interval plus 2 ms.
+  - A tap that ends more than 22 ms before the deadline still reaches the game exactly as pressed. A tap that ends after that point is shortened to it (at least 68 ms at a 90 ms interval).
+  - The debug log's "press started" line now gives the release time and the first click time, both measured from the press.
+
 ## October 5, 2026
 
 ### Changed & Improved

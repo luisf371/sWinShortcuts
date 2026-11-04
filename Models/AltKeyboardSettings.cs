@@ -21,9 +21,9 @@ public sealed class AltKeyboardSettings
     }
 
     /// <summary>
-    /// Tap-hold split threshold in milliseconds.
+    /// Tap-hold split threshold in milliseconds. Alt + Shortcut has one threshold, so this cannot drift.
     /// </summary>
-    public const int DefaultHoldThresholdMilliseconds = 150;
+    public const int DefaultHoldThresholdMilliseconds = AltMouseSettings.DefaultHoldThresholdMilliseconds;
 
     public int HoldThresholdMilliseconds { get; set; } = DefaultHoldThresholdMilliseconds;
 }

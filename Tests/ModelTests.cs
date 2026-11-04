@@ -118,11 +118,11 @@ public class ProfileTests
 public class AltMouseSettingsTests
 {
     [Fact]
-    public void DefaultHoldThreshold_Is150Ms()
+    public void DefaultHoldThreshold_Is200Ms()
     {
         var settings = new AltMouseSettings();
 
-        Assert.Equal(150, settings.HoldThresholdMilliseconds);
+        Assert.Equal(200, settings.HoldThresholdMilliseconds);
     }
 
     [Fact]
@@ -180,11 +180,11 @@ public class MouseButtonBindingTests
 public class AltKeyboardSettingsTests
 {
     [Fact]
-    public void DefaultHoldThreshold_Is150Ms()
+    public void DefaultHoldThreshold_Is200Ms()
     {
         var settings = new AltKeyboardSettings();
 
-        Assert.Equal(150, settings.HoldThresholdMilliseconds);
+        Assert.Equal(200, settings.HoldThresholdMilliseconds);
     }
 
     [Fact]

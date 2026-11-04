@@ -15,6 +15,7 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.Macros.IsEnabled = true;
         profile.Macros.LoadError = "Preserved failure";
         profile.IsPersistenceSuspended = true;
+        profile.AltShortcutLoadError = "Alt failure";
         profile.Macros.Definitions = [new() { Label = "Original", Steps = [new() { Kind = MacroStepKind.Wait, DurationMs = 100 }] }];
 
         var snapshot = ProfilePersistenceSnapshot.Create(profile);
@@ -27,6 +28,7 @@ public sealed class ProfilePersistenceSnapshotTests
         Assert.Equal("Original", Assert.Single(snapshot.Macros.Definitions).Label);
         Assert.Equal(100, Assert.Single(snapshot.Macros.Definitions[0].Steps).DurationMs);
         Assert.Equal("Preserved failure", snapshot.Macros.LoadError);
+        Assert.Equal("Alt failure", snapshot.AltShortcutLoadError);
         Assert.True(snapshot.IsPersistenceSuspended);
     }
 

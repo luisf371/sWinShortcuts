@@ -76,8 +76,9 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Equal("B|True|False", saved.GetString("KeyMappingsOverrides", "A", "missing"));
         Assert.Equal("E|True|True", saved.GetString("KeyMappingsOverrides", "Wheel:Up", "missing"));
         Assert.Equal("Q|False|True", saved.GetString("KeyMappingsOverrides", "Wheel:Down", "missing"));
-        Assert.Equal("F", saved.GetString("AltMouse", "WheelUp", "missing"));
-        Assert.Null(saved.GetKey("AltMouse", "WheelDown"));
+        Assert.Equal("F|", saved.GetString("AltShortcutBindings", "Wheel:Up", "missing"));
+        Assert.Null(saved.GetValue("AltShortcutBindings", "Wheel:Down"));
+        Assert.False(saved.ContainsSection("AltMouse"));
     }
 
     [Fact]
@@ -278,54 +279,6 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task SaveAndLoad_RoundTripsAltMouseSettings()
-    {
-        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "altmouse.exe");
-        profile.AltMouse.IsEnabled = true;
-        profile.AltMouse.HoldThresholdMilliseconds = 75;
-        profile.AltMouse.Bindings[MouseButton.Left] = new MouseButtonBinding
-        {
-            TapKey = Key.F,
-            HoldKey = Key.G
-        };
-        profile.AltMouse.Bindings[MouseButton.Right] = new MouseButtonBinding
-        {
-            TapKey = Key.H
-        };
-        profile.AltMouse.Bindings[MouseButton.Middle] = new MouseButtonBinding
-        {
-            HoldKey = Key.J
-        };
-        profile.AltMouse.Bindings[MouseButton.XButton1] = new MouseButtonBinding();
-        _createdProfiles.Add(profile);
-
-        await _store.SaveProfileAsync(profile, CancellationToken.None);
-        Assert.Equal(
-            "|",
-            IniDocument.Load(profile.SourcePath!).GetString("AltMouseBindings", nameof(MouseButton.XButton1), "missing"));
-        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
-        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
-
-        Assert.NotNull(loaded);
-        Assert.True(loaded.AltMouse.IsEnabled);
-        Assert.Equal(75, loaded.AltMouse.HoldThresholdMilliseconds);
-        
-        Assert.True(loaded.AltMouse.Bindings.ContainsKey(MouseButton.Left));
-        Assert.Equal(Key.F, loaded.AltMouse.Bindings[MouseButton.Left].TapKey);
-        Assert.Equal(Key.G, loaded.AltMouse.Bindings[MouseButton.Left].HoldKey);
-        
-        Assert.True(loaded.AltMouse.Bindings.ContainsKey(MouseButton.Right));
-        Assert.Equal(Key.H, loaded.AltMouse.Bindings[MouseButton.Right].TapKey);
-        Assert.Null(loaded.AltMouse.Bindings[MouseButton.Right].HoldKey);
-
-        Assert.Null(loaded.AltMouse.Bindings[MouseButton.Middle].TapKey);
-        Assert.Equal(Key.J, loaded.AltMouse.Bindings[MouseButton.Middle].HoldKey);
-
-        Assert.Null(loaded.AltMouse.Bindings[MouseButton.XButton1].TapKey);
-        Assert.Null(loaded.AltMouse.Bindings[MouseButton.XButton1].HoldKey);
-    }
-
-    [Fact]
     public async Task LoadProfiles_UnsupportedAltMouseSections_AreIgnored()
     {
         var profilesDirectory = Path.Combine(_root, "Profiles");
@@ -344,54 +297,6 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.True(loaded.AltMouse.IsEnabled);
         Assert.Equal(10, loaded.AltMouse.HoldThresholdMilliseconds);
         Assert.Empty(loaded.AltMouse.Bindings);
-    }
-
-    [Fact]
-    public async Task SaveAndLoad_RoundTripsAltKeyboardSettings()
-    {
-        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "altkeyboard.exe");
-        profile.AltKeyboard.IsEnabled = true;
-        profile.AltKeyboard.HoldThresholdMilliseconds = 75;
-        profile.AltKeyboard.Bindings[Key.Q] = new AltKeyboardBinding
-        {
-            TapKey = Key.F,
-            HoldKey = Key.G
-        };
-        profile.AltKeyboard.Bindings[Key.E] = new AltKeyboardBinding
-        {
-            HoldKey = Key.H // unset TapKey round-trips through the empty-string slot
-        };
-        profile.AltKeyboard.Bindings[Key.R] = new AltKeyboardBinding
-        {
-            TapKey = Key.J
-        };
-        profile.AltKeyboard.Bindings[Key.T] = new AltKeyboardBinding();
-        _createdProfiles.Add(profile);
-
-        await _store.SaveProfileAsync(profile, CancellationToken.None);
-        Assert.Equal(
-            "|",
-            IniDocument.Load(profile.SourcePath!).GetString("AltKeyboardBindings", nameof(Key.T), "missing"));
-        var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
-        var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
-
-        Assert.NotNull(loaded);
-        Assert.True(loaded.AltKeyboard.IsEnabled);
-        Assert.Equal(75, loaded.AltKeyboard.HoldThresholdMilliseconds);
-
-        Assert.True(loaded.AltKeyboard.Bindings.ContainsKey(Key.Q));
-        Assert.Equal(Key.F, loaded.AltKeyboard.Bindings[Key.Q].TapKey);
-        Assert.Equal(Key.G, loaded.AltKeyboard.Bindings[Key.Q].HoldKey);
-
-        Assert.True(loaded.AltKeyboard.Bindings.ContainsKey(Key.E));
-        Assert.Null(loaded.AltKeyboard.Bindings[Key.E].TapKey);
-        Assert.Equal(Key.H, loaded.AltKeyboard.Bindings[Key.E].HoldKey);
-
-        Assert.Equal(Key.J, loaded.AltKeyboard.Bindings[Key.R].TapKey);
-        Assert.Null(loaded.AltKeyboard.Bindings[Key.R].HoldKey);
-
-        Assert.Null(loaded.AltKeyboard.Bindings[Key.T].TapKey);
-        Assert.Null(loaded.AltKeyboard.Bindings[Key.T].HoldKey);
     }
 
     [Fact]
