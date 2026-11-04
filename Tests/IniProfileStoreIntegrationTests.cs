@@ -631,6 +631,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "crosshair.exe");
         profile.Crosshair.IsEnabled = true;
         profile.Crosshair.HideWhileRightButtonHeld = true;
+        profile.Crosshair.HideDelayMilliseconds = 750;
         profile.Crosshair.ImagePath = @"C:\Screens\My Cross Hair.png";
         profile.Crosshair.SizeAdjustment = -25;
         profile.Crosshair.OffsetX = 120;
@@ -642,6 +643,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
 
         Assert.True(loaded.Crosshair.IsEnabled);
         Assert.True(loaded.Crosshair.HideWhileRightButtonHeld);
+        Assert.Equal(750, loaded.Crosshair.HideDelayMilliseconds);
         Assert.Equal(@"C:\Screens\My Cross Hair.png", loaded.Crosshair.ImagePath);
         Assert.Equal(-25, loaded.Crosshair.SizeAdjustment);
         Assert.Equal(120, loaded.Crosshair.OffsetX);

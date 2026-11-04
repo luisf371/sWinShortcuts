@@ -57,6 +57,7 @@ public class ProfileTests
 
         Assert.False(settings.IsEnabled);
         Assert.False(settings.HideWhileRightButtonHeld);
+        Assert.Equal(0, settings.HideDelayMilliseconds);
         Assert.Equal(string.Empty, settings.ImagePath);
         Assert.Equal(CrosshairSettings.DefaultSizeAdjustment, settings.SizeAdjustment);
         Assert.Equal(0, settings.SizeAdjustment);

@@ -22,7 +22,12 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
     // mutate the same Profile, so compare values rather than the Profile reference.
     private bool _shown;
     private bool _reportsRightButton;
+    // _rightButtonHeld means "hidden for the right button"; with a hide delay it trails _rightButtonDown.
     private bool _rightButtonHeld;
+    private bool _rightButtonDown;
+    private int _hideDelayMilliseconds;
+    // Pre-allocated one-shot: the hook-thread path only re-arms it.
+    private readonly System.Threading.Timer _hideDelayTimer;
     private Profile? _appliedProfile;
     private long _appliedForegroundGeneration;
     private StrongBox<bool>? _offsetMode;
@@ -52,6 +57,8 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
         _inputHookService = inputHookService;
         _enqueue = enqueue;
         _dispatcher = System.Windows.Application.Current?.Dispatcher;
+        _hideDelayTimer = new System.Threading.Timer(OnHideDelayElapsed, null,
+            System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
         _inputHookService.RightButtonStateChanged += OnRightButtonStateChanged;
         _inputHookService.CrosshairOffsetToggleRequested += OnCrosshairOffsetToggleRequested;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
@@ -121,9 +128,12 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
             _appliedOffsetX = offsetX;
             _appliedOffsetY = offsetY;
             _appliedHwnd = foregroundHwnd;
+            _hideDelayMilliseconds = profile?.Crosshair.HideDelayMilliseconds ?? 0;
             if (!reportsRightButton)
             {
                 _rightButtonHeld = false;
+                _rightButtonDown = false;
+                _hideDelayTimer.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
             }
 
             // This setter takes no feature lock and may synchronously publish physical state.
@@ -146,10 +156,35 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
                 return;
             }
 
+            _rightButtonDown = isDown;
+            if (isDown && _hideDelayMilliseconds > 0 && !_rightButtonHeld)
+            {
+                _hideDelayTimer.Change(_hideDelayMilliseconds, System.Threading.Timeout.Infinite);
+                return;
+            }
+
+            _hideDelayTimer.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
             _rightButtonHeld = isDown;
         }
 
         // Always enqueue, even on the UI thread. Input callbacks never wait or reload assets.
+        RunOnDispatcher(ApplyVisibilityOnDispatcher, priority: DispatcherPriority.Input);
+    }
+
+    // shortcut: a fire already queued when the button is released and pressed again can hide the
+    // new press early (sub-ms window, never sticks: release still restores). Add a press id if seen.
+    private void OnHideDelayElapsed(object? state)
+    {
+        lock (_gate)
+        {
+            if (_disposed || !_shown || !_reportsRightButton || !_rightButtonDown)
+            {
+                return;
+            }
+
+            _rightButtonHeld = true;
+        }
+
         RunOnDispatcher(ApplyVisibilityOnDispatcher, priority: DispatcherPriority.Input);
     }
 
@@ -314,6 +349,8 @@ public sealed class CrosshairService : ICrosshairService, IDisposable
             _shown = false;
             _reportsRightButton = false;
             _rightButtonHeld = false;
+            _rightButtonDown = false;
+            _hideDelayTimer.Dispose();
             _appliedProfile = null;
             _offsetMode = null;
             _offsetModes.Clear();

@@ -570,6 +570,21 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
+    public int CrosshairHideDelayMilliseconds
+    {
+        get => Model.Crosshair.HideDelayMilliseconds;
+        set
+        {
+            var clamped = Math.Clamp(value, 0, CrosshairSettings.MaxHideDelayMilliseconds);
+            if (Model.Crosshair.HideDelayMilliseconds != clamped)
+            {
+                Model.Crosshair.HideDelayMilliseconds = clamped;
+                OnPropertyChanged();
+                OnProfileChanged(ProfileChangeKind.Crosshair);
+            }
+        }
+    }
+
     public int CrosshairSizeAdjustment
     {
         get => Model.Crosshair.SizeAdjustment;
@@ -979,6 +994,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.RapidFire.RequireRightButton = RapidFireRequireRightButton;
             Model.Crosshair.IsEnabled = CrosshairEnabled;
             Model.Crosshair.HideWhileRightButtonHeld = CrosshairHideWhileRightButtonHeld;
+            Model.Crosshair.HideDelayMilliseconds = CrosshairHideDelayMilliseconds;
             Model.Crosshair.SizeAdjustment = CrosshairSizeAdjustment;
             Model.Crosshair.OffsetX = CrosshairOffsetX;
             Model.Crosshair.OffsetY = CrosshairOffsetY;

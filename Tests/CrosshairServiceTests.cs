@@ -463,6 +463,57 @@ public sealed class CrosshairServiceTests
         Assert.False(hook.RightButtonObservation);
     }
 
+    [Fact]
+    public void SetRightButtonHeld_WithHideDelay_HidesOnlyAfterDelayAndRestoresOnRelease()
+    {
+        var pending = new Queue<Action>();
+        var hook = new FakeInputHookService();
+        using var service = new CrosshairService(new NullLoggerService(), hook,
+            a => { lock (pending) pending.Enqueue(a); });
+        var profile = CreateGatedProfile();
+        profile.Crosshair.HideDelayMilliseconds = 100;
+        service.ApplyProfile(profile, (IntPtr)100);
+        DrainLocked(pending);
+
+        // Released before the delay: never hides.
+        hook.RaiseRightButton(true);
+        DrainLocked(pending);
+        Assert.True(service.AppliedVisibility);
+        hook.RaiseRightButton(false);
+        Thread.Sleep(300);
+        DrainLocked(pending);
+        Assert.True(service.AppliedVisibility);
+
+        // Held past the delay: hides, then release restores.
+        hook.RaiseRightButton(true);
+        DrainLocked(pending);
+        Assert.True(service.AppliedVisibility);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (service.AppliedVisibility && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(10);
+            DrainLocked(pending);
+        }
+        Assert.False(service.AppliedVisibility);
+
+        hook.RaiseRightButton(false);
+        DrainLocked(pending);
+        Assert.True(service.AppliedVisibility);
+    }
+
+    private static void DrainLocked(Queue<Action> pending)
+    {
+        while (true)
+        {
+            Action? callback;
+            lock (pending)
+            {
+                if (!pending.TryDequeue(out callback)) return;
+            }
+            callback();
+        }
+    }
+
     private static void RaiseDisplaySettingsChanged(CrosshairService service)
     {
         var handler = typeof(CrosshairService).GetMethod("OnDisplaySettingsChanged",

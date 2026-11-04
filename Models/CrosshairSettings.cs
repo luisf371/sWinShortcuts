@@ -15,9 +15,15 @@ public sealed class CrosshairSettings
     public const int MinOffset = -500;
     public const int MaxOffset = 500;
 
+    // Right-button hide delay: 0 = hide at once (off); slider steps by HideDelayStepMilliseconds.
+    public const int MaxHideDelayMilliseconds = 1000;
+    public const int HideDelayStepMilliseconds = 50;
+
     public bool IsEnabled { get; set; }
 
     public bool HideWhileRightButtonHeld { get; set; }
+
+    public int HideDelayMilliseconds { get; set; }
 
     public int SizeAdjustment { get; set; } = DefaultSizeAdjustment;
 

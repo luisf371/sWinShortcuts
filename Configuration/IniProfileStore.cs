@@ -1007,6 +1007,8 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.IsEnabled = document.GetBoolean("Crosshair", "Enabled", settings.IsEnabled);
         settings.HideWhileRightButtonHeld = document.GetBoolean("Crosshair", "HideWhileRightButtonHeld", settings.HideWhileRightButtonHeld);
+        settings.HideDelayMilliseconds = Math.Clamp(document.GetInt32("Crosshair", "HideDelayMilliseconds", settings.HideDelayMilliseconds),
+            0, CrosshairSettings.MaxHideDelayMilliseconds);
         settings.ImagePath = document.GetString("Crosshair", "ImagePath", settings.ImagePath);
         // Clamp on read: a hand-edited INI must never produce a negative/oversized overlay.
         settings.SizeAdjustment = Math.Max(CrosshairSettings.MinSizeAdjustment,
@@ -1065,6 +1067,7 @@ public sealed class IniProfileStore : IProfileStore
         var crosshair = profile.Crosshair;
         document.SetBoolean("Crosshair", "Enabled", crosshair.IsEnabled);
         document.SetBoolean("Crosshair", "HideWhileRightButtonHeld", crosshair.HideWhileRightButtonHeld);
+        document.SetInt32("Crosshair", "HideDelayMilliseconds", crosshair.HideDelayMilliseconds);
         document.SetString("Crosshair", "ImagePath", crosshair.ImagePath);
         document.SetInt32("Crosshair", "SizeAdjustment", crosshair.SizeAdjustment);
         document.SetInt32("Crosshair", "OffsetX", crosshair.OffsetX);

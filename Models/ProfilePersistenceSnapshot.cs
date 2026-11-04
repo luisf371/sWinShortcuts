@@ -223,6 +223,7 @@ internal static class ProfilePersistenceSnapshot
         {
             IsEnabled = source.IsEnabled,
             HideWhileRightButtonHeld = source.HideWhileRightButtonHeld,
+            HideDelayMilliseconds = source.HideDelayMilliseconds,
             SizeAdjustment = source.SizeAdjustment,
             OffsetX = source.OffsetX,
             OffsetY = source.OffsetY,
