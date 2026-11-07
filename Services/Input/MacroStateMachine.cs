@@ -11,14 +11,29 @@ namespace sWinShortcuts.Services.Input;
 
 internal sealed class MacroPhysicalState : IMacroInputContext
 {
-    private const int DOWN = 1, SUPPRESSED = 2, TAKEOVER = 4, ACTIVATION = 8, RECORDING_PASSTHROUGH = 16;
+    private const int DOWN = 1, SUPPRESSED = 2, TAKEOVER = 4, ACTIVATION = 8, RECORDING_PASSTHROUGH = 16, PLAY_THROUGH = 32;
+    private static readonly int[] ModifierVirtualKeys = [0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
+    // Alt and Win stay excluded: keys sent under a held Alt or Win become Windows shortcuts (Alt+Tab, Win+D).
+    private static readonly int[] PlayThroughVirtualKeys = [0x10, 0x11, 0xA0, 0xA1, 0xA2, 0xA3];
     private readonly int[] _keys = new int[256];
     private readonly int[] _buttons = new int[6];
     private readonly int[] _keyRevisions = new int[256];
     private int _takeovers;
+    private int _playThroughSession;
 
     internal bool HasTakeovers => Volatile.Read(ref _takeovers) != 0;
-    public bool PhysicalModifiersDown => Modifiers != ModifierKeys.None;
+    // Gates new macro output. Shift/Ctrl held through a Start-on-press activation keep reaching the target with
+    // the macro's keys until released; a fresh modifier press still pauses output.
+    public bool PhysicalModifiersDown
+    {
+        get
+        {
+            if (Volatile.Read(ref _playThroughSession) == 0) return Modifiers != ModifierKeys.None;
+            foreach (var vk in ModifierVirtualKeys)
+                if ((KeyState(vk) & (DOWN | ACTIVATION | PLAY_THROUGH)) == DOWN) return true;
+            return false;
+        }
+    }
     // A consumed activation is held physically but never reaches the target application.
     public bool IsPhysicalKeyDown(int vk) => (uint)vk < 256 && (KeyState(vk) & (DOWN | ACTIVATION)) == DOWN;
     internal bool IsRawKeyDown(int vk) => (uint)vk < 256 && (KeyState(vk) & DOWN) != 0;
@@ -90,6 +105,17 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     {
         if (down && suppressed) Interlocked.Or(ref _buttons[(int)button], SUPPRESSED);
     }
+
+    // Hook thread, at a Start-on-press activation. A key's mark ends at its UP (ObserveKey writes 0); the session
+    // flag ends with playback, so a later on-release session ignores marks left on keys still held.
+    internal void BeginModifierPlayThrough()
+    {
+        foreach (var vk in PlayThroughVirtualKeys)
+            if (IsPhysicalKeyDown(vk)) Interlocked.Or(ref _keys[vk], PLAY_THROUGH);
+        Volatile.Write(ref _playThroughSession, 1);
+    }
+
+    internal void EndModifierPlayThrough() => Volatile.Write(ref _playThroughSession, 0);
 
     internal void TakeKey(int vk)
     {
@@ -180,6 +206,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     private int _busy;
     private int _requestReady;
     private int _cancelled;
+    private int _mouseFrozen;
     private int _recordStopRequested;
     private int _disposed;
     private int _closing;
@@ -209,6 +236,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     internal bool IsBusy => Volatile.Read(ref _busy) != 0;
     internal bool CancelsOnMouseMovement => Volatile.Read(ref _requestReady) != 0 && Current() &&
         !IsRecording && _pending?.Definition.CancelOnMouseMovement == true;
+    // Current() is the failsafe: any cancel lifts the freeze at the next mouse event, even with the worker stuck in a native call.
+    internal bool FreezesMouseMovement => Volatile.Read(ref _mouseFrozen) != 0 && Current();
     internal bool IsRecording => Volatile.Read(ref _recordRequest) is not null;
 
     internal MacroSessionSnapshot GetSession()
@@ -337,6 +366,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                     _failure = null;
                     _foreground = _runtime.ForegroundIdentity;
                     _pending = entry;
+                    if (entry.Definition.StartOnPress) _physical.BeginModifierPlayThrough();
                     Interlocked.Increment(ref _sessionId);
                     Volatile.Write(ref _startedAt, Stopwatch.GetTimestamp());
                     if (!ReferenceEquals(lookup, Volatile.Read(ref _lookup))) Volatile.Write(ref _cancelled, 1);
@@ -599,10 +629,15 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             }
             else
             {
-                Publish(MacroSessionMode.WaitingForShortcutRelease);
-                while ((_pending!.Definition.ShortcutMouseButton is { } shortcutButton
-                    ? _physical.IsRawMouseButtonDown(shortcutButton) : _physical.IsRawKeyDown(_pending.VirtualKey)) ||
-                    _physical.PhysicalModifiersDown) Wait(10);
+                // On press, the held shortcut is a consumed activation the executor ignores. Its held Shift/Ctrl
+                // play through (see BeginModifierPlayThrough); Alt/Win and fresh modifier presses still defer output.
+                if (!_pending!.Definition.StartOnPress)
+                {
+                    Publish(MacroSessionMode.WaitingForShortcutRelease);
+                    while ((_pending.Definition.ShortcutMouseButton is { } shortcutButton
+                        ? _physical.IsRawMouseButtonDown(shortcutButton) : _physical.IsRawKeyDown(_pending.VirtualKey)) ||
+                        _physical.PhysicalModifiersDown) Wait(10);
+                }
                 Array.Clear(_intendedModifiers);
                 var definition = _pending.Definition;
                 var steps = definition.Steps;
@@ -643,6 +678,9 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         finally
         {
             Volatile.Write(ref _cancelled, 1);
+            if (Interlocked.Exchange(ref _mouseFrozen, 0) != 0 && _logger.IsEnabled)
+                _logger.Log($"[Macros] Playback session={_sessionId} mouse freeze lifted at session end");
+            _physical.EndModifierPlayThrough();
             Volatile.Write(ref _movementMonitors, null);
             Volatile.Write(ref _verifyClickPosition, 0);
             Publish(MacroSessionMode.Finishing);
@@ -698,6 +736,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             case MacroStepKind.MouseUp: SendButton(step.MouseButton!.Value, false); break;
             case MacroStepKind.MouseWheel:
                 Send(new InputCommand(Key.None, false, Kind: InputCommandKind.MouseWheel, WheelDelta: step.WheelDelta, HorizontalWheel: step.HorizontalWheel)); break;
+            case MacroStepKind.FreezeMouse: Volatile.Write(ref _mouseFrozen, 1); break;
+            case MacroStepKind.UnfreezeMouse: Volatile.Write(ref _mouseFrozen, 0); break;
         }
     }
 
@@ -841,7 +881,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         {
             if (_logger.IsEnabled)
                 _logger.Log($"[Macros] Session={value.SessionId} state={mode} row={row} elapsed={value.Elapsed.TotalMilliseconds:F0}ms " +
-                    $"toggleMode={_pending?.Definition.ToggleMode ?? false} cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} failure={value.FailureReason ?? "none"}");
+                    $"toggleMode={_pending?.Definition.ToggleMode ?? false} startOnPress={_pending?.Definition.StartOnPress ?? false} cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} failure={value.FailureReason ?? "none"}");
             RaiseChanged();
         }
     }

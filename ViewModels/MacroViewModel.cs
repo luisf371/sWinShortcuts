@@ -75,6 +75,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public string Label { get => _definition.Label; set => Change(_definition with { Label = value ?? string.Empty }, nameof(Label)); }
     public bool IsEnabled { get => _definition.IsEnabled; set => Change(_definition with { IsEnabled = value }, nameof(IsEnabled)); }
     public bool ToggleMode { get => _definition.ToggleMode; set => Change(_definition with { ToggleMode = value }, nameof(ToggleMode)); }
+    public bool StartOnPress { get => _definition.StartOnPress; set => Change(_definition with { StartOnPress = value }, nameof(StartOnPress)); }
     public bool CancelOnMouseMovement { get => _definition.CancelOnMouseMovement; set => Change(_definition with { CancelOnMouseMovement = value }, nameof(CancelOnMouseMovement)); }
     public Key ShortcutKey { get => _definition.ShortcutKey; set => Change(_definition with { ShortcutKey = value, ShortcutMouseButton = null }, nameof(ShortcutKey)); }
     public InputTrigger ShortcutTrigger
@@ -251,7 +252,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     [
         new(MacroStepKind.KeyPress, "Key press"), new(MacroStepKind.KeyDown, "Key down"), new(MacroStepKind.KeyUp, "Key up"),
         new(MacroStepKind.Wait, "Wait"), new(MacroStepKind.MouseClick, "Mouse click"), new(MacroStepKind.MouseDown, "Mouse down"),
-        new(MacroStepKind.MouseUp, "Mouse up"), new(MacroStepKind.MoveTo, "Move to"), new(MacroStepKind.MouseWheel, "Mouse wheel")
+        new(MacroStepKind.MouseUp, "Mouse up"), new(MacroStepKind.MoveTo, "Move to"), new(MacroStepKind.MouseWheel, "Mouse wheel"),
+        new(MacroStepKind.FreezeMouse, "Freeze mouse"), new(MacroStepKind.UnfreezeMouse, "Unfreeze mouse")
     ];
 
     public MacroDefinition ToDefinition() => _definition with { Steps = Steps.Select(step => step.ToModel()).ToArray() };

@@ -209,5 +209,16 @@ public sealed class MacroModelTests
         Assert.NotNull(MacroValidation.GetFormatError(macro with { Steps = [.. macro.Steps, new() { Kind = MacroStepKind.Wait }] }));
     }
 
+    [Fact]
+    public void GetPlaybackError_MouseFreezeSteps_ArePlayableWithoutPairing()
+    {
+        var freeze = new MacroStep { Kind = MacroStepKind.FreezeMouse };
+        var unfreeze = new MacroStep { Kind = MacroStepKind.UnfreezeMouse };
+
+        Assert.Null(MacroValidation.GetPlaybackError(Assigned(freeze, unfreeze)));
+        Assert.Null(MacroValidation.GetPlaybackError(Assigned(freeze)));
+        Assert.Null(MacroValidation.GetPlaybackError(Assigned(unfreeze)));
+    }
+
     private static MacroDefinition Assigned(params MacroStep[] steps) => new() { ShortcutKey = Key.F6, Steps = steps };
 }

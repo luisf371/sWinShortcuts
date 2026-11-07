@@ -1741,7 +1741,7 @@ public sealed class InputHookService : IInputHookService
                              NativeMethods.WM_XBUTTONDOWN or NativeMethods.WM_XBUTTONUP or
                              NativeMethods.WM_MOUSEWHEEL) &&
             !(message == NativeMethods.WM_MOUSEHWHEEL && _runtime.RecordingPaused) &&
-            !(message == NativeMethods.WM_MOUSEMOVE && _macros.CancelsOnMouseMovement))
+            !(message == NativeMethods.WM_MOUSEMOVE && (_macros.CancelsOnMouseMovement || _macros.FreezesMouseMovement)))
         {
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);
         }
@@ -1768,6 +1768,8 @@ public sealed class InputHookService : IInputHookService
 
         if (message == NativeMethods.WM_MOUSEMOVE)
         {
+            // A freeze wins over Cancel on mouse movement: the blocked move must not end the macro.
+            if (_macros.FreezesMouseMovement) return (IntPtr)1;
             if (_macros.CancelsOnMouseMovement)
                 _macros.Cancel("Physical mouse movement interrupted playback.", playbackOnly: true);
             return NativeMethods.CallNextHookEx(_mouseHookHandle, nCode, wParam, lParam);

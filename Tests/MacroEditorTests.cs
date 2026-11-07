@@ -400,6 +400,26 @@ public sealed class MacroEditorTests
         Assert.Equal((0, 0), (empty.SelectedStep!.X, empty.SelectedStep.Y));
     }
 
+    [Theory]
+    [InlineData(MacroStepKind.FreezeMouse, "Freeze mouse")]
+    [InlineData(MacroStepKind.UnfreezeMouse, "Unfreeze mouse")]
+    public void AddStep_MouseFreezeKinds_InsertLabelledRowsWithoutFieldEditors(MacroStepKind kind, string label)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition(), () => true);
+
+        macro.AddStepCommand.Execute(kind);
+
+        var step = Assert.Single(macro.Steps);
+        Assert.Same(step, macro.SelectedStep);
+        Assert.Equal(kind, step.Kind);
+        Assert.Equal(label, step.ActionLabel);
+        Assert.False(step.HasKey || step.HasMouseButton || step.HasCoordinates || step.HasDuration || step.IsWheel);
+        Assert.Empty(step.Error);
+        Assert.Empty(step.Summary);
+        Assert.NotEqual("Pauses before the next step.", step.KindHelp);
+        Assert.Contains(new KeyValuePair<MacroStepKind, string>(kind, label), MacroViewModel.ActionOptions);
+    }
+
     [Fact]
     public void ClearSteps_AsksFirst_AndKeepsNameShortcutAndOptions()
     {

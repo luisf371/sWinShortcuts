@@ -455,6 +455,12 @@
                 <DataTrigger Binding="{Binding IsWheel}" Value="True">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconWheel}" />
                 </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.FreezeMouse}">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMouse}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.UnfreezeMouse}">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMouse}" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding DisplayError}" Value="">
                     <Setter TargetName="ErrorMark" Property="Visibility" Value="Collapsed" />
                     <Setter TargetName="Row" Property="ToolTip" Value="{x:Null}" />
@@ -585,7 +591,7 @@
                           ToolTip="Only enabled macros respond to their shortcut."
                           AutomationProperties.Name="Enable selected macro" />
                 <TextBlock Text="Shortcut" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}"
-                           ToolTip="Hold the selected modifiers, then press the key or mouse button. Release the shortcut to start playback. F12 stops playback." />
+                           ToolTip="Hold the selected modifiers, then press the key or mouse button. Playback starts when you release the shortcut, or when you press it if Start on press is on. F12 stops playback." />
                 <CheckBox Content="Ctrl" IsChecked="{Binding ControlModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Control modifier" />
                 <CheckBox Content="Alt" IsChecked="{Binding AltModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Alt modifier" />
                 <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Shift modifier" />
@@ -601,9 +607,13 @@
             </StackPanel>
             <DockPanel Grid.Row="1" Margin="0,8,0,0">
                 <CheckBox Content="Toggle loop" IsChecked="{Binding ToggleMode}" Margin="0,0,18,0" VerticalAlignment="Center"
-                          ToolTip="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut. Off by default."
+                          ToolTip="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut unless Start on press is on. Off by default."
                           AutomationProperties.Name="Toggle loop"
-                          AutomationProperties.HelpText="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut. Off by default." />
+                          AutomationProperties.HelpText="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut unless Start on press is on. Off by default." />
+                <CheckBox Content="Start on press" IsChecked="{Binding StartOnPress}" Margin="0,0,18,0" VerticalAlignment="Center"
+                          ToolTip="Start playback when you press the shortcut instead of when you release it. Shift or Ctrl held for the shortcut stays held, so the app sees it with the macro's keys (Shift+Tab, for example). Alt and Win still have to be released first, because keys sent with them trigger Windows shortcuts. Off by default."
+                          AutomationProperties.Name="Start on press"
+                          AutomationProperties.HelpText="Start playback when you press the shortcut instead of when you release it. Shift or Ctrl held for the shortcut combines with the macro's keys. Alt and Win still have to be released first. Off by default." />
                 <CheckBox Content="Cancel on mouse movement" IsChecked="{Binding CancelOnMouseMovement}" Margin="0,0,18,0" VerticalAlignment="Center"
                           ToolTip="Stop playback when you move the mouse. Off by default."
                           AutomationProperties.Name="Cancel on mouse movement" />
@@ -693,6 +703,13 @@
                             </MenuItem>
                             <MenuItem Header="Mouse wheel" CommandParameter="{x:Static models:MacroStepKind.MouseWheel}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWheel}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <Separator Style="{StaticResource MacroMenuSeparator}" />
+                            <MenuItem Header="Freeze mouse" CommandParameter="{x:Static models:MacroStepKind.FreezeMouse}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Unfreeze mouse" CommandParameter="{x:Static models:MacroStepKind.UnfreezeMouse}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
                             </MenuItem>
                             <Separator Style="{StaticResource MacroMenuSeparator}" />
                             <MenuItem Header="Wait" CommandParameter="{x:Static models:MacroStepKind.Wait}" Command="{Binding AddStepCommand}">

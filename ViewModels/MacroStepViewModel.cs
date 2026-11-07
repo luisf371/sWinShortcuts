@@ -79,7 +79,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     {
         MacroStepKind.KeyPress => "Key press", MacroStepKind.KeyDown => "Key down", MacroStepKind.KeyUp => "Key up",
         MacroStepKind.MouseClick => "Mouse click", MacroStepKind.MouseDown => "Mouse down", MacroStepKind.MouseUp => "Mouse up",
-        MacroStepKind.MoveTo => "Move to", MacroStepKind.MouseWheel => "Mouse wheel", _ => "Wait"
+        MacroStepKind.MoveTo => "Move to", MacroStepKind.MouseWheel => "Mouse wheel",
+        MacroStepKind.FreezeMouse => "Freeze mouse", MacroStepKind.UnfreezeMouse => "Unfreeze mouse", _ => "Wait"
     };
 
     // Row presentation: what the step targets, and how long it holds or waits (kept in its own column).
@@ -125,6 +126,9 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.MouseUp => "Releases a button held by an earlier Mouse down step.",
         MacroStepKind.MoveTo => "Moves the cursor to exact screen pixels at up to 9,000 px/s.",
         MacroStepKind.MouseWheel => "120 is one notch. Negative values scroll down or left.",
+        MacroStepKind.FreezeMouse => "Blocks your physical mouse movement until an Unfreeze mouse step or the end of the macro. " +
+            "The macro's own cursor moves still work; F12 stops playback. Some games read the mouse directly and may still see movement.",
+        MacroStepKind.UnfreezeMouse => "Lets your physical mouse move the cursor again.",
         _ => "Pauses before the next step."
     };
     private string ButtonText => MouseButton?.ToString() ?? "Choose button";

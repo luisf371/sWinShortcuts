@@ -19,6 +19,8 @@ public sealed record MacroDefinition
     public string Label { get; init; } = "New macro";
     public bool IsEnabled { get; init; }
     public bool ToggleMode { get; init; }
+    // Off: playback waits for the shortcut and its modifiers to be released. On: it starts at the press.
+    public bool StartOnPress { get; init; }
     public bool CancelOnMouseMovement { get; init; }
     public Key ShortcutKey { get; init; } = Key.None;
     public MouseButton? ShortcutMouseButton { get; init; }
@@ -60,7 +62,9 @@ public enum MacroStepKind
     MouseDown,
     MouseUp,
     MoveTo,
-    MouseWheel
+    MouseWheel,
+    FreezeMouse,
+    UnfreezeMouse
 }
 
 public enum MacroSessionMode

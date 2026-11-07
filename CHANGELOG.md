@@ -4,7 +4,39 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
-## November 4, 2026
+## November 7, 2026
+
+### Added
+- **Macro Mouse Freeze**:
+  - Two new macro steps, **Freeze mouse** and **Unfreeze mouse**, are in **Add step** and in the step's **Action** list. **Freeze mouse** blocks your physical mouse movement from that step on, so **Move to** and **Mouse click** steps are not pushed off their pixels. **Unfreeze mouse** lets the mouse move again.
+  - Only movement is frozen. The macro's own cursor moves still work, and your mouse buttons and wheel behave as before.
+  - A freeze always ends with the run: when it completes, on **F12**, the toggle shortcut, focus loss, or a failure. A macro without an **Unfreeze mouse** step stays frozen until the run ends. In a **Toggle loop** the freeze lasts across passes until an **Unfreeze mouse** step runs or the loop stops.
+  - While the mouse is frozen, **Cancel on mouse movement** does not cancel the macro. After **Unfreeze mouse** it works again.
+  - Games that read raw mouse input may still see the motion, because the freeze stops the Windows cursor, not the device.
+  - Older builds treat a profile with these steps as having a malformed macro section: they leave the file unchanged and suspend saving that profile.
+
+---
+
+## November 5, 2026
+
+### Added
+- **Macro Start on Press**:
+  - Each macro has a new **Start on press** option beside **Toggle loop**, off by default. When on, playback starts as soon as the shortcut is pressed instead of when it is released.
+  - Holding the shortcut does not restart the macro, and releasing it does not stop it. With **Toggle loop**, the next press still stops the loop.
+  - If the shortcut includes Shift or Ctrl, the held key stays held while the macro plays, so the application sees it with the macro's keys (a Shift+Q macro that sends Tab arrives as Shift+Tab). A step that presses the same Shift or Ctrl key you are holding is refused and stops the run.
+  - Shortcuts with Alt or Win still wait for that key to be released, because keys sent while Alt or Win is held trigger Windows shortcuts such as Alt+Tab, Alt+F4 or Win+D. Modifiers pressed after the macro starts still pause it until released.
+  - Existing macros keep starting on release. Profiles from older builds load unchanged; older builds ignore the new setting and start on release.
+
+---
+
+## November 4, 2026 (Build 146 – Build 147)
+
+### Added
+- **Crosshair Right-Button Hide Delay**:
+  - Added a configurable **Hide Delay** slider (0 to 1,000 ms in 50 ms increments, default 0 ms / Off) under the Display tab when **Hide while right mouse button is held** is checked.
+  - Holding the right mouse button waits for the set delay before hiding the crosshair overlay, preventing quick right-click taps or rapid aim adjustments from hiding it.
+  - Releasing the right mouse button before the delay expires cancels the pending hide timer and keeps the crosshair visible. If already hidden, releasing the button restores the overlay immediately.
+  - Setting the delay to 0 ms (Off) hides the crosshair immediately on right-button press, preserving previous behavior.
 
 ### Changed & Improved
 - **Alt + Mouse and Alt + Keyboard Are Now One Section: Alt + Shortcut**:
@@ -15,14 +47,23 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
   - Settings now live in `[AltShortcut]` and `[AltShortcutBindings]`. Older files convert when loaded and are rewritten on the next save. If both old sections had bound rows and only one was on, the section that was off loses its rows, since they never ran. If both had Hold rows with different thresholds, the Alt + Mouse value is used. Mouse rows for buttons that do not exist are dropped. Each change is logged.
   - The first save keeps a one-time copy of the original as `<Name>.ini.pre-alt-shortcut.bak`. Older builds show converted Alt shortcuts as off and empty; to roll back, close the app and rename the backup over the `.ini` file.
   - A damaged `[AltShortcut]` section loads with Alt + Shortcut off and makes the profile read-only, so autosave cannot overwrite it. The profile warning names the problem, together with any macro error.
+- **Physical Alt State Tracking for Alt Gestures**:
+  - Alt gestures now arm only when a physical Alt key is actually pressed on the keyboard. Physical Alt states (Left Alt and Right Alt) are tracked separately from synthetic Alt holds injected by the app (such as hold-breath steady aim, macros, or key remaps), ensuring synthetic Alt events never accidentally latch or trigger Alt shortcuts.
+  - At the moment an Alt gesture triggers, the latched Alt side is confirmed against Windows' live key state (`GetAsyncKeyState`). If Windows reports the key is already released (such as after an OS-dropped key-up event), the stale latch is cleared immediately so stray shortcuts do not fire.
+  - Boundary re-baselines (`AdoptHeldAltFromWindows`) ignore any Alt sides currently held synthetically by the app, and Alt release events clear only the specific physical side that was released.
 - **Macro Conflict Message**: a macro shortcut that an Alt binding already uses now reports "An Alt + Shortcut binding uses this shortcut."
 - **Rapid Fire Clicks Are Longer and Evenly Spaced**:
   - Each Rapid Fire click now holds the button for 20–30 ms (was 10–20 ms), so a game that checks the mouse once per frame is less likely to miss one. Below a 60 ms interval the hold is capped at half the interval, so the button still comes up between clicks. Macro mouse clicks with a 0 ms hold use the same timing.
   - The second shot of a held press no longer comes about 20 ms late. A press still held 22 ms before the first deadline (the interval plus jitter) is released at that point, and the first synthetic click lands on the deadline, so the gap from your press to the next shot matches every later gap. Under a 40 ms interval the 22 ms shrinks to half the interval plus 2 ms.
   - A tap that ends more than 22 ms before the deadline still reaches the game exactly as pressed. A tap that ends after that point is shortened to it (at least 68 ms at a 90 ms interval).
   - The debug log's "press started" line now gives the release time and the first click time, both measured from the press.
+- **Caps Lock 2x Tap Diagnostics & Reliability**:
+  - Added pair-numbered diagnostic tracking and detailed logging for Caps Lock 2x Normal remaps (e.g. hold-to-view map) to diagnose dropped or inverted closing taps across frame rate dips and window transitions.
+  - Logs now capture paired queue events, missed-release intervals, pass-through decisions, and exact active modifiers held at the moment of synthetic tap delivery.
 
-## October 5, 2026
+---
+
+## October 5, 2026 (Build 145)
 
 ### Changed & Improved
 - **Macro Page Regrouped by Purpose**:
@@ -38,12 +79,18 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
   - Deleting a macro that has steps now asks first, because the change is saved immediately. **Clear…** removes every step from a macro, after asking, while keeping its name, shortcut, and options.
 - **Better Defaults for New Macros and Steps**:
   - New macros start enabled, since a macro cannot fire until it has a shortcut and steps; duplicates still start off. A new Wait step starts at 100 ms instead of 0, and a new Move to or Mouse click starts at the macro's nearest earlier position instead of the screen's top-left corner.
+- **Macro Playback Error Details**:
+  - When a step fails during macro playback, the error message now includes the step number, total step count, and action type (e.g., `Step 2/2 (KeyPress)`), ensuring the exact failing step remains identifiable in failure logs after session cleanup completes.
+- **Cleaner Foreground Activation Logging**:
+  - Consecutive focus changes to non-matching windows now log only the initial no-match snapshot and departures from configured profiles, eliminating redundant log spam while maintaining full background deactivation behavior.
 
 ### Fixed
 - **Turning a Profile Off Grays Every Tab Again**:
   - Since the macro editor update, switching a game profile off only disabled the tab headers, which never reached the page on screen, so Keys, Advanced, Display, System, and Launcher stayed fully editable. Each page is now disabled and shaded again, as it was before. Every tab stays clickable and every page still scrolls, so a disabled profile can be reviewed; the Macros tab keeps its own gating so Stop recording stays reachable.
 
-## September 25, 2026
+---
+
+## September 25, 2026 (Build 144)
 
 ### Added
 - **Rapid Fire Right-Button Gating (Aim-Down-Sights Gate)**:
@@ -81,7 +128,7 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
-## September 23, 2026
+## September 23, 2026 (Build 143)
 
 ### Fixed & Improved
 - **Rapid Fire Cadence & First-Shot Reliability**:

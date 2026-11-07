@@ -344,6 +344,7 @@ public sealed class IniProfileStore : IProfileStore
                 Label = ReadMacroString(document, section, "Label"),
                 IsEnabled = ReadMacroBoolean(document, section, "Enabled"),
                 ToggleMode = ReadMacroBoolean(document, section, "ToggleMode", false),
+                StartOnPress = ReadMacroBoolean(document, section, "StartOnPress", false),
                 CancelOnMouseMovement = ReadMacroBoolean(document, section, "CancelOnMouseMovement", false),
                 ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
                 ShortcutMouseButton = document.TryGetSourceValue(section, "ShortcutMouseButton", out _)
@@ -481,6 +482,7 @@ public sealed class IniProfileStore : IProfileStore
             document.SetString(section, "Label", macro.Label.Trim());
             document.SetBoolean(section, "Enabled", macro.IsEnabled);
             document.SetBoolean(section, "ToggleMode", macro.ToggleMode);
+            document.SetBoolean(section, "StartOnPress", macro.StartOnPress);
             document.SetBoolean(section, "CancelOnMouseMovement", macro.CancelOnMouseMovement);
             document.SetKey(section, "ShortcutKey", macro.ShortcutKey);
             if (macro.ShortcutMouseButton is { } button) document.SetEnum(section, "ShortcutMouseButton", button);

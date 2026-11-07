@@ -200,7 +200,7 @@ Shortcut conflicts and incomplete sequences are shown in the editor and cannot r
 
 The top rows group the page by what each control affects: the macro list with **New…**,
 **Rename…**, **Duplicate**, and **Delete…**; the macro's own **Enabled** switch followed by its shortcut; then
-**Toggle loop**, **Cancel on mouse movement**, and the macro's status. **Delete…** asks
+**Toggle loop**, **Start on press**, **Cancel on mouse movement**, and the macro's status. **Delete…** asks
 first when the macro has steps. Duplicating a macro adds the next available number to its
 name, such as **Ammo 1** and **Ammo 2**, and the copy starts off without a shortcut.
 
@@ -234,8 +234,8 @@ between steps. **Close** or Escape discards the input; switching macros, leaving
 editor, or starting a recording closes it automatically.
 
 Use the step editor to insert, duplicate, delete, and reorder key presses, explicit
-key/button down and up events, waits, mouse clicks, cursor moves, and vertical or
-horizontal scrolling. A press or click with a hold of **0 ms** uses the existing automatic
+key/button down and up events, waits, mouse clicks, cursor moves, vertical or
+horizontal scrolling, and **Freeze mouse**/**Unfreeze mouse** steps. A press or click with a hold of **0 ms** uses the existing automatic
 hold timing; explicit waits and holds keep their entered durations. Explicit down/up
 sequences must balance before playback is enabled.
 
@@ -265,10 +265,29 @@ changes, and conflicting physical input also cancel playback and release its hel
 **Toggle loop** repeats a macro until you press its shortcut again, even mid-step; there is
 no regular playback Stop button.
 
+**Start on press** is a per-macro option, off by default. Enable it to start playback when
+the shortcut goes down instead of when the chord is released; holding or releasing the
+shortcut afterward neither restarts nor stops the run. Shift or Ctrl held as part of the
+shortcut keeps reaching the application with the macro's keys, so a Shift+Q macro that
+sends Tab arrives as Shift+Tab. A step that presses the same Shift or Ctrl key you are
+holding is refused and stops the run. Alt and Win still pause output until released, because keys sent
+under them trigger Windows shortcuts such as Alt+Tab or Win+D. Modifiers pressed after the
+run starts pause output as usual.
+
 **Cancel on mouse movement** is a per-macro option, off by default. Enable it to cancel
 playback when you move the mouse, including during waits and held inputs. Injected
 movement does not trigger this option. Coordinate actions still require arrival at the
 requested pixel before continuing.
+
+A **Freeze mouse** step blocks your physical mouse movement from that row on, so **Move to**
+and **Mouse click** steps are not pushed off their pixels; an **Unfreeze mouse** step lets the
+mouse move again. Only physical movement is blocked: the macro's own cursor moves, your mouse
+buttons, and the wheel work as usual. A freeze always ends with the run, whether it completes
+or stops on **F12**, the toggle shortcut, focus loss, or a failure. In a **Toggle loop** it
+lasts across passes until an **Unfreeze mouse** step runs or the loop stops. While the mouse
+is frozen, **Cancel on mouse movement** does not trigger; it applies again after **Unfreeze
+mouse**. The freeze stops the Windows cursor, but games that read raw mouse input may still
+see the motion.
 
 With **Enable Debug Logging** on, macro diagnostics include session states, step numbers
 and action types, recording completion, and cancellation/failure reasons. A cursor-arrival
