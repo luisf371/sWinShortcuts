@@ -4,7 +4,19 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
-## November 7, 2026
+## November 17, 2026 (Build 150)
+
+### Fixed
+- **Background Auto-Run Focus Re-engage and Movement Stutter**:
+  - Returning focus to the target game window while Background Auto-Run is running now keeps forward movement key presses (`W`) fresh with active thread attachment for 500 ms before resuming normal repeat flags.
+  - Fixes movement stuttering or dropped forward movement in games (such as Unreal Engine Enhanced Input) that flush key states when regaining focus and disregard repeat-flagged key-down events.
+- **Physical Key Release Resynchronization on Auto-Run Cancel**:
+  - Activating Auto-Run while physically holding the forward key (`W`) hands off movement and suppresses the physical key release so movement remains continuous without interruption.
+  - Cancelling Background Auto-Run now injects a synthetic key release to Windows if the physical key release was swallowed and the key is not physically held. This ensures Windows' global key state is properly resynchronized rather than remaining stuck down, preventing subsequent physical presses of `W` from being treated as repeats or held keys.
+
+---
+
+## November 7, 2026 (Build 149)
 
 ### Added
 - **Macro Mouse Freeze**:
@@ -14,12 +26,6 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
   - While the mouse is frozen, **Cancel on mouse movement** does not cancel the macro. After **Unfreeze mouse** it works again.
   - Games that read raw mouse input may still see the motion, because the freeze stops the Windows cursor, not the device.
   - Older builds treat a profile with these steps as having a malformed macro section: they leave the file unchanged and suspend saving that profile.
-
----
-
-## November 5, 2026
-
-### Added
 - **Macro Start on Press**:
   - Each macro has a new **Start on press** option beside **Toggle loop**, off by default. When on, playback starts as soon as the shortcut is pressed instead of when it is released.
   - Holding the shortcut does not restart the macro, and releasing it does not stop it. With **Toggle loop**, the next press still stops the loop.
@@ -29,7 +35,7 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
-## November 4, 2026 (Build 146 – Build 147)
+## November 4, 2026 (Build 146 – Build 148)
 
 ### Added
 - **Crosshair Right-Button Hide Delay**:

@@ -76,6 +76,87 @@ public sealed class AutoRunStateMachineTests
     }
 
     [Fact]
+    public void BackgroundReturnToTarget_WDownsStayFreshBeforeRepeating()
+    {
+        var (machine, _, transport, profile) = CreateMachine(AutoRunSendMode.Background);
+        var w = KeyInterop.VirtualKeyFromKey(Key.W);
+        var recording = 0;
+        var wDownRepeats = new System.Collections.Concurrent.ConcurrentQueue<bool>();
+        transport.OnPost = (_, message, vk, lParam) =>
+        {
+            if (Volatile.Read(ref recording) != 0 && message == NativeMethods.WM_KEYDOWN && vk == w)
+                wDownRepeats.Enqueue(((long)lParam & (1L << 30)) != 0);
+        };
+
+        try
+        {
+            Assert.True(Activate(machine, profile));
+            Assert.True(SpinWait.SpinUntil(() => transport.ForegroundCallCount >= 2, TimeSpan.FromSeconds(2)));
+
+            transport.ForegroundWindow = (IntPtr)200;
+            transport.ProcessIds[transport.ForegroundWindow] = 9;
+            var awayPosts = transport.Posts.Count;
+            Assert.True(SpinWait.SpinUntil(() => transport.Posts.Count >= awayPosts + 2, TimeSpan.FromSeconds(2)));
+
+            Volatile.Write(ref recording, 1);
+            transport.ForegroundWindow = (IntPtr)100;
+
+            // Away repeats may precede the return; the first fresh DOWN marks the re-engage.
+            static List<bool> AfterReturn(IEnumerable<bool> downs) => downs.SkipWhile(repeat => repeat).ToList();
+            Assert.True(SpinWait.SpinUntil(
+                () => AfterReturn(wDownRepeats).Contains(true),
+                TimeSpan.FromSeconds(3)));
+
+            var afterReturn = AfterReturn(wDownRepeats);
+            Assert.True(afterReturn.IndexOf(true) >= 3, $"fresh W-downs after return: {afterReturn.IndexOf(true)}");
+        }
+        finally
+        {
+            machine.Release(includeBackground: true);
+            machine.JoinBackgroundInputThread();
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BackgroundCancel_AfterSwallowedHandoffWUp_InjectsWUpToResyncWindows(bool physicalHandoff)
+    {
+        var (machine, queue, transport, profile) = CreateMachine(AutoRunSendMode.Background);
+        var w = KeyInterop.VirtualKeyFromKey(Key.W);
+        var s = KeyInterop.VirtualKeyFromKey(Key.S);
+        if (physicalHandoff) machine.ObservePhysicalEvent(w, isKeyDown: true, isKeyUp: false);
+
+        try
+        {
+            Assert.True(Activate(machine, profile));
+            if (physicalHandoff)
+            {
+                var up = machine.ObservePhysicalEvent(w, isKeyDown: false, isKeyUp: true);
+                Assert.True(machine.Handle(w, isKeyDown: false, isKeyUp: true, up));
+            }
+            Assert.True(transport.PostEntered.Wait(TimeSpan.FromSeconds(2)));
+
+            var cancel = machine.ObservePhysicalEvent(s, isKeyDown: true, isKeyUp: false);
+            Assert.False(machine.Handle(s, isKeyDown: true, isKeyUp: false, cancel));
+            Assert.False(machine.IsActive);
+
+            // Background posts never touch Windows' key state; only the swallowed UP needs an injected one.
+            if (physicalHandoff)
+            {
+                var command = Assert.Single(queue.Commands);
+                Assert.Equal((Key.W, false), (command.Key, command.IsDown));
+            }
+            else Assert.Empty(queue.Commands);
+        }
+        finally
+        {
+            machine.Release(includeBackground: true);
+            machine.JoinBackgroundInputThread();
+        }
+    }
+
+    [Fact]
     public void ForegroundActivation_PriorBackgroundWorkerStillAlive_FailsClosed()
     {
         var (machine, queue, _, profile) = CreateMachine(AutoRunSendMode.Foreground);

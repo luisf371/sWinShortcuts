@@ -59,6 +59,9 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     private const int BG_SPRINT_TAP_MIN_MS = 40;
     private const int BG_SPRINT_TAP_MAX_MS = 60;
     private const int BG_SPRINT_REENGAGE_QUIET_MS = 50;
+    // Games that flush held keys while regaining focus can drop the single re-engage DOWN and
+    // then treat repeat-flagged DOWNs as one-frame presses (Unreal Enhanced Input stutter).
+    private const int BG_W_REENGAGE_FRESH_MS = 500;
     private const int TAP_DURATION_MIN_MS = 20;
     private const int TAP_DURATION_MAX_MS = 30;
     private const int RNG_WARMUP_MIN_CALLS = 1;
@@ -105,6 +108,11 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     private bool _sprintPhysicallyDown;
     private volatile bool _physicalWHandoff;
     private bool _suppressedPhysicalWUp;
+    private bool _backgroundSwallowedWUp;
+    // Diagnostic: the first fresh physical W after a release reports what Windows believed about W.
+    private volatile bool _logNextPhysicalW;
+    private bool _lastReleaseSwallowedWUp;
+    private bool _lastReleaseResyncedW;
     private bool _stopOnPhysicalWUp;
     private bool _antiAfkTapInFlight;
 
@@ -200,6 +208,14 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         if (active && sprintVk != 0 && vkCode == sprintVk && vkCode != VK_W && vkCode != VK_S)
         {
             freshSprint = ApplyPhysicalKeyEvent(ref _sprintPhysicallyDown, isKeyDown, isKeyUp);
+        }
+
+        if (_logNextPhysicalW && physicalEvent.FreshW)
+        {
+            _logNextPhysicalW = false;
+            // Inside W's own hook event GetAsyncKeyState still holds the state before this press.
+            if (_logger.IsEnabled)
+                _logger.Log($"AutoRun: first physical W after release (Windows already had W down={IsDown(VK_W)}, handoff W-UP swallowed={_lastReleaseSwallowedWUp}, W-UP resync sent={_lastReleaseResyncedW})");
         }
 
         if (active && isKeyDown && (physicalEvent.FreshW || physicalEvent.FreshS)
@@ -628,6 +644,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         {
             if (!_active) return;
             _suppressedPhysicalWUp = true;
+            if (_isBackground) _backgroundSwallowedWUp = true;
             if (_isBackground || _moveInjected) return;
             var snapshot = _foregroundGuard;
             if (snapshot is null && _bypassForegroundGuardForTesting)
@@ -711,6 +728,12 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             _backgroundReleaseW |= releaseW;
             _backgroundReleaseSprint |= releaseSprint;
             if (releaseSprint) _backgroundReleaseSprintKey = sprintUpKey;
+            // The hook swallowed the handoff W-UP, so Windows still counts W as down and flags the
+            // next physical W press as a repeat. The posted UP cannot clear that; an injected UP does.
+            _lastReleaseResyncedW = _backgroundSwallowedWUp && !_wPhysicallyDown
+                && _queue.Enqueue(new InputCommand(Key.W, IsDown: false, HoldOwner: InputHoldOwner.AutoRunMovement));
+            _lastReleaseSwallowedWUp = _backgroundSwallowedWUp;
+            _logNextPhysicalW = _logger.IsEnabled;
             ResetRunState(preserveBackgroundTarget: true);
             return;
         }
@@ -737,6 +760,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         _moveInjected = false;
         _physicalWHandoff = false;
         _suppressedPhysicalWUp = false;
+        _backgroundSwallowedWUp = false;
         _stopOnPhysicalWUp = false;
         _sprintInjected = false;
         _sprintIntendedHeld = false;
@@ -911,6 +935,8 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             bool wasForeground = true;
             bool sprintPending = false;
             int sprintDueTick = 0;
+            bool freshWPending = false;
+            int freshWUntilTick = 0;
             while (BackgroundRunIsCurrent(run))
             {
                 if (!BackgroundTargetValid(run.Window, run.ProcessId))
@@ -930,10 +956,13 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                     {
                         if (_sprintInjected) sprintKey = _sprintInjectedKey;
                         sprintPending = false;
+                        freshWPending = false;
                     }
                     else if (!wasForeground && foreground)
                     {
                         reengageW = true;
+                        freshWPending = true;
+                        freshWUntilTick = unchecked(Environment.TickCount + BG_W_REENGAGE_FRESH_MS);
                         if (_sprintToggleable && _sprintIntendedHeld && !_sprintInjected)
                         {
                             sprintPending = true;
@@ -968,11 +997,16 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                         }
                     }
                 }
-                if (reengageW) PostAutoRunKey(run, Key.W, isDown: true, forceAttach: true);
+                if (freshWPending && unchecked(Environment.TickCount - freshWUntilTick) >= 0) freshWPending = false;
+                if (reengageW)
+                {
+                    var reposted = PostAutoRunKey(run, Key.W, isDown: true, forceAttach: true);
+                    if (_logger.IsEnabled) Log($"Background Auto-Run re-engaged W on return to target (posted={reposted})");
+                }
                 if (sprintKey != Key.None)
                     PostAutoRunKey(run, sprintKey, sprintDown, sprint: true, sprintHold: sprintDown);
                 else if (repeatW && !reengageW)
-                    PostAutoRunKey(run, Key.W, isDown: true, repeat: true);
+                    PostAutoRunKey(run, Key.W, isDown: true, repeat: !freshWPending, forceAttach: freshWPending);
 
                 int sleep = AUTO_RUN_REPEAT_MS;
                 if (sprintPending)

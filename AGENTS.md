@@ -36,6 +36,7 @@ sWinShortcuts/
 | P/Invoke declarations | `Interop/NativeMethods.cs` | Keep centralized |
 | Service registration | `App.xaml.cs` | DI via Microsoft.Extensions.Hosting |
 | Add test | `Tests/` + use `Tests/Fakes/` | Manual fakes, no mocking libs |
+| Document changes | `CHANGELOG.md` | Plain English, bold topic titles, grouped by milestone |
 
 ## CODE MAP
 
@@ -80,6 +81,12 @@ sWinShortcuts/
 - Test naming: `MethodName_Scenario_ExpectedResult`
 - Manual fakes in `Tests/Fakes/` (no Moq/NSubstitute)
 - Integration tests implement `IDisposable` for cleanup
+
+### Changelog
+- Always update `CHANGELOG.md` with relevant, changelog-style entries whenever implementing notable changes, new features, improvements, or bug fixes:
+  - Follow the established format: group entries chronologically under the latest release/build milestone in plain English.
+  - Categorize changes under standard markdown headers: `### Added`, `### Changed & Improved`, or `### Fixed`.
+  - Use bold topic titles (`- **Feature / Topic Name**:`) followed by clear explanations and indented sub-bullets that document concrete user-facing behavior, edge cases, settings/INI changes, and migrations.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
