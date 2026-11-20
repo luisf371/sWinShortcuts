@@ -956,19 +956,22 @@ public sealed class IniProfileStore : IProfileStore
     {
         settings.IsEnabled = document.GetBoolean("Color", "Enabled", settings.IsEnabled);
         settings.HasSecondary = document.GetBoolean("Color", "HasSecondary", settings.HasSecondary);
+        settings.HasTertiary = document.GetBoolean("Color", "HasTertiary", false);
         settings.ClearProfiles();
 
-        // Primary keeps the historical [ColorDisplays] section (back-compat); Secondary is the new preset.
         LoadColorDisplaySection(document, "ColorDisplays", settings, ColorVariant.Primary);
         LoadColorDisplaySection(document, "ColorDisplaysSecondary", settings, ColorVariant.Secondary);
+        LoadColorDisplaySection(document, "ColorDisplaysTertiary", settings, ColorVariant.Tertiary);
 
-        // Enforce the invariant HasSecondary => Secondary is POPULATED. A hand-edited / partial INI with
-        // HasSecondary=true but an empty [ColorDisplaysSecondary] must not let the editor later create blank
-        // (disabled) entries that a toggle would then apply as a neutral plan, wiping Primary. Seed from
-        // Primary (no-op if the section had entries).
+        // Fill gaps in enabled presets after loading so the editor preserves the inherited calibration.
         if (settings.HasSecondary)
         {
-            settings.EnsureSecondaryInitialized();
+            settings.EnsureVariantInitialized(ColorVariant.Secondary);
+        }
+
+        if (settings.HasTertiary)
+        {
+            settings.EnsureVariantInitialized(ColorVariant.Tertiary);
         }
     }
 
@@ -1100,11 +1103,12 @@ public sealed class IniProfileStore : IProfileStore
     {
         document.SetBoolean("Color", "Enabled", color.IsEnabled);
         document.SetBoolean("Color", "HasSecondary", color.HasSecondary);
+        document.SetBoolean("Color", "HasTertiary", color.HasTertiary);
 
-        // Serialize each variant EXPLICITLY (not SnapshotProfiles(), which returns whichever is currently
-        // active) so an autosave while Secondary is toggled-on still writes Primary->[ColorDisplays].
+        // Save rows in their own sections even when another preset is active or the preset is disabled.
         WriteColorDisplaySection(document, "ColorDisplays", color.SnapshotProfiles(ColorVariant.Primary));
         WriteColorDisplaySection(document, "ColorDisplaysSecondary", color.SnapshotProfiles(ColorVariant.Secondary));
+        WriteColorDisplaySection(document, "ColorDisplaysTertiary", color.SnapshotProfiles(ColorVariant.Tertiary));
     }
 
     private static void WriteColorDisplaySection(IniDocument document, string sectionName, IReadOnlyDictionary<string, DisplayColorProfile> profiles)

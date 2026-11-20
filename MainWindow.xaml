@@ -1469,10 +1469,13 @@
                                             <Run Text=" — assigned in Settings" />
                                         </TextBlock>
 
-                                        <!-- Primary/Secondary color presets: edit one set of sliders at a time. -->
+                                        <!-- Color presets share one set of sliders. -->
                                         <StackPanel Margin="0,0,0,12">
                                             <CheckBox Content="Enable a secondary color preset"
                                                       IsChecked="{Binding ColorSettings.HasSecondary}"
+                                                      Margin="0,0,0,6" />
+                                            <CheckBox Content="Enable a third color preset"
+                                                      IsChecked="{Binding ColorSettings.HasTertiary}"
                                                       Margin="0,0,0,6" />
                                             <Grid Margin="0,0,0,6">
                                                 <Grid.ColumnDefinitions>
@@ -1482,12 +1485,31 @@
                                                 <TextBlock Text="Edit preset"
                                                            FontWeight="SemiBold"
                                                            VerticalAlignment="Center" />
-                                                <ToggleButton Grid.Column="1"
-                                                              Style="{StaticResource PresetVariantToggleStyle}"
-                                                              IsChecked="{Binding ColorSettings.IsEditingSecondary, Mode=TwoWay}"
-                                                              IsEnabled="{Binding ColorSettings.CanEditSecondary}"
-                                                              ToolTip="Choose which color profile to edit."
-                                                              AutomationProperties.Name="Color preset to edit" />
+                                                <!-- Segmented picker: one click selects any enabled preset. -->
+                                                <Border Grid.Column="1"
+                                                        Background="{StaticResource InputSurfaceBrush}"
+                                                        BorderBrush="{StaticResource BorderBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="4"
+                                                        Padding="3"
+                                                        ToolTip="Choose which color profile to edit.">
+                                                    <UniformGrid Rows="1">
+                                                        <RadioButton Content="Primary"
+                                                                     IsChecked="{Binding ColorSettings.IsEditingPrimary}"
+                                                                     Style="{StaticResource SegmentRadioButtonStyle}"
+                                                                     AutomationProperties.Name="Edit Primary preset" />
+                                                        <RadioButton Content="Secondary"
+                                                                     IsChecked="{Binding ColorSettings.IsEditingSecondary}"
+                                                                     IsEnabled="{Binding ColorSettings.HasSecondary}"
+                                                                     Style="{StaticResource SegmentRadioButtonStyle}"
+                                                                     AutomationProperties.Name="Edit Secondary preset" />
+                                                        <RadioButton Content="Tertiary"
+                                                                     IsChecked="{Binding ColorSettings.IsEditingTertiary}"
+                                                                     IsEnabled="{Binding ColorSettings.HasTertiary}"
+                                                                     Style="{StaticResource SegmentRadioButtonStyle}"
+                                                                     AutomationProperties.Name="Edit Tertiary preset" />
+                                                    </UniformGrid>
+                                                </Border>
                                             </Grid>
                                             <!-- Game profiles only (the default profile's colors are already
                                                  live): temporarily force-apply the edited profile's colors while tuning. -->
@@ -1508,7 +1530,7 @@
                                                            Margin="8,0,0,0"
                                                            VerticalAlignment="Center" />
                                             </StackPanel>
-                                            <TextBlock Text="Primary is the default look. Secondary is an optional alternate preset."
+                                            <TextBlock Text="Primary is the default look. Enable Secondary and Tertiary to add alternate presets to the hotkey cycle."
                                                        Foreground="{StaticResource ForegroundSecondaryBrush}"
                                                        FontSize="11"
                                                        TextWrapping="Wrap" />

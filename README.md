@@ -100,8 +100,9 @@ moment that program comes to the foreground.
 - **Digital Vibrance** per monitor on supported NVIDIA and AMD GPUs. AMD support requires
   [Radeon Software Adrenalin 25.3.1 or later](https://gpuopen-librariesandsdks.github.io/adl/).
   Unsupported GPUs or unavailable driver APIs retain brightness/contrast/gamma controls.
-- **Primary + Secondary presets** per profile (e.g. normal vs. vibrant looks), flipped live
-  with a global app-level hotkey.
+- **Up to three color presets** per app profile and in **Window [Default]**. Enable Secondary
+  and Tertiary independently in the Display tab. The global color profile toggle key cycles
+  through Primary, Secondary, and Tertiary, skipping unavailable presets.
 
 ## Getting Started
 

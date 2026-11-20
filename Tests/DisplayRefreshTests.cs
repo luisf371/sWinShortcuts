@@ -92,11 +92,48 @@ public sealed class DisplayRefreshTests
         {
             // Invalidating without raising an editor event isolates the variant-rebuild path.
             typeof(DisplayService).GetField("_cachedDisplays", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(service, null);
-            vm.IsEditingSecondary = true;
+            vm.EditingVariant = ColorVariant.Secondary;
             Assert.Single(vm.DisplayViewModels);
             vm.Dispose();
         });
         Assert.Equal(1, calls);
+        Assert.Empty(color.AppliedProfiles);
+    }
+
+    [Fact]
+    public async Task HotkeyToggle_OnAnotherThread_EditorFollowsOnTheOwnerThread()
+    {
+        using var ui = new OwnerContext();
+        using var service = new DisplayService(() => [Display("first")]);
+        var settings = new ColorSettings { IsEnabled = true, HasSecondary = true, HasTertiary = true };
+        foreach (var variant in Enum.GetValues<ColorVariant>())
+        {
+            settings.SetProfile(new DisplayColorProfile { DisplayId = "first", IsEnabled = true }, variant);
+        }
+
+        var color = new RecordingColorControlService();
+        var vm = await ui.Run(() => new ColorSettingsViewModel(settings, service, color));
+        await WaitForRows(ui, vm, "first");
+        var threads = new List<int>();
+        await ui.Run(() => vm.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(vm.EditingVariant)) threads.Add(Environment.CurrentManagedThreadId);
+        });
+
+        foreach (var expected in new[] { ColorVariant.Secondary, ColorVariant.Tertiary, ColorVariant.Primary })
+        {
+            // Production raises this on the keyboard-hook thread; the follow is queued before this read.
+            await Task.Run(() => settings.ToggleVariant());
+            Assert.Equal(expected, await ui.Run(() => vm.EditingVariant));
+        }
+
+        await ui.Run(vm.Dispose);
+        await Task.Run(() => settings.ToggleVariant()); // a disposed editor ignores later presses
+        await ui.Run(() =>
+        {
+            Assert.Equal(ColorVariant.Primary, vm.EditingVariant);
+            Assert.Equal([ui.ThreadId, ui.ThreadId, ui.ThreadId], threads);
+        });
         Assert.Empty(color.AppliedProfiles);
     }
 
@@ -116,7 +153,7 @@ public sealed class DisplayRefreshTests
             {
                 if (args.PropertyName == nameof(vm.HasDisplays)) publicationThreads.Add(Environment.CurrentManagedThreadId);
             };
-            vm.IsEditingSecondary = true;
+            vm.EditingVariant = ColorVariant.Secondary;
             for (var i = 0; i < 20; i++) service.RaiseDisplaysChanged();
         });
         Assert.Equal(1, service.Calls);
@@ -132,7 +169,7 @@ public sealed class DisplayRefreshTests
             var row = Assert.Single(vm.DisplayViewModels);
             Assert.Equal("latest", row.DisplayName);
             Assert.Equal(35, row.Brightness);
-            Assert.True(vm.IsEditingSecondary);
+            Assert.Equal(ColorVariant.Secondary, vm.EditingVariant);
             Assert.All(publicationThreads, id => Assert.Equal(ui.ThreadId, id));
             Assert.Empty(color.AppliedProfiles);
             vm.Dispose();

@@ -423,3 +423,35 @@
 
 - Background Auto-Run, S-cancel then W "swallowed": only after a physical-W handoff (W held at Ctrl+R). The hook swallows that W-UP, and a swallowed LL-hook event never updates Windows' key state, so Windows keeps W down. Background release only posts `WM_KEYUP` (no key-state effect), so the next physical W-DOWN arrives repeat-flagged (lParam bit 30) and Unreal reads it as a one-frame press. Foreground mode was never affected: its release is an injected UP. Fix: `_backgroundSwallowedWUp` (set in `BeginAfterPhysicalWRelease`) makes the background branch of `ReleaseLocked` also enqueue an injected W-UP, unless W is physically down. Covers every release path (S, Ctrl+R, focus/profile), not only S. Regression `BackgroundCancel_AfterSwallowedHandoffWUp_InjectsWUpToResyncWindows`. Not verified in game.
 - The debug log cannot confirm that fix: it records only `AutoRun activated` / `release requested`, and `WindowsInputSender` logs failed sends only. Added a one-shot diagnostic after each Background release: `AutoRun: first physical W after release (Windows already had W down=…, handoff W-UP swallowed=…, W-UP resync sent=…)`. `GetAsyncKeyState(W)` inside W's own hook event is the pre-press state, so `down=True` means that press reaches the game repeat-flagged. Don't add log lines after `AutoRun release requested (...)` in `ReleaseLocked`: tests assert it as `Messages[^1]`.
+
+## 2026-11-20 (Third display color preset plan)
+
+- Optional color presets need explicit variant snapshots in both `ProfilePersistenceSnapshot.CloneColor` and `IniProfileStore.WriteColorSection`. The shared color INI codec covers custom profiles and `Win.ini`.
+- The color hotkey advances at press time before the color worker coalesces apply requests. It can retarget Force Preview independently of the editor selection, so turning off an optional preset should end the preview even when a different preset is selected in the editor.
+- Plan v2 (`docs/superpowers/plans/2026-11-20-third-display-color-profile_v2.md`): `ToggleVariant` should be one cyclic "next available" loop, not per-case branches. `ColorSettingsViewModel.HasSecondary` setter's unconditional `SetActiveVariant(Primary)` must go once a third slot exists, or turning Secondary off yanks the screen off Tertiary. Serializers build a fresh `IniDocument`, so a downgrade save drops unknown sections.
+
+## 2026-11-20 (Third display color preset implementation)
+
+- Color availability requires an opted-in, populated optional store. An unavailable hotkey origin is treated as Primary, while explicit snapshots retain disabled preset rows for editing and saving.
+- The autosave clone keeps a detached copy of every stored preset. The shared INI writer selects each preset explicitly and leaves the active selection session-only.
+- Seed optional rows before enabling the flag so a concurrent hotkey cannot advance into a partially initialized preset. Clearing Force Preview before resetting the editor avoids queuing a preview of Primary just before restoring the foreground plan.
+- WPF ComboBox incremental text search can navigate to disabled items. The preset picker disables text search, and its local item style dims disabled rows because ComboBoxItemLightStyle has no disabled visual.
+- Debug verification: app build had 0 warnings. Across full-suite runs all 1,640 cases passed. The Rapid Fire profile-switch timer assertion failed once and passed both reruns. The two ProcessLauncher desktop cases passed on the first run and skipped on reruns when GetShellWindow returned zero.
+
+## 2026-11-20 (Edit preset segmented picker)
+
+- The Edit preset ComboBox is replaced by three RadioButtons (`SegmentRadioButtonStyle` in `Resources/Styles.xaml`) bound to the `ColorSettingsViewModel.IsEditingPrimary/Secondary/Tertiary` projections. Same pattern as the Macros wait-scope radios: a `false` push is ignored, and `EditingVariant` notifies all three.
+- Why not a styled ListBox: in Single mode, Ctrl+click or Ctrl+Space deselects. The null can't convert to the non-nullable `EditingVariant`, so the picker would show nothing selected. ListBox also turns text search on by default. Radios can't be cleared and have no text search, so the old ComboBox text-search gotcha is gone.
+- Checked segment = `AccentDarkBrush` + white SemiBold (about 4.75:1). `AccentBrush` with light text is only about 2.4-3:1.
+- Test `ColorPresetSegments_SelectAnEnabledPresetInOneClick_AndFollowTheEditor` selects through `RadioButtonAutomationPeer` (`ISelectionItemProvider.Select`, which throws `ElementNotEnabledException` on a disabled segment). It fails if the projection notifications are removed.
+- Visual check without launching the app: from a temporary test, call `ProfileEditorTabsTemplateTests.LoadProfileTabs` via reflection, then render the element through a `VisualBrush` into a `RenderTargetBitmap`. That avoids RenderTargetBitmap's VisualOffset shift. Set `host.Foreground`, since harness TextBlocks don't get the App-level implicit style.
+- Full suite 1,640/1,640; `--no-incremental` app build 0 warnings. Not checked in the live app: hover, keyboard focus ring.
+- Line endings: Git Bash `grep -c $'\r$'` reported CRLF for LF-only `MainWindow.xaml`. Count raw bytes instead: `tr -dc '\r' < f | wc -c` vs `tr -dc '\n' < f | wc -c`. As of 2026-11-20 `MainWindow.xaml` and `memory.md` are LF on disk; `Styles.xaml`, `CHANGELOG.md` and most `.cs` files are CRLF (autocrlf=true). Edit tool and heredoc appends keep each file's style.
+
+## 2026-11-20 (Edit preset follows the color hotkey)
+
+- `ColorSettings.VariantToggled` is raised by `ToggleVariant` outside `_sync` when `after != (origin ?? active)`. That is the toast's before/after test, so a preview press from Secondary to Primary fires even when `ActiveVariant` was already Primary. It runs on the keyboard-hook thread, so handlers must only queue work and never throw.
+- `ColorSettingsViewModel` subscribes in the ctor and unsubscribes in `Dispose`. It posts `FollowActiveVariant` to `_ownerContext`, or runs it inline when already on it, which keeps toggles from the test thread deterministic. The follow re-reads `ActiveVariant` when it runs, so a burst of presses settles on the latest preset. It calls `ShowVariant`, not the `EditingVariant` setter: the service has already retargeted Force Preview, and setting it again from a stale UI read could flash the previous preset during rapid presses.
+- Hot path: adds one closure plus queued UI work per physical press, the same cost as the toast enqueue. Nothing is added per keyboard event.
+- Tests: `ToggleVariant_RaisesVariantToggled_OnlyWhenThePresetMoves`, `HotkeyToggle_OnAnotherThread_EditorFollowsOnTheOwnerThread` (DisplayRefreshTests `OwnerContext`), `HotkeyToggleDuringPreview_EditorFollowsWithoutResettingThePreview`, `ColorVariantToggle_InGame_EditorFollowsTheHotkeyPreset` (real service). Mutations caught: following through the setter, no marshaling (updates ran on threads 3 and 8, not the owner's 9), and an `_activeVariant`-based event condition.
+- Full suite 1,644/1,644 (two runs); `--no-incremental` app build 0 warnings. Not checked in the live app.

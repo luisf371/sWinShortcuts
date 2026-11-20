@@ -95,80 +95,63 @@
         <Setter Property="Margin" Value="0,4,0,4" />
     </Style>
 
-    <!-- Segmented two-state editor toggle: both choices remain visible, while IsChecked selects Secondary. -->
-    <Style x:Key="PresetVariantToggleStyle" TargetType="ToggleButton">
+    <!-- One segment of a segmented picker: every option is one click, and the checked one is filled.
+         Radio semantics, so a click can never leave the picker with nothing selected. -->
+    <Style x:Key="SegmentRadioButtonStyle" TargetType="RadioButton">
         <Setter Property="Foreground" Value="{StaticResource ForegroundPrimaryBrush}" />
-        <Setter Property="Background" Value="{StaticResource InputSurfaceBrush}" />
-        <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="4" />
-        <Setter Property="MinHeight" Value="34" />
-        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Padding" Value="6,4" />
+        <Setter Property="FocusVisualStyle">
+            <Setter.Value>
+                <!-- Keyboard focus only; the theme's dotted black ring is invisible on the dark surfaces. -->
+                <Style>
+                    <Setter Property="Control.Template">
+                        <Setter.Value>
+                            <ControlTemplate>
+                                <Border BorderBrush="{StaticResource AccentLightBrush}"
+                                        BorderThickness="2"
+                                        CornerRadius="3"
+                                        SnapsToDevicePixels="True" />
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Setter.Value>
+        </Setter>
         <Setter Property="Template">
             <Setter.Value>
-                <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Root"
-                            Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="4"
-                            Padding="{TemplateBinding Padding}">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <!-- Unchecked (IsChecked=False/Null) = Primary selected: highlighted by this
-                                 default; the IsChecked=True trigger below mirrors the state to Secondary. -->
-                            <Border x:Name="PrimarySegment"
-                                    Grid.Column="0"
-                                    CornerRadius="3"
-                                    Padding="6,3"
-                                    Background="{StaticResource AccentBrush}">
-                                <TextBlock x:Name="PrimaryLabel"
-                                           Text="Primary"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Center"
-                                           Foreground="{StaticResource ForegroundPrimaryBrush}" />
-                            </Border>
-                            <Border x:Name="SecondarySegment"
-                                    Grid.Column="1"
-                                    CornerRadius="3"
-                                    Padding="6,3"
-                                    Background="Transparent">
-                                <TextBlock x:Name="SecondaryLabel"
-                                           Text="Secondary"
-                                           HorizontalAlignment="Center"
-                                           VerticalAlignment="Center"
-                                           Foreground="{StaticResource ForegroundSecondaryBrush}" />
-                            </Border>
-                        </Grid>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="3"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="False" />
                     </Border>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="PrimarySegment" Property="Background" Value="Transparent" />
-                            <Setter TargetName="SecondarySegment" Property="Background" Value="{StaticResource AccentBrush}" />
-                            <Setter TargetName="PrimaryLabel" Property="Foreground" Value="{StaticResource ForegroundSecondaryBrush}" />
-                            <Setter TargetName="SecondaryLabel" Property="Foreground" Value="{StaticResource ForegroundPrimaryBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Root" Property="Background" Value="{StaticResource AccentDarkBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
-                            <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource AccentLightBrush}" />
-                            <Setter TargetName="Root" Property="BorderThickness" Value="2" />
-                        </Trigger>
-                        <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Root" Property="Opacity" Value="0.5" />
-                        </Trigger>
-                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <Style.Resources>
+            <!-- The app-wide TextBlock style would pin label text to one color; follow the segment. -->
+            <Style TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}" />
+            </Style>
+        </Style.Resources>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#222B3D" />
+            </Trigger>
+            <!-- AccentDark keeps the white label above 4.5:1 contrast (Accent would be about 3:1). -->
+            <Trigger Property="IsChecked" Value="True">
+                <Setter Property="Background" Value="{StaticResource AccentDarkBrush}" />
+                <Setter Property="Foreground" Value="White" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45" />
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <Style TargetType="TextBox">

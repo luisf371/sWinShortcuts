@@ -6,6 +6,14 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ## November 17, 2026 (Build 150)
 
+### Added
+- **Third Display Color Preset**:
+  - Turn on **Enable a third color preset** in the Display tab for an app profile or **Window [Default]**. Tertiary starts off and inherits missing monitor settings from Primary when enabled. Turning it off keeps its slider values for next time.
+  - Choose which preset the sliders edit with the **Primary**, **Secondary** and **Tertiary** buttons beside **Edit preset**. Each enabled preset is one click away. A preset that is turned off stays visible but dimmed until its checkbox is turned on.
+  - When the color toggle key cycles a profile's preset, that profile's **Edit preset** selection moves to the new preset, so the sliders edit what is on screen. This includes presses during **Force preview**.
+  - The existing color profile toggle key advances **Primary → Secondary → Tertiary → Primary**, skipping presets that are disabled or have no saved monitor rows.
+  - App profiles and `Win.ini` save the opt-in as `[Color] HasTertiary` and the per-monitor values under `[ColorDisplaysTertiary]`. Saving either file with an older build drops both the setting and the section.
+
 ### Fixed
 - **Background Auto-Run Focus Re-engage and Movement Stutter**:
   - Returning focus to the target game window while Background Auto-Run is running now keeps forward movement key presses (`W`) fresh with active thread attachment for 500 ms before resuming normal repeat flags.

@@ -48,23 +48,97 @@ public class ColorSettingsTests
     }
 
     [Fact]
-    public void SnapshotProfiles_ReturnsActiveVariant_AndExplicitVariantIsIndependent()
+    public void ToggleVariant_AllPresetsAvailable_CyclesAndSnapshotsEachPreset()
     {
-        var settings = new ColorSettings { HasSecondary = true };
+        var settings = new ColorSettings { HasSecondary = true, HasTertiary = true };
         settings.SetProfile(new DisplayColorProfile { DisplayId = "D1", IsEnabled = true, Brightness = 30 }, ColorVariant.Primary);
         settings.SetProfile(new DisplayColorProfile { DisplayId = "D1", IsEnabled = true, Brightness = 88 }, ColorVariant.Secondary);
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1", IsEnabled = true, Brightness = 65 }, ColorVariant.Tertiary);
 
-        Assert.Equal(30, settings.SnapshotProfiles()["D1"].Brightness);                  // active starts Primary
-        Assert.Equal(ColorVariant.Secondary, settings.ToggleVariant());
-        Assert.Equal(88, settings.SnapshotProfiles()["D1"].Brightness);                  // active now Secondary
-        Assert.Equal(30, settings.SnapshotProfiles(ColorVariant.Primary)["D1"].Brightness); // explicit Primary intact
+        Assert.Equal(30, settings.SnapshotProfiles()["D1"].Brightness);
+        (ColorVariant Variant, int Brightness)[] expected =
+        [
+            (ColorVariant.Secondary, 88), (ColorVariant.Tertiary, 65),
+            (ColorVariant.Primary, 30), (ColorVariant.Secondary, 88)
+        ];
+        foreach (var (variant, brightness) in expected)
+        {
+            Assert.Equal(variant, settings.ToggleVariant());
+            Assert.Equal(brightness, settings.SnapshotProfiles()["D1"].Brightness);
+        }
+
+        Assert.Equal(30, settings.SnapshotProfiles(ColorVariant.Primary)["D1"].Brightness);
     }
 
     [Fact]
-    public void ToggleVariant_IsNoOp_WhenNoSecondaryConfigured()
+    public void ToggleVariant_PrimaryOnly_StaysOnPrimary()
     {
-        var settings = new ColorSettings { HasSecondary = false };
+        var settings = new ColorSettings();
         Assert.Equal(ColorVariant.Primary, settings.ToggleVariant());
+        Assert.Equal(ColorVariant.Primary, settings.ActiveVariant);
+    }
+
+    [Fact]
+    public void ToggleVariant_TertiaryEnabledButEmpty_SkipsTertiary()
+    {
+        var settings = new ColorSettings { HasSecondary = true, HasTertiary = true };
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1" }, ColorVariant.Secondary);
+
+        Assert.Equal(ColorVariant.Secondary, settings.ToggleVariant());
+        Assert.Equal(ColorVariant.Primary, settings.ToggleVariant());
+    }
+
+    [Fact]
+    public void ToggleVariant_SecondaryDisabledButPopulated_SkipsSecondary()
+    {
+        var settings = new ColorSettings { HasTertiary = true };
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1" }, ColorVariant.Secondary);
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1" }, ColorVariant.Tertiary);
+
+        Assert.Equal(ColorVariant.Tertiary, settings.ToggleVariant());
+        Assert.Equal(ColorVariant.Primary, settings.ToggleVariant());
+    }
+
+    [Fact]
+    public void ToggleVariant_TertiaryOriginDisabled_AdvancesFromPrimary()
+    {
+        var settings = new ColorSettings { HasSecondary = true };
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1" }, ColorVariant.Secondary);
+
+        Assert.Equal(ColorVariant.Secondary, settings.ToggleVariant(ColorVariant.Tertiary));
+    }
+
+    [Fact]
+    public void ToggleVariant_RaisesVariantToggled_OnlyWhenThePresetMoves()
+    {
+        var settings = new ColorSettings { HasSecondary = true };
+        var raised = 0;
+        settings.VariantToggled += (_, _) => raised++;
+
+        Assert.Equal(ColorVariant.Primary, settings.ToggleVariant()); // Secondary has no rows yet
+        Assert.Equal(0, raised);
+
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1" }, ColorVariant.Secondary);
+        Assert.Equal(ColorVariant.Secondary, settings.ToggleVariant());
+        Assert.Equal(ColorVariant.Primary, settings.ToggleVariant());
+        Assert.Equal(2, raised);
+
+        // A previewed origin counts like the toast: Secondary -> Primary moves even though Primary was active.
+        Assert.Equal(ColorVariant.Primary, settings.ToggleVariant(ColorVariant.Secondary));
+        Assert.Equal(3, raised);
+    }
+
+    [Fact]
+    public void ActiveVariant_DisablingOptionalPresets_ResetsOnlyTheActiveSlot()
+    {
+        var settings = new ColorSettings { HasSecondary = true, HasTertiary = true };
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1" }, ColorVariant.Tertiary);
+        Assert.Equal(ColorVariant.Tertiary, settings.ToggleVariant());
+
+        settings.HasSecondary = false;
+        Assert.Equal(ColorVariant.Tertiary, settings.ActiveVariant);
+
+        settings.HasTertiary = false;
         Assert.Equal(ColorVariant.Primary, settings.ActiveVariant);
     }
 
@@ -94,12 +168,12 @@ public class ColorSettingsTests
     }
 
     [Fact]
-    public void EnsureSecondaryInitialized_SeedsFromPrimary_ThenTogglesCleanly()
+    public void EnsureVariantInitialized_SeedsFromPrimary_ThenTogglesCleanly()
     {
         var settings = new ColorSettings { HasSecondary = true };
         settings.SetProfile(new DisplayColorProfile { DisplayId = "D1", IsEnabled = true, Brightness = 33, DigitalVibrance = 70 }, ColorVariant.Primary);
 
-        settings.EnsureSecondaryInitialized();
+        settings.EnsureVariantInitialized(ColorVariant.Secondary);
 
         var seeded = settings.SnapshotProfiles(ColorVariant.Secondary)["D1"];
         Assert.Equal(33, seeded.Brightness);
@@ -110,22 +184,30 @@ public class ColorSettingsTests
         Assert.Equal(33, settings.SnapshotProfiles()["D1"].Brightness);
     }
 
-    [Fact]
-    public void EnsureSecondaryInitialized_FillsMissingDisplays_PreservesExisting()
+    [Theory]
+    [InlineData(ColorVariant.Secondary)]
+    [InlineData(ColorVariant.Tertiary)]
+    public void EnsureVariantInitialized_PartiallyPopulated_CopiesMissingRowsAndPreservesEdits(ColorVariant variant)
     {
-        // codex CRITICAL: a PARTIAL secondary (Primary D1+D2, Secondary only D1) must not leave D2 blank —
-        // the editor would materialize a disabled D2 that a toggle applies as a neutral plan, wiping D2.
-        var settings = new ColorSettings { HasSecondary = true };
+        var settings = new ColorSettings();
         settings.SetProfile(new DisplayColorProfile { DisplayId = "D1", IsEnabled = true, Brightness = 20 }, ColorVariant.Primary);
-        settings.SetProfile(new DisplayColorProfile { DisplayId = "D2", IsEnabled = true, Brightness = 40 }, ColorVariant.Primary);
-        settings.SetProfile(new DisplayColorProfile { DisplayId = "D1", IsEnabled = true, Brightness = 99 }, ColorVariant.Secondary);
+        settings.SetProfile(new DisplayColorProfile
+        {
+            DisplayId = "D2", IsEnabled = false, Brightness = 40, Contrast = 60, Gamma = 1.4, DigitalVibrance = 70
+        }, ColorVariant.Primary);
+        settings.SetProfile(new DisplayColorProfile { DisplayId = "d1", IsEnabled = true, Brightness = 99 }, variant);
 
-        settings.EnsureSecondaryInitialized();
+        settings.EnsureVariantInitialized(variant);
+        settings.UpdateProfile("D2", p => p.Brightness = 10);
 
-        var sec = settings.SnapshotProfiles(ColorVariant.Secondary);
-        Assert.Equal(99, sec["D1"].Brightness); // existing Secondary D1 preserved (not overwritten)
-        Assert.Equal(40, sec["D2"].Brightness); // D2 filled from Primary (was missing) — never blank/disabled
-        Assert.True(sec["D2"].IsEnabled);
+        var rows = settings.SnapshotProfiles(variant);
+        Assert.Equal(99, rows["D1"].Brightness);
+        Assert.Equal("D2", rows["D2"].DisplayId);
+        Assert.False(rows["D2"].IsEnabled);
+        Assert.Equal(40, rows["D2"].Brightness);
+        Assert.Equal(60, rows["D2"].Contrast);
+        Assert.Equal(1.4, rows["D2"].Gamma);
+        Assert.Equal(70, rows["D2"].DigitalVibrance);
     }
 
     [Fact]
@@ -145,7 +227,7 @@ public class ColorSettingsTests
         using var vm = new ColorSettingsViewModel(
             settings, new FakeDisplayService { Displays = [display] }, color, allowLiveUpdates: true);
 
-        vm.IsEditingSecondary = true;
+        vm.EditingVariant = ColorVariant.Secondary;
         color.AppliedProfiles.Clear();
         vm.DisplayViewModels.Single().Brightness = 80;
 
@@ -178,7 +260,7 @@ public class ColorSettingsTests
         var settings = new ColorSettings { IsEnabled = true, HasSecondary = true };
         var profile = new DisplayColorProfile { DisplayId = display.Id, IsEnabled = true, Brightness = 30 };
         settings.SetProfile(profile);
-        settings.EnsureSecondaryInitialized();
+        settings.EnsureVariantInitialized(ColorVariant.Secondary);
         var color = new RecordingColorControlService();
         using var vm = new DisplayColorSettingsViewModel(
             display, profile, settings, color, () => true, allowLiveUpdates: true);

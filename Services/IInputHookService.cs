@@ -37,8 +37,8 @@ public interface IInputHookService : IDisposable
 
     /// <summary>
     /// Raised on the hook thread when the user presses the configured GLOBAL color-variant toggle key.
-    /// Fires exactly once per physical press (typematic repeats are ignored). The subscriber flips the
-    /// active profile's applied color preset (Primary&lt;-&gt;Secondary) and re-applies.
+    /// Fires once per physical press. The subscriber advances to the next available color preset
+    /// and requests a reapply.
     /// </summary>
     event EventHandler? ColorVariantToggleRequested;
 

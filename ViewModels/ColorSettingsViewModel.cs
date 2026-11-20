@@ -59,17 +59,49 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         // Rebuild when monitors are hot-plugged/removed. DisplayService is a singleton that outlives
         // this (transient) VM, so we MUST unsubscribe in Dispose or the handler leaks.
         _displayService.DisplaysChanged += OnDisplaysChanged;
+        _model.VariantToggled += OnVariantToggled;
         ScheduleDisplayRefresh();
+    }
+
+    // The color hotkey cycled this profile's preset on the keyboard-hook thread: queue the editor
+    // update to the owner thread (same marshaling as ScheduleDisplayRefresh) and never throw into the hook.
+    private void OnVariantToggled(object? sender, EventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_ownerContext is not null && !ReferenceEquals(SynchronizationContext.Current, _ownerContext))
+            {
+                _ownerContext.Post(_ => FollowActiveVariant(), null);
+                return;
+            }
+
+            FollowActiveVariant();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[Color] Failed to follow the hotkey preset: {ex.Message}");
+        }
+    }
+
+    // Reads the preset when it runs, so a burst of presses settles on the latest one. The hotkey has
+    // already retargeted any Force Preview, so following only moves the editor.
+    private void FollowActiveVariant()
+    {
+        if (!_disposed)
+        {
+            ShowVariant(_model.ActiveVariant);
+        }
     }
 
     private void BuildDisplayViewModels()
     {
-        if (_editingVariant == ColorVariant.Secondary)
-        {
-            // Seed any missing Secondary display from Primary BEFORE GetOrCreateProfile below would otherwise
-            // materialize a blank (disabled) one that a toggle could later apply as a neutral plan (codex).
-            _model.EnsureSecondaryInitialized();
-        }
+        // Inherit Primary calibration before GetOrCreateProfile fills any remaining gaps with disabled rows.
+        _model.EnsureVariantInitialized(_editingVariant);
 
         foreach (var display in _displaySnapshot)
         {
@@ -229,72 +261,97 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         }
     }
 
-    // ── Primary / Secondary variant editing ──────────────────────────────────────────────────────────
-    // Both presets share ONE set of per-display sliders; IsEditingSecondary chooses which variant they bind
-    // to. Runtime application of a variant is driven by the global toggle key, not by the editor.
-
-    /// <summary>Whether a Secondary preset is configured for this profile (the toggle key is a no-op without it).</summary>
     public bool HasSecondary
     {
         get => _model.HasSecondary;
-        set
-        {
-            if (_model.HasSecondary == value)
-            {
-                return;
-            }
-
-            _model.HasSecondary = value;
-
-            if (value)
-            {
-                // Seed Secondary from Primary so a freshly-enabled preset is a COPY of the current look, not a
-                // blank/neutral plan the toggle would apply (codex CRITICAL). No-op if already populated.
-                _model.EnsureSecondaryInitialized();
-            }
-
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(CanEditSecondary));
-
-            if (!value)
-            {
-                // Turning Secondary off snaps editing AND the applied preset back to Primary.
-                IsEditingSecondary = false;
-                _model.SetActiveVariant(ColorVariant.Primary);
-                EndForcePreview(); // a preset that no longer exists has nothing to preview
-            }
-
-            Changed?.Invoke(this, EventArgs.Empty);
-        }
+        set => SetOptionalVariantEnabled(ColorVariant.Secondary, value);
     }
 
-    public bool CanEditSecondary => _model.HasSecondary;
-
-    /// <summary>Which preset the per-display sliders currently edit. Switching rebinds them to that variant's
-    /// saved values (no hardware apply on switch — the runtime toggle key drives live changes).</summary>
-    public bool IsEditingSecondary
+    public bool HasTertiary
     {
-        get => _editingVariant == ColorVariant.Secondary;
+        get => _model.HasTertiary;
+        set => SetOptionalVariantEnabled(ColorVariant.Tertiary, value);
+    }
+
+    private bool IsVariantEnabled(ColorVariant variant) => variant switch
+    {
+        ColorVariant.Primary => true,
+        ColorVariant.Secondary => HasSecondary,
+        ColorVariant.Tertiary => HasTertiary,
+        _ => false
+    };
+
+    private void SetOptionalVariantEnabled(ColorVariant variant, bool enabled)
+    {
+        if (IsVariantEnabled(variant) == enabled)
+        {
+            return;
+        }
+
+        var isSecondary = variant == ColorVariant.Secondary;
+
+        if (enabled)
+        {
+            _model.EnsureVariantInitialized(variant);
+        }
+
+        if (isSecondary)
+        {
+            _model.HasSecondary = enabled;
+        }
+        else
+        {
+            _model.HasTertiary = enabled;
+        }
+
+        if (!enabled)
+        {
+            // The hotkey can retarget the preview independently of the editor selection.
+            EndForcePreview();
+            if (EditingVariant == variant)
+            {
+                EditingVariant = ColorVariant.Primary;
+            }
+        }
+
+        OnPropertyChanged(isSecondary ? nameof(HasSecondary) : nameof(HasTertiary));
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>The preset shown in the per-display sliders. Changing it retargets an active Force Preview.</summary>
+    public ColorVariant EditingVariant
+    {
+        get => _editingVariant;
         set
         {
-            var target = value ? ColorVariant.Secondary : ColorVariant.Primary;
-            if (_editingVariant == target)
+            if (ShowVariant(value) && _isForcePreviewActive)
             {
-                return;
-            }
-
-            _editingVariant = target;
-            OnPropertyChanged();
-            RebuildDisplayViewModels();
-
-            if (_isForcePreviewActive)
-            {
-                // The preview follows the Edit-preset selection: flipping the segmented toggle
-                // during a preview switches the previewed variant live.
-                _runtimeService?.SetForcedColorPreview(_model, target);
+                _runtimeService?.SetForcedColorPreview(_model, value);
             }
         }
     }
+
+    // Points the sliders at an enabled preset. Returns false when nothing changed.
+    private bool ShowVariant(ColorVariant value)
+    {
+        if (!IsVariantEnabled(value) || _editingVariant == value)
+        {
+            return false;
+        }
+
+        _editingVariant = value;
+        OnPropertyChanged(nameof(EditingVariant));
+        OnPropertyChanged(nameof(IsEditingPrimary));
+        OnPropertyChanged(nameof(IsEditingSecondary));
+        OnPropertyChanged(nameof(IsEditingTertiary));
+        RebuildDisplayViewModels();
+        return true;
+    }
+
+    // Radio-button projections of EditingVariant; clearing one is ignored because choosing another sets the preset.
+    public bool IsEditingPrimary { get => _editingVariant == ColorVariant.Primary; set { if (value) EditingVariant = ColorVariant.Primary; } }
+    public bool IsEditingSecondary { get => _editingVariant == ColorVariant.Secondary; set { if (value) EditingVariant = ColorVariant.Secondary; } }
+    public bool IsEditingTertiary { get => _editingVariant == ColorVariant.Tertiary; set { if (value) EditingVariant = ColorVariant.Tertiary; } }
 
     // ── 30 s force preview (game profiles) ───────────────────────────────────────────────────────────
     // A game profile's colors normally apply only while its exe is foreground; while editing, the
@@ -419,6 +476,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
 
         _disposed = true;
         _displayService.DisplaysChanged -= OnDisplaysChanged;
+        _model.VariantToggled -= OnVariantToggled;
 
         foreach (var displayVm in DisplayViewModels)
         {

@@ -547,7 +547,7 @@ public sealed class ProfileActivationReliabilityTests
         {
             DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 30
         });
-        global.ColorSettings.EnsureSecondaryInitialized();
+        global.ColorSettings.EnsureVariantInitialized(ColorVariant.Secondary);
         var watcher = new FakeForegroundWatcher();
         var color = new QueuedColorControlService();
         var displays = new FakeDisplayService { Displays = [CreateDisplay("DISPLAY1")] };
@@ -572,7 +572,7 @@ public sealed class ProfileActivationReliabilityTests
             }
             else if (context == "inactive")
             {
-                editor.ColorSettings.IsEditingSecondary = true;
+                editor.ColorSettings.EditingVariant = ColorVariant.Secondary;
             }
 
             var before = color.Brightnesses.Count;

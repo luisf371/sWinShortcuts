@@ -1,13 +1,18 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Threading;
 using System.Xml.Linq;
 using sWinShortcuts.Factories;
+using sWinShortcuts.Models;
 using sWinShortcuts.ViewModels;
 using Tests.Fakes;
 using Xunit;
@@ -120,6 +125,52 @@ public sealed class ProfileEditorTabsTemplateTests
             Assert.False(page.IsEnabled);
             Assert.False(content.IsEnabled);
             Assert.False(toggle.IsEnabled);
+        });
+
+    [Fact]
+    public Task ColorPresetSegments_SelectAnEnabledPresetInOneClick_AndFollowTheEditor() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var host = LoadProfileTabs();
+            var model = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+            model.ColorSettings.IsEnabled = true;
+            using var profile = new ProfileViewModel(model, new FakeDisplayService(), new RecordingColorControlService());
+            host.Content = profile;
+            host.ContentTemplate = (DataTemplate)host.Resources["ProfileTabs"];
+            host.Measure(new Size(900, 700));
+            host.Arrange(new Rect(0, 0, 900, 700));
+            host.UpdateLayout();
+            var tabs = Assert.Single(Descendants(host).OfType<TabControl>());
+            tabs.SelectedItem = tabs.Items.OfType<TabItem>().Single(item => (item.Header as string) == "Display");
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+
+            var segmentStyle = host.FindResource("SegmentRadioButtonStyle");
+            var segments = Descendants(host).OfType<RadioButton>().Where(button => button.Style == segmentStyle).ToArray();
+            Assert.Equal(["Primary", "Secondary", "Tertiary"], segments.Select(button => button.Content as string));
+            bool[] Checked() => segments.Select(button => button.IsChecked == true).ToArray();
+            Assert.Equal([true, false, false], Checked());
+            var tertiary = segments[2];
+            Assert.False(segments[1].IsEnabled);
+            Assert.False(tertiary.IsEnabled);
+
+            // The same Select a click or screen reader performs; a preset that is off cannot be picked.
+            var pickTertiary = (ISelectionItemProvider)UIElementAutomationPeer.CreatePeerForElement(tertiary)
+                .GetPattern(PatternInterface.SelectionItem);
+            Assert.Throws<ElementNotEnabledException>(pickTertiary.Select);
+            Assert.Equal(ColorVariant.Primary, profile.ColorSettings.EditingVariant);
+
+            profile.ColorSettings.HasTertiary = true;
+            Assert.True(tertiary.IsEnabled);
+            pickTertiary.Select();
+            Assert.Equal(ColorVariant.Tertiary, profile.ColorSettings.EditingVariant);
+            Assert.Equal([false, false, true], Checked());
+
+            // Turning off the preset being edited moves the editor, and the picker, back to Primary.
+            profile.ColorSettings.HasTertiary = false;
+            Assert.Equal(ColorVariant.Primary, profile.ColorSettings.EditingVariant);
+            Assert.Equal([true, false, false], Checked());
+            Assert.False(tertiary.IsEnabled);
         });
 
     private static IEnumerable<DependencyObject> LogicalDescendants(DependencyObject root)

@@ -83,10 +83,17 @@ public sealed class ColorProfileToastServiceTests
     }
 
     [Fact]
-    public async Task ColorVariantToggle_RealFlipToastsNewVariant()
+    public async Task ColorVariantToggle_ThreePresses_ToastsEachPresetInOrder()
     {
         var store = new InMemoryProfileStore();
         var profile = CreateColorToggleProfile(hasSecondary: true);
+        profile.ColorSettings.HasTertiary = true;
+        profile.ColorSettings.SetProfile(new DisplayColorProfile
+        {
+            DisplayId = "DISPLAY1",
+            IsEnabled = true,
+            Brightness = 70
+        }, ColorVariant.Tertiary);
         store.Profiles.Add(profile);
 
         var manager = new ProfileManager(store);
@@ -115,10 +122,13 @@ public sealed class ColorProfileToastServiceTests
             await WaitForAsync(() => color.AppliedProfiles.Count > 0);
             await Task.Delay(100); // publication completes a few instructions after the apply
 
-            input.RaiseColorVariantToggle();
-
-            Assert.Equal(ColorVariant.Secondary, toast.AppliedVariant);
-            Assert.Equal(1, toast.ShownCount);
+            ColorVariant[] expected = [ColorVariant.Secondary, ColorVariant.Tertiary, ColorVariant.Primary];
+            for (var i = 0; i < expected.Length; i++)
+            {
+                input.RaiseColorVariantToggle();
+                Assert.Equal(expected[i], toast.AppliedVariant);
+                Assert.Equal(i + 1, toast.ShownCount);
+            }
         }
         finally
         {

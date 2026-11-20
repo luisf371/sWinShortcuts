@@ -79,7 +79,7 @@
                         </ComboBox.ItemTemplate>
                     </ComboBox>
                 </Grid>
-                <TextBlock Text="Toggles between Primary and Secondary color profile."
+                <TextBlock Text="Cycles through the enabled color presets."
                            Foreground="{DynamicResource ForegroundSecondaryBrush}"
                            FontSize="11"
                            TextWrapping="Wrap"/>

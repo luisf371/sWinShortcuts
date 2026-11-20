@@ -176,7 +176,8 @@ internal static class ProfilePersistenceSnapshot
         var clone = new ColorSettings
         {
             IsEnabled = source.IsEnabled,
-            HasSecondary = source.HasSecondary
+            HasSecondary = source.HasSecondary,
+            HasTertiary = source.HasTertiary
         };
 
         foreach (var profile in source.SnapshotProfiles(ColorVariant.Primary).Values)
@@ -187,6 +188,11 @@ internal static class ProfilePersistenceSnapshot
         foreach (var profile in source.SnapshotProfiles(ColorVariant.Secondary).Values)
         {
             clone.SetProfile(CloneDisplayColorProfile(profile), ColorVariant.Secondary);
+        }
+
+        foreach (var profile in source.SnapshotProfiles(ColorVariant.Tertiary).Values)
+        {
+            clone.SetProfile(CloneDisplayColorProfile(profile), ColorVariant.Tertiary);
         }
 
         clone.SetActiveVariant(source.ActiveVariant);

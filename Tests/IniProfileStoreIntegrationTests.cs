@@ -305,11 +305,11 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "color.exe");
         profile.ColorSettings.IsEnabled = true;
         profile.ColorSettings.HasSecondary = true;
+        profile.ColorSettings.HasTertiary = true;
         profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 45, Contrast = 55, Gamma = 1.2, DigitalVibrance = 60 }, ColorVariant.Primary);
         profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 95, Contrast = 60, Gamma = 1.0, DigitalVibrance = 90 }, ColorVariant.Secondary);
-        // Toggle to Secondary BEFORE saving — the serializer must still write each variant to its own section
-        // (Primary must not be overwritten by the currently-active variant).
-        profile.ColorSettings.ToggleVariant();
+        profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = false, Brightness = 75, Contrast = 65, Gamma = 1.4, DigitalVibrance = 80 }, ColorVariant.Tertiary);
+        profile.ColorSettings.SetActiveVariant(ColorVariant.Tertiary);
         _createdProfiles.Add(profile);
 
         await _store.SaveProfileAsync(profile, CancellationToken.None);
@@ -318,6 +318,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
 
         Assert.NotNull(loaded);
         Assert.True(loaded.ColorSettings.HasSecondary);
+        Assert.True(loaded.ColorSettings.HasTertiary);
         Assert.Equal(ColorVariant.Primary, loaded.ColorSettings.ActiveVariant); // runtime state resets on load
 
         var primary = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
@@ -327,6 +328,35 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var secondary = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Secondary)["DISPLAY1"];
         Assert.Equal(95, secondary.Brightness);
         Assert.Equal(90, secondary.DigitalVibrance);
+
+        var tertiary = loaded.ColorSettings.SnapshotProfiles(ColorVariant.Tertiary)["DISPLAY1"];
+        Assert.False(tertiary.IsEnabled);
+        Assert.Equal(75, tertiary.Brightness);
+        Assert.Equal(65, tertiary.Contrast);
+        Assert.Equal(1.4, tertiary.Gamma);
+        Assert.Equal(80, tertiary.DigitalVibrance);
+    }
+
+    [Fact]
+    public async Task LoadProfiles_LegacyTwoPresetIni_KeepsTwoPresetCycle()
+    {
+        var profilesDirectory = Path.Combine(_root, "Profiles");
+        Directory.CreateDirectory(profilesDirectory);
+        File.WriteAllText(
+            Path.Combine(profilesDirectory, "TwoPresets.ini"),
+            "[Profile]\nName=Two Presets\nExecutable=two-presets.exe\nEnabled=true\n\n" +
+            "[Color]\nEnabled=true\nHasSecondary=true\n\n" +
+            "[ColorDisplays]\nDISPLAY1=1|40|50|1.2|60\n\n" +
+            "[ColorDisplaysSecondary]\nDISPLAY1=1|90|55|1.5|80\n");
+
+        var loaded = Assert.Single(
+            await _store.LoadProfilesAsync(CancellationToken.None),
+            p => p.NormalizedExecutable == "two-presets");
+
+        Assert.False(loaded.ColorSettings.HasTertiary);
+        Assert.Equal(ColorVariant.Primary, loaded.ColorSettings.ActiveVariant);
+        Assert.Equal(ColorVariant.Secondary, loaded.ColorSettings.ToggleVariant());
+        Assert.Equal(ColorVariant.Primary, loaded.ColorSettings.ToggleVariant());
     }
 
     [Fact]
@@ -847,6 +877,10 @@ public class IniProfileStoreIntegrationTests : IDisposable
         windows.ColorSettings.SetProfile(
             new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 90, Gamma = 0.9, DigitalVibrance = 85 },
             ColorVariant.Secondary);
+        windows.ColorSettings.SetProfile(
+            new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 70, Contrast = 65, Gamma = 1.4, DigitalVibrance = 75 },
+            ColorVariant.Tertiary);
+        windows.ColorSettings.HasTertiary = false;
 
         await _store.SaveProfileAsync(windows, CancellationToken.None);
 
@@ -856,6 +890,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.True(reloaded.WindowsLauncher.IsEnabled);
         Assert.True(reloaded.ColorSettings.IsEnabled);
         Assert.True(reloaded.ColorSettings.HasSecondary);
+        Assert.False(reloaded.ColorSettings.HasTertiary);
         var primary = reloaded.ColorSettings.SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"];
         Assert.Equal(40, primary.Brightness);
         Assert.Equal(60, primary.Contrast);
@@ -864,6 +899,13 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var secondary = reloaded.ColorSettings.SnapshotProfiles(ColorVariant.Secondary)["DISPLAY1"];
         Assert.Equal(90, secondary.Brightness);
         Assert.Equal(85, secondary.DigitalVibrance);
+
+        var tertiary = reloaded.ColorSettings.SnapshotProfiles(ColorVariant.Tertiary)["DISPLAY1"];
+        Assert.True(tertiary.IsEnabled);
+        Assert.Equal(70, tertiary.Brightness);
+        Assert.Equal(65, tertiary.Contrast);
+        Assert.Equal(1.4, tertiary.Gamma);
+        Assert.Equal(75, tertiary.DigitalVibrance);
     }
 
 }

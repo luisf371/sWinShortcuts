@@ -6,17 +6,13 @@ using sWinShortcuts.Views;
 
 namespace sWinShortcuts.Services;
 
-// 2-second toast for the global color-preset toggle key: "Color Profile: Primary/Secondary". Every
-// press restarts a fresh 2s window (deliberately NO dedup, unlike RapidFireStatusService).
+// Each change from the global color-preset toggle key restarts the 2-second "Color Profile: <preset>" toast.
 //
 // Dispatch contract (identical to RapidFireStatusService): Show is ENQUEUE-ONLY. It is called from
 // ProfileActivationService's ColorVariantToggleRequested handler — i.e. the keyboard-hook thread —
 // so building or touching a WPF window inline there risks LowLevelHooksTimeout (a stalled hook
 // callback is silently removed by Windows). Show therefore schedules ApplyShow and returns
-// immediately. This service deliberately does NOT subscribe to ColorVariantToggleRequested itself:
-// that event fires PRE-flip and subscriber order is subscription order, so a direct subscriber
-// would toast the inverted variant. ProfileActivationService raises Show AFTER ToggleVariant(),
-// using the before/after compare as the "was a real flip" predicate.
+// immediately. ProfileActivationService calls Show after ToggleVariant() confirms a preset change.
 public sealed class ColorProfileToastService : IDisposable
 {
     private static readonly TimeSpan ToastDuration = TimeSpan.FromSeconds(2);

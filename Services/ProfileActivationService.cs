@@ -55,11 +55,8 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     // Set by the resume/display-change handlers; consumed by the worker so a forced re-apply routes
     // through the same C1 plan-diff (a resume while color is disabled therefore never wipes calibration).
     private int _forceReapply;
-    // The ColorSettings currently being applied (active app profile's, else the global Color fallback),
-    // published by the worker on each foreground change. The color-toggle hook event flips THIS object at
-    // PRESS TIME (thread-safe via ColorSettings._sync) — so a toggle targets the color visible at the moment
-    // of the press and preserves parity (one flip per press), instead of a deferred worker flip keyed off the
-    // capacity-1 DropOldest channel (which coalesces and could otherwise flip the wrong/later profile).
+    // The ColorSettings currently being applied, published by the worker on each foreground change.
+    // The hook advances this preset once per press, so coalesced apply requests preserve every advance.
     private volatile ColorSettings? _activeColorSettings;
     private bool _reapplyHandlersRegistered;
 
@@ -540,10 +537,8 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
     private void OnColorVariantToggleRequested(object? sender, EventArgs e)
     {
-        // Hook thread: flip the CURRENTLY-APPLIED color preset at PRESS TIME (thread-safe; internally a no-op
-        // without a populated Secondary), then request a re-apply. Flipping here — not deferred to the worker
-        // off the coalescing channel — preserves parity (one flip per press) and targets the color that was
-        // visible at the instant of the press.
+        // Advance from the visible preset at press time, then request a reapply. The color worker can
+        // coalesce apply requests while the model still advances once for each press.
         var settings = _activeColorSettings;
         if (settings is not null)
         {
@@ -554,23 +549,15 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             var after = settings.ToggleVariant(before);
             if (before != after)
             {
-                // Force preview active on exactly these settings -> RETARGET it to the flipped
-                // variant so toast, screen, and preview stay consistent: the hotkey flips the
-                // color visible on screen, which during a preview IS the forced profile. (When
-                // forced.Settings.IsEnabled == false, ProcessColorChange's publication left
-                // _activeColorSettings at the GLOBAL settings, so this branch simply doesn't
-                // fire — the plan and its publication never disagree.)
+                // Retarget a preview using these settings so the next apply shows the same preset as the
+                // toast. When the preview's colors are disabled, the global fallback is the toggle target.
                 if (forced is not null && ReferenceEquals(forced.Settings, settings))
                 {
                     _forcedColorPreview = new ForcedColorPreview(settings, after);
                 }
 
-                // Real flip -> toast the new variant. Raised HERE (press time, post-flip) because it is the
-                // only path that encodes hotkey intent; a post-apply raise would fire spurious toasts on
-                // foreground swaps between profiles with different active variants. Show is enqueue-only, so
-                // this is safe on the hook thread. Trade-off: if the subsequent apply fails, the toast names
-                // the queued variant; the failed apply stays un-deduped and retries, so screen and toast
-                // converge.
+                // Toast the new preset at press time so foreground changes never produce a toast.
+                // Show queues UI work and the color worker retries any failed apply.
                 _toastService?.Show(after);
             }
         }
@@ -732,9 +719,8 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             }
         }
 
-        // Publish AFTER a SUCCESSFUL/current apply so the color-toggle hook event only ever flips the
-        // ColorSettings whose plan is actually on screen — not a profile whose color failed to apply or hasn't
-        // been applied yet. A failed plan may be partially visible; retain the last successful target.
+        // Publish after a successful, current apply so the hotkey advances the preset on screen.
+        // A failed plan may be partially visible, so retain the last successful target.
         latest = _latestForeground;
         if (planOnScreen && latest is not null && latest.Generation == snapshot.Generation)
         {

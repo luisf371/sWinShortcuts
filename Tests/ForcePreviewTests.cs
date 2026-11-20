@@ -153,25 +153,26 @@ public sealed class ForcePreviewTests
     }
 
     [Fact]
-    public async Task ColorVariantToggleDuringPreview_RetargetsForcedVariant_AndToastMatches()
+    public async Task ColorVariantToggleDuringPreview_SecondaryVisible_AppliesAndToastsTertiary()
     {
-        var harness = await CreateServiceHarness(CreateGameProfile(
-            hasSecondary: true, primaryBrightness: 40, secondaryBrightness: 90));
+        var profile = CreateGameProfile(hasSecondary: true, primaryBrightness: 40, secondaryBrightness: 90);
+        profile.ColorSettings.HasTertiary = true;
+        SetDisplayColor(profile, "DISPLAY1", ColorVariant.Tertiary, 70);
+        var harness = await CreateServiceHarness(profile);
         await harness.Service.StartAsync(CancellationToken.None);
         try
         {
             await WaitForAsync(() => harness.LastBrightness == 60); // warm-up: global applied
 
-            harness.Service.SetForcedColorPreview(harness.GameProfile.ColorSettings, ColorVariant.Primary);
-            await WaitForAsync(() => harness.LastBrightness == 40);
+            harness.Service.SetForcedColorPreview(profile.ColorSettings, ColorVariant.Secondary);
+            await WaitForAsync(() => harness.LastBrightness == 90);
             await Task.Delay(100); // publication lands a few instructions after the apply
+            Assert.Equal(ColorVariant.Primary, profile.ColorSettings.ActiveVariant);
 
-            // The hotkey flips the color visible on screen — during a preview that IS the forced
-            // profile, so the forced record retargets (plan + publication stay consistent).
             harness.Input.RaiseColorVariantToggle();
 
-            await WaitForAsync(() => harness.LastBrightness == 90);
-            Assert.Equal(ColorVariant.Secondary, harness.Toast.AppliedVariant);
+            await WaitForAsync(() => harness.LastBrightness == 70);
+            Assert.Equal(ColorVariant.Tertiary, harness.Toast.AppliedVariant);
             Assert.Equal(1, harness.Toast.ShownCount);
 
             // Clearing still restores the foreground-appropriate (global) plan.
@@ -229,10 +230,7 @@ public sealed class ForcePreviewTests
             await WaitForAsync(() => harness.LastBrightness == 60);
             harness.Service.SetForcedColorPreview(harness.GameProfile.ColorSettings, preview);
             await WaitForAsync(() => harness.LastBrightness == beforeBrightness);
-            await WaitForAsync(() => ReferenceEquals(
-                typeof(ProfileActivationService).GetField("_activeColorSettings",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-                    .GetValue(harness.Service), harness.GameProfile.ColorSettings));
+            await WaitForAsync(() => IsToggleTarget(harness, harness.GameProfile));
             Assert.Equal(runtime, harness.GameProfile.ColorSettings.ActiveVariant);
 
             harness.Input.RaiseColorVariantToggle();
@@ -240,6 +238,31 @@ public sealed class ForcePreviewTests
             Assert.Equal(runtime, harness.Toast.AppliedVariant);
             Assert.Equal(1, harness.Toast.ShownCount);
             await WaitForAsync(() => harness.LastBrightness == afterBrightness);
+        }
+        finally
+        {
+            await StopAsync(harness);
+        }
+    }
+
+    [Fact]
+    public async Task ColorVariantToggle_InGame_EditorFollowsTheHotkeyPreset()
+    {
+        var profile = CreateGameProfile(hasSecondary: true, primaryBrightness: 40, secondaryBrightness: 90);
+        var harness = await CreateServiceHarness(profile);
+        using var viewModel = CreateGameViewModel(profile, harness.Service);
+        await harness.Service.StartAsync(CancellationToken.None);
+        try
+        {
+            harness.Watcher.RaiseForegroundChanged("game.exe", 123);
+            await WaitForAsync(() => harness.LastBrightness == 40 && IsToggleTarget(harness, profile));
+
+            harness.Input.RaiseColorVariantToggle();
+            await WaitForAsync(() => viewModel.ColorSettings.EditingVariant == ColorVariant.Secondary);
+            await WaitForAsync(() => harness.LastBrightness == 90);
+
+            harness.Input.RaiseColorVariantToggle();
+            await WaitForAsync(() => viewModel.ColorSettings.EditingVariant == ColorVariant.Primary);
         }
         finally
         {
@@ -310,7 +333,7 @@ public sealed class ForcePreviewTests
     }
 
     [Fact]
-    public void ForcePreview_EditPresetFlipMidPreview_ResetsToEditedVariant()
+    public void ForcePreview_EditPresetChanges_RetargetsToEditedVariant()
     {
         var runtime = new RecordingPreviewRuntimeService();
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -319,7 +342,7 @@ public sealed class ForcePreviewTests
 
         colorSettings.IsForcePreviewEnabled = true; // previews Primary
         colorSettings.HasSecondary = true;
-        colorSettings.IsEditingSecondary = true; // flip the segmented toggle mid-preview
+        colorSettings.EditingVariant = ColorVariant.Secondary;
 
         Assert.Equal(2, runtime.ForcedPreviews.Count);
         var last = runtime.ForcedPreviews[^1];
@@ -327,10 +350,26 @@ public sealed class ForcePreviewTests
         Assert.Equal(ColorVariant.Secondary, last.Variant);
         Assert.True(colorSettings.IsForcePreviewEnabled); // same preview, now of Secondary
 
-        // Flipping back re-targets Primary again.
-        colorSettings.IsEditingSecondary = false;
+        colorSettings.EditingVariant = ColorVariant.Primary;
         Assert.Equal(ColorVariant.Primary, runtime.ForcedPreviews[^1].Variant);
         Assert.Equal(3, runtime.ForcedPreviews.Count);
+    }
+
+    [Fact]
+    public void HotkeyToggleDuringPreview_EditorFollowsWithoutResettingThePreview()
+    {
+        var runtime = new RecordingPreviewRuntimeService();
+        var profile = CreateGameProfile(hasSecondary: true);
+        using var viewModel = CreateGameViewModel(profile, runtime);
+        var colorSettings = viewModel.ColorSettings;
+        colorSettings.IsForcePreviewEnabled = true; // previews Primary
+
+        // The hotkey's step during a preview; the service has already retargeted its own preview.
+        profile.ColorSettings.ToggleVariant(ColorVariant.Primary);
+
+        Assert.Equal(ColorVariant.Secondary, colorSettings.EditingVariant);
+        Assert.Single(runtime.ForcedPreviews); // only the checkbox's: following never sets it again
+        Assert.True(colorSettings.IsForcePreviewEnabled);
     }
 
     [Fact]
@@ -346,6 +385,34 @@ public sealed class ForcePreviewTests
 
         Assert.False(colorSettings.IsForcePreviewEnabled);
         Assert.Equal(1, runtime.ClearedPreviews);
+    }
+
+    [Fact]
+    public void EditingVariant_DisablingOptionalPresets_KeepsTertiaryUntilDisabledAndEndsPreview()
+    {
+        var runtime = new RecordingPreviewRuntimeService();
+        var profile = CreateGameProfile(hasSecondary: true);
+        using var viewModel = CreateGameViewModel(profile, runtime);
+        var colorSettings = viewModel.ColorSettings;
+        colorSettings.HasTertiary = true;
+        Assert.Equal(ColorVariant.Tertiary, profile.ColorSettings.ToggleVariant(ColorVariant.Secondary));
+        colorSettings.EditingVariant = ColorVariant.Tertiary;
+
+        colorSettings.IsForcePreviewEnabled = true;
+        colorSettings.HasSecondary = false;
+
+        Assert.Equal(ColorVariant.Tertiary, profile.ColorSettings.ActiveVariant);
+        Assert.Equal(ColorVariant.Tertiary, colorSettings.EditingVariant);
+        Assert.False(colorSettings.IsForcePreviewEnabled);
+        Assert.Equal(1, runtime.ClearedPreviews);
+
+        colorSettings.IsForcePreviewEnabled = true;
+        colorSettings.HasTertiary = false;
+
+        Assert.Equal(ColorVariant.Primary, profile.ColorSettings.ActiveVariant);
+        Assert.Equal(ColorVariant.Primary, colorSettings.EditingVariant);
+        Assert.False(colorSettings.IsForcePreviewEnabled);
+        Assert.Equal(2, runtime.ClearedPreviews);
     }
 
     [Fact]
@@ -443,7 +510,7 @@ public sealed class ForcePreviewTests
 
     // ── Helpers ────────────────────────────────────────────────────────────────────────────────
 
-    private static ProfileViewModel CreateGameViewModel(Profile profile, RecordingPreviewRuntimeService runtime)
+    private static ProfileViewModel CreateGameViewModel(Profile profile, IProfileRuntimeService runtime)
     {
         return new ProfileViewModel(
             profile,
@@ -451,6 +518,12 @@ public sealed class ForcePreviewTests
             new RecordingColorControlService(),
             profileRuntimeService: runtime);
     }
+
+    // The hotkey toggles the settings the color worker last published as on screen.
+    private static bool IsToggleTarget(ServiceHarness harness, Profile profile) => ReferenceEquals(
+        typeof(ProfileActivationService).GetField("_activeColorSettings",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(harness.Service), profile.ColorSettings);
 
     private static async Task<ProfileManager> CreateManagerAsync()
     {

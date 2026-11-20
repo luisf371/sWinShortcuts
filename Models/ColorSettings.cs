@@ -4,39 +4,66 @@ using System.Collections.Generic;
 namespace sWinShortcuts.Models;
 
 /// <summary>
-/// Which of a profile's two color presets is being referenced. Primary is the "as default" look;
-/// Secondary is an optional alternate (e.g. more vibrant / brighter) toggled live by a global hotkey.
+/// A profile's color preset. Primary is the default look. Secondary and Tertiary are optional
+/// alternates that the global hotkey can cycle through.
 /// </summary>
 public enum ColorVariant
 {
     Primary = 0,
-    Secondary = 1
+    Secondary = 1,
+    Tertiary = 2
 }
 
 public sealed class ColorSettings
 {
+    private const int VARIANT_COUNT = 3;
+
     private readonly Dictionary<string, DisplayColorProfile> _primaryProfiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DisplayColorProfile> _secondaryProfiles = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DisplayColorProfile> _tertiaryProfiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sync = new();
 
-    // Runtime-only: which preset is currently APPLIED. Deliberately NOT persisted — every launch starts on
-    // Primary so the "as default" look is what comes up. Guarded by _sync (flipped from the activation
-    // worker via ToggleVariant, read by the INI serializer / apply path via SnapshotProfiles).
+    // Runtime-only applied preset. Every launch starts on Primary. Guarded by _sync and advanced by
+    // the hotkey through ToggleVariant.
     private ColorVariant _activeVariant = ColorVariant.Primary;
 
     public bool IsEnabled { get; set; } = false;
 
     private bool _hasSecondary;
+    private bool _hasTertiary;
 
-    /// <summary>
-    /// Whether a Secondary preset has been configured for this profile. When false, only Primary is ever
-    /// applied and the global toggle key is a no-op for this profile (the user opts in explicitly).
-    /// Guarded by <c>_sync</c> — written by the UI thread, read by the activation worker / hook event.
-    /// </summary>
+    /// <summary>Whether the user has opted in to the Secondary preset.</summary>
     public bool HasSecondary
     {
         get { lock (_sync) { return _hasSecondary; } }
-        set { lock (_sync) { _hasSecondary = value; } }
+        set
+        {
+            lock (_sync)
+            {
+                _hasSecondary = value;
+                if (!value && _activeVariant == ColorVariant.Secondary)
+                {
+                    _activeVariant = ColorVariant.Primary;
+                }
+            }
+        }
+    }
+
+    /// <summary>Whether the user has opted in to the Tertiary preset.</summary>
+    public bool HasTertiary
+    {
+        get { lock (_sync) { return _hasTertiary; } }
+        set
+        {
+            lock (_sync)
+            {
+                _hasTertiary = value;
+                if (!value && _activeVariant == ColorVariant.Tertiary)
+                {
+                    _activeVariant = ColorVariant.Primary;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -48,12 +75,26 @@ public sealed class ColorSettings
     }
 
     private Dictionary<string, DisplayColorProfile> StoreFor(ColorVariant variant)
-        => variant == ColorVariant.Secondary ? _secondaryProfiles : _primaryProfiles;
+        => variant switch
+        {
+            ColorVariant.Secondary => _secondaryProfiles,
+            ColorVariant.Tertiary => _tertiaryProfiles,
+            _ => _primaryProfiles
+        };
+
+    private bool IsAvailableLocked(ColorVariant variant)
+        => variant switch
+        {
+            ColorVariant.Primary => true,
+            ColorVariant.Secondary => _hasSecondary && _secondaryProfiles.Count > 0,
+            ColorVariant.Tertiary => _hasTertiary && _tertiaryProfiles.Count > 0,
+            _ => false
+        };
 
     /// <summary>
     /// Returns a point-in-time snapshot of the per-display profiles for the ACTIVE variant. The returned
     /// dictionary is a fresh deep copy, so it is safe to enumerate from any thread while the UI thread
-    /// mutates the underlying store. Falls back to Primary if Secondary is active but not configured.
+    /// mutates the underlying store. Falls back to Primary when the active preset is unavailable.
     /// </summary>
     public IReadOnlyDictionary<string, DisplayColorProfile> DisplayProfiles => SnapshotProfiles();
 
@@ -61,17 +102,13 @@ public sealed class ColorSettings
     {
         lock (_sync)
         {
-            // Secondary only when opted-in AND actually populated — a HasSecondary-but-empty store must NEVER
-            // apply (it would push neutral/disabled plans and wipe the calibrated Primary look).
-            var effective = (_activeVariant == ColorVariant.Secondary && _hasSecondary && _secondaryProfiles.Count > 0)
-                ? ColorVariant.Secondary
-                : ColorVariant.Primary;
+            var effective = IsAvailableLocked(_activeVariant) ? _activeVariant : ColorVariant.Primary;
             return SnapshotLocked(effective);
         }
     }
 
     /// <summary>Snapshot of a SPECIFIC variant — used by the INI serializer and the editor UI, which must
-    /// address Primary/Secondary explicitly regardless of which one is currently active.</summary>
+    /// address each preset explicitly regardless of which one is currently active.</summary>
     public IReadOnlyDictionary<string, DisplayColorProfile> SnapshotProfiles(ColorVariant variant)
     {
         lock (_sync)
@@ -170,27 +207,48 @@ public sealed class ColorSettings
         {
             _primaryProfiles.Clear();
             _secondaryProfiles.Clear();
+            _tertiaryProfiles.Clear();
         }
     }
 
     /// <summary>
-    /// Flips the active variant Primary&lt;-&gt;Secondary (only meaningful when <see cref="HasSecondary"/>).
+    /// Raised after <see cref="ToggleVariant"/> moves to a different preset, on the caller's thread (the
+    /// keyboard-hook thread for the hotkey), so handlers must only queue work and never throw.
+    /// </summary>
+    public event EventHandler? VariantToggled;
+
+    /// <summary>
+    /// Advances to the next enabled, populated preset in cycle order. Primary is always available.
     /// The hotkey may supply the visible preview variant as its origin. Returns the new active variant.
     /// </summary>
     public ColorVariant ToggleVariant(ColorVariant? origin = null)
     {
+        ColorVariant before;
+        var after = ColorVariant.Primary;
         lock (_sync)
         {
-            // Never switch to an un-opted-in or empty Secondary (would apply a blank/neutral plan).
-            if (!_hasSecondary || _secondaryProfiles.Count == 0)
+            before = origin ?? _activeVariant;
+            var start = IsAvailableLocked(before) ? before : ColorVariant.Primary;
+            for (var step = 1; step <= VARIANT_COUNT; step++)
             {
-                _activeVariant = ColorVariant.Primary;
-                return _activeVariant;
+                var next = (ColorVariant)(((int)start + step) % VARIANT_COUNT);
+                if (IsAvailableLocked(next))
+                {
+                    after = next;
+                    break;
+                }
             }
 
-            _activeVariant = (origin ?? _activeVariant) == ColorVariant.Primary ? ColorVariant.Secondary : ColorVariant.Primary;
-            return _activeVariant;
+            _activeVariant = after;
         }
+
+        // Same before/after test as the toast, outside the lock.
+        if (after != before)
+        {
+            VariantToggled?.Invoke(this, EventArgs.Empty);
+        }
+
+        return after;
     }
 
     /// <summary>Force the active variant (e.g. the editor previewing a specific variant, or reset to Primary
@@ -204,23 +262,27 @@ public sealed class ColorSettings
     }
 
     /// <summary>
-    /// Ensure every Primary display has a Secondary counterpart, seeding any MISSING one from Primary (a
-    /// per-display fill that PRESERVES existing Secondary entries / user edits). A freshly-enabled or only
-    /// partially-configured Secondary thus never leaves an enabled display blank/disabled — which the editor
-    /// would materialize and a toggle would then apply as a neutral plan, wiping the calibrated Primary there.
+    /// Seed missing rows in an optional preset from Primary before the editor creates blank display rows.
+    /// Preserves all existing entries and user edits in the optional preset.
     /// </summary>
-    public void EnsureSecondaryInitialized()
+    public void EnsureVariantInitialized(ColorVariant variant)
     {
+        if (variant == ColorVariant.Primary)
+        {
+            return;
+        }
+
         lock (_sync)
         {
+            var store = StoreFor(variant);
             foreach (var (id, p) in _primaryProfiles)
             {
-                if (_secondaryProfiles.ContainsKey(id))
+                if (store.ContainsKey(id))
                 {
                     continue;
                 }
 
-                _secondaryProfiles[id] = new DisplayColorProfile
+                store[id] = new DisplayColorProfile
                 {
                     DisplayId = p.DisplayId,
                     IsEnabled = p.IsEnabled,

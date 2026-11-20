@@ -86,6 +86,8 @@ public sealed class ProfilePersistenceSnapshotTests
         var display = profile.ColorSettings.GetOrCreateProfile("DISPLAY1");
         display.IsEnabled = true;
         display.Brightness = 61;
+        profile.ColorSettings.HasTertiary = true;
+        profile.ColorSettings.GetOrCreateProfile("DISPLAY1", ColorVariant.Tertiary).Brightness = 74;
 
         var snapshot = ProfilePersistenceSnapshot.Create(profile);
 
@@ -119,6 +121,8 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.ColorSettings.UpdateProfile(
             "DISPLAY1",
             color => color.Brightness = 99);
+        profile.ColorSettings.HasTertiary = false;
+        profile.ColorSettings.UpdateProfile("DISPLAY1", ColorVariant.Tertiary, color => color.Brightness = 88);
 
         Assert.Equal("game.exe", snapshot.Executable);
         Assert.True(snapshot.IsEnabled);
@@ -152,5 +156,7 @@ public sealed class ProfilePersistenceSnapshotTests
             snapshot.ColorSettings
                 .SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"]
                 .Brightness);
+        Assert.True(snapshot.ColorSettings.HasTertiary);
+        Assert.Equal(74, snapshot.ColorSettings.SnapshotProfiles(ColorVariant.Tertiary)["DISPLAY1"].Brightness);
     }
 }

@@ -8,7 +8,7 @@ using WinForms = System.Windows.Forms;
 namespace sWinShortcuts.Views;
 
 // 2-second toast for the global color-preset toggle key (driven by ColorProfileToastService): names
-// the preset that was just flipped to ("Color Profile: Primary/Secondary"). Top-left anchored on the
+// the preset that was just switched to ("Color Profile: <preset>"). Top-left anchored on the
 // cursor's monitor, offset right of the Rapid Fire status dot, click-through, always-on-top. Every
 // press restarts a fresh 2s window (the SERVICE owns that timer; this window is stateless). All
 // focus-stealing vectors are closed off (ShowActivated=false, WS_EX_NOACTIVATE, SWP_NOACTIVATE,
