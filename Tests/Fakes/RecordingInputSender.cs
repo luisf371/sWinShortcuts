@@ -21,6 +21,7 @@ internal sealed class RecordingInputSender(
     public ConcurrentQueue<(Key Key, bool MacroRelease)> KeyReleases { get; } = new();
     public ConcurrentQueue<(MouseButton Button, bool IsDown, bool MacroRelease)> MouseTransitions { get; } = new();
     public ConcurrentQueue<(int X, int Y)> MouseMoves { get; } = new();
+    public ConcurrentQueue<(int Dx, int Dy)> RelativeMouseMoves { get; } = new();
     public ConcurrentQueue<(int Delta, bool Horizontal)> MouseWheels { get; } = new();
     public Func<Key, bool, bool, bool>? KeyResult { get; set; }
     public Func<MouseButton, bool, bool, bool>? MouseResult { get; set; }
@@ -64,6 +65,13 @@ internal sealed class RecordingInputSender(
     {
         if (canSend?.Invoke() == false) return false;
         MouseMoves.Enqueue((physicalX, physicalY));
+        return true;
+    }
+
+    public bool MoveMouseBy(int dx, int dy, Func<bool>? canSend = null)
+    {
+        if (canSend?.Invoke() == false) return false;
+        RelativeMouseMoves.Enqueue((dx, dy));
         return true;
     }
 

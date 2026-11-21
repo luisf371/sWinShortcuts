@@ -178,6 +178,14 @@ public sealed class WindowsInputSender : IInputSender
         }
     }
 
+    public bool MoveMouseBy(int dx, int dy, Func<bool>? canSend = null)
+    {
+        var input = CreateMouseInput(NativeMethods.MouseEventFlags.MOUSEEVENTF_MOVE);
+        input.U.mi.dx = dx;
+        input.U.mi.dy = dy;
+        return canSend?.Invoke() != false && SendInputLogged([input], SendInputKind.RelativeMouseMove);
+    }
+
     internal static bool TryGetPhysicalCursorPosition(out int x, out int y)
     {
         var succeeded = NativeMethods.GetPhysicalCursorPos(out var point);
@@ -242,7 +250,8 @@ public sealed class WindowsInputSender : IInputSender
         DummyKey,
         MouseButton,
         MouseWheel,
-        MouseMove
+        MouseMove,
+        RelativeMouseMove
     }
 
     /// <summary>
@@ -279,6 +288,7 @@ public sealed class WindowsInputSender : IInputSender
                 SendInputKind.MouseButton => $"mouse button {(MouseButton)virtualKey} ({(isKeyDown ? "DOWN" : "UP")})",
                 SendInputKind.MouseWheel => $"mouse wheel {virtualKey}",
                 SendInputKind.MouseMove => "absolute mouse movement",
+                SendInputKind.RelativeMouseMove => "relative mouse movement",
                 _ => "dummy key"
             };
             var suffix = kind == SendInputKind.LeftButtonUpRetry ? " (button may be stuck)" : string.Empty;

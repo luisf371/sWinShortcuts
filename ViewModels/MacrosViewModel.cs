@@ -258,13 +258,14 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
             foreach (var macro in Definitions) macro.CancelCoordinatePick();
         }
         IsPlaying = snapshot.Mode is MacroSessionMode.PreparingPlayback or MacroSessionMode.WaitingForShortcutRelease or
-            MacroSessionMode.WaitingForPhysicalModifiers or MacroSessionMode.Playing;
+            MacroSessionMode.WaitingForPhysicalModifiers or MacroSessionMode.Playing or MacroSessionMode.WaitingForMouseRelease;
         var status = snapshot.Mode switch
         {
             MacroSessionMode.PreparingPlayback or MacroSessionMode.PreparingRecording or MacroSessionMode.WaitingForShortcutRelease or
                 MacroSessionMode.WaitingForPhysicalModifiers => "Preparing",
             MacroSessionMode.Recording => "Recording",
             MacroSessionMode.Playing => "Playing",
+            MacroSessionMode.WaitingForMouseRelease => "Waiting for mouse buttons to be released",
             MacroSessionMode.Finishing => "Finishing",
             MacroSessionMode.Faulted => "Faulted",
             _ => "Idle"

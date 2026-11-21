@@ -420,10 +420,15 @@ public sealed class IniProfileStore : IProfileStore
                 };
                 break;
             case MacroStepKind.MoveTo:
+            case MacroStepKind.MoveCursorBy:
+            case MacroStepKind.MoveMouseBy:
                 step = step with
                 {
                     X = ReadMacroInt(document, section, "X"),
-                    Y = ReadMacroInt(document, section, "Y")
+                    Y = ReadMacroInt(document, section, "Y"),
+                    // Optional: steps saved before the option existed have no key and keep stopping.
+                    HeldButtons = document.TryGetSourceValue(section, "HeldButtons", out _)
+                        ? ReadMacroEnum<MacroHeldButtonPolicy>(document, section, "HeldButtons") : MacroHeldButtonPolicy.Stop
                 };
                 break;
         }
@@ -523,8 +528,12 @@ public sealed class IniProfileStore : IProfileStore
                         document.SetBoolean(stepSection, "HorizontalWheel", step.HorizontalWheel);
                         break;
                     case MacroStepKind.MoveTo:
+                    case MacroStepKind.MoveCursorBy:
+                    case MacroStepKind.MoveMouseBy:
                         document.SetInt32(stepSection, "X", step.X);
                         document.SetInt32(stepSection, "Y", step.Y);
+                        // Stop is the default, so leave it out and keep existing files unchanged.
+                        if (step.HeldButtons != MacroHeldButtonPolicy.Stop) document.SetEnum(stepSection, "HeldButtons", step.HeldButtons);
                         break;
                 }
             }

@@ -295,6 +295,24 @@ public sealed class MacroEditorTemplateTests
             var pickerBottom = coordinatePicker.TransformToAncestor(host).Transform(new Point(0, coordinatePicker.ActualHeight)).Y;
             Assert.True(pickerBottom <= host.ActualHeight, $"Coordinate picker bottom {pickerBottom} exceeds viewport {host.ActualHeight}.");
 
+            // Move to is the tallest move inspector: position, picker, then the held-button choice. The choice sits
+            // below the picker, so the picker stays in view (the inspector scrolls for the rest) and the choices fit its width.
+            macro.SelectedStep!.Kind = MacroStepKind.MoveTo;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            var moveAnyway = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "If a mouse button is held, move anyway");
+            var heldGroup = Assert.IsType<StackPanel>(Assert.IsType<StackPanel>(moveAnyway.Parent).Parent);
+            Assert.Equal(Visibility.Visible, heldGroup.Visibility);
+            Assert.True(moveAnyway.ActualHeight > 0);
+            var movePicker = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Pick screen coordinates after three seconds");
+            var movePickerBottom = movePicker.TransformToAncestor(host).Transform(new Point(0, movePicker.ActualHeight)).Y;
+            Assert.True(movePickerBottom <= host.ActualHeight, $"Move to picker bottom {movePickerBottom} exceeds viewport {host.ActualHeight}.");
+            var inspector = Assert.IsAssignableFrom<FrameworkElement>(heldGroup.Parent);
+            var heldRight = moveAnyway.TransformToAncestor(inspector).Transform(new Point(moveAnyway.ActualWidth, 0)).X;
+            Assert.True(heldRight <= inspector.ActualWidth, $"Held-button choice right edge {heldRight} exceeds inspector width {inspector.ActualWidth}.");
+            macro.SelectedStep!.Kind = MacroStepKind.MouseClick;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+
             // Stop stays operable with the section off and the profile disabled while recording.
             master.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, false);
             profile.IsEnabled = false;
@@ -425,7 +443,8 @@ public sealed class MacroEditorTemplateTests
             var apply = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Apply wait time");
             var close = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Close wait time editor");
             var status = Assert.Single(Descendants(view).OfType<TextBlock>(), block => AutomationProperties.GetName(block) == "Wait time edit status");
-            var scopes = Descendants(view).OfType<RadioButton>().ToArray();
+            var scopes = Descendants(view).OfType<RadioButton>()
+                .Where(radio => AutomationProperties.GetName(radio).StartsWith("Change ", StringComparison.Ordinal)).ToArray();
             Assert.Equal(new[] { "Change press holds", "Change Wait steps between actions", "Change press holds and Wait steps" },
                 scopes.Select(AutomationProperties.GetName));
             // Press holds open first with the suggested 50 ms; the Wait after the press keeps its own timing.

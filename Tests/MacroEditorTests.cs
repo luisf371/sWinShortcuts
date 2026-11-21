@@ -400,6 +400,97 @@ public sealed class MacroEditorTests
         Assert.Equal((0, 0), (empty.SelectedStep!.X, empty.SelectedStep.Y));
     }
 
+    [Fact]
+    public void AddStep_MoveCursorBy_EditsAnOffsetThatIsNeverUsedAsAPosition()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveTo, X = -1280, Y = 300 }]
+        }, () => true);
+
+        macro.AddStepCommand.Execute(MacroStepKind.MoveCursorBy);
+        var offset = macro.SelectedStep!;
+        Assert.Equal((0, 0), (offset.X, offset.Y));
+        Assert.Equal("Move cursor by", offset.ActionLabel);
+        Assert.True(offset.HasOffset);
+        Assert.False(offset.HasCoordinates);
+        Assert.False(macro.PickCoordinatesCommand.CanExecute(null));
+        Assert.Contains(new KeyValuePair<MacroStepKind, string>(MacroStepKind.MoveCursorBy, "Move cursor by"), MacroViewModel.ActionOptions);
+
+        offset.XText = "-25";
+        offset.YText = "12";
+        Assert.Equal("-25, +12", offset.Detail);
+        Assert.Empty(offset.Error);
+        offset.XText = "left";
+        Assert.Equal("Offsets must be signed whole numbers.", offset.Error);
+        offset.XText = "-25";
+
+        macro.AddStepCommand.Execute(MacroStepKind.MoveTo);
+        Assert.Equal((-1280, 300), (macro.SelectedStep!.X, macro.SelectedStep.Y));
+        Assert.Equal(new MacroStep { Kind = MacroStepKind.MoveCursorBy, Key = Key.A, MouseButton = sWinShortcuts.Models.MouseButton.Left, WheelDelta = 120, X = -25, Y = 12 },
+            macro.ToDefinition().Steps[1]);
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.MoveTo, true)]
+    [InlineData(MacroStepKind.MoveCursorBy, true)]
+    [InlineData(MacroStepKind.MoveMouseBy, true)]
+    [InlineData(MacroStepKind.MouseClick, false)]
+    [InlineData(MacroStepKind.MouseWheel, false)]
+    public void HeldButtonChoice_ShowsOnlyOnMoveSteps_AndDefaultsToStop(MacroStepKind kind, bool shown)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition(), () => true);
+        macro.AddStepCommand.Execute(kind);
+        var step = macro.SelectedStep!;
+
+        Assert.Equal(shown, step.HasHeldButtons);
+        Assert.True(step.HeldButtonsStop);
+        Assert.Equal(MacroHeldButtonPolicy.Stop, macro.ToDefinition().Steps[0].HeldButtons);
+    }
+
+    [Fact]
+    public void HeldButtonChoice_RadioButtonsSetOneChoice_AndShowItInTheRow()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition(), () => true);
+        macro.AddStepCommand.Execute(MacroStepKind.MoveMouseBy);
+        var step = macro.SelectedStep!;
+        Assert.Equal("Move mouse by", step.ActionLabel);
+        Assert.True(step.HasOffset);
+        Assert.False(step.HasCoordinates);
+        Assert.Contains(new KeyValuePair<MacroStepKind, string>(MacroStepKind.MoveMouseBy, "Move mouse by"), MacroViewModel.ActionOptions);
+
+        step.HeldButtonsWait = true;
+        Assert.Equal((false, true, false), (step.HeldButtonsStop, step.HeldButtonsWait, step.HeldButtonsAllow));
+        Assert.Equal("waits for buttons", step.TimingText);
+        step.HeldButtonsWait = false; // WPF unchecking the old radio button must not change the choice
+        Assert.Equal(MacroHeldButtonPolicy.Wait, macro.ToDefinition().Steps[0].HeldButtons);
+
+        step.HeldButtonsAllow = true;
+        Assert.Equal("moves while held", step.TimingText);
+        Assert.Equal(MacroHeldButtonPolicy.Allow, macro.ToDefinition().Steps[0].HeldButtons);
+
+        step.HeldButtonsStop = true;
+        Assert.Empty(step.TimingText);
+        Assert.Equal(MacroHeldButtonPolicy.Stop, macro.ToDefinition().Steps[0].HeldButtons);
+    }
+
+    [Fact]
+    public void MouseDownWaitMoveCursorByMouseUp_MarksTheWaitAsAHold()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps =
+            [
+                new() { Kind = MacroStepKind.MouseDown, MouseButton = sWinShortcuts.Models.MouseButton.Left },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 50 },
+                new() { Kind = MacroStepKind.MoveCursorBy, X = 40 },
+                new() { Kind = MacroStepKind.MouseUp, MouseButton = sWinShortcuts.Models.MouseButton.Left }
+            ]
+        }, () => true);
+
+        Assert.True(macro.Steps[1].IsPressHold);
+    }
+
     [Theory]
     [InlineData(MacroStepKind.FreezeMouse, "Freeze mouse")]
     [InlineData(MacroStepKind.UnfreezeMouse, "Unfreeze mouse")]
@@ -413,7 +504,7 @@ public sealed class MacroEditorTests
         Assert.Same(step, macro.SelectedStep);
         Assert.Equal(kind, step.Kind);
         Assert.Equal(label, step.ActionLabel);
-        Assert.False(step.HasKey || step.HasMouseButton || step.HasCoordinates || step.HasDuration || step.IsWheel);
+        Assert.False(step.HasKey || step.HasMouseButton || step.HasCoordinates || step.HasOffset || step.HasDuration || step.IsWheel);
         Assert.Empty(step.Error);
         Assert.Empty(step.Summary);
         Assert.NotEqual("Pauses before the next step.", step.KindHelp);

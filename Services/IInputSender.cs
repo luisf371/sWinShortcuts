@@ -16,6 +16,10 @@ public interface IInputSender
 
     bool MoveMouseTo(int physicalX, int physicalY, Func<bool>? canSend = null);
 
+    // Relative device-like motion. Windows applies pointer speed/acceleration to the cursor;
+    // raw-input readers (game cameras) see the delta as sent.
+    bool MoveMouseBy(int dx, int dy, Func<bool>? canSend = null);
+
     bool SendMouseWheel(int delta, bool horizontal, Func<bool>? canSend = null);
 
     bool SendVirtualKeyTap(int virtualKey);

@@ -452,6 +452,9 @@
                 <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.MoveTo}">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMove}" />
                 </DataTrigger>
+                <DataTrigger Binding="{Binding HasOffset}" Value="True">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMove}" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding IsWheel}" Value="True">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconWheel}" />
                 </DataTrigger>
@@ -699,6 +702,12 @@
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
                             </MenuItem>
                             <MenuItem Header="Move to" CommandParameter="{x:Static models:MacroStepKind.MoveTo}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Move cursor by" CommandParameter="{x:Static models:MacroStepKind.MoveCursorBy}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
+                            </MenuItem>
+                            <MenuItem Header="Move mouse by" CommandParameter="{x:Static models:MacroStepKind.MoveMouseBy}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
                             </MenuItem>
                             <MenuItem Header="Mouse wheel" CommandParameter="{x:Static models:MacroStepKind.MouseWheel}" Command="{Binding AddStepCommand}">
@@ -1036,6 +1045,19 @@
                                           FocusVisualStyle="{StaticResource MacroFocusRing}" AutomationProperties.Name="Step mouse button" />
                             </StackPanel>
 
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasOffset, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Offset" Style="{StaticResource MacroFieldLabel}"
+                                           ToolTip="Distance from the current position. Positive X moves right, positive Y moves down. Move mouse by sends mouse movement, not exact pixels." />
+                                <TextBlock Text="X" FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                                <TextBox Width="56" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                         Text="{Binding XText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                         AutomationProperties.Name="X offset in pixels" />
+                                <TextBlock Text="Y" FontSize="12" Margin="10,0,5,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+                                <TextBox Width="56" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                         Text="{Binding YText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                         AutomationProperties.Name="Y offset in pixels" />
+                            </StackPanel>
+
                             <StackPanel Margin="0,0,0,8" Visibility="{Binding HasCoordinates, Converter={StaticResource VisibleIfTrue}}">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="Position" Style="{StaticResource MacroFieldLabel}"
@@ -1071,6 +1093,25 @@
                                         </Style>
                                     </TextBlock.Style>
                                 </TextBlock>
+                            </StackPanel>
+
+                            <!-- One of three, like the wait-time scope. The macro's own shortcut button never counts as held.
+                                 Sits below the coordinate picker so the picker stays in view at the minimum size; at that size
+                                 this group may need a short scroll. The inspector is too narrow for the label beside the choices. -->
+                            <StackPanel Margin="0,0,0,8" Visibility="{Binding HasHeldButtons, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="If a mouse button is held" FontSize="12" Margin="0,0,0,4" Foreground="{StaticResource MacroMutedBrush}"
+                                           ToolTip="What this step does if you are holding a mouse button when it runs. The macro's own shortcut button never counts." />
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton Content="Stop" IsChecked="{Binding HeldButtonsStop}" Style="{StaticResource MacroKeycap}"
+                                                 ToolTip="Stop the macro with an error at this step."
+                                                 AutomationProperties.Name="If a mouse button is held, stop the macro" />
+                                    <RadioButton Content="Wait" IsChecked="{Binding HeldButtonsWait}" Style="{StaticResource MacroKeycap}"
+                                                 ToolTip="Pause at this step until every mouse button is released, then continue."
+                                                 AutomationProperties.Name="If a mouse button is held, wait for release" />
+                                    <RadioButton Content="Move anyway" IsChecked="{Binding HeldButtonsAllow}" Style="{StaticResource MacroKeycap}"
+                                                 ToolTip="Move while the button is held. On the desktop this drags whatever you are holding."
+                                                 AutomationProperties.Name="If a mouse button is held, move anyway" />
+                                </StackPanel>
                             </StackPanel>
 
                             <StackPanel Margin="0,0,0,8" Visibility="{Binding HasDuration, Converter={StaticResource VisibleIfTrue}}">

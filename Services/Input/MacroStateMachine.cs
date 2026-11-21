@@ -722,7 +722,14 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                     GestureChordStateMachine.KEY_PRESS_MAX_MS + 1) : step.DurationMs); SendKey(step.Key, false); break;
             case MacroStepKind.KeyDown: SendKey(step.Key, true); break;
             case MacroStepKind.KeyUp: SendKey(step.Key, false); break;
-            case MacroStepKind.MoveTo: MoveTo(step.X, step.Y); break;
+            case MacroStepKind.MoveTo: MoveTo(step.X, step.Y, step.HeldButtons); break;
+            case MacroStepKind.MoveCursorBy:
+                // Wait first so the offset applies from where the cursor is after release.
+                HoldForMouseButtons(step.HeldButtons);
+                // An overflowing sum wraps far outside every monitor, so the path check rejects it.
+                var cursor = _cursor();
+                MoveTo(cursor.X + step.X, cursor.Y + step.Y, step.HeldButtons); break;
+            case MacroStepKind.MoveMouseBy: MoveMouseBy(step.X, step.Y, step.HeldButtons); break;
             case MacroStepKind.MouseClick:
                 MoveTo(step.X, step.Y);
                 _clickX = step.X; _clickY = step.Y;
@@ -766,6 +773,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             if (newOutput)
             {
                 while (_physical.PhysicalModifiersDown) { Publish(MacroSessionMode.WaitingForPhysicalModifiers); Wait(10); }
+                // A button pressed after the step's own check makes the executor defer; wait here, then retry.
+                if (command.HeldButtons == MacroHeldButtonPolicy.Wait) HoldForMouseButtons(command.HeldButtons);
                 if (!CanExecute(default)) throw new OperationCanceledException();
                 if (restoreModifiers)
                 {
@@ -827,9 +836,32 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         } while (true);
     }
 
-    private void MoveTo(int x, int y)
+    // Applies a move step's held-button option: Stop fails, Wait pauses until every physical button is up, Allow continues.
+    private void HoldForMouseButtons(MacroHeldButtonPolicy policy)
     {
-        if (_physical.AnyMouseButtonDown) throw new InvalidOperationException("Release physical mouse buttons before moving the cursor.");
+        if (policy == MacroHeldButtonPolicy.Allow || !_physical.AnyMouseButtonDown) return;
+        if (policy == MacroHeldButtonPolicy.Stop) throw new InvalidOperationException("Release physical mouse buttons before moving the cursor.");
+        var row = GetSession().RowCount;
+        while (_physical.AnyMouseButtonDown) { Publish(MacroSessionMode.WaitingForMouseRelease, row); Wait(10); }
+        Publish(MacroSessionMode.Playing, row);
+    }
+
+    private void MoveMouseBy(int dx, int dy, MacroHeldButtonPolicy policy)
+    {
+        var chunks = MacroCursorPath.RelativeChunkCount(dx, dy);
+        for (long chunk = 1; chunk <= chunks; chunk++)
+        {
+            HoldForMouseButtons(policy);
+            Wait(MacroCursorPath.UPDATE_INTERVAL_MS);
+            var (x, y) = MacroCursorPath.RelativeChunk(dx, dy, chunks, chunk);
+            if (x == 0 && y == 0) continue;
+            Send(new InputCommand(Key.None, false, Kind: InputCommandKind.MoveMouseBy, X: x, Y: y, HeldButtons: policy));
+        }
+    }
+
+    private void MoveTo(int x, int y, MacroHeldButtonPolicy policy = MacroHeldButtonPolicy.Stop)
+    {
+        HoldForMouseButtons(policy);
         var start = _cursor();
         var monitors = _monitors();
         var points = MacroCursorPath.Create(start.X, start.Y, x, y, monitors, Random.Shared.NextDouble() * 2 - 1);
@@ -839,11 +871,12 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             var previous = new Point(start.X, start.Y);
             foreach (var point in points)
             {
-                if (_physical.AnyMouseButtonDown || !monitors.SequenceEqual(_monitors()))
+                if (policy == MacroHeldButtonPolicy.Wait) HoldForMouseButtons(policy);
+                if (policy == MacroHeldButtonPolicy.Stop && _physical.AnyMouseButtonDown || !monitors.SequenceEqual(_monitors()))
                     throw new InvalidOperationException("Physical mouse input or display geometry changed during movement.");
                 Wait((int)Math.Ceiling(Math.Max(MacroCursorPath.UPDATE_INTERVAL_MS,
                     MacroCursorPath.Distance(previous, point) / MacroCursorPath.SPEED_PIXELS_PER_MS)));
-                Send(new InputCommand(Key.None, false, Kind: InputCommandKind.MoveTo, X: point.X, Y: point.Y));
+                Send(new InputCommand(Key.None, false, Kind: InputCommandKind.MoveTo, X: point.X, Y: point.Y, HeldButtons: policy));
                 var settleStart = Stopwatch.GetTimestamp();
                 var observed = _cursor();
                 while (observed != (point.X, point.Y))
@@ -906,6 +939,15 @@ internal static class MacroCursorPath
 {
     internal const double SPEED_PIXELS_PER_MS = 9;
     internal const int UPDATE_INTERVAL_MS = 8;
+
+    // Relative moves go out in chunks at the same speed as cursor paths. Each chunk is the difference of
+    // truncated running totals, so the chunks always add up to exactly (dx, dy).
+    internal static long RelativeChunkCount(int dx, int dy) =>
+        Math.Max(1, (long)Math.Ceiling(Math.Sqrt((double)dx * dx + (double)dy * dy) / (SPEED_PIXELS_PER_MS * UPDATE_INTERVAL_MS)));
+
+    internal static (int X, int Y) RelativeChunk(int dx, int dy, long count, long index) =>
+        ((int)((long)dx * index / count - (long)dx * (index - 1) / count),
+         (int)((long)dy * index / count - (long)dy * (index - 1) / count));
 
     internal static double Distance(Point from, Point to) => Math.Sqrt(Math.Pow((double)to.X - from.X, 2) + Math.Pow((double)to.Y - from.Y, 2));
 

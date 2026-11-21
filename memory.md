@@ -455,3 +455,25 @@
 - Hot path: adds one closure plus queued UI work per physical press, the same cost as the toast enqueue. Nothing is added per keyboard event.
 - Tests: `ToggleVariant_RaisesVariantToggled_OnlyWhenThePresetMoves`, `HotkeyToggle_OnAnotherThread_EditorFollowsOnTheOwnerThread` (DisplayRefreshTests `OwnerContext`), `HotkeyToggleDuringPreview_EditorFollowsWithoutResettingThePreview`, `ColorVariantToggle_InGame_EditorFollowsTheHotkeyPreset` (real service). Mutations caught: following through the setter, no marshaling (updates ran on threads 3 and 8, not the owner's 9), and an `_activeVariant`-based event condition.
 - Full suite 1,644/1,644 (two runs); `--no-incremental` app build 0 warnings. Not checked in the live app.
+
+## 2026-11-20 (Macro Move cursor by step)
+- New `MacroStepKind.MoveCursorBy` (appended last, no `[Macros] Version` bump; same old-build behavior as FreezeMouse). It reuses `X`/`Y` as a signed offset and the same INI keys. Playback reads `_cursor()` and calls the existing `MoveTo(cursor + offset)`, so path, arrival check, and off-monitor fail-closed are shared. Unchecked int overflow wraps far off every monitor, so `MacroCursorPath.Create` rejects it (covered by int.MaxValue/MinValue cases).
+- Naming reserved for a future raw relative (non-absolute `MOUSEEVENTF_MOVE`) step: `MoveMouseBy` / "Move mouse by". "Cursor" = on-screen cursor via absolute input; "mouse" = device-like deltas for game cameras. A does not work for FPS mouselook (game recenters cursor → arrival check fails).
+- Editor: `HasCoordinates` stays absolute-only (it gates the 3 s picker and `FindPositionBefore`); `HasOffset` drives a separate Offset X/Y panel in `MacrosView.xaml`. `MarkPressHold` skips MoveCursorBy rows like MoveTo.
+- Playback tests must wait for `{ SessionId: 1, Mode: Idle }`, not just `Mode == Idle` — the session is Idle before the worker starts, so a bare Idle wait returns immediately.
+- Verification: app build 0 warnings; full suite 1,648/1,648 (Debug). Not checked in the live app.
+
+## 2026-11-20 (Macro Move mouse by + held-button choice)
+- `MacroStepKind.MoveMouseBy` (appended after MoveCursorBy): relative `MOUSEEVENTF_MOVE` (no ABSOLUTE) via new `IInputSender.MoveMouseBy` + `InputCommandKind.MoveMouseBy` (appended). Four senders implement IInputSender: WindowsInputSender, Tests/Fakes/RecordingInputSender (`RelativeMouseMoves`), AutoRunStateMachineTests.PausedSprintUpSender, WheelInputExecutorTests.ScriptedSender.
+- Smooth chunks: `MacroCursorPath.RelativeChunkCount/RelativeChunk` = 72 counts per 8 ms (same 9,000/s as Move to); chunk = difference of truncated running totals in long math, so the sum is exact. No arrival/monitor checks for relative moves.
+- `MacroStep.HeldButtons` (`MacroHeldButtonPolicy` Stop/Wait/Allow) on MoveTo/MoveCursorBy/MoveMouseBy only; Mouse click always stops. INI key `HeldButtons` is written only when non-Stop (existing files unchanged); old builds ignore unknown step keys and fall back to Stop. Malformed/undefined values reject the macro section.
+- The choice travels on `InputCommand.HeldButtons`. Executor gate (`CanStartMacroOutput`) skips the physical-button check for Allow, and for Wait calls `DeferForPhysicalModifiers()` so `MacroStateMachine.Send` loops; Send's top waits via `HoldForMouseButtons` when the command is Wait. Mutation check: dropping the executor Allow bypass fails all 3 `HeldButton_Allow` tests.
+- New session mode `WaitingForMouseRelease` (appended); `MacrosViewModel` counts it as playing, status "Waiting for mouse buttons to be released". `HoldForMouseButtons` republishes Playing with the same row after release.
+- Layout gotcha: the inspector is only 209 px wide at the 650x480 minimum, so the held-button label can't sit beside the three keycap radios. The group sits below the coordinate picker; at minimum size with Move to it is ~6 px below the fold (inspector scrolls). `MacroEditorTemplateTests` now asserts the Move to picker stays in view and the radio row fits the width. Its wait-scope radio query filters on the "Change " automation-name prefix.
+- WPF test gotcha: `IsVisible` is always false for a host not in a window/PresentationSource; check `Visibility` and `ActualHeight` instead.
+- Tests: tests that press a physical button reflect `_physical` (MacroPhysicalState) from `_macros` and call `ObserveButton`.
+- Verification: app + tests 0 warnings; full suite 1,679 passed twice in a row. One earlier run failed a Rapid Fire log assertion ("Rapid Fire press started…"), the known flake. Not checked in the live app or a real game.
+
+## 2026-11-20 (Merged macro Move cursor/mouse by into main)
+- Worktree `feat/macro-move-cursor-by` sat on 3ccc394, an older copy of the third-color-preset commit (main has d0abbfa). Ported its uncommitted diff with `git diff --binary` + `git apply --3way --exclude=memory.md` + copying the untracked tests; only memory.md conflicted (both sides appended). Uncommitted on main.
+- Verification: `--no-incremental` app build 0 warnings; full suite 1,683/1,683 (= 1,679 worktree + 4 color tests main gained).

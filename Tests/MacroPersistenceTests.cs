@@ -124,6 +124,56 @@ public sealed class MacroPersistenceTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndLoad_MoveCursorBy_RoundTripsSignedOffsetsAsXAndY()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.IsEnabled = true;
+        profile.Macros.Definitions = [new()
+        {
+            IsEnabled = true, ShortcutKey = Key.F6,
+            Steps = [new() { Kind = MacroStepKind.MoveCursorBy, X = -25, Y = 12 }]
+        }];
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Game");
+
+        Assert.False(loaded.IsPersistenceSuspended);
+        Assert.Equal(profile.Macros.Definitions[0].Steps, loaded.Macros.Definitions[0].Steps);
+        var ini = IniDocument.Load(profile.SourcePath);
+        Assert.Equal(new[] { "Kind", "X", "Y" }, ini.GetSection("Macro0.Step0").Keys);
+        Assert.Equal("MoveCursorBy", ini.GetValue("Macro0.Step0", "Kind"));
+        Assert.Equal("-25", ini.GetValue("Macro0.Step0", "X"));
+    }
+
+    [Fact]
+    public async Task SaveAndLoad_HeldButtonOption_WritesOnlyNonDefaultChoices()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.IsEnabled = true;
+        profile.Macros.Definitions = [new()
+        {
+            IsEnabled = true, ShortcutKey = Key.F6,
+            Steps =
+            [
+                new() { Kind = MacroStepKind.MoveTo, X = 5, Y = 6 },
+                new() { Kind = MacroStepKind.MoveCursorBy, X = 1, Y = 2, HeldButtons = MacroHeldButtonPolicy.Allow },
+                new() { Kind = MacroStepKind.MoveMouseBy, X = -300, Y = 40, HeldButtons = MacroHeldButtonPolicy.Wait }
+            ]
+        }];
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Game");
+
+        Assert.False(loaded.IsPersistenceSuspended);
+        Assert.Equal(profile.Macros.Definitions[0].Steps, loaded.Macros.Definitions[0].Steps);
+        var ini = IniDocument.Load(profile.SourcePath);
+        Assert.Equal(new[] { "Kind", "X", "Y" }, ini.GetSection("Macro0.Step0").Keys);
+        Assert.Equal("Allow", ini.GetValue("Macro0.Step1", "HeldButtons"));
+        Assert.Equal("MoveMouseBy", ini.GetValue("Macro0.Step2", "Kind"));
+        Assert.Equal("Wait", ini.GetValue("Macro0.Step2", "HeldButtons"));
+    }
+
+    [Fact]
     public async Task SaveAndLoad_MouseFreezeSteps_RoundTripWithOnlyTheirKind()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -160,6 +210,10 @@ public sealed class MacroPersistenceTests : IDisposable
     [InlineData("Kind=MouseWheel\nWheelDelta=0\nX=0\nY=0\n")]
     [InlineData("Kind=MoveTo\nX=oops\nY=0\n")]
     [InlineData("Kind=MoveTo\nX=0\nY=\n")]
+    [InlineData("Kind=MoveTo\nX=0\nY=0\nHeldButtons=Sometimes\n")]
+    [InlineData("Kind=MoveMouseBy\nX=0\nY=0\nHeldButtons=\n")]
+    [InlineData("Kind=MoveMouseBy\nX=0\nY=0\nHeldButtons=7\n")]
+    [InlineData("Kind=MoveMouseBy\nX=1\n")]
     [InlineData("Kind=MouseDown\nMouseButton=99\nX=0\nY=0\n")]
     [InlineData("Kind=MouseWheel\nWheelDelta=-120\nX=0\nY=0\nHorizontalWheel=\n")]
     public async Task LoadMacros_MalformedStepField_SuspendsUnrelatedSaves(string invalidFields)

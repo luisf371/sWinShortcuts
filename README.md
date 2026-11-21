@@ -235,7 +235,7 @@ between steps. **Close** or Escape discards the input; switching macros, leaving
 editor, or starting a recording closes it automatically.
 
 Use the step editor to insert, duplicate, delete, and reorder key presses, explicit
-key/button down and up events, waits, mouse clicks, cursor moves, vertical or
+key/button down and up events, waits, mouse clicks, cursor moves (to a position or by an offset), vertical or
 horizontal scrolling, and **Freeze mouse**/**Unfreeze mouse** steps. A press or click with a hold of **0 ms** uses the existing automatic
 hold timing; explicit waits and holds keep their entered durations. Explicit down/up
 sequences must balance before playback is enabled.
@@ -289,6 +289,24 @@ lasts across passes until an **Unfreeze mouse** step runs or the loop stops. Whi
 is frozen, **Cancel on mouse movement** does not trigger; it applies again after **Unfreeze
 mouse**. The freeze stops the Windows cursor, but games that read raw mouse input may still
 see the motion.
+
+A **Move cursor by** step moves the cursor a set number of pixels from wherever it is when the
+step runs (positive X is right, positive Y is down) instead of to a fixed position. It uses the
+same smooth movement and arrival check as **Move to**, so an offset that would land off every
+screen stops the macro. It moves the on-screen cursor, so it does not turn the camera in games
+that hide and recenter the cursor.
+
+A **Move mouse by** step sends the same kind of offset as mouse movement, the way a real mouse
+does, so games that read the mouse directly turn the camera. It moves smoothly at the same speed
+as **Move to**. The offset is mouse movement rather than exact pixels: the game's sensitivity
+decides how far the camera turns, and on the desktop Windows mouse speed changes the distance.
+Windows marks the movement as software-generated, and some games ignore that kind of input.
+
+Each move step (**Move to**, **Move cursor by**, **Move mouse by**) has an **If a mouse button is
+held** choice. **Stop** (the default) stops the macro at that step; **Wait** pauses until every
+mouse button is released, then continues; **Move anyway** moves with the button held, which drags
+on the desktop. The macro's own shortcut button never counts as held, and keyboard keys never block
+a move.
 
 With **Enable Debug Logging** on, macro diagnostics include session states, step numbers
 and action types, recording completion, and cancellation/failure reasons. A cursor-arrival

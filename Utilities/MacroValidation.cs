@@ -118,6 +118,11 @@ public static class MacroValidation
             return "Wheel delta must be a nonzero signed 16-bit value.";
         }
 
+        if (!Enum.IsDefined(step.HeldButtons))
+        {
+            return "The held mouse button option is unsupported.";
+        }
+
         // Coordinates are signed physical pixels, including negative positions on secondary displays.
         return null;
     }

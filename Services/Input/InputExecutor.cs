@@ -47,7 +47,8 @@ internal enum InputCommandKind
     MoveTo,
     MouseWheel,
     MacroReserveModifiers,
-    MacroCleanup
+    MacroCleanup,
+    MoveMouseBy
 }
 
 [Flags]
@@ -108,7 +109,8 @@ internal readonly record struct InputCommand(
     int Y = 0,
     int WheelDelta = 0,
     bool HorizontalWheel = false,
-    bool RequireAllReleased = false);
+    bool RequireAllReleased = false,
+    MacroHeldButtonPolicy HeldButtons = MacroHeldButtonPolicy.Stop);
 
 /// <summary>
 /// Single-consumer FIFO for synthetic key input. Producers may hold a feature lock while enqueueing;
@@ -325,7 +327,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         var queue = _queue;
         var startsInput = command.IsDown || command.Kind is
             InputCommandKind.KeyTap or InputCommandKind.DummyKey or InputCommandKind.Sequence or
-            InputCommandKind.WheelTap or InputCommandKind.MoveTo or InputCommandKind.MouseWheel or
+            InputCommandKind.WheelTap or InputCommandKind.MoveTo or InputCommandKind.MoveMouseBy or InputCommandKind.MouseWheel or
             InputCommandKind.MacroReserveModifiers;
         if (_disposed || queue is null || queue.IsAddingCompleted ||
             (_runtime.IsDisposed && startsInput && !IsCompensatingTapCandidate(in command)) ||
@@ -437,6 +439,7 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             case InputCommandKind.MouseButtonTransition:
                 return ExecuteMouseTransition(queue, in command);
             case InputCommandKind.MoveTo:
+            case InputCommandKind.MoveMouseBy:
             case InputCommandKind.MouseWheel:
                 return ExecuteMouseOutput(queue, in command);
         }
@@ -774,10 +777,15 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
             return !_macroInputContext.IsPhysicalKeyDown(KeyInteropUtilities.ToVirtualKey(command.Key));
         if (command.Kind == InputCommandKind.MouseButtonTransition && command.IsDown)
             return command.Button is { } button && !_macroInputContext.IsPhysicalMouseButtonDown(button);
-        if (command.Kind == InputCommandKind.MoveTo)
+        if (command.Kind is InputCommandKind.MoveTo or InputCommandKind.MoveMouseBy && command.HeldButtons != MacroHeldButtonPolicy.Allow)
         {
             for (var index = 1; index < _mouseDown.Length; index++)
-                if (_macroInputContext.IsPhysicalMouseButtonDown((MouseButton)index)) return false;
+            {
+                if (!_macroInputContext.IsPhysicalMouseButtonDown((MouseButton)index)) continue;
+                // The macro worker treats a deferral as "wait, then retry"; it waits for mouse release itself.
+                if (command.HeldButtons == MacroHeldButtonPolicy.Wait) command.Acknowledgement?.DeferForPhysicalModifiers();
+                return false;
+            }
         }
         return true;
     }
@@ -897,6 +905,8 @@ internal sealed class InputExecutor : IInputQueue, IDisposable
         bool CanSend() => CanStartMacroOutput(queue, attempt);
         var sent = allowed && (command.Kind == InputCommandKind.MoveTo
             ? _inputSender.MoveMouseTo(command.X, command.Y, CanSend)
+            : command.Kind == InputCommandKind.MoveMouseBy
+            ? _inputSender.MoveMouseBy(command.X, command.Y, CanSend)
             : command.WheelDelta is >= short.MinValue and <= short.MaxValue and not 0 &&
               _inputSender.SendMouseWheel(command.WheelDelta, command.HorizontalWheel, CanSend));
         command.Completion?.TrySetResult(sent);

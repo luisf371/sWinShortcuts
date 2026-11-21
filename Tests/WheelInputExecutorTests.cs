@@ -421,6 +421,7 @@ public sealed class WheelInputExecutorTests
         public bool SendMouseButton(sWinShortcuts.Models.MouseButton button, bool isDown, bool macroRelease = false, Func<bool>? canSend = null) =>
             throw new NotSupportedException();
         public bool MoveMouseTo(int physicalX, int physicalY, Func<bool>? canSend = null) => throw new NotSupportedException();
+        public bool MoveMouseBy(int dx, int dy, Func<bool>? canSend = null) => throw new NotSupportedException();
         public bool SendMouseWheel(int delta, bool horizontal, Func<bool>? canSend = null) => throw new NotSupportedException();
         public LeftClickResult SendLeftClick(int holdMilliseconds) => throw new NotSupportedException();
         public bool SendDummyKey() => true;

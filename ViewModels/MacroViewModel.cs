@@ -252,7 +252,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     [
         new(MacroStepKind.KeyPress, "Key press"), new(MacroStepKind.KeyDown, "Key down"), new(MacroStepKind.KeyUp, "Key up"),
         new(MacroStepKind.Wait, "Wait"), new(MacroStepKind.MouseClick, "Mouse click"), new(MacroStepKind.MouseDown, "Mouse down"),
-        new(MacroStepKind.MouseUp, "Mouse up"), new(MacroStepKind.MoveTo, "Move to"), new(MacroStepKind.MouseWheel, "Mouse wheel"),
+        new(MacroStepKind.MouseUp, "Mouse up"), new(MacroStepKind.MoveTo, "Move to"), new(MacroStepKind.MoveCursorBy, "Move cursor by"), new(MacroStepKind.MoveMouseBy, "Move mouse by"),
+        new(MacroStepKind.MouseWheel, "Mouse wheel"),
         new(MacroStepKind.FreezeMouse, "Freeze mouse"), new(MacroStepKind.UnfreezeMouse, "Unfreeze mouse")
     ];
 
@@ -637,7 +638,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         var upIndex = downIndex + 2;
         if (down.Kind == MacroStepKind.MouseDown)
         {
-            while (upIndex < Steps.Count && Steps[upIndex].Kind == MacroStepKind.MoveTo) upIndex++;
+            while (upIndex < Steps.Count && Steps[upIndex].Kind is MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy) upIndex++;
         }
         if (upIndex >= Steps.Count) return;
         var up = Steps[upIndex];

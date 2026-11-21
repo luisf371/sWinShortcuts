@@ -71,6 +71,23 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public bool HasKey => Kind is MacroStepKind.KeyPress or MacroStepKind.KeyDown or MacroStepKind.KeyUp;
     public bool HasMouseButton => Kind is MacroStepKind.MouseClick or MacroStepKind.MouseDown or MacroStepKind.MouseUp;
     public bool HasCoordinates => Kind is MacroStepKind.MouseClick or MacroStepKind.MoveTo;
+    public bool HasOffset => Kind is MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy;
+    public bool HasHeldButtons => Kind is MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy;
+    public MacroHeldButtonPolicy HeldButtons
+    {
+        get => _step.HeldButtons;
+        set
+        {
+            Change(_step with { HeldButtons = value });
+            OnPropertyChanged(nameof(HeldButtonsStop));
+            OnPropertyChanged(nameof(HeldButtonsWait));
+            OnPropertyChanged(nameof(HeldButtonsAllow));
+        }
+    }
+    // Radio buttons: WPF also writes false to the one being unchecked, which is ignored.
+    public bool HeldButtonsStop { get => HeldButtons == MacroHeldButtonPolicy.Stop; set { if (value) HeldButtons = MacroHeldButtonPolicy.Stop; } }
+    public bool HeldButtonsWait { get => HeldButtons == MacroHeldButtonPolicy.Wait; set { if (value) HeldButtons = MacroHeldButtonPolicy.Wait; } }
+    public bool HeldButtonsAllow { get => HeldButtons == MacroHeldButtonPolicy.Allow; set { if (value) HeldButtons = MacroHeldButtonPolicy.Allow; } }
     public bool HasDuration => Kind is MacroStepKind.KeyPress or MacroStepKind.MouseClick or MacroStepKind.Wait;
     public bool HasHold => Kind is MacroStepKind.KeyPress or MacroStepKind.MouseClick;
     public bool IsWheel => Kind == MacroStepKind.MouseWheel;
@@ -79,7 +96,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     {
         MacroStepKind.KeyPress => "Key press", MacroStepKind.KeyDown => "Key down", MacroStepKind.KeyUp => "Key up",
         MacroStepKind.MouseClick => "Mouse click", MacroStepKind.MouseDown => "Mouse down", MacroStepKind.MouseUp => "Mouse up",
-        MacroStepKind.MoveTo => "Move to", MacroStepKind.MouseWheel => "Mouse wheel",
+        MacroStepKind.MoveTo => "Move to", MacroStepKind.MoveCursorBy => "Move cursor by", MacroStepKind.MoveMouseBy => "Move mouse by", MacroStepKind.MouseWheel => "Mouse wheel",
         MacroStepKind.FreezeMouse => "Freeze mouse", MacroStepKind.UnfreezeMouse => "Unfreeze mouse", _ => "Wait"
     };
 
@@ -90,6 +107,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.MouseClick => $"{ButtonText} at {PositionText}",
         MacroStepKind.MouseDown or MacroStepKind.MouseUp => ButtonText,
         MacroStepKind.MoveTo => PositionText,
+        MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy => $"{X.ToString("+0;-0;0", CultureInfo.InvariantCulture)}, {Y.ToString("+0;-0;0", CultureInfo.InvariantCulture)}",
         MacroStepKind.MouseWheel => $"{WheelDelta.ToString("+0;-0;0", CultureInfo.InvariantCulture)} {(HorizontalWheel ? "horizontal" : "vertical")}",
         _ => string.Empty
     };
@@ -97,6 +115,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     {
         MacroStepKind.KeyPress or MacroStepKind.MouseClick => DurationMs == 0 ? "auto hold" : $"{MillisecondsText} hold",
         MacroStepKind.Wait => IsPressHold ? $"{MillisecondsText} hold" : MillisecondsText,
+        _ when HasHeldButtons && HeldButtons == MacroHeldButtonPolicy.Wait => "waits for buttons",
+        _ when HasHeldButtons && HeldButtons == MacroHeldButtonPolicy.Allow => "moves while held",
         _ => string.Empty
     };
     // A Wait that holds a press (between its Down and matching Up) rather than pausing between steps.
@@ -125,6 +145,11 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.MouseDown => "Holds the button where the cursor is until a later Mouse up step.",
         MacroStepKind.MouseUp => "Releases a button held by an earlier Mouse down step.",
         MacroStepKind.MoveTo => "Moves the cursor to exact screen pixels at up to 9,000 px/s.",
+        MacroStepKind.MoveCursorBy => "Moves the on-screen cursor this many pixels from where it is when the step runs. " +
+            "Positive X is right, positive Y is down. Fails if that lands off-screen. Doesn't turn a game's camera; use Move mouse by for that.",
+        MacroStepKind.MoveMouseBy => "Sends mouse movement the way a real mouse does, for turning a game camera. " +
+            "How far it turns depends on the game's sensitivity; on the desktop, Windows mouse speed changes the distance. " +
+            "Use Move cursor by for exact pixels.",
         MacroStepKind.MouseWheel => "120 is one notch. Negative values scroll down or left.",
         MacroStepKind.FreezeMouse => "Blocks your physical mouse movement until an Unfreeze mouse step or the end of the macro. " +
             "The macro's own cursor moves still work; F12 stops playback. Some games read the mouse directly and may still see movement.",
@@ -136,6 +161,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     private string MillisecondsText => $"{DurationMs.ToString(CultureInfo.InvariantCulture)} ms";
     public string Error =>
         HasCoordinates && (!IsNumber(XText) || !IsNumber(YText)) ? "Screen coordinates must be signed whole numbers." :
+        HasOffset && (!IsNumber(XText) || !IsNumber(YText)) ? "Offsets must be signed whole numbers." :
         HasDuration && !IsNumber(DurationText) ? "Duration must be a whole number of milliseconds." :
         IsWheel && !IsNumber(WheelDeltaText) ? "Wheel delta must be a signed whole number." :
         MacroValidation.GetStepError(_step) ?? string.Empty;
@@ -209,6 +235,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
             OnPropertyChanged(nameof(HasKey));
             OnPropertyChanged(nameof(HasMouseButton));
             OnPropertyChanged(nameof(HasCoordinates));
+            OnPropertyChanged(nameof(HasOffset));
+            OnPropertyChanged(nameof(HasHeldButtons));
             OnPropertyChanged(nameof(HasDuration));
             OnPropertyChanged(nameof(HasHold));
             OnPropertyChanged(nameof(IsWheel));

@@ -4,7 +4,7 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
-## November 17, 2026 (Build 150)
+## November 20, 2026
 
 ### Added
 - **Third Display Color Preset**:
@@ -13,6 +13,28 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
   - When the color toggle key cycles a profile's preset, that profile's **Edit preset** selection moves to the new preset, so the sliders edit what is on screen. This includes presses during **Force preview**.
   - The existing color profile toggle key advances **Primary → Secondary → Tertiary → Primary**, skipping presets that are disabled or have no saved monitor rows.
   - App profiles and `Win.ini` save the opt-in as `[Color] HasTertiary` and the per-monitor values under `[ColorDisplaysTertiary]`. Saving either file with an older build drops both the setting and the section.
+- **Macro Move Cursor By**:
+  - A new **Move cursor by** macro step in **Add step** and the step's **Action** list moves the cursor by an X/Y offset in pixels from wherever it is when the step runs, instead of to a fixed screen position like **Move to**. Positive X moves right and positive Y moves down; rows show the offset as `+20, -5`.
+  - It uses the same smooth movement and arrival check as **Move to**. An offset that would land outside every monitor stops the macro with an error. The **Pick in 3 s** button is not offered, because an offset is not a screen position, and adding a new **Move to** or **Mouse click** never copies an offset as its starting position.
+  - Mouse down → Wait → **Move cursor by** → Mouse up shows the wait as a hold, the same as a drag made with **Move to**.
+  - It moves the on-screen cursor, so it does not turn the camera in games that hide and recenter the cursor. Use **Move mouse by** for that.
+  - Profiles save the step as `Kind=MoveCursorBy` with `X` and `Y`. Older builds treat a profile with this step as having a malformed macro section: they leave the file unchanged and suspend saving that profile.
+- **Macro Move Mouse By**:
+  - A new **Move mouse by** step sends mouse movement the way a real mouse does, so games that read the mouse directly see it and turn the camera. It takes the same X/Y offset as **Move cursor by**.
+  - Movement is smooth: the offset goes out in small steps at the same speed as **Move to** (about 9,000 per second), and the steps always add up to exactly the offset.
+  - The offset is mouse movement, not exact pixels. How far a game camera turns depends on the game's sensitivity, and on the desktop Windows mouse speed and **Enhance pointer precision** change the distance. There is no arrival check, because games recenter the cursor.
+  - Like all of the app's input, the movement is marked by Windows as software-generated. Some games ignore software-generated mouse input.
+  - Profiles save the step as `Kind=MoveMouseBy` with `X` and `Y`; older builds treat it like other unknown steps.
+- **Held Mouse Button Choice for Move Steps**:
+  - **Move to**, **Move cursor by**, and **Move mouse by** have a new **If a mouse button is held** choice: **Stop** (the default, and the behavior until now) stops the macro with an error at that step; **Wait** pauses at the step until every mouse button is released, then continues, including when a button is pressed partway through a move; **Move anyway** moves while the button is held, which drags on the desktop.
+  - While waiting, the macro status reads "Waiting for mouse buttons to be released". F12, the toggle shortcut, and focus loss still stop a waiting macro.
+  - The macro's own shortcut button never counts as held. Keyboard keys never block a move; held Ctrl, Shift, Alt, or Win still pause every step as before. **Mouse click** keeps stopping when a button is held.
+  - Step rows show "waits for buttons" or "moves while held" when the choice is not **Stop**.
+  - Profiles save the choice as `HeldButtons=Wait` or `HeldButtons=Allow` on the step, and leave it out for **Stop**, so existing macros and files are unchanged. Older builds ignore the key and stop.
+
+---
+
+## November 17, 2026 (Build 150)
 
 ### Fixed
 - **Background Auto-Run Focus Re-engage and Movement Stutter**:
