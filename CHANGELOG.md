@@ -4,6 +4,21 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## November 21, 2026
+
+### Added
+- **Keep Color Active**:
+  - Turn on **Keep color active** in an app profile's Display tab to keep the game's current preset when you switch to the desktop or an app without an enabled profile. It starts off.
+  - The hold ends when the game exits or another enabled app profile takes focus, including a profile used only for shortcuts.
+  - Turning off **Keep color active** or **Color Profiles**, disabling or removing the profile, or changing its executable also ends the hold. If you re-enable it while the game is in the background, it takes effect the next time the game gets focus.
+  - Each enabled display row colors the whole monitor, including other apps on that screen.
+  - The color toggle key cycles the held game's preset while the desktop has focus. **Force preview** takes priority while active.
+  - If sWinShortcuts can't watch the game's process, as with some elevated or protected games, the game's colors apply only while it has focus.
+  - Quitting sWinShortcuts leaves the last colors on screen. See [Troubleshooting](README.md#troubleshooting) for how to reset them on the next start.
+  - App profiles save the opt-in as `[Color] KeepColorActive`. Saving the profile with an older build drops the setting.
+
+---
+
 ## November 20, 2026
 
 ### Added

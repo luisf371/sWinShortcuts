@@ -86,6 +86,7 @@ public sealed class ProfilePersistenceSnapshotTests
         var display = profile.ColorSettings.GetOrCreateProfile("DISPLAY1");
         display.IsEnabled = true;
         display.Brightness = 61;
+        profile.ColorSettings.KeepColorActive = true;
         profile.ColorSettings.HasTertiary = true;
         profile.ColorSettings.GetOrCreateProfile("DISPLAY1", ColorVariant.Tertiary).Brightness = 74;
 
@@ -121,6 +122,7 @@ public sealed class ProfilePersistenceSnapshotTests
         profile.ColorSettings.UpdateProfile(
             "DISPLAY1",
             color => color.Brightness = 99);
+        profile.ColorSettings.KeepColorActive = false;
         profile.ColorSettings.HasTertiary = false;
         profile.ColorSettings.UpdateProfile("DISPLAY1", ColorVariant.Tertiary, color => color.Brightness = 88);
 
@@ -156,6 +158,7 @@ public sealed class ProfilePersistenceSnapshotTests
             snapshot.ColorSettings
                 .SnapshotProfiles(ColorVariant.Primary)["DISPLAY1"]
                 .Brightness);
+        Assert.True(snapshot.ColorSettings.KeepColorActive);
         Assert.True(snapshot.ColorSettings.HasTertiary);
         Assert.Equal(74, snapshot.ColorSettings.SnapshotProfiles(ColorVariant.Tertiary)["DISPLAY1"].Brightness);
     }

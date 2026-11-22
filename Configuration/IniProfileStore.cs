@@ -263,6 +263,7 @@ public sealed class IniProfileStore : IProfileStore
         DeserializeAntiAfk(document, profile.AntiAfk);
         DeserializeCapsLock(document, profile.CapsLock);
         DeserializeColorSettings(document, profile.ColorSettings);
+        profile.ColorSettings.KeepColorActive = document.GetBoolean("Color", "KeepColorActive", false);
         DeserializeCrosshair(document, profile.Crosshair);
         LoadMacros(document, profile);
 
@@ -1099,6 +1100,7 @@ public sealed class IniProfileStore : IProfileStore
         document.SetKey("CapsLock", "RemapTarget", capsLock.RemapTarget);
 
         WriteColorSection(document, profile.ColorSettings);
+        document.SetBoolean("Color", "KeepColorActive", profile.ColorSettings.KeepColorActive);
 
         WriteMacros(document, profile.Macros);
 

@@ -173,6 +173,48 @@ public sealed class ProfileEditorTabsTemplateTests
             Assert.False(tertiary.IsEnabled);
         });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task KeepColorActive_InDisplayTab_FollowsColorEnablementAndProfileKind(bool windowsProfile) =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var host = LoadProfileTabs();
+            var model = windowsProfile ? ProfileFactory.CreateWindowsProfile() : ProfileFactory.CreateCustomProfile("Game", "game.exe");
+            model.ColorSettings.IsEnabled = true;
+            using var profile = new ProfileViewModel(model, new FakeDisplayService(), new RecordingColorControlService());
+            host.Content = profile;
+            host.ContentTemplate = (DataTemplate)host.Resources["ProfileTabs"];
+            host.Measure(new Size(900, 700));
+            host.Arrange(new Rect(0, 0, 900, 700));
+            host.UpdateLayout();
+            var tabs = Assert.Single(Descendants(host).OfType<TabControl>());
+            var display = tabs.Items.OfType<TabItem>().Single(item => (item.Header as string) == "Display");
+            tabs.SelectedItem = display;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+
+            var checkbox = Assert.Single(LogicalDescendants(display).OfType<CheckBox>(),
+                box => (box.Content as string) == "Keep color active");
+            var row = Assert.IsType<StackPanel>(checkbox.Parent);
+            Assert.Equal(windowsProfile ? Visibility.Collapsed : Visibility.Visible, row.Visibility);
+            if (windowsProfile)
+            {
+                return;
+            }
+
+            Assert.False(checkbox.IsChecked);
+            Assert.True(checkbox.IsEnabled);
+            var toggle = (IToggleProvider)UIElementAutomationPeer.CreatePeerForElement(checkbox)
+                .GetPattern(PatternInterface.Toggle);
+            toggle.Toggle();
+            Assert.True(model.ColorSettings.KeepColorActive);
+
+            profile.ColorSettings.IsEnabled = false;
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.False(checkbox.IsEnabled);
+        });
+
     private static IEnumerable<DependencyObject> LogicalDescendants(DependencyObject root)
     {
         foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())

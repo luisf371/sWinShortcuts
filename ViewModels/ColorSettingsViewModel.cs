@@ -27,6 +27,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
     // runtime state (what the worker applies). Null (tests / no runtime) hides the feature.
     private readonly IProfileRuntimeService? _runtimeService;
     private bool _isEnabled;
+    private bool _keepColorActive;
     private volatile bool _disposed;
     private ColorVariant _editingVariant = ColorVariant.Primary;
 
@@ -55,6 +56,7 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
         _runtimeService = profileRuntimeService;
 
         _isEnabled = model.IsEnabled;
+        _keepColorActive = model.KeepColorActive;
 
         // Rebuild when monitors are hot-plugged/removed. DisplayService is a singleton that outlives
         // this (transient) VM, so we MUST unsubscribe in Dispose or the handler leaks.
@@ -256,6 +258,19 @@ public sealed class ColorSettingsViewModel : ViewModelBase, IDisposable
                     displayVm.NotifyControlsEnabledChanged();
                 }
 
+                Changed?.Invoke(this, EventArgs.Empty);
+            }
+        }
+    }
+
+    public bool KeepColorActive
+    {
+        get => _keepColorActive;
+        set
+        {
+            if (SetProperty(ref _keepColorActive, value))
+            {
+                _model.KeepColorActive = value;
                 Changed?.Invoke(this, EventArgs.Empty);
             }
         }

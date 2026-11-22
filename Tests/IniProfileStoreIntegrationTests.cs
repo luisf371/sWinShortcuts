@@ -304,6 +304,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
     {
         var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "color.exe");
         profile.ColorSettings.IsEnabled = true;
+        profile.ColorSettings.KeepColorActive = true;
         profile.ColorSettings.HasSecondary = true;
         profile.ColorSettings.HasTertiary = true;
         profile.ColorSettings.SetProfile(new DisplayColorProfile { DisplayId = "DISPLAY1", IsEnabled = true, Brightness = 45, Contrast = 55, Gamma = 1.2, DigitalVibrance = 60 }, ColorVariant.Primary);
@@ -317,6 +318,7 @@ public class IniProfileStoreIntegrationTests : IDisposable
         var loaded = profiles.FirstOrDefault(p => p.Name == profile.Name);
 
         Assert.NotNull(loaded);
+        Assert.True(loaded.ColorSettings.KeepColorActive);
         Assert.True(loaded.ColorSettings.HasSecondary);
         Assert.True(loaded.ColorSettings.HasTertiary);
         Assert.Equal(ColorVariant.Primary, loaded.ColorSettings.ActiveVariant); // runtime state resets on load
@@ -335,6 +337,19 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Equal(65, tertiary.Contrast);
         Assert.Equal(1.4, tertiary.Gamma);
         Assert.Equal(80, tertiary.DigitalVibrance);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("KeepColorActive=yes\n")]
+    public async Task LoadProfilesAsync_KeepColorActiveMissingOrUnrecognized_DefaultsToFalse(string colorEntry)
+    {
+        var path = Path.Combine(_root, "Profiles", "Game.ini");
+        File.WriteAllText(path, $"[Profile]\nName=Game\nExecutable=game.exe\n[Color]\nEnabled=true\n{colorEntry}");
+
+        var profile = Assert.Single(await _store.LoadProfilesAsync(CancellationToken.None), p => !p.IsWindowsProfile);
+
+        Assert.False(profile.ColorSettings.KeepColorActive);
     }
 
     [Fact]
@@ -823,6 +838,17 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     // ── Merged built-in: color sections live in Win.ini ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task LoadProfilesAsync_WindowsIniContainsKeepColorActive_IgnoresKey()
+    {
+        File.WriteAllText(Path.Combine(_root, "Win.ini"), "[Color]\nEnabled=false\nKeepColorActive=true\n");
+
+        var windows = Assert.Single(await _store.LoadProfilesAsync(CancellationToken.None), p => p.IsWindowsProfile);
+
+        Assert.False(windows.ColorSettings.IsEnabled);
+        Assert.False(windows.ColorSettings.KeepColorActive);
+    }
 
     [Fact]
     public async Task MissingWinIni_CreatesDefaultsWithColorEnabled()

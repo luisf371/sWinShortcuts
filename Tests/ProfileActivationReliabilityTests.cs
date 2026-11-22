@@ -588,18 +588,7 @@ public sealed class ProfileActivationReliabilityTests
         }
     }
 
-    private sealed class QueuedColorControlService : IColorControlService
-    {
-        public System.Collections.Concurrent.ConcurrentQueue<int> Brightnesses { get; } = new();
-
-        public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)
-        {
-            Brightnesses.Enqueue(profile.Brightness);
-            return ColorApplyOutcome.Applied;
-        }
-    }
-
-    private static Profile CreateColorProfile(string name, string executable, int brightness)
+    internal static Profile CreateColorProfile(string name, string executable, int brightness)
     {
         var profile = ProfileFactory.CreateCustomProfile(name, executable);
         profile.ColorSettings.IsEnabled = true;
@@ -620,7 +609,7 @@ public sealed class ProfileActivationReliabilityTests
         };
     }
 
-    private static async Task WaitForAsync(Func<bool> condition)
+    internal static async Task WaitForAsync(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline)
@@ -634,29 +623,5 @@ public sealed class ProfileActivationReliabilityTests
         }
 
         Assert.True(condition());
-    }
-
-    private sealed class BlockingColorControlService : IColorControlService, IDisposable
-    {
-        public ManualResetEventSlim ApplyEntered { get; } = new(false);
-
-        public ManualResetEventSlim ReleaseApply { get; } = new(false);
-
-        public ColorApplyOutcome Apply(DisplayInfo display, DisplayColorProfile profile)
-        {
-            ApplyEntered.Set();
-            if (!ReleaseApply.Wait(TimeSpan.FromSeconds(15)))
-            {
-                throw new TimeoutException("Test did not release the blocked color apply.");
-            }
-
-            return ColorApplyOutcome.Applied;
-        }
-
-        public void Dispose()
-        {
-            ApplyEntered.Dispose();
-            ReleaseApply.Dispose();
-        }
     }
 }

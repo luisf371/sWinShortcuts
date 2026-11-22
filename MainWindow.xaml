@@ -1443,7 +1443,7 @@
                                                       Margin="0"
                                                       VerticalAlignment="Center" />
                                             <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                       ToolTip="Adjust display color settings. Application profiles apply only when the application is in foreground. Check individual monitors to enable adjustments."
+                                                       ToolTip="Adjust display color settings. Application profiles apply while the application is in the foreground, or until it exits when Keep color active is on. Check individual monitors to enable adjustments."
                                                        ToolTipService.InitialShowDelay="0"
                                                        ToolTipService.Placement="Right" />
                                         </StackPanel>
@@ -1468,6 +1468,18 @@
                                             <Run Text="{Binding DataContext.ColorToggleKey, ElementName=RootWindow, Converter={StaticResource KeyDisplayConverter}, Mode=OneWay}" />
                                             <Run Text=" — assigned in Settings" />
                                         </TextBlock>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6"
+                                                    Visibility="{Binding IsCustomProfile, Converter={StaticResource VisibleIfTrue}}">
+                                            <CheckBox Content="Keep color active"
+                                                      IsChecked="{Binding ColorSettings.KeepColorActive}"
+                                                      VerticalAlignment="Center"
+                                                      Margin="0" />
+                                            <TextBlock Style="{StaticResource InfoIconStyle}"
+                                                       ToolTip="Keep this app's display colors after switching away. Ends when the app exits or another enabled app profile takes focus."
+                                                       ToolTipService.InitialShowDelay="0"
+                                                       ToolTipService.Placement="Right" />
+                                        </StackPanel>
 
                                         <!-- Color presets share one set of sliders. -->
                                         <StackPanel Margin="0,0,0,12">

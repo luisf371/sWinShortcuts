@@ -176,6 +176,7 @@ internal static class ProfilePersistenceSnapshot
         var clone = new ColorSettings
         {
             IsEnabled = source.IsEnabled,
+            KeepColorActive = source.KeepColorActive,
             HasSecondary = source.HasSecondary,
             HasTertiary = source.HasTertiary
         };

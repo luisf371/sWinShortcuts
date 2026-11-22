@@ -21,6 +21,17 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         string? NormalizedExecutable,
         Profile? Profile);
 
+    private sealed class ColorOwner(Profile profile, string? normalizedExecutable, uint processId)
+    {
+        public Profile Profile { get; } = profile;
+        public string? NormalizedExecutable { get; } = normalizedExecutable;
+        public uint ProcessId { get; } = processId;
+        public IDisposable? Watch;
+        public bool IsValid = true;
+        public bool HasExited;
+        public string? ReleaseReason;
+    }
+
     private readonly IProfileManager _profileManager;
     private readonly IForegroundWatcher _foregroundWatcher;
     private readonly IInputHookService _inputHookService;
@@ -34,6 +45,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     // indivisible operation; otherwise generation N+1 can be queued before N and the input worker can
     // permanently regress its active generation behind the published one.
     private readonly object _publicationLock = new();
+    private ColorOwner? _colorOwner; // guarded by _publicationLock
     private Channel<ForegroundSnapshot>? _inputChanges;
     private Channel<ForegroundSnapshot>? _colorChanges;
     private volatile Profile? _activeProfile;
@@ -55,7 +67,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     // Set by the resume/display-change handlers; consumed by the worker so a forced re-apply routes
     // through the same C1 plan-diff (a resume while color is disabled therefore never wipes calibration).
     private int _forceReapply;
-    // The ColorSettings currently being applied, published by the worker on each foreground change.
+    // The ColorSettings from the last successful, current color plan published by the worker.
     // The hook advances this preset once per press, so coalesced apply requests preserve every advance.
     private volatile ColorSettings? _activeColorSettings;
     private bool _reapplyHandlersRegistered;
@@ -73,6 +85,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     // Optional (trailing) so the ~10 positional test constructions keep compiling; MS DI injects
     // the registered singleton. Null (tests) disables the toast.
     private readonly ColorProfileToastService? _toastService;
+    private readonly Func<IntPtr, uint, Action, IDisposable?> _tryWatchColorProcess;
 
     public ProfileActivationService(
         IProfileManager profileManager,
@@ -83,7 +96,8 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         IDisplayService displayService,
         ICrosshairService crosshairService,
         ILoggerService logger,
-        ColorProfileToastService? toastService = null)
+        ColorProfileToastService? toastService = null,
+        Func<IntPtr, uint, Action, IDisposable?>? tryWatchColorProcess = null)
     {
         _profileManager = profileManager;
         _foregroundWatcher = foregroundWatcher;
@@ -94,6 +108,9 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         _crosshairService = crosshairService;
         _logger = logger;
         _toastService = toastService;
+        // MS DI uses the default when no process watch delegate is registered.
+        _tryWatchColorProcess = tryWatchColorProcess ??
+            ((hwnd, pid, onExit) => WindowsProcessExitWatch.TryRegister(hwnd, pid, onExit, logger));
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -114,6 +131,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
                         "The previous activation workers are still shutting down; retry Start after they exit.");
                 }
 
+                _colorOwner = null;
                 _workerCancellation?.Dispose();
                 _workerCancellation = null;
                 _inputWorkerTask = null;
@@ -201,9 +219,12 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
     private void CleanupAfterFailedStart()
     {
         CancellationTokenSource? workerCancellation;
+        ColorOwner? colorOwner;
         lock (_publicationLock)
         {
             _stopping = true;
+            colorOwner = _colorOwner;
+            _colorOwner = null;
             _inputChanges?.Writer.TryComplete();
             _colorChanges?.Writer.TryComplete();
             workerCancellation = _workerCancellation;
@@ -226,6 +247,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         workerCancellation?.Cancel();
         try { _inputHookService.Stop(); } catch { /* best effort */ }
         try { _crosshairService.Stop(); } catch { /* best effort */ }
+        try { ReleaseColorOwner(colorOwner, "stopped"); } catch { /* best effort */ }
 
         lock (_publicationLock)
         {
@@ -249,9 +271,12 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         CancellationTokenSource? workerCancellation;
         Task? inputWorkerTask;
         Task? colorWorkerTask;
+        ColorOwner? colorOwner;
         lock (_publicationLock)
         {
             _stopping = true;
+            colorOwner = _colorOwner;
+            _colorOwner = null;
             _inputChanges?.Writer.TryComplete();
             _colorChanges?.Writer.TryComplete();
             workerCancellation = _workerCancellation;
@@ -276,6 +301,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         // Input teardown must never wait behind a slow, non-cancelable native color call.
         _inputHookService.Stop();
         _crosshairService.Stop();
+        ReleaseColorOwner(colorOwner, "stopped");
         var inputWorkerCompleted =
             await WaitForWorkerAsync(inputWorkerTask, cancellationToken).ConfigureAwait(false);
         var colorWorkerCompleted =
@@ -400,6 +426,11 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         }
 
         _inputChanges?.Writer.TryWrite(snapshot);
+        if (profile is { IsEnabled: true } && _colorOwner is { IsValid: true } owner &&
+            owner.ProcessId != processId)
+        {
+            InvalidateColorOwnerLocked(owner, "another profile took focus");
+        }
         _colorChanges?.Writer.TryWrite(snapshot);
     }
 
@@ -429,11 +460,31 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             return;
         }
 
-        if ((changeKind & (ProfileChangeKind.Master | ProfileChangeKind.Identity | ProfileChangeKind.Removed)) != 0)
+        var republishForeground =
+            (changeKind & (ProfileChangeKind.Master | ProfileChangeKind.Identity | ProfileChangeKind.Removed)) != 0;
+        lock (_publicationLock)
         {
-            // Publish the invalidating generation first. The hook immediately fails open for new
-            // profile-scoped presses while reconciliation releases already-owned state.
-            RepublishLatestForeground();
+            if (_colorOwner is { IsValid: true } owner && ReferenceEquals(owner.Profile, profile) &&
+                ((changeKind & ProfileChangeKind.Removed) != 0 ||
+                 !IsEligibleColorOwner(profile, owner.NormalizedExecutable)))
+            {
+                InvalidateColorOwnerLocked(owner, "setting changed");
+                if (_latestForeground is { } latest)
+                {
+                    _colorChanges?.Writer.TryWrite(latest);
+                }
+            }
+
+            if (republishForeground)
+            {
+                // Publish the invalidating generation first. The hook immediately fails open for new
+                // profile-scoped presses while reconciliation releases already-owned state.
+                RepublishLatestForeground();
+            }
+        }
+
+        if (republishForeground)
+        {
             _inputHookService.ReconcileProfileSettings(profile, changeKind);
 
             if ((changeKind & ProfileChangeKind.Removed) != 0)
@@ -688,6 +739,20 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
             return;
         }
 
+        ReleaseInvalidColorOwner();
+        TryAcquireColorOwner(snapshot);
+
+        var selectedProfile = snapshot.Profile;
+        ColorOwner? selectedOwner = null;
+        lock (_publicationLock)
+        {
+            if (selectedProfile is not { IsEnabled: true })
+            {
+                selectedOwner = _colorOwner is { IsValid: true } owner ? owner : null;
+                selectedProfile = selectedOwner?.Profile;
+            }
+        }
+
         // SINGLE read per iteration: a second volatile read could race a concurrent Set/Clear/
         // retarget and make the plan build and the publication below disagree. forcedIsActive gates
         // BOTH — preserving the publication invariant that _activeColorSettings names the settings
@@ -700,7 +765,7 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
         var displays = _displayService.GetDisplays();
         var plan = forcedIsActive
             ? BuildColorPlan(forced!.Settings, forced.Variant, displays, _profileManager)
-            : BuildColorPlan(snapshot.Profile, displays, _profileManager);
+            : BuildColorPlan(selectedProfile, displays, _profileManager);
 
         var force = Interlocked.Exchange(ref _forceReapply, 0) == 1;
         var planOnScreen = true;
@@ -721,12 +786,125 @@ public sealed class ProfileActivationService : IHostedService, IProfileRuntimeSe
 
         // Publish after a successful, current apply so the hotkey advances the preset on screen.
         // A failed plan may be partially visible, so retain the last successful target.
-        latest = _latestForeground;
-        if (planOnScreen && latest is not null && latest.Generation == snapshot.Generation)
+        lock (_publicationLock)
         {
-            _activeColorSettings = forcedIsActive
-                ? forced!.Settings
-                : ResolveColorSettings(snapshot.Profile, _profileManager);
+            latest = _latestForeground;
+            if (planOnScreen && latest is not null && latest.Generation == snapshot.Generation &&
+                (forcedIsActive || selectedOwner is null ||
+                 (ReferenceEquals(_colorOwner, selectedOwner) && selectedOwner.IsValid)))
+            {
+                _activeColorSettings = forcedIsActive
+                    ? forced!.Settings
+                    : ResolveColorSettings(selectedProfile, _profileManager);
+            }
+        }
+    }
+
+    private static bool IsEligibleColorOwner(Profile profile, string? normalizedExecutable) =>
+        !profile.IsWindowsProfile && profile.IsEnabled && profile.ColorSettings.IsEnabled &&
+        profile.ColorSettings.KeepColorActive &&
+        string.Equals(profile.NormalizedExecutable, normalizedExecutable, StringComparison.OrdinalIgnoreCase);
+
+    private static void InvalidateColorOwnerLocked(ColorOwner owner, string reason)
+    {
+        owner.IsValid = false;
+        owner.ReleaseReason ??= reason;
+    }
+
+    private void ReleaseInvalidColorOwner()
+    {
+        ColorOwner owner;
+        lock (_publicationLock)
+        {
+            if (_colorOwner is not { IsValid: false } invalidOwner)
+            {
+                return;
+            }
+
+            owner = invalidOwner;
+            _colorOwner = null;
+        }
+
+        ReleaseColorOwner(owner, owner.ReleaseReason);
+    }
+
+    private void ReleaseColorOwner(ColorOwner? owner, string? reason)
+    {
+        if (owner is null)
+        {
+            return;
+        }
+
+        owner.Watch?.Dispose();
+        _logger.Log($"[Color] Keep color active: hold released profile={owner.Profile.Name} pid={owner.ProcessId} reason={reason}");
+    }
+
+    private void TryAcquireColorOwner(ForegroundSnapshot snapshot)
+    {
+        if (snapshot.Profile is not { } profile || !IsEligibleColorOwner(profile, snapshot.NormalizedExecutable) ||
+            snapshot.WindowHandle == IntPtr.Zero || snapshot.ProcessId == 0)
+        {
+            return;
+        }
+
+        lock (_publicationLock)
+        {
+            if (_colorOwner?.ProcessId == snapshot.ProcessId)
+            {
+                return;
+            }
+        }
+
+        var owner = new ColorOwner(profile, snapshot.NormalizedExecutable, snapshot.ProcessId);
+        var watch = _tryWatchColorProcess(snapshot.WindowHandle, snapshot.ProcessId, () => OnColorOwnerExited(owner));
+        if (watch is null)
+        {
+            return;
+        }
+
+        bool installed;
+        lock (_publicationLock)
+        {
+            installed = !_stopping && _latestForeground?.Generation == snapshot.Generation &&
+                        IsEligibleColorOwner(profile, snapshot.NormalizedExecutable) &&
+                        !owner.HasExited && _colorOwner is null;
+            if (installed)
+            {
+                owner.Watch = watch;
+                _colorOwner = owner;
+            }
+        }
+
+        if (installed)
+        {
+            _logger.Log($"[Color] Keep color active: hold started profile={profile.Name} pid={owner.ProcessId}");
+        }
+        else
+        {
+            watch.Dispose();
+        }
+    }
+
+    private void OnColorOwnerExited(ColorOwner owner)
+    {
+        try
+        {
+            lock (_publicationLock)
+            {
+                owner.HasExited = true;
+                if (!_stopping && ReferenceEquals(_colorOwner, owner) && owner.IsValid)
+                {
+                    InvalidateColorOwnerLocked(owner, "process exited");
+                    if (_latestForeground is { } latest)
+                    {
+                        _colorChanges?.Writer.TryWrite(latest);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Log($"[Color] Process exit callback failed: {ex.Message}");
         }
     }
 

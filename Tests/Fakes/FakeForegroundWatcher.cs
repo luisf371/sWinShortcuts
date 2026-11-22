@@ -8,9 +8,12 @@ public sealed class FakeForegroundWatcher : IForegroundWatcher
 
     public bool IsStarted { get; private set; }
 
+    public Action? OnStart { get; set; }
+
     public void Start()
     {
         IsStarted = true;
+        OnStart?.Invoke();
     }
 
     public void Stop()
@@ -21,14 +24,15 @@ public sealed class FakeForegroundWatcher : IForegroundWatcher
     public void RaiseForegroundChanged(
         string processName,
         uint processId = 0,
-        bool requiresInputReset = false)
+        bool requiresInputReset = false,
+        IntPtr windowHandle = default)
     {
         if (IsStarted)
         {
             ForegroundChanged?.Invoke(
                 this,
                 new ForegroundChangedEventArgs(
-                    IntPtr.Zero,
+                    windowHandle,
                     processName,
                     processId,
                     requiresInputReset));

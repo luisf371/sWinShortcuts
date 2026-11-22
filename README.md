@@ -36,6 +36,7 @@ moment that program comes to the foreground.
   no manual switching.
 - **Window [Default] profile**: the single built-in, undeletable global profile. Its input
   and color settings apply everywhere a game profile doesn't override them.
+  With **Keep color active** enabled, a game's colors can stay after you switch away.
 - **Human-readable storage**: every profile is a plain `.ini` file you can edit by hand,
   back up, or share.
 
@@ -103,6 +104,14 @@ moment that program comes to the foreground.
 - **Up to three color presets** per app profile and in **Window [Default]**. Enable Secondary
   and Tertiary independently in the Display tab. The global color profile toggle key cycles
   through Primary, Secondary, and Tertiary, skipping unavailable presets.
+- **Keep color active** is off by default in each app profile's Display tab. Turn it on to
+  keep the game's current preset when you Alt+Tab to the desktop or an app without an enabled profile.
+  - The hold ends when the game's process exits or the focused app matches a different enabled
+    profile. A profile used only for shortcuts counts.
+  - Each enabled display row applies to the whole monitor, including other apps on it. While
+    the hold lasts, an enabled game row takes precedence over edits to **Window [Default]** on that monitor.
+  - An enabled `explorer.exe` profile (the desktop and taskbar) ends every hold as soon as
+    you reach the desktop.
 
 ## Getting Started
 
@@ -349,7 +358,7 @@ administrator** and save again.
 
 | Profile | Role |
 |---|---|
-| **Window [Default]** | The single built-in global fallback, including global display color settings. Its settings apply in every app that doesn't have its own profile. Cannot be deleted. |
+| **Window [Default]** | The single built-in global fallback, including global display color settings. Its settings apply in every app that doesn't have its own profile, except where **Keep color active** holds a game's colors after you switch away. Cannot be deleted. |
 | Your profiles | Matched against the foreground executable (name or full path). |
 
 ## Data & Configuration Files
@@ -420,6 +429,15 @@ sWinShortcuts/
 - **Digital Vibrance slider does nothing** — check for a supported NVIDIA driver or AMD
   Radeon Software Adrenalin 25.3.1+. Unsupported GPUs or unavailable driver APIs skip
   vibrance; brightness/contrast/gamma controls remain available.
+- **Colors stay changed after sWinShortcuts exits or crashes** — the app leaves the current
+  colors in place when it closes, and a crash does the same. On the next start it rewrites
+  only monitors that have colors turned on; on the desktop, that means monitors checked in
+  **Window [Default]**. To reset your desktop colors on every start, keep **Window [Default]**
+  switched on, turn on **Color Profiles** in its Display tab, and check each monitor. The
+  default slider values give normal colors. sWinShortcuts then controls those monitors'
+  colors whenever no app profile applies, which replaces calibration loaded by other tools.
+  A game's held colors also stay on screen after sWinShortcuts exits or crashes, and the
+  same **Window [Default]** setup resets them on the next start.
 - **Some protected processes can't be matched by path** — the app falls back to matching by
   process name.
 

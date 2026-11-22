@@ -341,6 +341,28 @@ public sealed class ProfileRuntimeNotificationTests
     }
 
     [Fact]
+    public async Task KeepColorActive_UserEdit_PublishesOneColorChangeAndDetachedAutosave()
+    {
+        var store = new InMemoryProfileStore();
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.ColorSettings.IsEnabled = true;
+        store.Profiles.Add(profile);
+        var runtime = new RecordingProfileRuntimeService(() => Assert.True(profile.ColorSettings.KeepColorActive));
+        var viewModel = new MainViewModel(new ProfileManager(store), new FakeDialogService(),
+            new FakeDisplayService(), new RecordingColorControlService(), runtime);
+        await viewModel.InitializeAsync();
+        var game = Assert.Single(viewModel.Profiles, vm => ReferenceEquals(vm.Model, profile));
+
+        game.ColorSettings.KeepColorActive = true;
+        game.ColorSettings.KeepColorActive = true;
+
+        Assert.Equal((profile, ProfileChangeKind.Color), Assert.Single(runtime.Changes));
+        profile.ColorSettings.KeepColorActive = false;
+        Assert.Equal(0, await viewModel.FlushPendingSavesAsync());
+        Assert.True(Assert.Single(store.SavedProfiles).ColorSettings.KeepColorActive);
+    }
+
+    [Fact]
     public void HoldBreathPanicEditor_RejectsWheelAndKeepsKeyboardInput()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");

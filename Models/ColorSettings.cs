@@ -28,6 +28,7 @@ public sealed class ColorSettings
     private ColorVariant _activeVariant = ColorVariant.Primary;
 
     public bool IsEnabled { get; set; } = false;
+    public bool KeepColorActive { get; set; }
 
     private bool _hasSecondary;
     private bool _hasTertiary;
