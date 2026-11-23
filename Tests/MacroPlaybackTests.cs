@@ -283,6 +283,53 @@ public sealed class MacroPlaybackTests
         WaitUntil(() => sender.Transitions.Any(x => x.Key == Key.A && !x.IsDown));
     }
 
+    [Fact]
+    public void Shortcut_CtrlAltShiftWin_FiresOnlyWithAllFourModifiers()
+    {
+        var sender = new RecordingInputSender();
+        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        const ModifierKeys all = ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows;
+        profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutModifiers = all }];
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
+        int[] modifiers = [0xA2, 0xA4, 0xA0, 0x5B];
+
+        // Three of four modifiers: no match, F6 passes through.
+        foreach (var vk in modifiers[..3]) service.DispatchDecodedKeyboardEvent(vk, true, false);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x75, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x75, false, true));
+        foreach (var vk in modifiers[..3]) service.DispatchDecodedKeyboardEvent(vk, false, true);
+        Assert.Empty(sender.Transitions);
+
+        foreach (var vk in modifiers) service.DispatchDecodedKeyboardEvent(vk, true, false);
+        Press(service, 0x75);
+        foreach (var vk in modifiers) service.DispatchDecodedKeyboardEvent(vk, false, true);
+        WaitUntil(() => sender.Transitions.Any(x => x.Key == Key.A && !x.IsDown));
+    }
+
+    [Theory]
+    [InlineData(ModifierKeys.None, ModifierKeys.Control, true)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.Control, true)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.Control | ModifierKeys.Shift, true)]
+    [InlineData(ModifierKeys.Control | ModifierKeys.Shift, ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Windows, true)]
+    [InlineData(ModifierKeys.Control | ModifierKeys.Shift, ModifierKeys.Control, false)]
+    [InlineData(ModifierKeys.Control | ModifierKeys.Alt, ModifierKeys.Control | ModifierKeys.Shift, false)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.None, false)]
+    public void GetShortcutError_AutoRunCombinedTrigger_ConflictsOnlyWhenMacroHoldsEveryAutoRunModifier(
+        ModifierKeys autoRunModifiers, ModifierKeys macroModifiers, bool conflicts)
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerKey = Key.F6;
+        profile.AutoRun.TriggerModifier = autoRunModifiers;
+        profile.Macros.IsEnabled = true;
+        var macro = new MacroDefinition { IsEnabled = true, ShortcutKey = Key.F6, ShortcutModifiers = macroModifiers };
+        profile.Macros.Definitions = [macro];
+
+        var error = MacroStateMachine.GetShortcutError(profile, macro.Id, null, 0, 0, 0);
+
+        Assert.Equal(conflicts ? "Auto-Run uses this shortcut." : null, error);
+    }
+
     internal static InputHookService Create(RecordingInputSender sender, out Profile profile, params MacroStep[] steps)
     {
         var service = InputHookServiceTestExtensions.CreateWithFakeForeground(new NullLoggerService(), sender);

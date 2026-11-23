@@ -540,3 +540,19 @@
 ## 2026-11-22 (macro logging)
 - Macro debug lines now carry `macro="<label>" profile="<name>"` (state, Playback, Failed). New lines: `Cancel requested` (with reason + row), `Physical key/mouse takeover` (vk/key/button), `Input refused` (CanExecute breakdown: foreground changed, owner/advanced off, monitors). Takeover log is behind `IsEnabled` in the rare macro-owned-key branch only.
 - Diagnosed Drop Bag stops: physical D keydown while macro holds D => "Physical input took over a macro key." (user strafes with D).
+
+## 2026-11-23 (Capture-based keybind assignment, card 48af14e2)
+
+- `Controls/KeyCaptureBox` is CODE-ONLY (no .xaml): `MainWindow.xaml`/`MacrosView.xaml` template tests parse XAML at runtime via XamlReader (with `;assembly=sWinShortcuts` rewriting), and a BAML UserControl using StaticResource would fail to resolve outside the app tree. Parts use implicit TextBox/Button styles; `BoxStyle`/`ButtonStyle` DPs override (macro editor).
+- `IKeyCaptureSource.EndKeyCapture(sink)` takes the sink (deviation from plan's parameterless form) so a late deferred apply can't end another box's capture. Internal boundaries (`ReleaseAllState`, so Stop/session switch/profile switch) call `_keyCapture.End()` unconditionally.
+- `Models.MouseButton` collides with `System.Windows.Input.MouseButton` in any file outside `sWinShortcuts.Models` that imports both: add `using MouseButton = sWinShortcuts.Models.MouseButton;`.
+- Gate insertion point: `KeyboardCallback` right after the injected-event filter and the `vkCode` locals, before `!featuresActive`. `TryBeginKeyCapture` refuses off `_hookDispatcher` thread, when stopped, or while macros are busy/recording/have takeovers (no `_profileLock`: UI thread).
+- `KeyCaptureBox.Current` is `[ThreadStatic]` (per UI thread) so STA test threads never cancel each other's boxes cross-thread; `CaptureSource` stays a process static, so `KeyCaptureBoxTests` runs in a non-parallel xUnit collection and resets it in `Dispose`.
+- Capture boxes put the same automation name on the inner TextBox ("Macro shortcut") and "Assign X"/"Clear X" on buttons: template tests must find fields with `OfType<KeyCaptureBox>()`, not any control by name.
+- `MacrosView.xaml` resources can't `BasedOn` the app's implicit styles (not in scope at InitializeComponent in tests); the local `MacroCaptureField` TextBox style repeats the setters with DynamicResource.
+- `MacroViewModel.Shortcut = None` clears modifiers; `ShortcutTrigger = None` still keeps them (existing test relies on it).
+- Row uniqueness moved from per-row `SelectableSources` lists to `SourceValidator` delegates set at attach time (`ProfileViewModel.AttachCombinedVm`, `AltShortcutViewModel.AttachRow`); "Add row" defaults still come from `Available*Sources` (catalog-based).
+- `[AutoRun] TriggerModifier` uses `IniExtensions.Get/SetModifierKeys`: single names byte-identical, combos `Control+Alt` (Ctrl, Alt, Shift, Win order); `+`/`,` accepted on read; "None" only alone. Old builds read a combo as default Control.
+- Alt + Shortcut table now ~170 keys (`KeyCatalog.AltShortcutKeys`): `ResetKeyboardStates` runs `Timer.Change` on every idle timer per physical Alt release (~1.8x old count, tens of µs). Skipping unarmed timers would need an armed flag; not done.
+- Auto-Run tests that re-press the trigger must send its up through `Handle` (the `_triggerKeyDownVk` latch), not only `ObservePhysicalEvent`.
+- Verification: no `dotnet` on the Linux implementation host; nothing compiled or run. Build/tests must run on Windows (plan §7).

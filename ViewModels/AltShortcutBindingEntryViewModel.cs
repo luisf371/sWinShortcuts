@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using sWinShortcuts.Models;
@@ -40,11 +39,12 @@ public sealed partial class AltShortcutBindingEntryViewModel : ViewModelBase
     // Wheel triggers fire immediately, so they support Tap only.
     public bool CanHold => Source.Kind is InputTriggerKind.KeyboardKey or InputTriggerKind.MouseButton;
 
-    private IEnumerable<InputTrigger> _selectableSources = [];
-    public IEnumerable<InputTrigger> SelectableSources
+    // Set by the owning AltShortcutViewModel: the capture box rejects a trigger another row already uses.
+    private Func<KeyChord, string?>? _sourceValidator;
+    public Func<KeyChord, string?>? SourceValidator
     {
-        get => _selectableSources;
-        set => SetProperty(ref _selectableSources, value);
+        get => _sourceValidator;
+        set => SetProperty(ref _sourceValidator, value);
     }
 
     partial void OnSourceChanged(InputTrigger oldValue, InputTrigger newValue)

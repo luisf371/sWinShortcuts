@@ -59,15 +59,69 @@ public sealed class MacroEditorTests
         Assert.Equal(5, published.Count);
     }
 
-    [Fact]
-    public void ShortcutOptions_IncludesExistingKeyboardChoicesAndAllFiveMouseButtons()
+    public static TheoryData<int> ModifierSubsets()
     {
-        Assert.Equal(InputTrigger.None, MacroViewModel.ShortcutOptions[0]);
-        Assert.Equal(MacroViewModel.KeyOptions.Select(InputTrigger.FromKey),
-            MacroViewModel.ShortcutOptions.Where(trigger => trigger.Kind == InputTriggerKind.KeyboardKey));
-        Assert.Equal(Enum.GetValues<sWinShortcuts.Models.MouseButton>().Select(InputTrigger.FromMouseButton),
-            MacroViewModel.ShortcutOptions.Where(trigger => trigger.Kind == InputTriggerKind.MouseButton));
-        Assert.DoesNotContain(MacroViewModel.ShortcutOptions, trigger => trigger.Kind == InputTriggerKind.MouseWheel);
+        var data = new TheoryData<int>();
+        for (var mask = 1; mask < 16; mask++) data.Add(mask);
+        return data;
+    }
+
+    // Each of the 15 Ctrl/Alt/Shift/Win combinations reaches the model in one publish and displays modifiers first.
+    [Theory]
+    [MemberData(nameof(ModifierSubsets))]
+    public void Shortcut_EveryModifierSubsetWithKey_PublishesOnceAndDisplaysModifiersFirst(int mask)
+    {
+        var modifiers = ((mask & 1) != 0 ? ModifierKeys.Control : ModifierKeys.None) |
+            ((mask & 2) != 0 ? ModifierKeys.Alt : ModifierKeys.None) |
+            ((mask & 4) != 0 ? ModifierKeys.Shift : ModifierKeys.None) |
+            ((mask & 8) != 0 ? ModifierKeys.Windows : ModifierKeys.None);
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new()];
+        var published = new List<MacroDefinition>();
+        using var editor = new MacrosViewModel(profile, () => published.Add(profile.Macros.Definitions[0]));
+        var macro = editor.SelectedMacro!;
+        var notifications = new List<string?>();
+        macro.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
+
+        macro.Shortcut = KeyChord.FromKey(Key.E, modifiers);
+
+        var definition = Assert.Single(published);
+        Assert.Equal(Key.E, definition.ShortcutKey);
+        Assert.Null(definition.ShortcutMouseButton);
+        Assert.Equal(modifiers, definition.ShortcutModifiers);
+        Assert.Equal(KeyChord.FromKey(Key.E, modifiers), macro.Shortcut);
+        Assert.Equal(KeyChord.FromKey(Key.E, modifiers).ToDisplayText(), macro.ShortcutText);
+        Assert.Equal(KeyChord.FormatModifiers(modifiers) + "+E", macro.ShortcutText);
+        Assert.Contains(nameof(MacroViewModel.Shortcut), notifications);
+        Assert.Contains(nameof(MacroViewModel.ShortcutModifiers), notifications);
+        Assert.Contains(nameof(MacroViewModel.ShortcutText), notifications);
+    }
+
+    [Fact]
+    public void Shortcut_MouseWithModifiersThenClear_ReplacesKeyAndClearsPrefixes()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new() { ShortcutKey = Key.F6 }];
+        var published = new List<MacroDefinition>();
+        using var editor = new MacrosViewModel(profile, () => published.Add(profile.Macros.Definitions[0]));
+        var macro = editor.SelectedMacro!;
+
+        macro.Shortcut = KeyChord.FromTrigger(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.XButton1),
+            ModifierKeys.Control | ModifierKeys.Shift);
+        Assert.Equal(Key.None, published[^1].ShortcutKey);
+        Assert.Equal(sWinShortcuts.Models.MouseButton.XButton1, published[^1].ShortcutMouseButton);
+        Assert.Equal("Ctrl+Shift+Mouse Button 4", macro.ShortcutText);
+
+        // A wheel is not a macro shortcut; the edit is ignored.
+        macro.Shortcut = KeyChord.FromTrigger(InputTrigger.FromWheel(MouseWheelDirection.Up));
+        Assert.Single(published);
+
+        macro.Shortcut = KeyChord.None;
+        Assert.Equal(2, published.Count);
+        Assert.Equal(InputTrigger.None, macro.ShortcutTrigger);
+        Assert.Equal(ModifierKeys.None, published[^1].ShortcutModifiers);
+        Assert.Equal(KeyChord.None, macro.Shortcut);
+        Assert.Equal("No shortcut", macro.ShortcutText);
     }
 
     [Fact]

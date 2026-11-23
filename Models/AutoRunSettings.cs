@@ -6,8 +6,8 @@ public sealed class AutoRunSettings
 {
     public bool IsEnabled { get; set; } = false;
 
-    // None selects a single-key trigger. Otherwise exactly one side-agnostic modifier is supported;
-    // combined flags (e.g. Control|Alt) do not round-trip through SetEnum/GetEnum.
+    // None selects a single-key trigger. Otherwise any combination of the side-agnostic Ctrl/Alt/Shift/Win
+    // flags; every flag must be held. Persisted by IniExtensions.Get/SetModifierKeys ("Control+Alt").
     public ModifierKeys TriggerModifier { get; set; } = ModifierKeys.Control;
 
     public Key TriggerKey { get; set; } = Key.R;

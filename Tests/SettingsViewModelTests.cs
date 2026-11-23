@@ -1,6 +1,7 @@
 using System.IO;
 using System.Reflection;
 using System.Windows.Input;
+using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
 using sWinShortcuts.ViewModels;
@@ -14,15 +15,10 @@ public sealed class SettingsViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void CrosshairOffsetToggleKey_AssignmentAndHydration_NormalizesAndPublishesOptions(bool hydrate)
+    public void CrosshairOffsetToggleKey_AssignmentAndHydration_NormalizesAndPublishes(bool hydrate)
     {
         var hook = new FakeInputHookService();
         var vm = new SettingsViewModel(new NullLoggerService(), hook);
-        vm.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName == nameof(vm.CrosshairOffsetToggleKey))
-                Assert.Contains(vm.CrosshairOffsetToggleKey, vm.ColorToggleKeyOptions);
-        };
         foreach (var (key, expected) in new[]
         {
             (Key.F13, Key.F13), (Key.ImeProcessed, Key.ImeProcessed),
@@ -88,22 +84,25 @@ public sealed class SettingsViewModelTests
         Assert.Null(inputHook.LastRapidFireToggleKey);
     }
 
+    // The capture field's rule accepts exactly the keys both runtimes honor, and rejects every modifier.
     [Fact]
-    public void ToggleKeyOptions_ContainOnlyKeysAcceptedByBothRuntimes()
+    public void ToggleKeyValidator_AcceptsOnlyKeysAcceptedByBothRuntimes()
     {
         using var hook = new InputHookService(new NullLoggerService(), new RecordingInputSender());
-        var vm = new SettingsViewModel(new NullLoggerService(), hook);
-        Assert.Contains(Key.None, vm.ColorToggleKeyOptions);
-        Assert.Contains(Key.F8, vm.ColorToggleKeyOptions);
+        Assert.Null(SettingsViewModel.ToggleKeyValidator(KeyChord.None));
+        Assert.Null(SettingsViewModel.ToggleKeyValidator(KeyChord.FromKey(Key.F8)));
         foreach (var modifier in new[]
         {
-            Key.LeftShift, Key.RightShift, Key.LeftCtrl, Key.RightCtrl, Key.LeftAlt, Key.RightAlt
+            Key.LeftShift, Key.RightShift, Key.LeftCtrl, Key.RightCtrl, Key.LeftAlt, Key.RightAlt, Key.LWin, Key.RWin
         })
         {
-            Assert.Contains(modifier, KeyCatalog.GetCommonKeys());
-            Assert.DoesNotContain(modifier, vm.ColorToggleKeyOptions);
+            Assert.Equal(KeyBindingRules.AppToggleModifierMessage, SettingsViewModel.ToggleKeyValidator(KeyChord.FromKey(modifier)));
         }
-        foreach (var key in vm.ColorToggleKeyOptions)
+        foreach (var modifier in new[] { Key.LeftShift, Key.RightShift, Key.LeftCtrl, Key.RightCtrl, Key.LeftAlt, Key.RightAlt })
+        {
+            Assert.Contains(modifier, KeyCatalog.GetCommonKeys());
+        }
+        foreach (var key in KeyCatalog.AssignableKeys.Where(key => SettingsViewModel.ToggleKeyValidator(KeyChord.FromKey(key)) is null))
         {
             hook.SetColorToggleKey(key);
             hook.SetRapidFireToggleKey(key);
@@ -156,16 +155,13 @@ public sealed class SettingsViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void ToggleKeys_OffListAssignments_PublishOptionsBeforeSelections(bool hydrate)
+    public void ToggleKeys_KeysOutsideTheOldList_AreAssignedAndNotifiedOnce(bool hydrate)
     {
         var vm = new SettingsViewModel(new NullLoggerService(), new FakeInputHookService());
         var notifications = new List<string>();
         vm.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName is nameof(vm.ColorToggleKeyOptions) or nameof(vm.ColorToggleKey) or nameof(vm.RapidFireToggleKey))
-                notifications.Add(e.PropertyName);
-            if (e.PropertyName == nameof(vm.ColorToggleKey)) Assert.Contains(vm.ColorToggleKey, vm.ColorToggleKeyOptions);
-            if (e.PropertyName == nameof(vm.RapidFireToggleKey)) Assert.Contains(vm.RapidFireToggleKey, vm.ColorToggleKeyOptions);
+            if (e.PropertyName is { } name) notifications.Add(name);
         };
 
         if (hydrate)
@@ -182,21 +178,18 @@ public sealed class SettingsViewModelTests
             vm.RapidFireToggleKey = Key.ImeProcessed;
         }
 
-        Assert.Equal(new[]
-        {
-            nameof(vm.ColorToggleKeyOptions), nameof(vm.ColorToggleKey),
-            nameof(vm.ColorToggleKeyOptions), nameof(vm.RapidFireToggleKey)
-        }, notifications);
-        Assert.Contains(Key.F13, vm.ColorToggleKeyOptions);
-        Assert.Contains(Key.ImeProcessed, vm.ColorToggleKeyOptions);
-        Assert.DoesNotContain(Key.F14, vm.ColorToggleKeyOptions);
+        Assert.Equal(Key.F13, vm.ColorToggleKey);
+        Assert.Equal(Key.ImeProcessed, vm.RapidFireToggleKey);
+        Assert.Equal(1, notifications.Count(name => name == nameof(vm.ColorToggleKey)));
+        Assert.Equal(1, notifications.Count(name => name == nameof(vm.RapidFireToggleKey)));
 
         notifications.Clear();
         vm.ColorToggleKey = Key.LeftCtrl;
         vm.RapidFireToggleKey = Key.System;
-        Assert.DoesNotContain(nameof(vm.ColorToggleKeyOptions), notifications);
-        Assert.DoesNotContain(Key.LeftCtrl, vm.ColorToggleKeyOptions);
-        Assert.DoesNotContain(Key.System, vm.ColorToggleKeyOptions);
+        Assert.Equal(Key.None, vm.ColorToggleKey);
+        Assert.Equal(Key.None, vm.RapidFireToggleKey);
+        Assert.Equal(new[] { nameof(vm.ColorToggleKey), nameof(vm.RapidFireToggleKey) },
+            notifications.Where(name => name is nameof(vm.ColorToggleKey) or nameof(vm.RapidFireToggleKey)));
     }
 
     private static void AssertRuntimeToggleKeys(InputHookService hook, Key expected)

@@ -19,7 +19,8 @@ sWinShortcuts/
 ├── Configuration/    # IniProfileStore - INI-based persistence
 ├── Interop/          # NativeMethods.cs - ALL P/Invoke centralized
 ├── Converters/       # WPF value converters
-├── Behaviors/        # WPF behaviors (ComboBox, MouseWheel)
+├── Behaviors/        # WPF behaviors (MouseWheel)
+├── Controls/         # Code-only WPF controls (KeyCaptureBox: [read-only][Assign] keybind capture)
 ├── Factories/        # ProfileFactory
 ├── Views/            # XAML dialogs (AddProfile, Settings)
 ├── Resources/        # Brushes.xaml, Styles.xaml
@@ -37,6 +38,7 @@ sWinShortcuts/
 | Service registration | `App.xaml.cs` | DI via Microsoft.Extensions.Hosting |
 | Add test | `Tests/` + use `Tests/Fakes/` | Manual fakes, no mocking libs |
 | Document changes | `CHANGELOG.md` | Plain English, bold topic titles, grouped by milestone |
+| Keybind field (Assign button) | `Controls/KeyCaptureBox.cs` + `Utilities/KeyBindingRules.cs` | Hook capture via `IKeyCaptureSource` / `KeyCaptureGate`; WPF fallback |
 
 ## CODE MAP
 

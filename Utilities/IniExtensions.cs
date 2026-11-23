@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Windows.Input;
 using sWinShortcuts.Models;
@@ -113,6 +114,68 @@ public static class IniExtensions
             ? result
             : defaultValue;
     }
+
+    /// <summary>
+    /// Reads side-agnostic modifier flags: a single name ("Control") as written by every build, or a
+    /// "+"/","-joined combination ("Control+Alt"). Unknown tokens, numbers, empty tokens, and undefined
+    /// bits fall back to <paramref name="defaultValue"/>.
+    /// </summary>
+    public static ModifierKeys GetModifierKeys(this IniDocument doc, string section, string key, ModifierKeys defaultValue)
+    {
+        var value = doc.GetValue(section, key);
+        return value is not null && TryParseModifierKeys(value, out var result) ? result : defaultValue;
+    }
+
+    /// <summary>
+    /// Writes one name for a single flag (byte-identical to the old SetEnum output) and "Control+Alt" style text,
+    /// in Ctrl, Alt, Shift, Win order, for combinations. Older builds read a combination back as their default.
+    /// </summary>
+    public static void SetModifierKeys(this IniDocument doc, string section, string key, ModifierKeys value)
+    {
+        doc.SetValue(section, key, FormatModifierKeys(value));
+    }
+
+    internal static string FormatModifierKeys(ModifierKeys value)
+    {
+        if (value == ModifierKeys.None || (value & ~AllModifierKeys) != 0)
+        {
+            return value.ToString();
+        }
+
+        var parts = new List<string>(4);
+        if ((value & ModifierKeys.Control) != 0) parts.Add(nameof(ModifierKeys.Control));
+        if ((value & ModifierKeys.Alt) != 0) parts.Add(nameof(ModifierKeys.Alt));
+        if ((value & ModifierKeys.Shift) != 0) parts.Add(nameof(ModifierKeys.Shift));
+        if ((value & ModifierKeys.Windows) != 0) parts.Add(nameof(ModifierKeys.Windows));
+        return string.Join("+", parts);
+    }
+
+    internal static bool TryParseModifierKeys(string value, out ModifierKeys result)
+    {
+        result = ModifierKeys.None;
+        var tokens = value.Split(['+', ','], StringSplitOptions.TrimEntries);
+        foreach (var token in tokens)
+        {
+            ModifierKeys flag;
+            if (token.Equals(nameof(ModifierKeys.None), StringComparison.OrdinalIgnoreCase))
+            {
+                // "None" is only valid on its own.
+                if (tokens.Length != 1) return false;
+                flag = ModifierKeys.None;
+            }
+            else if (token.Equals(nameof(ModifierKeys.Control), StringComparison.OrdinalIgnoreCase)) flag = ModifierKeys.Control;
+            else if (token.Equals(nameof(ModifierKeys.Alt), StringComparison.OrdinalIgnoreCase)) flag = ModifierKeys.Alt;
+            else if (token.Equals(nameof(ModifierKeys.Shift), StringComparison.OrdinalIgnoreCase)) flag = ModifierKeys.Shift;
+            else if (token.Equals(nameof(ModifierKeys.Windows), StringComparison.OrdinalIgnoreCase)) flag = ModifierKeys.Windows;
+            else return false;
+
+            result |= flag;
+        }
+
+        return true;
+    }
+
+    private const ModifierKeys AllModifierKeys = ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows;
 
     public static Key? GetKey(this IniDocument doc, string section, string key)
     {

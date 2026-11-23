@@ -1,7 +1,6 @@
 using System;
 using CommunityToolkit.Mvvm.ComponentModel;
 using System.Windows.Input;
-using System.Collections.Generic;
 using sWinShortcuts.Models;
 
 namespace sWinShortcuts.ViewModels;
@@ -30,11 +29,12 @@ public sealed partial class CombinedMappingEntryViewModel : ViewModelBase
     [ObservableProperty]
     private bool rightClickOnly;
 
-    private IEnumerable<InputTrigger> _selectableSources = [];
-    public IEnumerable<InputTrigger> SelectableSources
+    // Set by the owning ProfileViewModel: the capture box rejects a source another row already uses.
+    private Func<KeyChord, string?>? _sourceValidator;
+    public Func<KeyChord, string?>? SourceValidator
     {
-        get => _selectableSources;
-        set => SetProperty(ref _selectableSources, value);
+        get => _sourceValidator;
+        set => SetProperty(ref _sourceValidator, value);
     }
 
     partial void OnSourceChanged(InputTrigger value) => Changed?.Invoke(this, EventArgs.Empty);

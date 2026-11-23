@@ -32,6 +32,24 @@ public sealed class InputHookService : IInputHookService
     public void BeginMacroRecordingStopGesture(Key? key = null) => _macros.StopFromControl(key);
     public void CancelMacroPlayback(Profile owner) => _macros.Invalidate(owner);
 
+    public bool TryBeginKeyCapture(IKeyCaptureSink sink)
+    {
+        ArgumentNullException.ThrowIfNull(sink);
+        // The hook callback runs on _hookDispatcher's thread; beginning anywhere else could race it. No
+        // _profileLock: this runs on the UI thread, and the gate's state is hook-thread owned.
+        if (_runtime.IsDisposed || !_runtime.IsRunning || _keyboardHookHandle == IntPtr.Zero ||
+            _hookDispatcher is not { } dispatcher || !dispatcher.CheckAccess() ||
+            _macros.IsBusy || _macros.IsRecording || _macroPhysical.HasTakeovers)
+        {
+            return false;
+        }
+
+        _keyCapture.Begin(sink, Stopwatch.GetTimestamp());
+        return true;
+    }
+
+    public void EndKeyCapture(IKeyCaptureSink sink) => _keyCapture.End(sink);
+
     private readonly ILoggerService _logger;
     private readonly InputRuntimeState _runtime;
     private readonly InputExecutor _inputExecutor;
@@ -41,6 +59,8 @@ public sealed class InputHookService : IInputHookService
     private readonly AntiAfkStateMachine _antiAfk;
     private readonly RemapStateMachine _remaps;
     private readonly CapsHoldWinKeyBlocker _winKeyBlocker = new();
+    // Keybind capture (Assign buttons): routes physical keys only to the capture UI while it runs.
+    private readonly KeyCaptureGate _keyCapture = new();
     private readonly MacroPhysicalState _macroPhysical;
     private readonly MacroStateMachine _macros;
     private int _macroPhysicalRecoveryPending;
@@ -1516,6 +1536,14 @@ public sealed class InputHookService : IInputHookService
         bool isKeyUp = message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP;
         int vkCode = (int)data.vkCode;
 
+        // Keybind capture: physical keys go only to the Assign UI (features, toggles and shell shortcuts don't
+        // fire). Injected output was filtered above, so the app's own synthetic input keeps flowing. During a
+        // watchdog hook replacement the early return above skips this, so a capture fails open for that window.
+        if (_keyCapture.IsActive && _keyCapture.TryHandle(vkCode, isKeyDown, isKeyUp, Stopwatch.GetTimestamp()))
+        {
+            return (IntPtr)1;
+        }
+
         if (!featuresActive)
         {
             _winKeyBlocker.ObserveUnfiltered(vkCode, isKeyDown, isKeyUp);
@@ -1919,6 +1947,8 @@ public sealed class InputHookService : IInputHookService
         string? rapidFireDisarmReason = null,
         bool foregroundDeparture = false)
     {
+        // A stuck capture must never keep swallowing the keyboard across a boundary.
+        _keyCapture.End();
         _gestures.InvalidateWheel();
         var rapidFireArmCleared = preserveRapidFireArm
             ? CancelRapidFirePressAndKeepArm()

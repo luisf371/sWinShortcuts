@@ -310,7 +310,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             (caps.Mode != CapsLockMode.Normal || caps.IsRemapEnabled))
             return "Caps Lock behavior uses this key.";
         if (profile.AutoRun.IsEnabled && profile.AutoRun.TriggerKey == definition.ShortcutKey &&
-            (profile.AutoRun.TriggerModifier == ModifierKeys.None || (mods & profile.AutoRun.TriggerModifier) != 0))
+            (mods & profile.AutoRun.TriggerModifier) == profile.AutoRun.TriggerModifier)
             return "Auto-Run uses this shortcut.";
         if (profile.RightClickHoldBreath.IsEnabled && profile.RightClickHoldBreath.SuppressEarlyCancelInput &&
             profile.RightClickHoldBreath.PanicTrigger == InputTrigger.FromKey(definition.ShortcutKey))

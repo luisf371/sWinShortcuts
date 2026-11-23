@@ -8,6 +8,8 @@ using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Threading;
 using System.Xml.Linq;
+using sWinShortcuts.Controls;
+using sWinShortcuts.Converters;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
 using sWinShortcuts.ViewModels;
@@ -24,47 +26,51 @@ public sealed class MacroEditorTemplateTests
     [InlineData(Key.PrintScreen)]
     [InlineData(Key.Pause)]
     [InlineData(Key.NumLock)]
-    public Task SupportedLoadedKey_MacroShortcutPickerRetainsSelectionAndCanReassign(Key key) =>
+    public Task SupportedLoadedKey_MacroShortcutCaptureBoxShowsKeyAndCanReassign(Key key) =>
         MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
         {
             using var macro = new MacroViewModel(new MacroDefinition { ShortcutKey = key }, () => true);
-            var picker = new ComboBox { ItemsSource = MacroViewModel.ShortcutOptions };
-            picker.SetBinding(System.Windows.Controls.Primitives.Selector.SelectedItemProperty,
-                new Binding(nameof(MacroViewModel.ShortcutTrigger)) { Source = macro, Mode = BindingMode.TwoWay });
+            var box = new KeyCaptureBox { Mode = KeyCaptureMode.Combo, AllowNone = true, NoneText = "No shortcut" };
+            box.SetBinding(KeyCaptureBox.ChordProperty,
+                new Binding(nameof(MacroViewModel.Shortcut)) { Source = macro, Mode = BindingMode.TwoWay });
             await Dispatcher.Yield(DispatcherPriority.DataBind);
 
             Assert.Equal(key, macro.ShortcutKey);
-            Assert.Equal(InputTrigger.FromKey(key), Assert.IsType<InputTrigger>(picker.SelectedItem));
-            picker.SelectedItem = InputTrigger.None;
+            Assert.Equal(KeyChord.FromKey(key), box.Chord);
+            Assert.Equal(KeyDisplayConverter.ToDisplayText(key), box.DisplayBox.Text);
+            box.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.None);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal(Key.None, macro.ShortcutKey);
-            picker.SelectedItem = InputTrigger.FromKey(key);
+            Assert.Equal("No shortcut", box.DisplayBox.Text);
+            box.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.FromKey(key, ModifierKeys.Control | ModifierKeys.Windows));
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal(key, macro.ShortcutKey);
-            Assert.Equal(InputTrigger.FromKey(key), Assert.IsType<InputTrigger>(picker.SelectedItem));
+            Assert.Equal(ModifierKeys.Control | ModifierKeys.Windows, macro.ShortcutModifiers);
+            Assert.Equal("Ctrl+Win+" + KeyDisplayConverter.ToDisplayText(key), box.DisplayBox.Text);
         });
 
     [Fact]
-    public Task RecordedUncommonKey_StepPickerRetainsSelectionAndCanReassign() =>
+    public Task RecordedUncommonKey_StepCaptureBoxShowsKeyAndCanReassign() =>
         MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
         {
             using var macro = new MacroViewModel(new MacroDefinition(), () => true);
-            var picker = new ComboBox { ItemsSource = MacroViewModel.KeyOptions };
-            picker.SetBinding(System.Windows.Controls.Primitives.Selector.SelectedItemProperty,
+            var box = new KeyCaptureBox { Validator = MacroViewModel.KeyValidator };
+            box.SetBinding(KeyCaptureBox.ChordProperty,
                 new Binding($"{nameof(MacroViewModel.SelectedStep)}.{nameof(MacroStepViewModel.Key)}")
-                { Source = macro, Mode = BindingMode.TwoWay });
+                { Source = macro, Mode = BindingMode.TwoWay, Converter = new KeyChordConverter() });
             macro.InsertRecording(0, [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.PrintScreen }]);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
 
             Assert.Equal(Key.PrintScreen, macro.SelectedStep!.Key);
-            Assert.Equal(Key.PrintScreen, Assert.IsType<Key>(picker.SelectedItem));
-            picker.SelectedItem = Key.Pause;
+            Assert.Equal(KeyChord.FromKey(Key.PrintScreen), box.Chord);
+            Assert.Equal("Print Screen", box.DisplayBox.Text);
+            box.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.FromKey(Key.Pause));
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal(Key.Pause, macro.SelectedStep.Key);
-            picker.SelectedItem = Key.PrintScreen;
+            box.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.FromKey(Key.PrintScreen));
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal(Key.PrintScreen, macro.SelectedStep.Key);
-            Assert.Equal(Key.PrintScreen, Assert.IsType<Key>(picker.SelectedItem));
+            Assert.Equal("Print Screen", box.DisplayBox.Text);
         });
 
     [Fact]
@@ -173,7 +179,7 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.False(macro.IsEnabled);
             Assert.True(profile.Macros.IsEnabled);
-            Assert.True(Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut").IsEnabled);
+            Assert.True(Assert.Single(controls.OfType<KeyCaptureBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut").IsEnabled);
             // Names change only through the naming dialog: no permanent Name field, and both New entry points and
             // Rename request a name from the view model. A stand-in request replaces the modal window here.
             Assert.DoesNotContain(controls.OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Macro label");
@@ -200,37 +206,36 @@ public sealed class MacroEditorTemplateTests
             Assert.Equal(new string?[] { null, null, "New macro" }, requests);
             Assert.Same(macro, Assert.Single(profile.Macros.Definitions));
             Assert.Equal("Renamed", macro.Label);
-            var shortcutPicker = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut");
-            Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(shortcutPicker));
-            var keyPopup = (System.Windows.Controls.Primitives.Popup)shortcutPicker.Template.FindName("Popup", shortcutPicker);
-            keyPopup.Child.Measure(new Size(240, 480));
-            keyPopup.Child.Arrange(new Rect(0, 0, 240, keyPopup.Child.DesiredSize.Height));
-            keyPopup.Child.UpdateLayout();
-            var unassigned = Assert.IsType<ComboBoxItem>(shortcutPicker.ItemContainerGenerator.ContainerFromItem(InputTrigger.None));
-            Assert.True(unassigned.IsSelected);
-            var unassignedText = Assert.Single(Descendants(unassigned).OfType<TextBlock>());
-            Assert.Equal("Unassigned", unassignedText.Text);
-            AssertReadableText(unassignedText, unassigned.Background);
+            // The shortcut is one [read-only box][Assign][Clear] capture field: no modifier checkboxes or key list remain.
+            var shortcutPicker = Assert.Single(controls.OfType<KeyCaptureBox>(), box => AutomationProperties.GetName(box) == "Macro shortcut");
+            Assert.Equal(KeyCaptureMode.Combo, shortcutPicker.Mode);
+            Assert.True(shortcutPicker.AcceptsMouseButtons);
+            Assert.True(shortcutPicker.AcceptsLeftButton);
+            Assert.True(shortcutPicker.DisplayBox.IsReadOnly);
+            Assert.False(shortcutPicker.DisplayBox.Focusable);
+            Assert.Equal(Visibility.Visible, shortcutPicker.ClearButton.Visibility);
+            Assert.Equal("Assign", shortcutPicker.AssignButton.Content);
+            Assert.Equal("No shortcut", shortcutPicker.DisplayBox.Text);
+            Assert.DoesNotContain(controls.OfType<CheckBox>(), box => AutomationProperties.GetName(box).StartsWith("Shortcut ", StringComparison.Ordinal));
             foreach (var button in MacroViewModel.MouseButtons)
             {
                 var trigger = InputTrigger.FromMouseButton(button);
-                shortcutPicker.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedItemProperty, trigger);
+                shortcutPicker.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.FromTrigger(trigger));
                 await Dispatcher.Yield(DispatcherPriority.DataBind);
                 Assert.Equal(trigger, macro.ShortcutTrigger);
                 Assert.Equal(Key.None, macro.ShortcutKey);
                 Assert.Equal(button, profile.Model.Macros.Definitions[0].ShortcutMouseButton);
             }
-            macro.ControlModifier = true;
-            macro.AltModifier = true;
-            macro.ShortcutTrigger = InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.Middle);
+            macro.Shortcut = KeyChord.FromTrigger(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.Middle),
+                ModifierKeys.Control | ModifierKeys.Alt);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal("Ctrl+Alt+Middle Mouse Button", macro.ShortcutText);
-            Assert.Equal(macro.ShortcutTrigger, shortcutPicker.SelectedItem);
+            Assert.Equal(macro.Shortcut, shortcutPicker.Chord);
+            Assert.Equal("Ctrl+Alt+Middle Mouse Button", shortcutPicker.DisplayBox.Text);
             host.UpdateLayout();
             var shortcutBounds = shortcutPicker.TransformToAncestor(host).TransformBounds(new Rect(shortcutPicker.RenderSize));
             Assert.True(new Rect(host.RenderSize).Contains(shortcutBounds));
-            macro.ControlModifier = false;
-            macro.AltModifier = false;
+            macro.ShortcutModifiers = ModifierKeys.None;
             var selector = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro");
             var originalEnabled = macro.IsEnabled;
             var originalDuration = macro.SelectedStep!.DurationText;
@@ -292,7 +297,10 @@ public sealed class MacroEditorTemplateTests
             Assert.True(stop.Focusable);
             Assert.False(stop.IsEnabled);
             Assert.DoesNotContain(controls.OfType<Button>(), button => AutomationProperties.GetName(button).Contains("Stop playback", StringComparison.Ordinal));
-            Assert.Equal(7, controls.OfType<ComboBox>().Count());
+            // Selector, press button, step action and step button; every key field is a capture box.
+            Assert.Equal(4, controls.OfType<ComboBox>().Count());
+            Assert.Equal(new[] { "Macro shortcut", "Press key", "Step key" },
+                controls.OfType<KeyCaptureBox>().Select(box => AutomationProperties.GetName(box)).Order().ToArray());
             var cancelOnMovement = MenuItemNamed(playback, "Cancel on mouse movement");
             Assert.False(cancelOnMovement.IsChecked);
             cancelOnMovement.SetCurrentValue(MenuItem.IsCheckedProperty, true);
@@ -309,8 +317,8 @@ public sealed class MacroEditorTemplateTests
 
             macro.SelectedStep!.Kind = MacroStepKind.MouseClick;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
-            var keyChoice = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Step key");
-            Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(keyChoice));
+            var keyChoice = Assert.Single(controls.OfType<KeyCaptureBox>(), box => AutomationProperties.GetName(box) == "Step key");
+            Assert.Equal(KeyCaptureMode.SingleKey, keyChoice.Mode);
             var buttonChoice = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Step mouse button");
             Assert.Equal(Visibility.Collapsed, Assert.IsType<StackPanel>(keyChoice.Parent).Visibility);
             Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(buttonChoice.Parent).Visibility);
@@ -436,9 +444,9 @@ public sealed class MacroEditorTemplateTests
             Assert.Same(grouped.Steps[0], list.SelectedItem);
             var groupedRow = Assert.IsType<ListBoxItem>(list.ItemContainerGenerator.ContainerFromIndex(0));
             Assert.Equal("Steps 1 to 3: Key press. A 25 ms hold", AutomationProperties.GetName(groupedRow));
-            var pressKey = Assert.Single(Descendants(view).OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Press key");
-            Assert.True(sWinShortcuts.Behaviors.ComboBoxKeySelectionBehavior.GetEnableKeySelection(pressKey));
-            pressKey.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedItemProperty, Key.B);
+            var pressKey = Assert.Single(Descendants(view).OfType<KeyCaptureBox>(), box => AutomationProperties.GetName(box) == "Press key");
+            Assert.Equal("A", pressKey.DisplayBox.Text);
+            pressKey.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.FromKey(Key.B));
             Assert.Equal(Key.B, grouped.Steps[0].Key);
             Assert.Equal(Key.B, grouped.Steps[2].Key);
             var hold = Assert.Single(Descendants(view).OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Press hold in milliseconds");

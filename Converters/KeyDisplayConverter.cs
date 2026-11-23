@@ -40,11 +40,14 @@ public sealed partial class KeyDisplayConverter : IValueConverter
             case Key.OemComma: return ",";         // , <
             case Key.OemPeriod: return ".";        // . >
             case Key.OemQuestion: return "/";      // / ?
+            case Key.OemBackslash: return "\\ (102)"; // the extra ISO key beside Left Shift
             // Key names print the first alias of a shared value (Return, Capital, Next, Snapshot); use keycap names.
             case Key.Enter: return "Enter";
             case Key.Back: return "Backspace";
             case Key.CapsLock: return "Caps Lock";
+            case Key.PageUp: return "Page Up";
             case Key.PageDown: return "Page Down";
+            case Key.NumLock: return "Num Lock";
             case Key.PrintScreen: return "Print Screen";
             case Key.Scroll: return "Scroll Lock";
             case Key.Apps: return "Menu";

@@ -111,13 +111,12 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             [MouseButton.XButton2] = new(this, MouseButton.XButton2)
         };
 
+        // The same set the Alt + Shortcut validator accepts (every VK-mapped key except Alt), so any captured
+        // trigger is registered here. Built once; the hot path stays a single dictionary lookup.
         _keyboardStates = [];
-        foreach (var key in KeyCatalog.GetCommonKeys())
+        foreach (var key in KeyCatalog.AltShortcutKeys)
         {
-            if (key is not (Key.LeftAlt or Key.RightAlt))
-            {
-                _keyboardStates[key] = new KeyboardState(this, key);
-            }
+            _keyboardStates[key] = new KeyboardState(this, key);
         }
     }
 

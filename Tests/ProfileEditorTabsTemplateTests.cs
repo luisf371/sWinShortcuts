@@ -112,8 +112,8 @@ public sealed class ProfileEditorTabsTemplateTests
             Assert.True(toggle.IsEnabled);
 
             grid.UpdateLayout();
-            var holdPickers = Descendants(grid).OfType<ComboBox>()
-                .Where(box => BindingOperations.GetBindingExpression(box, Selector.SelectedItemProperty)?.ParentBinding.Path.Path == "HoldKey")
+            var holdPickers = Descendants(grid).OfType<sWinShortcuts.Controls.KeyCaptureBox>()
+                .Where(box => BindingOperations.GetBindingExpression(box, sWinShortcuts.Controls.KeyCaptureBox.ChordProperty)?.ParentBinding.Path.Path == "HoldKey")
                 .ToDictionary(box => ((AltShortcutBindingEntryViewModel)box.DataContext).Source.Kind);
             Assert.Equal(2, holdPickers.Count);
             Assert.True(holdPickers[sWinShortcuts.Models.InputTriggerKind.MouseButton].IsEnabled);
@@ -252,7 +252,7 @@ public sealed class ProfileEditorTabsTemplateTests
         {
             if (IsAppNamespace(element.Name.NamespaceName))
                 element.Name = XName.Get(element.Name.LocalName, element.Name.NamespaceName + ";assembly=sWinShortcuts");
-            // Attached properties such as behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection need the same.
+            // Attached properties in app namespaces need the same.
             foreach (var attribute in element.Attributes().Where(attribute => !attribute.IsNamespaceDeclaration &&
                 IsAppNamespace(attribute.Name.NamespaceName)).ToList())
             {

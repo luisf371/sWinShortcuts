@@ -918,9 +918,9 @@ public sealed class IniProfileStore : IProfileStore
     private static void DeserializeAutoRun(IniDocument document, AutoRunSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("AutoRun", "Enabled", settings.IsEnabled);
-        // GetEnum's Enum.IsDefined guard rejects a combined ModifierKeys flag (e.g. Control|Alt=6)
-        // and falls back to the default. None is a supported single-key trigger.
-        settings.TriggerModifier = document.GetEnum("AutoRun", "TriggerModifier", settings.TriggerModifier);
+        // Single names ("Control") or a combination ("Control+Alt"); anything else falls back to the default.
+        // None is a supported single-key trigger.
+        settings.TriggerModifier = document.GetModifierKeys("AutoRun", "TriggerModifier", settings.TriggerModifier);
         settings.TriggerKey = document.GetKey("AutoRun", "TriggerKey") ?? settings.TriggerKey;
         settings.SprintEnabled = document.GetBoolean("AutoRun", "SprintEnabled", settings.SprintEnabled);
         settings.SprintKey = document.GetKey("AutoRun", "SprintKey") ?? settings.SprintKey;
@@ -1066,7 +1066,7 @@ public sealed class IniProfileStore : IProfileStore
 
         var autoRun = profile.AutoRun;
         document.SetBoolean("AutoRun", "Enabled", autoRun.IsEnabled);
-        document.SetEnum("AutoRun", "TriggerModifier", autoRun.TriggerModifier);
+        document.SetModifierKeys("AutoRun", "TriggerModifier", autoRun.TriggerModifier);
         document.SetKey("AutoRun", "TriggerKey", autoRun.TriggerKey);
         document.SetBoolean("AutoRun", "SprintEnabled", autoRun.SprintEnabled);
         document.SetKey("AutoRun", "SprintKey", autoRun.SprintKey);

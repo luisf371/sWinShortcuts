@@ -54,7 +54,7 @@ public sealed class ProfileRuntimeNotificationTests
         owner.Macros.NewMacroCommand.Execute(null);
         var macro = owner.Macros.SelectedMacro!;
         macro.ShortcutKey = Key.F6;
-        macro.ControlModifier = true;
+        macro.ShortcutModifiers |= ModifierKeys.Control;
         input.MacroShortcutError = (_, _) => "This key is reserved by an app-level toggle.";
 
         input.RaiseMacroSessionChanged();
@@ -83,7 +83,10 @@ public sealed class ProfileRuntimeNotificationTests
                     InputTrigger.FromKey(Key.B), InputTrigger.FromKey(Key.A)]),
             viewModel.AltShortcutBindings.Select(row => row.Source));
         Assert.Empty(viewModel.AvailableAltShortcutSources);
-        Assert.All(viewModel.AltShortcutBindings, row => Assert.Equal(row.Source, Assert.Single(row.SelectableSources)));
+        // Each row keeps its own trigger; the capture box rejects one another row already uses.
+        Assert.All(viewModel.AltShortcutBindings, row => Assert.Null(row.SourceValidator!(KeyChord.FromTrigger(row.Source))));
+        Assert.Equal("Another row already uses Wheel Up",
+            viewModel.AltShortcutBindings[0].SourceValidator!(KeyChord.FromTrigger(InputTrigger.FromWheel(MouseWheelDirection.Up))));
         var removed = viewModel.AltShortcutBindings[5];
         Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), removed.Source);
         removed.TapKey = Key.E;
@@ -91,7 +94,8 @@ public sealed class ProfileRuntimeNotificationTests
         viewModel.RemoveAltShortcutBinding(removed);
         Assert.Null(profile.AltMouse.WheelUpKey);
         Assert.Equal(removed.Source, Assert.Single(viewModel.AvailableAltShortcutSources));
-        Assert.All(viewModel.AltShortcutBindings, row => Assert.Contains(removed.Source, row.SelectableSources));
+        Assert.All(viewModel.AltShortcutBindings, row => Assert.Null(row.SourceValidator!(KeyChord.FromTrigger(removed.Source))));
+        Assert.Null(removed.SourceValidator);
     }
 
     [Fact]
@@ -129,10 +133,12 @@ public sealed class ProfileRuntimeNotificationTests
         var keyRow = Assert.Single(viewModel.AltShortcutBindings, row => row.TapKey == Key.Z);
         Assert.True(keyRow.CanHold);
         Assert.Equal(Key.X, keyRow.HoldKey);
-        // F13 is outside the editor's list, so only its own row offers it, first.
-        Assert.Equal(InputTrigger.FromKey(Key.F13), keyRow.SelectableSources.First());
+        // F13 is outside the add-row list but still a valid trigger: its row keeps it, other rows can't take it.
+        Assert.Null(keyRow.SourceValidator!(KeyChord.FromKey(Key.F13)));
+        Assert.Equal("Another row already uses F13",
+            viewModel.AltShortcutBindings.First(row => row != keyRow).SourceValidator!(KeyChord.FromKey(Key.F13)));
         Assert.DoesNotContain(InputTrigger.FromKey(Key.F13), viewModel.AvailableAltShortcutSources);
-        Assert.All(viewModel.AltShortcutBindings, row => Assert.Contains(row.Source, row.SelectableSources));
+        Assert.All(viewModel.AltShortcutBindings, row => Assert.Null(row.SourceValidator!(KeyChord.FromTrigger(row.Source))));
         Assert.All(viewModel.AltShortcutBindings.Where(row => row.Source.Kind == InputTriggerKind.MouseWheel),
             row => { Assert.False(row.CanHold); Assert.Equal(Key.None, row.HoldKey); });
     }
@@ -196,8 +202,8 @@ public sealed class ProfileRuntimeNotificationTests
         Assert.Equal(Key.E, profile.AltMouse.WheelDownKey);
         Assert.Equal(5, changes.Count);
 
-        // A picker refresh changes no model and raises no profile event.
-        row.SelectableSources = [];
+        // Validating a capture changes no model and raises no profile event.
+        Assert.Null(row.SourceValidator!(KeyChord.FromKey(Key.T)));
         Assert.Equal(5, changes.Count);
     }
 
@@ -221,7 +227,7 @@ public sealed class ProfileRuntimeNotificationTests
         Assert.Equal(Key.None, row.HoldKey);
         Assert.Empty(profile.AltMouse.Bindings);
         Assert.Equal(Key.E, direction == MouseWheelDirection.Up ? profile.AltMouse.WheelUpKey : profile.AltMouse.WheelDownKey);
-        Assert.Contains(row.Source, row.SelectableSources);
+        Assert.Null(row.SourceValidator!(KeyChord.FromTrigger(row.Source)));
         Assert.Contains(InputTrigger.FromMouseButton(AppMouseButton.Left), viewModel.AvailableAltShortcutSources);
         row.HoldKey = Key.F;
         Assert.Equal(Key.None, row.HoldKey);
@@ -263,11 +269,14 @@ public sealed class ProfileRuntimeNotificationTests
 
         Assert.Equal(4, viewModel.CombinedMappings.Count);
         Assert.Empty(viewModel.AvailableCombinedSources);
-        Assert.All(viewModel.CombinedMappings, row => Assert.Equal(row.Source, Assert.Single(row.SelectableSources)));
+        Assert.All(viewModel.CombinedMappings, row => Assert.Null(row.SourceValidator!(KeyChord.FromTrigger(row.Source))));
+        Assert.Equal("Another row already uses B",
+            viewModel.CombinedMappings[0].SourceValidator!(KeyChord.FromKey(Key.B)));
         var removed = viewModel.CombinedMappings[2];
         viewModel.RemoveCombinedMapping(removed);
         Assert.Equal(InputTrigger.FromWheel(MouseWheelDirection.Up), Assert.Single(viewModel.AvailableCombinedSources));
-        Assert.All(viewModel.CombinedMappings, row => Assert.Contains(removed.Source, row.SelectableSources));
+        Assert.All(viewModel.CombinedMappings, row => Assert.Null(row.SourceValidator!(KeyChord.FromTrigger(removed.Source))));
+        Assert.Null(removed.SourceValidator);
     }
 
     [Fact]

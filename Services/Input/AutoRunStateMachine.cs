@@ -489,17 +489,19 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         return false;
     }
 
+    // Every flag in the mask must be down; extra modifiers are allowed. Undefined bits never match.
     internal bool IsTriggerModifierDown(ModifierKeys modifier)
     {
-        return modifier switch
+        const ModifierKeys supported = ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows;
+        if ((modifier & ~supported) != 0)
         {
-            ModifierKeys.None => true,
-            ModifierKeys.Control => IsDown(0x11),
-            ModifierKeys.Alt => IsDown(0x12),
-            ModifierKeys.Shift => IsDown(0x10),
-            ModifierKeys.Windows => IsDown(0x5B) || IsDown(0x5C),
-            _ => false
-        };
+            return false;
+        }
+
+        return ((modifier & ModifierKeys.Control) == 0 || IsDown(0x11)) &&
+               ((modifier & ModifierKeys.Alt) == 0 || IsDown(0x12)) &&
+               ((modifier & ModifierKeys.Shift) == 0 || IsDown(0x10)) &&
+               ((modifier & ModifierKeys.Windows) == 0 || IsDown(0x5B) || IsDown(0x5C));
     }
 
     private bool IsDown(int virtualKey) => (_transport.GetAsyncKeyState(virtualKey) & 0x8000) != 0;

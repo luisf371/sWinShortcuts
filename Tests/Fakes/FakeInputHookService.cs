@@ -31,6 +31,20 @@ public sealed class FakeInputHookService : IInputHookService
         MacroRecordingStopRequested?.Invoke();
     }
     public void BeginMacroRecordingStopGesture(Key? key = null) => MacroStopGestureCount++;
+
+    // Keybind capture: refused by default so capture boxes use their WPF fallback.
+    public bool AllowKeyCapture { get; set; }
+    public IKeyCaptureSink? KeyCaptureSink { get; private set; }
+    public bool TryBeginKeyCapture(IKeyCaptureSink sink)
+    {
+        if (!AllowKeyCapture) return false;
+        KeyCaptureSink = sink;
+        return true;
+    }
+    public void EndKeyCapture(IKeyCaptureSink sink)
+    {
+        if (ReferenceEquals(KeyCaptureSink, sink)) KeyCaptureSink = null;
+    }
     public void CancelMacroPlayback(Profile owner)
     {
         MacroPlaybackCancellation?.Invoke(owner);

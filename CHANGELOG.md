@@ -4,6 +4,28 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## November 23, 2026
+
+### Changed & Improved
+- **Keybind Assignment**:
+  - Every key picker is now a read-only box with an **Assign** button, replacing the key dropdowns and the macro shortcut's Ctrl/Alt/Shift/Win checkboxes. Fields where "None" is allowed also have a **✕** button that clears them.
+  - Click **Assign** and the box shows **Capturing keys…**. Capture starts at the first key you press and ends once every key pressed during it is released. A key already held when you clicked **Assign** is ignored.
+  - Modifiers always come first, in the order Ctrl, Alt, Shift, Win, whatever order you pressed them in. Pressing E then Ctrl, or Ctrl then E, both give **Ctrl+E**. Pressing only modifiers assigns the last one pressed, with its side (for example **LeftShift** for Sprint), and any others become its prefixes.
+  - The macro shortcut and the Auto-Run trigger take any mix of Ctrl, Alt, Shift and Win plus one key. The Auto-Run **Trigger modifier** and **Trigger key** rows are now one **Trigger** row, and a trigger such as Ctrl+Alt+R starts only when every modifier in it is held.
+  - A macro shortcut conflicts with the Auto-Run trigger when it uses the same key and holds every Auto-Run modifier: Ctrl+Shift+R conflicts with Auto-Run Ctrl+R, but Ctrl+R doesn't conflict with Auto-Run Ctrl+Shift+R.
+  - Alt + Shortcut triggers, macro shortcuts and the Hold-breath **Early Cancel** trigger also capture a mouse button pressed over the box. Key Mapping sources and Alt + Shortcut triggers capture a wheel notch scrolled over it.
+  - Any key Windows reports can be assigned wherever the field accepts it, including F13–F24, Print Screen, Scroll Lock, Pause, Num Lock, the extra key beside Left Shift on ISO keyboards, numpad operators and the Menu key.
+  - A capture that doesn't fit the field keeps the old value and shows why for a moment. Examples: "Press only one key", a modifier combination on a single-key field, Alt on an Alt + Shortcut trigger, a modifier as an app toggle key, or a source another row already uses.
+  - Clicking **Cancel** or anywhere outside the box, switching windows, changing profile or macro, or 10 seconds without a key press (30 seconds overall) ends the capture and keeps the old value. **Escape** is an ordinary assignable key.
+  - While a capture runs, keystrokes go only to the box: profile remaps, Alt gestures, the app toggle keys, the Start menu, Win+E/R/D and Alt+Tab don't fire. Ctrl+Alt+Del and Win+L still work and cancel the capture. If input hooks aren't running (or a macro is busy), the box captures through the window instead, and Windows shortcuts such as Win+E may still react.
+  - Key names read more naturally: **Print Screen**, **Scroll Lock**, **Num Lock**, **Page Up/Down**, **Caps Lock**, **Backspace**, **Left/Right Win** and **Num +** style numpad operators. Saved key names are unchanged.
+  - Profiles save a combined Auto-Run trigger as `[AutoRun] TriggerModifier=Control+Alt`. Single modifiers and None are written exactly as before, so existing files load and re-save unchanged. An older build reads a combined value as its default, **Control**.
+
+### Fixed
+- **Alt + Shortcut Keys Outside the Old List**: an Alt + Shortcut trigger on a key that the old dropdown didn't list, such as F13 loaded from a profile file, now fires. Alt + Shortcut now recognizes every key the trigger field accepts.
+
+---
+
 ## November 22, 2026
 
 ### Changed & Improved
