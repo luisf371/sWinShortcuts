@@ -339,6 +339,9 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         if (down && !MacroPhysicalState.WasSuppressed(previous) && _executor.IsMacroKeyOwned(vk))
         {
             _physical.TakeKey(vk);
+            if (_logger.IsEnabled)
+                _logger.Log($"[Macros] Physical key takeover session={_sessionId} {MacroTag} vk=0x{vk:X2} key={KeyInterop.KeyFromVirtualKey(vk)} " +
+                    $"modifier={MacroPhysicalState.ModifierForKey(vk) != ModifierKeys.None}");
             if (MacroPhysicalState.ModifierForKey(vk) == ModifierKeys.None) Cancel("Physical input took over a macro key.");
             _wake.Set();
             return false;
@@ -399,6 +402,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         if (down && !MacroPhysicalState.WasSuppressed(previous) && _executor.IsMacroMouseOwned(button))
         {
             _physical.TakeButton(button);
+            if (_logger.IsEnabled) _logger.Log($"[Macros] Physical mouse takeover session={_sessionId} {MacroTag} button={button}");
             Cancel("Physical input took over a macro mouse button.");
             return false;
         }
@@ -499,10 +503,30 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         return await result.ConfigureAwait(false);
     }
 
+    // Log-only: names the macro and profile of the current session (allocates; call behind IsEnabled).
+    private string MacroTag => $"macro=\"{_pending?.Definition.Label ?? (_recordRequest is null ? "?" : "<recording>")}\" " +
+        $"profile=\"{(_pending?.Owner ?? _recordRequest?.Owner)?.Name ?? "?"}\"";
+
+    // Log-only: why CanExecute would refuse right now (allocates; call behind IsEnabled).
+    private string DescribeRefusal()
+    {
+        var entry = _pending;
+        var live = _runtime.ForegroundIdentity;
+        return $"current={Current()} advanced={_runtime.AdvancedModeEnabled} ownerEnabled={entry?.Owner.IsEnabled} " +
+            $"macrosEnabled={entry?.Owner.Macros.IsEnabled} sameForeground={ReferenceEquals(_foreground, live)} " +
+            $"liveMatches={(entry is not null && _foreground is not null && _runtime.LiveForegroundMatches(entry.Owner, _foreground.Generation))} " +
+            $"startFg={_foreground?.Executable}/pid{_foreground?.ProcessId} nowFg={live?.Executable}/pid{live?.ProcessId} " +
+            $"monitorsChanged={Volatile.Read(ref _movementMonitors) is { } m && !m.SequenceEqual(_monitors())} " +
+            $"clickVerify={Volatile.Read(ref _verifyClickPosition) != 0} physicalModifiers={_physical.PhysicalModifiersDown} " +
+            $"physicalHeld=[{string.Join(",", Enumerable.Range(0, 256).Where(_physical.IsPhysicalKeyDown).Select(KeyInterop.KeyFromVirtualKey))}]";
+    }
+
     internal void Cancel(string reason, Profile? owner = null, bool playbackOnly = false)
     {
         if (!IsBusy || (playbackOnly && IsRecording) ||
             (owner is not null && !ReferenceEquals(owner, _pending?.Owner) && !ReferenceEquals(owner, _recordRequest?.Owner))) return;
+        if (_logger.IsEnabled)
+            _logger.Log($"[Macros] Cancel requested session={_sessionId} {MacroTag} row={GetSession().RowCount} reason={reason}");
         _failure = reason;
         Volatile.Write(ref _cancelled, 1);
         Volatile.Read(ref _recorder)?.RequestStop(MacroRecordingEndReason.Interrupted);
@@ -650,7 +674,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                         if (!CanExecute(default)) throw new OperationCanceledException();
                         Publish(MacroSessionMode.Playing, i + 1);
                         if (_logger.IsEnabled)
-                            _logger.Log($"[Macros] Playback session={_sessionId} row={i + 1}/{steps.Length} action={steps[i].Kind} iteration={iteration}");
+                            _logger.Log($"[Macros] Playback session={_sessionId} {MacroTag} row={i + 1}/{steps.Length} action={steps[i].Kind} iteration={iteration}");
                         try
                         {
                             Play(steps[i]);
@@ -673,7 +697,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         catch (Exception exception)
         {
             _failure = exception.Message;
-            if (_logger.IsEnabled) _logger.Log($"[Macros] {exception.Message}");
+            if (_logger.IsEnabled)
+                _logger.Log($"[Macros] Failed session={_sessionId} {MacroTag} row={GetSession().RowCount} fg={_foreground?.Executable}: {exception.Message}");
         }
         finally
         {
@@ -800,6 +825,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             });
             if (sent) return;
             if (newOutput && acknowledgement.DeferredForPhysicalModifiers && Current()) continue;
+            if (_logger.IsEnabled)
+                _logger.Log($"[Macros] Input refused session={_sessionId} {MacroTag} row={GetSession().RowCount} kind={command.Kind} key={command.Key} {DescribeRefusal()}");
             throw new InvalidOperationException("Macro input was refused or could not be inserted.");
         }
     }
@@ -913,7 +940,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         if (previous.SessionId != value.SessionId || previous.Mode != mode || previous.FailureReason != value.FailureReason)
         {
             if (_logger.IsEnabled)
-                _logger.Log($"[Macros] Session={value.SessionId} state={mode} row={row} elapsed={value.Elapsed.TotalMilliseconds:F0}ms " +
+                _logger.Log($"[Macros] Session={value.SessionId} {MacroTag} state={mode} row={row} elapsed={value.Elapsed.TotalMilliseconds:F0}ms " +
                     $"toggleMode={_pending?.Definition.ToggleMode ?? false} startOnPress={_pending?.Definition.StartOnPress ?? false} cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} failure={value.FailureReason ?? "none"}");
             RaiseChanged();
         }

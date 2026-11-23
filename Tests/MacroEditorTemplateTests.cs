@@ -131,7 +131,21 @@ public sealed class MacroEditorTemplateTests
             var gated = Descendants(section).OfType<FrameworkElement>()
                 .Where(element => ReferenceEquals(element.Style, host.Resources["FeatureToggleContentStyle"])).ToArray();
             Assert.Equal(3, gated.Length);
-            var body = new[] { "Selected macro", "Enable selected macro", "New macro", "Ordered macro steps", "Create first macro", "Toggle loop" }
+            // Materialize a button's menu without a native popup: the real resources, its placement target, and a layout pass.
+            async Task<MenuItem[]> MenuItemsAsync(string buttonName)
+            {
+                var owner = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == buttonName);
+                var menu = owner.ContextMenu!;
+                if (!menu.Resources.MergedDictionaries.Contains(host.Resources)) menu.Resources.MergedDictionaries.Add(host.Resources);
+                menu.PlacementTarget = owner;
+                await Dispatcher.Yield(DispatcherPriority.DataBind);
+                menu.Measure(new Size(320, 480));
+                menu.Arrange(new Rect(0, 0, 320, 480));
+                menu.UpdateLayout();
+                return menu.Items.OfType<MenuItem>().ToArray();
+            }
+            static MenuItem MenuItemNamed(MenuItem[] items, string name) => Assert.Single(items, item => AutomationProperties.GetName(item) == name);
+            var body = new[] { "Selected macro", "Enable selected macro", "New macro", "Ordered macro steps", "Create first macro", "Playback options" }
                 .Select(name => Assert.Single(controls, control => AutomationProperties.GetName(control) == name)).ToArray();
             Assert.All(body, control => Assert.Contains(gated, part => part.IsAncestorOf(control)));
             Assert.All(new FrameworkElement[]
@@ -163,9 +177,14 @@ public sealed class MacroEditorTemplateTests
             // Names change only through the naming dialog: no permanent Name field, and both New entry points and
             // Rename request a name from the view model. A stand-in request replaces the modal window here.
             Assert.DoesNotContain(controls.OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Macro label");
-            var rename = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Rename macro");
+            // The rarer commands sit under More, bound to the same editor commands.
+            var more = await MenuItemsAsync("More macro commands");
+            var rename = MenuItemNamed(more, "Rename macro");
             Assert.True(rename.IsEnabled);
             Assert.Same(profile.Macros.RenameMacroCommand, rename.Command);
+            Assert.Same(profile.Macros.DuplicateMacroCommand, MenuItemNamed(more, "Duplicate macro").Command);
+            Assert.Same(profile.Macros.ClearStepsCommand, MenuItemNamed(more, "Clear all steps").Command);
+            Assert.Same(profile.Macros.DeleteMacroCommand, MenuItemNamed(more, "Delete macro").Command);
             var newButtons = controls.OfType<Button>()
                 .Where(button => AutomationProperties.GetName(button) is "New macro" or "Create first macro").ToArray();
             Assert.Equal(2, newButtons.Length);
@@ -225,9 +244,13 @@ public sealed class MacroEditorTemplateTests
             popup.Child.UpdateLayout();
             var entry = Assert.IsType<ComboBoxItem>(selector.ItemContainerGenerator.ContainerFromIndex(0));
             Assert.True(entry.IsSelected);
-            // Toggle loop defaults off and binds both ways; its looping ready copy yields to the off and validation messages.
-            var toggleLoop = Assert.Single(controls.OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Toggle loop");
+            // Playback choices live in one menu: Once/Loop is a radio pair bound both ways, and the short status
+            // ("Ready", "Off") yields to validation messages.
+            var playback = await MenuItemsAsync("Playback options");
+            var toggleLoop = MenuItemNamed(playback, "Toggle loop");
+            var playOnce = MenuItemNamed(playback, "Play once per press");
             var macroStatus = Assert.IsType<TextBlock>(view.FindName("MacroStatus"));
+            Assert.True(playOnce.IsChecked);
             Assert.False(toggleLoop.IsChecked);
             Assert.False(macro.ToggleMode);
             foreach (var state in new[] { "Ready", "Off", "Not saved" })
@@ -242,23 +265,23 @@ public sealed class MacroEditorTemplateTests
                 foreach (var text in texts) AssertReadableText(text, entry.Background);
                 foreach (var loop in new[] { true, false })
                 {
-                    toggleLoop.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, loop);
+                    (loop ? toggleLoop : playOnce).SetCurrentValue(MenuItem.IsCheckedProperty, true);
                     await Dispatcher.Yield(DispatcherPriority.DataBind);
                     Assert.Equal(loop, macro.ToggleMode);
-                    Assert.Equal(state switch
-                    {
-                        "Ready" => loop ? "Ready. Press F24 to loop; press it again to stop." : "Ready. Press F24 while this profile is active.",
-                        "Off" => "Off. Turn on Enabled to use the shortcut.",
-                        _ => macro.ValidationMessage
-                    }, macroStatus.Text);
+                    Assert.Equal(!loop, playOnce.IsChecked);
+                    Assert.Equal(state switch { "Ready" => "Ready", "Off" => "Off", _ => macro.ValidationMessage }, macroStatus.Text);
                 }
             }
-            // With the problem-step link also shown, the option still fits its row at the minimum size.
+            // A menu click on the checked item writes false; the pair stays checked.
+            playOnce.SetCurrentValue(MenuItem.IsCheckedProperty, false);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.True(playOnce.IsChecked);
+            Assert.False(macro.ToggleMode);
+            // The second header row fits at the minimum width.
             host.UpdateLayout();
-            var optionsRow = Assert.IsType<DockPanel>(toggleLoop.Parent);
-            var rowBounds = optionsRow.TransformToAncestor(host).TransformBounds(new Rect(optionsRow.RenderSize));
-            var toggleBounds = toggleLoop.TransformToAncestor(host).TransformBounds(new Rect(toggleLoop.RenderSize));
-            Assert.True(rowBounds.Contains(toggleBounds), $"Toggle loop exceeds the macro options row {rowBounds}: {toggleBounds}.");
+            var playbackButton = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "Playback options");
+            var playbackBounds = playbackButton.TransformToAncestor(host).TransformBounds(new Rect(playbackButton.RenderSize));
+            Assert.True(new Rect(host.RenderSize).Contains(playbackBounds), $"Playback options exceed the view: {playbackBounds}.");
             macro.IsEnabled = originalEnabled;
             macro.ShortcutKey = Key.None;
             macro.SelectedStep.Key = Key.None;
@@ -270,10 +293,11 @@ public sealed class MacroEditorTemplateTests
             Assert.False(stop.IsEnabled);
             Assert.DoesNotContain(controls.OfType<Button>(), button => AutomationProperties.GetName(button).Contains("Stop playback", StringComparison.Ordinal));
             Assert.Equal(7, controls.OfType<ComboBox>().Count());
-            var cancelOnMovement = Assert.Single(controls.OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Cancel on mouse movement");
+            var cancelOnMovement = MenuItemNamed(playback, "Cancel on mouse movement");
             Assert.False(cancelOnMovement.IsChecked);
-            cancelOnMovement.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, true);
+            cancelOnMovement.SetCurrentValue(MenuItem.IsCheckedProperty, true);
             Assert.True(macro.ToDefinition().CancelOnMouseMovement);
+            Assert.Equal("Once · stops on move", macro.PlaybackSummary);
             Assert.Contains(controls.OfType<ListBoxItem>(), item => AutomationProperties.GetName(item).StartsWith("Step 1: Key press", StringComparison.Ordinal));
 
             macro.InsertStepCommand.Execute(null);
@@ -301,7 +325,8 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
             var moveAnyway = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "If a mouse button is held, move anyway");
-            var heldGroup = Assert.IsType<StackPanel>(Assert.IsType<StackPanel>(moveAnyway.Parent).Parent);
+            // Choice → segment row → segmented frame → labelled group.
+            var heldGroup = Assert.IsType<StackPanel>(Assert.IsType<Border>(Assert.IsType<StackPanel>(moveAnyway.Parent).Parent).Parent);
             Assert.Equal(Visibility.Visible, heldGroup.Visibility);
             Assert.True(moveAnyway.ActualHeight > 0);
             var movePicker = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Pick screen coordinates after three seconds");
@@ -324,7 +349,8 @@ public sealed class MacroEditorTemplateTests
             Assert.All(gated, part => Assert.False(part.IsEnabled));
             Assert.False(master.IsEnabled);
             Assert.True(stop.IsEnabled);
-            Assert.False(cancelOnMovement.IsEnabled);
+            // The playback menu opens only from its button, which is off while recording.
+            Assert.False(playbackButton.IsEnabled);
             Assert.False(Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro").IsEnabled);
             Assert.True(view.ActualWidth <= 650);
             Assert.True(stop.TransformToAncestor(host).Transform(new Point(0, 0)).Y < 480);
@@ -428,20 +454,22 @@ public sealed class MacroEditorTemplateTests
                 Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(Assert.IsType<StackPanel>(hold.Parent).Parent).Visibility);
             }
 
-            // Wait times sits in the sequence toolbar beside Add step; Clear sits beside the step count it removes.
+            // Wait times sits in the sequence toolbar beside Add step; the list header switches between presses and
+            // every step, and Clear (under More) follows the selected macro.
             var bulk = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Set wait times");
             Assert.Same(add.Parent, bulk.Parent);
-            var collapse = Assert.Single(Descendants(view).OfType<CheckBox>(), box => AutomationProperties.GetName(box) == "Collapse presses");
-            var clear = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Clear all steps");
+            var collapse = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "Group presses");
+            var showEvery = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "Show every step");
             Assert.True(collapse.IsChecked);
-            Assert.True(clear.IsEnabled);
-            Assert.Same(profile.Macros.ClearStepsCommand, clear.Command);
+            Assert.False(showEvery.IsChecked);
+            Assert.True(MenuItemNamed(await MenuItemsAsync("More macro commands"), "Clear all steps").IsEnabled);
+            var listTop = list.TransformToAncestor(host).Transform(new Point(0, 0)).Y;
             bulk.Command.Execute(null);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
             var duration = Assert.Single(Descendants(view).OfType<TextBox>(), box => AutomationProperties.GetName(box) == "Wait time in milliseconds");
             var apply = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Apply wait time");
-            var close = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Close wait time editor");
+            var close = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Cancel wait time editor");
             var status = Assert.Single(Descendants(view).OfType<TextBlock>(), block => AutomationProperties.GetName(block) == "Wait time edit status");
             var scopes = Descendants(view).OfType<RadioButton>()
                 .Where(radio => AutomationProperties.GetName(radio).StartsWith("Change ", StringComparison.Ordinal)).ToArray();
@@ -450,7 +478,7 @@ public sealed class MacroEditorTemplateTests
             // Press holds open first with the suggested 50 ms; the Wait after the press keeps its own timing.
             Assert.Equal(new bool?[] { true, false, false }, scopes.Select(scope => scope.IsChecked));
             Assert.Equal("50", duration.Text);
-            Assert.Equal("Applies to 1 press hold.", status.Text);
+            Assert.Equal(string.Empty, status.Text);
             Assert.True(apply.IsEnabled);
             duration.SetCurrentValue(TextBox.TextProperty, "invalid");
             await Dispatcher.Yield(DispatcherPriority.DataBind);
@@ -463,7 +491,7 @@ public sealed class MacroEditorTemplateTests
             apply.Command.Execute(null);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
-            Assert.Equal("Set 1 press hold to 40 ms.", status.Text);
+            Assert.Equal("Set to 40 ms", status.Text);
             Assert.True(grouped.IsWaitEditorOpen);
             Assert.Equal(40, grouped.Steps[1].DurationMs);
             Assert.Equal(50, grouped.Steps[3].DurationMs);
@@ -472,27 +500,44 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Equal(MacroWaitScope.BetweenSteps, grouped.WaitScope);
             Assert.Equal(new bool?[] { false, true, false }, scopes.Select(scope => scope.IsChecked));
-            Assert.Equal("Applies to 1 Wait step between actions.", status.Text);
+            Assert.Equal(string.Empty, status.Text);
             host.UpdateLayout();
             var sequencePanel = Assert.IsType<Border>(Assert.IsType<Grid>(Assert.IsType<Grid>(list.Parent).Parent).Parent);
             var panelBounds = sequencePanel.TransformToAncestor(host).TransformBounds(new Rect(sequencePanel.RenderSize));
-            FrameworkElement[] panelControls = [clear, collapse, duration, apply, close, .. scopes];
-            foreach (var control in panelControls)
+            foreach (var control in new FrameworkElement[] { collapse, showEvery })
             {
                 var bounds = control.TransformToAncestor(host).TransformBounds(new Rect(control.RenderSize));
                 Assert.True(panelBounds.Contains(bounds), $"{AutomationProperties.GetName(control)} exceeds the sequence panel {panelBounds}: {bounds}.");
             }
+            // The bar takes over the toolbar row at the same height: the commands hide, every bar control fits in
+            // the one row at the minimum width, and the step list does not move.
+            Assert.Equal(Visibility.Collapsed, Assert.IsType<DockPanel>(bulk.Parent).Visibility);
+            var bar = Assert.Single(Descendants(view).OfType<Border>(), border => AutomationProperties.GetName(border) == "Wait time editor");
+            var barBounds = bar.TransformToAncestor(host).TransformBounds(new Rect(bar.RenderSize));
+            FrameworkElement[] barControls = [duration, apply, close, .. scopes];
+            foreach (var control in barControls)
+            {
+                var bounds = control.TransformToAncestor(host).TransformBounds(new Rect(control.RenderSize));
+                Assert.True(barBounds.Contains(bounds), $"{AutomationProperties.GetName(control)} exceeds the wait time bar {barBounds}: {bounds}.");
+            }
+            Assert.Equal(listTop, list.TransformToAncestor(host).Transform(new Point(0, 0)).Y, 3);
             var durationRight = duration.TransformToAncestor(host).Transform(new Point(duration.ActualWidth, 0)).X;
             var applyLeft = apply.TransformToAncestor(host).Transform(new Point(0, 0)).X;
             Assert.True(durationRight < applyLeft, "Bulk duration field overlaps Apply.");
+            // The shaded bar ends just after Cancel instead of spanning the row.
+            var closeRight = close.TransformToAncestor(host).Transform(new Point(close.ActualWidth, 0)).X;
+            Assert.InRange(barBounds.Right - closeRight, 0, 4);
             close.Command.Execute(null);
-            var expand = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Turn off Collapse presses");
+            var expand = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Show all steps");
             Assert.True(expand.IsEnabled);
             Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(expand.Parent).Visibility);
             expand.Command.Execute(null);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
             Assert.False(grouped.CollapseSteps);
+            // The view switch follows the expand link.
+            Assert.True(showEvery.IsChecked);
+            Assert.False(collapse.IsChecked);
             Assert.Equal(4, list.Items.Count);
             Assert.Same(grouped.Steps[0], list.SelectedItem);
             list.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedItemProperty, grouped.Steps[1]);

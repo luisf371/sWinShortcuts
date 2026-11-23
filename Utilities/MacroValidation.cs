@@ -137,7 +137,7 @@ public static class MacroValidation
 
         if (macro.ShortcutTrigger.Kind == InputTriggerKind.None)
         {
-            return "Assign a shortcut to play this macro.";
+            return "Assign a shortcut to play it.";
         }
 
         if (macro.ShortcutKey == Key.F12)
@@ -160,7 +160,7 @@ public static class MacroValidation
 
         if (macro.Steps.Length == 0)
         {
-            return "Add at least one step to play this macro.";
+            return "Add a step to play it.";
         }
 
         var keysDown = new Dictionary<ushort, int>();
@@ -176,7 +176,7 @@ public static class MacroValidation
                 case MacroStepKind.KeyUp:
                     if (!keysDown.Remove(KeyInteropUtilities.ToVirtualKey(step.Key)))
                     {
-                        return $"Step {index + 1}: a key UP must follow a matching DOWN.";
+                        return $"Step {index + 1}: a Key up must follow a matching Key down.";
                     }
                     break;
                 case MacroStepKind.KeyPress:
@@ -193,7 +193,7 @@ public static class MacroValidation
                     {
                         if (!mouseDown.Remove(button))
                         {
-                            return $"Step {index + 1}: a mouse UP must follow a matching DOWN.";
+                            return $"Step {index + 1}: a Mouse up must follow a matching Mouse down.";
                         }
                     }
                     else if (mouseDown.ContainsKey(button))
@@ -216,7 +216,8 @@ public static class MacroValidation
         var firstUnreleased = macro.Steps.Length;
         foreach (var index in keysDown.Values) firstUnreleased = Math.Min(firstUnreleased, index);
         foreach (var index in mouseDown.Values) firstUnreleased = Math.Min(firstUnreleased, index);
-        return $"Step {firstUnreleased + 1}: add a matching UP before the macro ends.";
+        var release = macro.Steps[firstUnreleased].Kind == MacroStepKind.KeyDown ? "Key up" : "Mouse up";
+        return $"Step {firstUnreleased + 1}: add a matching {release} before the macro ends.";
     }
 
     public static bool IsSupportedKey(Key key, bool allowNone = false) =>

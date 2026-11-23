@@ -1,11 +1,12 @@
 using System;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Windows.Data;
 using System.Windows.Input;
 
 namespace sWinShortcuts.Converters;
 
-public sealed class KeyDisplayConverter : IValueConverter
+public sealed partial class KeyDisplayConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
@@ -39,10 +40,33 @@ public sealed class KeyDisplayConverter : IValueConverter
             case Key.OemComma: return ",";         // , <
             case Key.OemPeriod: return ".";        // . >
             case Key.OemQuestion: return "/";      // / ?
+            // Key names print the first alias of a shared value (Return, Capital, Next, Snapshot); use keycap names.
+            case Key.Enter: return "Enter";
+            case Key.Back: return "Backspace";
+            case Key.CapsLock: return "Caps Lock";
+            case Key.PageDown: return "Page Down";
+            case Key.PrintScreen: return "Print Screen";
+            case Key.Scroll: return "Scroll Lock";
+            case Key.Apps: return "Menu";
+            case Key.LWin: return "Left Win";
+            case Key.RWin: return "Right Win";
+            case Key.Multiply: return "Num *";
+            case Key.Add: return "Num +";
+            case Key.Subtract: return "Num -";
+            case Key.Divide: return "Num /";
+            case Key.Decimal: return "Num .";
+        }
+        if (key is >= Key.NumPad0 and <= Key.NumPad9)
+        {
+            return "Num " + (char)('0' + (key - Key.NumPad0));
         }
 
-        return key.ToString();
+        // LeftShift -> Left Shift, PageUp -> Page Up, VolumeUp -> Volume Up; F13 stays whole.
+        return WordStart().Replace(key.ToString(), " ");
     }
+
+    [GeneratedRegex("(?<=[a-z])(?=[A-Z0-9])")]
+    private static partial Regex WordStart();
 
     public object? ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
     {

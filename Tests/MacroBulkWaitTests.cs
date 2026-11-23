@@ -32,7 +32,7 @@ public sealed class MacroBulkWaitTests
         // Press holds come first with the suggested 50 ms: the Down/Wait/Up hold and the Key press hold.
         Assert.True(macro.IsPressHoldScope);
         Assert.Equal("50", macro.WaitDurationText);
-        Assert.Equal("Applies to 2 press holds.", macro.WaitEditMessage);
+        Assert.Equal(string.Empty, macro.WaitEditMessage);
 
         foreach (var input in new[] { "", "letters", "-1", "3600001", "3,600,000" })
         {
@@ -50,7 +50,7 @@ public sealed class MacroBulkWaitTests
         macro.ApplyWaitTimesCommand.Execute(null);
         Assert.True(macro.IsWaitEditorOpen);
         Assert.True(macro.WaitEditApplied);
-        Assert.Equal("Set 2 press holds to 50 ms.", macro.WaitEditMessage);
+        Assert.Equal("Set to 50 ms", macro.WaitEditMessage);
         Assert.Equal(new[] { 0, 50, 0, 40, 50 }, profile.Macros.Definitions[0].Steps.Select(step => step.DurationMs));
         Assert.Equal(1, edits);
 
@@ -59,13 +59,13 @@ public sealed class MacroBulkWaitTests
         Assert.Equal(MacroWaitScope.BetweenSteps, macro.WaitScope);
         Assert.False(macro.IsPressHoldScope);
         Assert.False(macro.WaitEditApplied);
-        Assert.Equal("Applies to 1 Wait step between actions.", macro.WaitEditMessage);
+        Assert.Equal(string.Empty, macro.WaitEditMessage);
         macro.WaitDurationText = "30";
         macro.ApplyWaitTimesCommand.Execute(null);
-        Assert.Equal("Set 1 Wait step between actions to 30 ms.", macro.WaitEditMessage);
+        Assert.Equal("Set to 30 ms", macro.WaitEditMessage);
         Assert.Equal(new[] { 0, 50, 0, 30, 50 }, profile.Macros.Definitions[0].Steps.Select(step => step.DurationMs));
         macro.IsAllWaitsScope = true;
-        Assert.Equal("Applies to 2 press holds and 1 Wait step between actions.", macro.WaitEditMessage);
+        Assert.Equal(string.Empty, macro.WaitEditMessage);
         macro.WaitDurationText = "20";
         macro.ApplyWaitTimesCommand.Execute(null);
         Assert.Equal(new[] { 0, 20, 0, 20, 20 }, profile.Macros.Definitions[0].Steps.Select(step => step.DurationMs));
@@ -122,12 +122,12 @@ public sealed class MacroBulkWaitTests
         macro.WaitDurationText = "100";
         macro.DeleteStepCommand.Execute(null);
         Assert.True(macro.IsWaitEditorOpen);
-        Assert.Equal("This macro has no Wait steps between actions.", macro.WaitEditMessage);
+        Assert.Equal("None in this macro", macro.WaitEditMessage);
         Assert.False(macro.ApplyWaitTimesCommand.CanExecute(null));
         macro.IsPressHoldScope = true;
-        Assert.Equal("This macro has no press holds.", macro.WaitEditMessage);
+        Assert.Equal("None in this macro", macro.WaitEditMessage);
         macro.IsAllWaitsScope = true;
-        Assert.Equal("This macro has no waits or holds.", macro.WaitEditMessage);
+        Assert.Equal("None in this macro", macro.WaitEditMessage);
     }
 
     [Fact]
@@ -144,9 +144,40 @@ public sealed class MacroBulkWaitTests
         macro.ShowWaitEditorCommand.Execute(null);
 
         Assert.True(macro.IsPressHoldScope);
-        Assert.Equal("Applies to 2 press holds.", macro.WaitEditMessage);
+        Assert.Equal(string.Empty, macro.WaitEditMessage);
         macro.ApplyWaitTimesCommand.Execute(null);
         Assert.Equal(new[] { 50, 50 }, macro.ToDefinition().Steps.Select(step => step.DurationMs));
+    }
+
+    [Fact]
+    public void WaitEditor_OpenScope_HighlightsItsRowsCountsEachScopeAndNamesInputErrors()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.KeyDown, Key = Key.A },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 10 },
+                new() { Kind = MacroStepKind.KeyUp, Key = Key.A },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 40 },
+                new() { Kind = MacroStepKind.KeyPress, Key = Key.B }]
+        }, () => true);
+        Assert.Equal((2, 1, 3), (macro.PressHoldCount, macro.BetweenWaitCount, macro.AllWaitCount));
+        Assert.True(macro.HasPressHolds && macro.HasBetweenWaits);
+        Assert.All(macro.Steps, step => Assert.False(step.IsWaitTarget));
+
+        // Collapsed, the Down row stands for its press, so it lights up for the hold it shows.
+        macro.ShowWaitEditorCommand.Execute(null);
+        Assert.Equal(new[] { true, true, false, false, true }, macro.Steps.Select(step => step.IsWaitTarget));
+        macro.IsBetweenStepsScope = true;
+        Assert.Equal(new[] { false, false, false, true, false }, macro.Steps.Select(step => step.IsWaitTarget));
+
+        foreach (var (text, message) in new[] { ("12.5", "Digits only"), ("-1", "Digits only"), ("99999999999", "Max 3600000 ms") })
+        {
+            macro.WaitDurationText = text;
+            Assert.Equal(message, macro.WaitEditMessage);
+        }
+
+        macro.CloseWaitEditorCommand.Execute(null);
+        Assert.All(macro.Steps, step => Assert.False(step.IsWaitTarget));
     }
 
     [Fact]

@@ -275,19 +275,38 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
             MacroSessionMode.Idle => status,
             // A take starts once its profile's app is in front; until then there is nothing to time or count.
             MacroSessionMode.WaitingForRecordingTarget => $"Switch to {snapshot.OwnerProfile?.Name ?? _profile.Name} to start recording",
-            _ => $"{status} · {snapshot.Elapsed:mm\\:ss} · {snapshot.RowCount} rows"
+            _ => $"{status} · {snapshot.Elapsed:mm\\:ss}{DescribeProgress(snapshot)}"
         };
         if (!string.IsNullOrEmpty(snapshot.FailureReason)) SessionStatus += $" · {snapshot.FailureReason}";
         if (_sessionBusy != wasBusy) RefreshAvailability();
     }
+    // Recording counts captured steps; playback names the step it is on (RowCount is 1-based there).
+    private static string DescribeProgress(MacroSessionSnapshot snapshot)
+    {
+        var row = snapshot.RowCount;
+        if (row <= 0) return string.Empty;
+        if (snapshot.Mode == MacroSessionMode.Recording) return $" · {row} {(row == 1 ? "step" : "steps")}";
+        var total = snapshot.OwnerProfile?.Macros.Definitions.FirstOrDefault(macro => macro.Id == snapshot.MacroId)?.Steps.Length ?? 0;
+        return total >= row ? $" · step {row} of {total}" : $" · step {row}";
+    }
     internal void ShowRecordingResult(MacroRecordingResult result)
     {
         var detail = result.AppendedBalancingReleases ? " Held inputs were released in the saved take." : string.Empty;
+        var count = result.Steps.Length;
+        var ending = result.EndReason switch
+        {
+            MacroRecordingEndReason.RowLimit => $" · stopped at the {MacroValidation.MaxSteps}-step limit",
+            MacroRecordingEndReason.DurationLimit => " · stopped at the 10-minute limit",
+            MacroRecordingEndReason.Interrupted => " · interrupted",
+            MacroRecordingEndReason.Cancelled => " · cancelled",
+            MacroRecordingEndReason.Faulted => " · faulted",
+            _ => string.Empty
+        };
         SessionStatus = result.FailureReason is { Length: > 0 } failure
             ? $"Recording finished: {failure}{detail}"
-            : result.Steps.Length == 0
+            : count == 0
                 ? "Recording stopped before anything was captured."
-                : $"Recording saved · {result.Steps.Length} rows · {result.EndReason}.{detail}";
+                : $"Recording saved · {count} {(count == 1 ? "step" : "steps")} added{ending}.{detail}";
     }
     internal void ShowFailure(string message) => SessionStatus = message;
     public void RefreshValidation()

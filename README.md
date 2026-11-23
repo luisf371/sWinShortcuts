@@ -204,27 +204,34 @@ and sprint keys: wheel output can interrupt those background holds.
 Open an application profile's **Macros** tab, immediately after **Advanced**. Enable
 macros for the profile, choose **New**, give the macro a label, and assign its key or mouse
 button with optional Ctrl/Alt/Shift/Win modifiers. New macros start enabled; clear
-**Enabled** beside the shortcut to keep one from responding. Playback requires
+**On** beside the macro list to keep one from responding. Playback requires
 **Advanced Mode** and runs only while that profile's application is in the foreground.
 Shortcut conflicts and incomplete sequences are shown in the editor and cannot run.
 
-The top rows group the page by what each control affects: the macro list with **New…**,
-**Rename…**, **Duplicate**, and **Delete…**; the macro's own **Enabled** switch followed by its shortcut; then
-**Toggle loop**, **Start on press**, **Cancel on mouse movement**, and the macro's status. **Delete…** asks
-first when the macro has steps. Duplicating a macro adds the next available number to its
-name, such as **Ammo 1** and **Ammo 2**, and the copy starts off without a shortcut.
+Two header rows sit above the sequence. The first picks the macro: the macro list, its own
+**On** switch and status (**Ready**, **Off**, a short reason, or **Fix step N** when one step
+needs attention), **New…**, and **⋯** for **Rename…**, **Duplicate**, **Clear all steps…**, and
+**Delete macro…**. The second sets when it runs: the Ctrl/Alt/Shift/Win modifiers, the key or
+mouse button, and the **Playback** button, whose label shows what is set (for example **Once**
+or **Loop · on press**). Its menu holds **Play once per press** or **Loop until pressed
+again**, **Start when released** or **Start when pressed**, and **Stop when the mouse moves**.
+**Delete macro…** asks first when the macro has steps. Duplicating a macro adds the next
+available number to its name, such as **Ammo 1** and **Ammo 2**, and the copy starts off
+without a shortcut.
 
 The sequence stays beside an inspector for the selected step. New steps and recordings go
 at the end unless you select a step, which inserts after it; the **New steps go** hint in
 the toolbar shows where. **Add step** lets you choose an action directly: a new **Wait**
 starts at 100 ms, and a new **Move to** or **Mouse click** starts at the macro's nearest
-earlier position. **Clear…** beside the step count removes every step after asking, for
+earlier position. **Clear all steps…** (under **⋯**) removes every step after asking, for
 example to record a macro again; its name, shortcut, and options stay.
 With the step list focused, use **Delete** to remove a step, **Ctrl+D** to duplicate it,
-and **Alt+Up/Down** to reorder it. **Show step** jumps to the row named in a validation error.
+and **Alt+Up/Down** to reorder it. **Fix step N** jumps to the row named in a validation error;
+that row shows a warning mark, and the step editor shows the full message.
 Open either key dropdown and press a key to select it directly.
 
-**Collapse presses** is on by default. Adjacent matching Down, Wait, and Up events appear as one
+The list shows **Presses** by default; switch to **All steps** above the list to see every
+event. With **Presses**, adjacent matching Down, Wait, and Up events appear as one
 press with their original step numbers and hold time. Intervening actions keep the events
 separate. Edit a grouped press's key/button and hold directly, or use **Show all steps**
 to edit the original events. Moving, duplicating, or deleting a collapsed row operates on
@@ -232,15 +239,16 @@ all three. This changes the view only: saved steps,
 playback, and the 1,000-step limit still use the original events. A Wait that holds a press
 shows its time as a hold even when presses are expanded.
 
-**Wait times…** in the toolbar opens an inline editor above the sequence. Choose **Press
-holds** (how long each key or button stays down: the Wait inside a press, plus Key press
-and Mouse click holds), **Between steps** (Wait steps that pause between actions), or
-**All**, enter a duration from **0 to 3,600,000 ms**, and choose **Apply** (or press Enter
-in the duration field). It opens on **Press holds** with a suggested 50 ms, enough for most
+**Wait times…** turns the sequence toolbar into a one-row bar, as **Record** does for its
+banner, so the step list keeps its size. Choose **Press holds** (how long each key or button
+stays down: the Wait inside a press, plus Key press and Mouse click holds), **Between steps**
+(Wait steps that pause between actions), or **All**. Each choice shows how many rows it
+changes, and the list highlights those rows' times while the bar is open. Enter a duration
+from **0 to 3,600,000 ms** and choose **Apply** (or press Enter in the duration field). It opens on **Press holds** with a suggested 50 ms, enough for most
 games to register a press, so the pauses that set the macro's rhythm keep their recorded
 timing. A recorded click's hold counts as a press hold even though the click re-anchors the
 cursor before releasing; waits around a key's typematic repeats or other input count as
-between steps. **Close** or Escape discards the input; switching macros, leaving the
+between steps. The bar's close button or Escape discards the input; switching macros, leaving the
 editor, or starting a recording closes it automatically.
 
 Use the step editor to insert, duplicate, delete, and reorder key presses, explicit
@@ -272,10 +280,10 @@ macro shortcuts are ignored while a run is busy. Physical modifiers pause new ou
 until released; they can still affect keys already held in the target app. **F12** is a
 temporary emergency cancellation key during playback or recording. Focus loss, profile
 changes, and conflicting physical input also cancel playback and release its held inputs.
-**Toggle loop** repeats a macro until you press its shortcut again, even mid-step; there is
-no regular playback Stop button.
+**Loop until pressed again** (the **Playback** menu, also called toggle loop) repeats a macro
+until you press its shortcut again, even mid-step; there is no regular playback Stop button.
 
-**Start on press** is a per-macro option, off by default. Enable it to start playback when
+**Start when pressed** is a per-macro option, off by default. Choose it to start playback when
 the shortcut goes down instead of when the chord is released; holding or releasing the
 shortcut afterward neither restarts nor stops the run. Shift or Ctrl held as part of the
 shortcut keeps reaching the application with the macro's keys, so a Shift+Q macro that
@@ -284,7 +292,7 @@ holding is refused and stops the run. Alt and Win still pause output until relea
 under them trigger Windows shortcuts such as Alt+Tab or Win+D. Modifiers pressed after the
 run starts pause output as usual.
 
-**Cancel on mouse movement** is a per-macro option, off by default. Enable it to cancel
+**Stop when the mouse moves** is a per-macro option, off by default. Enable it to cancel
 playback when you move the mouse, including during waits and held inputs. Injected
 movement does not trigger this option. Coordinate actions still require arrival at the
 requested pixel before continuing.
@@ -293,9 +301,9 @@ A **Freeze mouse** step blocks your physical mouse movement from that row on, so
 and **Mouse click** steps are not pushed off their pixels; an **Unfreeze mouse** step lets the
 mouse move again. Only physical movement is blocked: the macro's own cursor moves, your mouse
 buttons, and the wheel work as usual. A freeze always ends with the run, whether it completes
-or stops on **F12**, the toggle shortcut, focus loss, or a failure. In a **Toggle loop** it
+or stops on **F12**, the toggle shortcut, focus loss, or a failure. In a toggle loop it
 lasts across passes until an **Unfreeze mouse** step runs or the loop stops. While the mouse
-is frozen, **Cancel on mouse movement** does not trigger; it applies again after **Unfreeze
+is frozen, **Stop when the mouse moves** does not trigger; it applies again after **Unfreeze
 mouse**. The freeze stops the Windows cursor, but games that read raw mouse input may still
 see the motion.
 

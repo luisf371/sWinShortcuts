@@ -54,7 +54,8 @@ public partial class MacrosView : UserControl
         if (e.Key is Key.Enter or Key.Space) (DataContext as MacrosViewModel)?.BeginStopGesture(e.Key);
     }
 
-    private void AddStepButton_Click(object sender, RoutedEventArgs e)
+    // Add step, Playback and More open their menus on a normal click, below the button.
+    private void MenuButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { ContextMenu: { } menu } button) return;
         menu.PlacementTarget = button;

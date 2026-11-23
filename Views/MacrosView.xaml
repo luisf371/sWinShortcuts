@@ -41,6 +41,11 @@
         <SolidColorBrush x:Key="MacroRecordingLineBrush" Color="#FF6B2E35" />
         <SolidColorBrush x:Key="MacroNoticeSurfaceBrush" Color="#FF272216" />
         <SolidColorBrush x:Key="MacroNoticeLineBrush" Color="#FF5A4822" />
+        <!-- The wait-time bar takes over the toolbar like the recording banner, in the accent hue instead of red.
+             Times it would change read in MacroWaitTargetBrush: 5.6:1 even on a selected row. -->
+        <SolidColorBrush x:Key="MacroTimingSurfaceBrush" Color="#FF0F2131" />
+        <SolidColorBrush x:Key="MacroTimingLineBrush" Color="#FF22506F" />
+        <SolidColorBrush x:Key="MacroWaitTargetBrush" Color="#FF8ED1F5" />
 
         <!-- 16 px stroke icons drawn in one weight by MacroIcon. -->
         <Geometry x:Key="MacroIconKeyboard">M2.5,4.5 H13.5 A1,1 0 0 1 14.5,5.5 V11.5 A1,1 0 0 1 13.5,12.5 H2.5 A1,1 0 0 1 1.5,11.5 V5.5 A1,1 0 0 1 2.5,4.5 Z M4.25,7 H4.75 M6.75,7 H7.25 M9.25,7 H9.75 M11.25,7 H11.75 M5,10 H11</Geometry>
@@ -56,6 +61,11 @@
         <Geometry x:Key="MacroIconDown">M8,3 V13 M4,9 L8,13 L12,9</Geometry>
         <Geometry x:Key="MacroIconTarget">M3,8 A5,5 0 0 1 13,8 A5,5 0 0 1 3,8 Z M8,1 V5 M8,11 V15 M1,8 H5 M11,8 H15</Geometry>
         <Geometry x:Key="MacroIconWarning">M8,1.75 L14.75,13.75 H1.25 Z M8,6 V9.25 M8,11.5 V11.75</Geometry>
+        <Geometry x:Key="MacroIconPlay">M5,3.25 L12.75,8 L5,12.75 Z</Geometry>
+        <Geometry x:Key="MacroIconMore">M3.5,8 L3.51,8 M8,8 L8.01,8 M12.5,8 L12.51,8</Geometry>
+        <Geometry x:Key="MacroIconRename">M10.25,2.75 L13.25,5.75 L6,13 H3 V10 Z M8.75,4.25 L11.75,7.25</Geometry>
+        <Geometry x:Key="MacroIconClear">M2.5,4.5 H13.5 M2.5,8 H9 M2.5,11.5 H7 M10.5,10 L13.5,13 M13.5,10 L10.5,13</Geometry>
+        <Geometry x:Key="MacroIconCheck">M3,8.5 L6.5,12 L13,4.5</Geometry>
 
         <Style x:Key="MacroIcon" TargetType="Path">
             <Setter Property="Width" Value="16" />
@@ -202,49 +212,19 @@
             </Style.Triggers>
         </Style>
 
-        <!-- Shortcut modifiers read as keycaps; checked caps are filled, bold and bordered. The wait-time scope
-             uses the same caps as a one-of-three choice, so the style targets both CheckBox and RadioButton. -->
-        <Style x:Key="MacroKeycap" TargetType="ToggleButton">
-            <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderBrush" Value="{StaticResource MacroInputLineBrush}" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="MinWidth" Value="46" />
-            <Setter Property="Height" Value="30" />
-            <Setter Property="Padding" Value="8,0" />
-            <Setter Property="Margin" Value="0,0,4,0" />
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="FocusVisualStyle" Value="{StaticResource MacroFocusRing}" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ToggleButton">
-                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}"
-                                CornerRadius="4" SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="False" />
-                        </Border>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-            <Style.Resources>
-                <Style TargetType="TextBlock">
-                    <Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" />
-                </Style>
-            </Style.Resources>
+        <!-- How many rows a wait-time scope changes, beside its segment label: a light chip on the dark segments,
+             a dark one on the checked accent segment so the white number stays above 4.5:1. -->
+        <Style x:Key="MacroCountChip" TargetType="Border">
+            <Setter Property="Margin" Value="5,0,0,0" />
+            <Setter Property="Padding" Value="5,0" />
+            <Setter Property="MinWidth" Value="18" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Background" Value="#1FFFFFFF" />
             <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                    <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
-                </Trigger>
-                <Trigger Property="IsChecked" Value="True">
-                    <Setter Property="Background" Value="{StaticResource MacroRowSelectedBrush}" />
-                    <Setter Property="BorderBrush" Value="{StaticResource MacroFocusBrush}" />
-                    <Setter Property="Foreground" Value="White" />
-                    <Setter Property="FontWeight" Value="SemiBold" />
-                </Trigger>
-                <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Opacity" Value="0.45" />
-                </Trigger>
+                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=RadioButton}}" Value="True">
+                    <Setter Property="Background" Value="#40000000" />
+                </DataTrigger>
             </Style.Triggers>
         </Style>
 
@@ -414,6 +394,10 @@
                     <Setter TargetName="Shortcut" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
                     <Setter TargetName="StateText" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
                 </DataTrigger>
+                <!-- In the closed picker (no item container) the status beside it already says the state. -->
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ComboBoxItem}, FallbackValue={x:Null}}" Value="{x:Null}">
+                    <Setter TargetName="StateText" Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
 
@@ -468,10 +452,19 @@
                     <Setter TargetName="ErrorMark" Property="Visibility" Value="Collapsed" />
                     <Setter TargetName="Row" Property="ToolTip" Value="{x:Null}" />
                 </DataTrigger>
+                <!-- The macro's playback problem names this row: warning color, like the Not ready status. -->
+                <DataTrigger Binding="{Binding IsProblemOnly}" Value="True">
+                    <Setter TargetName="ErrorMark" Property="Stroke" Value="{StaticResource MacroWarningBrush}" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
                     <Setter TargetName="Number" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
                     <Setter TargetName="Icon" Property="Stroke" Value="{StaticResource MacroSelectedTextBrush}" />
                     <Setter TargetName="Timing" Property="Foreground" Value="{StaticResource MacroSelectedTextBrush}" />
+                </DataTrigger>
+                <!-- After selection so it also marks the selected row: the open wait-time bar would change this time. -->
+                <DataTrigger Binding="{Binding IsWaitTarget}" Value="True">
+                    <Setter TargetName="Timing" Property="Foreground" Value="{StaticResource MacroWaitTargetBrush}" />
+                    <Setter TargetName="Timing" Property="FontWeight" Value="SemiBold" />
                 </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
@@ -542,11 +535,13 @@
             </Grid.RowDefinitions>
         <StackPanel IsEnabled="{Binding IsEnabled}" Tag="{Binding IsEnabled}" Style="{DynamicResource FeatureToggleContentStyle}">
 
-        <!-- Which macro, and the commands that manage it. Rows above the workspace share 8 px gaps so the step
-             inspector keeps its coordinate picker in view at the minimum size. -->
+        <!-- Row 1, which macro: the picker, its own switch and status, then New and the rarer commands under More.
+             Two header rows instead of three leave the step list more height. -->
         <Grid Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="240" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <Grid>
@@ -559,115 +554,171 @@
                            Foreground="{StaticResource MacroMutedBrush}"
                            Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfFalse}}" />
             </Grid>
-            <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0">
-                <Button Style="{StaticResource MacroButton}" Command="{Binding NewMacroCommand}" Margin="0,0,6,0"
-                        ToolTip="Name and create a macro in this profile. A profile holds up to 64 macros."
-                        AutomationProperties.Name="New macro">
-                    <StackPanel Orientation="Horizontal">
-                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconAdd}" Margin="0,0,6,0" />
-                        <TextBlock Text="New…" VerticalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-                <!-- Names change only through the naming dialog, so an unaccepted name never reaches the macro. -->
-                <Button Style="{StaticResource MacroButton}" Content="Rename…" Command="{Binding RenameMacroCommand}" Margin="0,0,6,0"
-                        ToolTip="Change the selected macro's name."
-                        AutomationProperties.Name="Rename macro" />
-                <Button Style="{StaticResource MacroButton}" Content="Duplicate" Command="{Binding DuplicateMacroCommand}" Margin="0,0,6,0"
-                        ToolTip="Copy the selected macro. The copy starts off, without a shortcut."
-                        AutomationProperties.Name="Duplicate macro" />
-                <Button Style="{StaticResource MacroButton}" Content="Delete…" Command="{Binding DeleteMacroCommand}"
-                        ToolTip="Delete the selected macro and all of its steps. Asks first when it has steps."
-                        AutomationProperties.Name="Delete macro" />
-            </StackPanel>
-        </Grid>
-
-        <!-- Selected macro: when it runs (its shortcut and own switch), how it runs, and whether it can play. -->
-        <Grid Margin="0,0,0,8" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
-              Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <!-- The macro's own switch leads the row, in line with Toggle loop below; its shortcut follows. -->
-            <StackPanel Orientation="Horizontal">
-                <CheckBox Content="Enabled" IsChecked="{Binding IsEnabled}" Margin="0,0,18,0" VerticalAlignment="Center"
-                          ToolTip="Only enabled macros respond to their shortcut."
+            <!-- The selected macro's own switch and whether it can play. The words stay short; the tooltip, and the
+                 named step for a step problem, carry the full sentence. -->
+            <DockPanel Grid.Column="1" Margin="12,0,10,0" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
+                       Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
+                <CheckBox Content="On" IsChecked="{Binding IsEnabled}" Margin="0,0,14,0" VerticalAlignment="Center"
+                          ToolTip="Only macros that are on respond to their shortcut."
                           AutomationProperties.Name="Enable selected macro" />
-                <TextBlock Text="Shortcut" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}"
-                           ToolTip="Hold the selected modifiers, then press the key or mouse button. Playback starts when you release the shortcut, or when you press it if Start on press is on. F12 stops playback." />
-                <CheckBox Content="Ctrl" IsChecked="{Binding ControlModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Control modifier" />
-                <CheckBox Content="Alt" IsChecked="{Binding AltModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Alt modifier" />
-                <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Shift modifier" />
-                <CheckBox Content="Win" IsChecked="{Binding WindowsModifier}" Style="{StaticResource MacroKeycap}" AutomationProperties.Name="Shortcut Windows modifier" />
-                <TextBlock Text="+" Margin="4,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
-                <ComboBox Width="160" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.ShortcutOptions}"
-                          SelectedItem="{Binding ShortcutTrigger}" ItemTemplate="{StaticResource ShortcutChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
-                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
-                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                          ToolTip="Choose a keyboard key or mouse button. You can also press a key while this list is open. The matching shortcut is consumed."
-                          AutomationProperties.Name="Macro shortcut"
-                          AutomationProperties.HelpText="Choose a keyboard key or one of the five mouse buttons, then select any required modifiers." />
-            </StackPanel>
-            <DockPanel Grid.Row="1" Margin="0,8,0,0">
-                <CheckBox Content="Toggle loop" IsChecked="{Binding ToggleMode}" Margin="0,0,18,0" VerticalAlignment="Center"
-                          ToolTip="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut unless Start on press is on. Off by default."
-                          AutomationProperties.Name="Toggle loop"
-                          AutomationProperties.HelpText="Press the shortcut to repeat this macro; press it again to stop, even mid-step. Playback starts when you release the shortcut unless Start on press is on. Off by default." />
-                <CheckBox Content="Start on press" IsChecked="{Binding StartOnPress}" Margin="0,0,18,0" VerticalAlignment="Center"
-                          ToolTip="Start playback when you press the shortcut instead of when you release it. Shift or Ctrl held for the shortcut stays held, so the app sees it with the macro's keys (Shift+Tab, for example). Alt and Win still have to be released first, because keys sent with them trigger Windows shortcuts. Off by default."
-                          AutomationProperties.Name="Start on press"
-                          AutomationProperties.HelpText="Start playback when you press the shortcut instead of when you release it. Shift or Ctrl held for the shortcut combines with the macro's keys. Alt and Win still have to be released first. Off by default." />
-                <CheckBox Content="Cancel on mouse movement" IsChecked="{Binding CancelOnMouseMovement}" Margin="0,0,18,0" VerticalAlignment="Center"
-                          ToolTip="Stop playback when you move the mouse. Off by default."
-                          AutomationProperties.Name="Cancel on mouse movement" />
-                <Button DockPanel.Dock="Right" Style="{StaticResource MacroLinkButton}" Command="{Binding ShowProblemStepCommand}"
-                        Content="{Binding ProblemStepNumber}" ContentStringFormat="Show step {0}" Margin="10,0,0,0" VerticalAlignment="Center"
+                <Ellipse Width="8" Height="8" Margin="0,0,7,0" VerticalAlignment="Center" Fill="{Binding Foreground, ElementName=MacroStatus}" />
+                <!-- A step problem is fixed on that step: the link leads there and the step shows the full message. -->
+                <Button DockPanel.Dock="Left" Style="{StaticResource MacroLinkButton}" Command="{Binding ShowProblemStepCommand}"
+                        Content="{Binding ProblemStepNumber}" ContentStringFormat="Fix step {0}" VerticalAlignment="Center"
+                        ToolTip="{Binding ValidationMessage}"
                         Visibility="{Binding HasProblemStep, Converter={StaticResource VisibleIfTrue}}"
                         AutomationProperties.Name="Show the step named in the message" />
-                <Ellipse Width="8" Height="8" Margin="0,0,8,0" VerticalAlignment="Center" Fill="{Binding Foreground, ElementName=MacroStatus}" />
-                <!-- One line keeps the workspace height stable; the tooltip carries a long message in full. -->
-                <TextBlock x:Name="MacroStatus" FontSize="13" TextTrimming="CharacterEllipsis"
-                           VerticalAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
+                <TextBlock x:Name="MacroStatus" FontSize="13" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
                            AutomationProperties.LiveSetting="Polite">
                     <TextBlock.Style>
                         <Style TargetType="TextBlock">
                             <Setter Property="Foreground" Value="{StaticResource MacroSuccessBrush}" />
-                            <Setter Property="Text" Value="{Binding ShortcutText, StringFormat='Ready. Press {0} while this profile is active.'}" />
+                            <Setter Property="Text" Value="Ready" />
+                            <Setter Property="ToolTip">
+                                <Setter.Value>
+                                    <ToolTip Content="{Binding ShortcutText}" ContentStringFormat="Press {0} while this profile is active." />
+                                </Setter.Value>
+                            </Setter>
                             <Style.Triggers>
-                                <!-- Later triggers win, so off and validation messages still replace the looping ready copy. -->
+                                <!-- Later triggers win, so off and validation messages replace the ready copy. -->
                                 <DataTrigger Binding="{Binding ToggleMode}" Value="True">
-                                    <Setter Property="Text" Value="{Binding ShortcutText, StringFormat='Ready. Press {0} to loop; press it again to stop.'}" />
+                                    <Setter Property="ToolTip">
+                                        <Setter.Value>
+                                            <ToolTip Content="{Binding ShortcutText}" ContentStringFormat="Press {0} to loop; press it again to stop." />
+                                        </Setter.Value>
+                                    </Setter>
                                 </DataTrigger>
                                 <DataTrigger Binding="{Binding DataContext.IsEnabled, ElementName=Editor}" Value="False">
                                     <Setter Property="Foreground" Value="{StaticResource MacroWarningBrush}" />
-                                    <Setter Property="Text" Value="Ready, but macros are off for this profile." />
+                                    <Setter Property="Text" Value="Macros are off" />
+                                    <Setter Property="ToolTip" Value="Ready, but macros are off for this profile. Turn on Macros above." />
                                 </DataTrigger>
                                 <DataTrigger Binding="{Binding IsEnabled}" Value="False">
                                     <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
-                                    <Setter Property="Text" Value="Off. Turn on Enabled to use the shortcut." />
+                                    <Setter Property="Text" Value="Off" />
+                                    <Setter Property="ToolTip" Value="Turn on On to use the shortcut." />
                                 </DataTrigger>
                                 <DataTrigger Binding="{Binding IsPlayable}" Value="False">
                                     <Setter Property="Foreground" Value="{StaticResource MacroWarningBrush}" />
                                     <Setter Property="Text" Value="{Binding ValidationMessage}" />
+                                    <Setter Property="ToolTip" Value="{Binding ValidationMessage}" />
                                 </DataTrigger>
                                 <DataTrigger Binding="{Binding HasFormatError}" Value="True">
                                     <Setter Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding HasProblemStep}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
             </DockPanel>
+            <Button Grid.Column="2" Style="{StaticResource MacroButton}" Command="{Binding NewMacroCommand}" Margin="0,0,6,0"
+                    ToolTip="Name and create a macro in this profile. A profile holds up to 64 macros."
+                    AutomationProperties.Name="New macro">
+                <StackPanel Orientation="Horizontal">
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconAdd}" Margin="0,0,6,0" />
+                    <TextBlock Text="New…" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+            <!-- Rarer commands for the selected macro. Names change only through the naming dialog, so an unaccepted
+                 name never reaches the macro; Clear and Delete ask first. -->
+            <Button Grid.Column="3" x:Name="MoreButton" Style="{StaticResource MacroIconButton}" Click="MenuButton_Click"
+                    IsEnabled="{Binding HasSelection}" ToolTip="Rename, duplicate, clear, or delete this macro"
+                    AutomationProperties.Name="More macro commands">
+                <Button.ContextMenu>
+                    <ContextMenu MinWidth="190" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                 ItemContainerStyle="{DynamicResource MacroContextMenuItemStyle}">
+                        <MenuItem Header="Rename…" Command="{Binding RenameMacroCommand}" AutomationProperties.Name="Rename macro">
+                            <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconRename}" /></MenuItem.Icon>
+                        </MenuItem>
+                        <MenuItem Header="Duplicate" Command="{Binding DuplicateMacroCommand}" AutomationProperties.Name="Duplicate macro"
+                                  ToolTip="The copy starts off, without a shortcut.">
+                            <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconDuplicate}" /></MenuItem.Icon>
+                        </MenuItem>
+                        <Separator Style="{StaticResource MacroMenuSeparator}" />
+                        <MenuItem Header="Clear all steps…" Command="{Binding ClearStepsCommand}" AutomationProperties.Name="Clear all steps"
+                                  ToolTip="Remove every step, for example to record it again. The name, shortcut, and options stay.">
+                            <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconClear}" /></MenuItem.Icon>
+                        </MenuItem>
+                        <MenuItem Header="Delete macro…" Command="{Binding DeleteMacroCommand}" AutomationProperties.Name="Delete macro">
+                            <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconDelete}" /></MenuItem.Icon>
+                        </MenuItem>
+                    </ContextMenu>
+                </Button.ContextMenu>
+                <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMore}" StrokeThickness="2.25" />
+            </Button>
         </Grid>
+
+        <!-- Row 2, when and how it runs: the shortcut, then the playback choices in one menu whose button says what is
+             set. The wider gap below closes the macro's header before the sequence. -->
+        <StackPanel Orientation="Horizontal" Margin="0,0,0,14" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
+                    Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
+            <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" Stroke="{StaticResource MacroMutedBrush}" Margin="2,0,10,0"
+                  ToolTip="Shortcut: hold the selected modifiers, then press the key or mouse button. F12 stops playback." />
+            <!-- Modifiers are independent toggles in the app's segmented look. -->
+            <Border Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
+                    Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                <StackPanel Orientation="Horizontal">
+                    <CheckBox Content="Ctrl" IsChecked="{Binding ControlModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                              AutomationProperties.Name="Shortcut Control modifier" />
+                    <CheckBox Content="Alt" IsChecked="{Binding AltModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                              AutomationProperties.Name="Shortcut Alt modifier" />
+                    <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                              AutomationProperties.Name="Shortcut Shift modifier" />
+                    <CheckBox Content="Win" IsChecked="{Binding WindowsModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                              AutomationProperties.Name="Shortcut Windows modifier" />
+                </StackPanel>
+            </Border>
+            <TextBlock Text="+" Margin="8,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
+            <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.ShortcutOptions}"
+                      SelectedItem="{Binding ShortcutTrigger}" ItemTemplate="{StaticResource ShortcutChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                      BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
+                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
+                      ToolTip="Choose a keyboard key or mouse button. You can also press a key while this list is open. The matching shortcut is consumed."
+                      AutomationProperties.Name="Macro shortcut"
+                      AutomationProperties.HelpText="Choose a keyboard key or one of the five mouse buttons, then select any required modifiers." />
+            <Button x:Name="PlaybackButton" Style="{StaticResource MacroButton}" Margin="12,0,0,0" Click="MenuButton_Click"
+                    ToolTip="How the shortcut plays this macro" AutomationProperties.Name="Playback options">
+                <Button.ContextMenu>
+                    <ContextMenu MinWidth="230" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                 ItemContainerStyle="{DynamicResource MacroContextMenuItemStyle}">
+                        <MenuItem Header="Play once per press" IsCheckable="True" IsChecked="{Binding PlaysOnce}"
+                                  AutomationProperties.Name="Play once per press" />
+                        <MenuItem Header="Loop until pressed again" IsCheckable="True" IsChecked="{Binding PlaysInLoop}"
+                                  ToolTip="Press the shortcut to repeat this macro; press it again to stop, even mid-step."
+                                  AutomationProperties.Name="Toggle loop" />
+                        <Separator Style="{StaticResource MacroMenuSeparator}" />
+                        <MenuItem Header="Start when released" IsCheckable="True" IsChecked="{Binding StartsWhenReleased}"
+                                  ToolTip="Playback waits until the shortcut and its modifiers are released."
+                                  AutomationProperties.Name="Start on release" />
+                        <MenuItem Header="Start when pressed" IsCheckable="True" IsChecked="{Binding StartsWhenPressed}"
+                                  ToolTip="Shift or Ctrl held for the shortcut stays held, so the app sees it with the macro's keys (Shift+Tab, for example). Alt and Win still have to be released first, because keys sent with them trigger Windows shortcuts."
+                                  AutomationProperties.Name="Start on press" />
+                        <Separator Style="{StaticResource MacroMenuSeparator}" />
+                        <MenuItem Header="Stop when the mouse moves" IsCheckable="True" IsChecked="{Binding CancelOnMouseMovement}"
+                                  AutomationProperties.Name="Cancel on mouse movement" />
+                    </ContextMenu>
+                </Button.ContextMenu>
+                <StackPanel Orientation="Horizontal">
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconPlay}" Margin="0,0,6,0" />
+                    <TextBlock Text="{Binding PlaybackSummary}" VerticalAlignment="Center" />
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconChevron}" Margin="4,0,0,0" />
+                </StackPanel>
+            </Button>
+        </StackPanel>
         </StackPanel>
 
-        <!-- Sequence commands; while recording the same row becomes the recording banner. Only the commands
-             are gated: the banner keeps Stop recording reachable while the section is off. -->
+        <!-- Sequence commands; while recording the same row becomes the recording banner, and while wait times are
+             open it becomes their bar. Only the commands and the bar are gated: the banner keeps Stop recording
+             reachable while the section is off. -->
         <Grid Grid.Row="1" Margin="0,0,0,8" MinHeight="32" Visibility="{Binding HasSelection, Converter={StaticResource VisibleIfTrue}}">
-            <DockPanel DataContext="{Binding SelectedMacro}"
-                       IsEnabled="{Binding DataContext.IsEnabled, ElementName=Editor}" Tag="{Binding DataContext.IsEnabled, ElementName=Editor}"
-                       Style="{DynamicResource FeatureToggleContentStyle}"
-                       Visibility="{Binding DataContext.IsRecording, ElementName=Editor, Converter={StaticResource VisibleIfFalse}}">
+            <Grid DataContext="{Binding SelectedMacro}"
+                  IsEnabled="{Binding DataContext.IsEnabled, ElementName=Editor}" Tag="{Binding DataContext.IsEnabled, ElementName=Editor}"
+                  Style="{DynamicResource FeatureToggleContentStyle}"
+                  Visibility="{Binding DataContext.IsRecording, ElementName=Editor, Converter={StaticResource VisibleIfFalse}}">
+            <DockPanel Visibility="{Binding IsWaitEditorOpen, Converter={StaticResource VisibleIfFalse}}">
                 <Button Style="{StaticResource MacroButton}" Command="{Binding DataContext.RecordCommand, ElementName=Editor}" Margin="0,0,6,0"
                         ToolTip="Record keys, mouse buttons and wheel input. Capture starts once this profile's app is in front, so switching to it is not recorded. The take goes where New steps go shows."
                         AutomationProperties.Name="Record macro">
@@ -676,7 +727,7 @@
                         <TextBlock Text="Record" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
-                <Button x:Name="AddStepButton" Style="{StaticResource MacroButton}" IsEnabled="{Binding CanAddStep}" Click="AddStepButton_Click"
+                <Button x:Name="AddStepButton" Style="{StaticResource MacroButton}" IsEnabled="{Binding CanAddStep}" Click="MenuButton_Click"
                         Margin="0,0,6,0" ToolTip="Choose an action to insert after the selected step."
                         AutomationProperties.Name="Add step">
                     <Button.ContextMenu>
@@ -734,10 +785,11 @@
                 </Button>
                 <Button x:Name="WaitEditorButton" Style="{StaticResource MacroButton}" Margin="0,0,10,0"
                         Command="{Binding ShowWaitEditorCommand}" Click="WaitEditorOpen_Click"
-                        ToolTip="Give press holds, Wait steps between actions, or both one duration. Unavailable when the macro has neither."
+                        ToolTip="Set press holds, Wait steps between actions, or both to one time. Unavailable when the macro has neither."
                         AutomationProperties.Name="Set wait times">
                     <StackPanel Orientation="Horizontal">
-                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWait}" Margin="0,0,6,0" />
+                        <!-- Accent like the bar it opens, as Record's red dot matches its banner. -->
+                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWait}" Stroke="{StaticResource MacroFocusBrush}" Margin="0,0,6,0" />
                         <TextBlock Text="Wait times…" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
@@ -794,6 +846,144 @@
                 </Grid>
             </DockPanel>
 
+            <!-- Wait times, in one row: the segment counts say what each scope changes and the list highlights those
+                 rows, so nothing needs a second line. Same height as the commands, so the list never moves. -->
+            <!-- The shaded bar ends at Cancel; the status sits after it on the row's background. -->
+            <Grid Visibility="{Binding IsWaitEditorOpen, Converter={StaticResource VisibleIfTrue}}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+            <Border Padding="0,1,2,1" CornerRadius="6" BorderThickness="1"
+                    Background="{StaticResource MacroTimingSurfaceBrush}" BorderBrush="{StaticResource MacroTimingLineBrush}"
+                    PreviewKeyDown="WaitEditor_PreviewKeyDown" AutomationProperties.Name="Wait time editor">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWait}" Stroke="{StaticResource MacroFocusBrush}" Margin="8,0,7,0" />
+                    <!-- The app's segmented picker, as on the Display tab. A scope with nothing to change is unavailable. -->
+                    <Border Grid.Column="1" Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
+                            Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroTimingLineBrush}">
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton IsChecked="{Binding IsPressHoldScope}" IsEnabled="{Binding HasPressHolds}" Padding="7,3"
+                                         Style="{DynamicResource SegmentRadioButtonStyle}" ToolTipService.ShowOnDisabled="True"
+                                         ToolTip="How long each key or button is held: the Wait inside a press, plus Key press and Mouse click holds."
+                                         AutomationProperties.Name="Change press holds">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Press holds" VerticalAlignment="Center" />
+                                    <Border Style="{StaticResource MacroCountChip}">
+                                        <TextBlock Text="{Binding PressHoldCount}" FontSize="11" FontWeight="Normal" HorizontalAlignment="Center" />
+                                    </Border>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton IsChecked="{Binding IsBetweenStepsScope}" IsEnabled="{Binding HasBetweenWaits}" Padding="7,3"
+                                         Style="{DynamicResource SegmentRadioButtonStyle}" ToolTipService.ShowOnDisabled="True"
+                                         ToolTip="Wait steps that pause between actions."
+                                         AutomationProperties.Name="Change Wait steps between actions">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Between steps" VerticalAlignment="Center" />
+                                    <Border Style="{StaticResource MacroCountChip}">
+                                        <TextBlock Text="{Binding BetweenWaitCount}" FontSize="11" FontWeight="Normal" HorizontalAlignment="Center" />
+                                    </Border>
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton IsChecked="{Binding IsAllWaitsScope}" Padding="7,3" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                         ToolTip="Press holds and Wait steps between actions."
+                                         AutomationProperties.Name="Change press holds and Wait steps">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="All" VerticalAlignment="Center" />
+                                    <Border Style="{StaticResource MacroCountChip}">
+                                        <TextBlock Text="{Binding AllWaitCount}" FontSize="11" FontWeight="Normal" HorizontalAlignment="Center" />
+                                    </Border>
+                                </StackPanel>
+                            </RadioButton>
+                        </StackPanel>
+                    </Border>
+                    <!-- Field and unit read as one input; its border carries focus and errors (no separate adorner). -->
+                    <Border Grid.Column="2" Width="80" Margin="8,0,0,0" CornerRadius="4" BorderThickness="1"
+                            Background="{DynamicResource ComboBoxBackgroundBrush}">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="BorderBrush" Value="{StaticResource MacroInputLineBrush}" />
+                                <Style.Triggers>
+                                    <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                        <Setter Property="BorderBrush" Value="{StaticResource MacroFocusBrush}" />
+                                    </Trigger>
+                                    <DataTrigger Binding="{Binding HasWaitEditError}" Value="True">
+                                        <Setter Property="BorderBrush" Value="{StaticResource MacroErrorBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right" Text="ms" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"
+                                       Foreground="{StaticResource MacroMutedBrush}" />
+                            <TextBox x:Name="WaitDurationField" BorderThickness="0" Background="Transparent" Padding="6,0,2,0"
+                                     VerticalContentAlignment="Center" Validation.ErrorTemplate="{x:Null}"
+                                     Text="{Binding WaitDurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
+                                     ToolTip="Whole milliseconds from 0 to 3600000. Enter applies; Esc closes."
+                                     AutomationProperties.Name="Wait time in milliseconds" />
+                        </DockPanel>
+                    </Border>
+                    <Button Grid.Column="3" Content="Apply" Style="{StaticResource MacroPrimaryButton}" MinHeight="28" Margin="8,0,0,0"
+                            Command="{Binding ApplyWaitTimesCommand}" Click="WaitEditorApply_Click"
+                            ToolTip="Set every highlighted time to this value (Enter)." AutomationProperties.Name="Apply wait time" />
+                    <Button Grid.Column="4" Content="Cancel" Style="{StaticResource MacroButton}" MinHeight="28" Margin="6,0,0,0"
+                            Command="{Binding CloseWaitEditorCommand}" Click="WaitEditorClose_Click"
+                            ToolTip="Close (Esc)" AutomationProperties.Name="Cancel wait time editor" />
+                </Grid>
+            </Border>
+                    <!-- The result only; an icon repeats success and errors beside the color. -->
+                    <DockPanel Grid.Column="1" Margin="10,0,8,0">
+                        <Path DockPanel.Dock="Left" Margin="0,0,6,0">
+                            <Path.Style>
+                                <Style TargetType="Path" BasedOn="{StaticResource MacroIcon}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding WaitEditApplied}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Setter Property="Data" Value="{StaticResource MacroIconCheck}" />
+                                            <Setter Property="Stroke" Value="{StaticResource MacroSuccessBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding HasWaitEditError}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Setter Property="Data" Value="{StaticResource MacroIconWarning}" />
+                                            <Setter Property="Stroke" Value="{StaticResource MacroErrorBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Path.Style>
+                        </Path>
+                        <TextBlock Text="{Binding WaitEditMessage}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                                   AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Wait time edit status">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource MacroDetailBrush}" />
+                                    <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                    <Style.Triggers>
+                                        <!-- No status until Apply or an error; an empty tooltip would still pop up. -->
+                                        <Trigger Property="Text" Value="">
+                                            <Setter Property="ToolTip" Value="{x:Null}" />
+                                        </Trigger>
+                                        <DataTrigger Binding="{Binding HasWaitEditError}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding WaitEditApplied}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource MacroSuccessBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </DockPanel>
+            </Grid>
+            </Grid>
+
             <Border Padding="10,0,0,0" CornerRadius="4" BorderThickness="1"
                     Background="{StaticResource MacroRecordingSurfaceBrush}" BorderBrush="{StaticResource MacroRecordingLineBrush}"
                     Visibility="{Binding IsRecording, Converter={StaticResource VisibleIfTrue}}">
@@ -833,72 +1023,27 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Border Padding="10,4,6,4" BorderThickness="0,0,0,1" BorderBrush="{StaticResource MacroLineBrush}">
                         <DockPanel>
-                            <CheckBox DockPanel.Dock="Right" Content="Collapse presses" FontSize="13" VerticalAlignment="Center"
-                                      IsChecked="{Binding CollapseSteps}"
-                                      ToolTip="Show each key or button down, wait, and matching up as one press row. Display only; saved steps don't change."
-                                      AutomationProperties.Name="Collapse presses"
-                                      AutomationProperties.HelpText="Show each key or button down, wait, and matching up as one press row. Display only; saved steps don't change." />
+                            <!-- How the list shows presses: one row each, or every down, wait and up. Display only. -->
+                            <Border DockPanel.Dock="Right" Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
+                                    Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton Content="Presses" IsChecked="{Binding ShowPresses}" Padding="8,3" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                 ToolTip="Show each key or button down, wait, and matching up as one press row. Saved steps don't change."
+                                                 AutomationProperties.Name="Group presses" />
+                                    <RadioButton Content="All steps" IsChecked="{Binding ShowAllSteps}" Padding="8,3" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                 ToolTip="Show every down, wait, and up as its own row."
+                                                 AutomationProperties.Name="Show every step" />
+                                </StackPanel>
+                            </Border>
                             <TextBlock Text="{Binding StepCountText}" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"
                                        Foreground="{StaticResource MacroMutedBrush}" />
-                            <!-- Beside the count it removes, apart from the toolbar's frequent commands. -->
-                            <Button Content="Clear…" Style="{StaticResource MacroButton}" HorizontalAlignment="Left"
-                                    Command="{Binding DataContext.ClearStepsCommand, ElementName=Editor}"
-                                    ToolTip="Remove every step from this macro, for example to record it again. Asks first."
-                                    AutomationProperties.Name="Clear all steps" />
                         </DockPanel>
                     </Border>
-                    <Border Grid.Row="1" Padding="10,8" Background="{StaticResource MacroControlBrush}"
-                            Visibility="{Binding IsWaitEditorOpen, Converter={StaticResource VisibleIfTrue}}"
-                            PreviewKeyDown="WaitEditor_PreviewKeyDown">
-                        <StackPanel>
-                            <!-- Press holds keep a key or button down; Wait steps between actions set the macro's rhythm.
-                                 One kind at a time, so the other keeps its timing. -->
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                <RadioButton Content="Press holds" IsChecked="{Binding IsPressHoldScope}" Style="{StaticResource MacroKeycap}"
-                                             ToolTip="How long each key or button is held: the Wait inside a press, plus Key press and Mouse click holds."
-                                             AutomationProperties.Name="Change press holds" />
-                                <RadioButton Content="Between steps" IsChecked="{Binding IsBetweenStepsScope}" Style="{StaticResource MacroKeycap}"
-                                             ToolTip="Wait steps that pause between actions."
-                                             AutomationProperties.Name="Change Wait steps between actions" />
-                                <RadioButton Content="All" IsChecked="{Binding IsAllWaitsScope}" Style="{StaticResource MacroKeycap}"
-                                             ToolTip="Press holds and Wait steps between actions."
-                                             AutomationProperties.Name="Change press holds and Wait steps" />
-                            </StackPanel>
-                            <DockPanel>
-                                <Button DockPanel.Dock="Right" Content="Close" Style="{StaticResource MacroButton}" Margin="6,0,0,0"
-                                        Command="{Binding CloseWaitEditorCommand}" Click="WaitEditorClose_Click" AutomationProperties.Name="Close wait time editor" />
-                                <Button DockPanel.Dock="Right" Content="Apply" Style="{StaticResource MacroPrimaryButton}" Margin="8,0,0,0"
-                                        Command="{Binding ApplyWaitTimesCommand}" Click="WaitEditorApply_Click" AutomationProperties.Name="Apply wait time" />
-                                <TextBox x:Name="WaitDurationField" Width="96" MinHeight="30" VerticalContentAlignment="Center"
-                                         Text="{Binding WaitDurationText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
-                                         BorderBrush="{StaticResource MacroInputLineBrush}"
-                                         AutomationProperties.Name="Wait time in milliseconds" />
-                                <TextBlock Text="ms" FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
-                            </DockPanel>
-                            <TextBlock Text="{Binding WaitEditMessage}" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"
-                                       AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Wait time edit status">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="{StaticResource MacroMutedBrush}" />
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding HasWaitEditError}" Value="True">
-                                                <Setter Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
-                                            </DataTrigger>
-                                            <DataTrigger Binding="{Binding WaitEditApplied}" Value="True">
-                                                <Setter Property="Foreground" Value="{StaticResource MacroSuccessBrush}" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                        </StackPanel>
-                    </Border>
-                    <Grid Grid.Row="2">
+                    <Grid Grid.Row="1">
                         <ListBox x:Name="StepList" ItemsSource="{Binding VisibleSteps}" SelectedItem="{Binding SelectedStep}"
                                  Style="{StaticResource MacroStepList}" ItemContainerStyle="{StaticResource MacroStepItem}" ItemTemplate="{StaticResource MacroStepRow}"
                                  BorderThickness="0" Background="Transparent"
@@ -972,8 +1117,9 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
                                         Visibility="{Binding SelectedStep.HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />
-                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtons}"
-                                          SelectedItem="{Binding SelectedPressMouseButton}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtonOptions}"
+                                          DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding SelectedPressMouseButton}"
+                                          ItemContainerStyle="{StaticResource MacroComboItem}"
                                           BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
                                           AutomationProperties.Name="Press mouse button" />
                             </StackPanel>
@@ -1000,7 +1146,7 @@
                                 </TextBlock.Style>
                             </TextBlock>
                             <Button Content="Show all steps" Style="{StaticResource MacroLinkButton}" HorizontalAlignment="Left"
-                                    Command="{Binding ExpandSelectedStepCommand}" AutomationProperties.Name="Turn off Collapse presses" />
+                                    Command="{Binding ExpandSelectedStepCommand}" AutomationProperties.Name="Show all steps" />
                         </StackPanel>
 
                         <StackPanel DataContext="{Binding SelectedStep}">
@@ -1040,7 +1186,8 @@
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />
-                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtons}" SelectedItem="{Binding MouseButton}"
+                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtonOptions}"
+                                          DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding MouseButton}"
                                           ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
                                           FocusVisualStyle="{StaticResource MacroFocusRing}" AutomationProperties.Name="Step mouse button" />
                             </StackPanel>
@@ -1101,17 +1248,20 @@
                             <StackPanel Margin="0,0,0,8" Visibility="{Binding HasHeldButtons, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="If a mouse button is held" FontSize="12" Margin="0,0,0,4" Foreground="{StaticResource MacroMutedBrush}"
                                            ToolTip="What this step does if you are holding a mouse button when it runs. The macro's own shortcut button never counts." />
-                                <StackPanel Orientation="Horizontal">
-                                    <RadioButton Content="Stop" IsChecked="{Binding HeldButtonsStop}" Style="{StaticResource MacroKeycap}"
-                                                 ToolTip="Stop the macro with an error at this step."
-                                                 AutomationProperties.Name="If a mouse button is held, stop the macro" />
-                                    <RadioButton Content="Wait" IsChecked="{Binding HeldButtonsWait}" Style="{StaticResource MacroKeycap}"
-                                                 ToolTip="Pause at this step until every mouse button is released, then continue."
-                                                 AutomationProperties.Name="If a mouse button is held, wait for release" />
-                                    <RadioButton Content="Move anyway" IsChecked="{Binding HeldButtonsAllow}" Style="{StaticResource MacroKeycap}"
-                                                 ToolTip="Move while the button is held. On the desktop this drags whatever you are holding."
-                                                 AutomationProperties.Name="If a mouse button is held, move anyway" />
-                                </StackPanel>
+                                <Border HorizontalAlignment="Left" Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
+                                        Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton Content="Stop" IsChecked="{Binding HeldButtonsStop}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                     ToolTip="Stop the macro with an error at this step."
+                                                     AutomationProperties.Name="If a mouse button is held, stop the macro" />
+                                        <RadioButton Content="Wait" IsChecked="{Binding HeldButtonsWait}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                     ToolTip="Pause at this step until every mouse button is released, then continue."
+                                                     AutomationProperties.Name="If a mouse button is held, wait for release" />
+                                        <RadioButton Content="Move anyway" IsChecked="{Binding HeldButtonsAllow}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                     ToolTip="Move while the button is held. On the desktop this drags whatever you are holding."
+                                                     AutomationProperties.Name="If a mouse button is held, move anyway" />
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
 
                             <StackPanel Margin="0,0,0,8" Visibility="{Binding HasDuration, Converter={StaticResource VisibleIfTrue}}">
@@ -1136,16 +1286,29 @@
                                              ToolTip="Nonzero whole number from -32768 to 32767. 120 is one notch."
                                              AutomationProperties.Name="Wheel delta" />
                                 </StackPanel>
-                                <CheckBox Content="Horizontal" IsChecked="{Binding HorizontalWheel}" Margin="56,8,0,0"
-                                          AutomationProperties.Name="Horizontal mouse wheel" />
+                                <Border Margin="56,8,0,0" HorizontalAlignment="Left" Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
+                                        Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton Content="Vertical" IsChecked="{Binding IsVerticalWheel}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                     AutomationProperties.Name="Vertical mouse wheel" />
+                                        <RadioButton Content="Horizontal" IsChecked="{Binding IsHorizontalWheel}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                     AutomationProperties.Name="Horizontal mouse wheel" />
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
 
-                            <TextBlock Text="{Binding Error}" Margin="0,0,0,8" FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource MacroErrorBrush}">
+                            <!-- Field errors, or the macro's playback problem when it names this step (Show step lands here). -->
+                            <TextBlock Text="{Binding DisplayError}" Margin="0,0,0,8" FontSize="12" TextWrapping="Wrap"
+                                       AutomationProperties.LiveSetting="Polite">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource MacroErrorBrush}" />
                                         <Style.Triggers>
-                                            <DataTrigger Binding="{Binding Error}" Value="">
+                                            <DataTrigger Binding="{Binding DisplayError}" Value="">
                                                 <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsProblemOnly}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource MacroWarningBrush}" />
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>

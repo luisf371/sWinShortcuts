@@ -87,7 +87,7 @@ public sealed class MacroStatusTests(ITestOutputHelper output)
     public Task SessionProgress_TimerReadsLatestRowsWithoutRevalidation(MacroSessionMode mode) => MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
     {
         var profile = new Profile { Name = "Game", Executable = "game.exe" };
-        profile.Macros.Definitions = [new MacroDefinition()];
+        profile.Macros.Definitions = [new MacroDefinition { Steps = [.. Enumerable.Repeat(new MacroStep { Kind = MacroStepKind.Wait }, 30)] }];
         var store = new InMemoryProfileStore();
         store.Profiles.Add(profile);
         var input = new FakeInputHookService();
@@ -102,10 +102,12 @@ public sealed class MacroStatusTests(ITestOutputHelper output)
         input.MacroShortcutError = (_, _) => { validations++; return null; };
         // Progress changes no longer raise an event per row; the existing timer polls it.
         input.MacroSession = input.MacroSession with { RowCount = 27, Elapsed = TimeSpan.FromSeconds(2) };
+        // Recording counts captured steps; playback names the step it is on out of the macro's total.
+        var progress = mode == MacroSessionMode.Recording ? "00:02 · 27 steps" : "00:02 · step 27 of 30";
         var started = Stopwatch.GetTimestamp();
-        while (!editor.SessionStatus.Contains("27 rows") && Stopwatch.GetElapsedTime(started).TotalSeconds < 3)
+        while (!editor.SessionStatus.Contains(progress) && Stopwatch.GetElapsedTime(started).TotalSeconds < 3)
             await Task.Delay(10);
-        Assert.Contains("00:02 · 27 rows", editor.SessionStatus);
+        Assert.Contains(progress, editor.SessionStatus);
         Assert.Equal(0, validations);
         input.MacroSession = input.MacroSession with { Mode = MacroSessionMode.Idle };
         input.RaiseMacroSessionChanged();
@@ -135,6 +137,20 @@ public sealed class MacroStatusTests(ITestOutputHelper output)
         input.MacroSession = input.MacroSession with { Mode = MacroSessionMode.Recording, Elapsed = TimeSpan.FromSeconds(1), RowCount = 3 };
         input.RaiseMacroSessionChanged();
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        Assert.Equal("Recording · 00:01 · 3 rows", editor.SessionStatus);
+        Assert.Equal("Recording · 00:01 · 3 steps", editor.SessionStatus);
     });
+
+    [Theory]
+    [InlineData(MacroRecordingEndReason.Stopped, "Recording saved · 1 step added.")]
+    [InlineData(MacroRecordingEndReason.RowLimit, "Recording saved · 1 step added · stopped at the 1000-step limit.")]
+    [InlineData(MacroRecordingEndReason.DurationLimit, "Recording saved · 1 step added · stopped at the 10-minute limit.")]
+    public void ShowRecordingResult_EndReason_ReadsAsPlainWords(MacroRecordingEndReason reason, string expected)
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        using var editor = new MacrosViewModel(profile, () => { });
+
+        editor.ShowRecordingResult(new MacroRecordingResult(1, profile, Guid.NewGuid(), [new MacroStep()], reason, false));
+
+        Assert.Equal(expected, editor.SessionStatus);
+    }
 }

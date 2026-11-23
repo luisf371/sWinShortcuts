@@ -4,6 +4,41 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## November 22, 2026
+
+### Changed & Improved
+- **Macro Page Layout**:
+  - The macro settings take two rows instead of three, so the step list shows about two more rows.
+  - Row one is the macro: the macro list, its own **On** switch (was **Enabled**), a short status, **New…**, and a **⋯** menu with **Rename…**, **Duplicate**, **Clear all steps…** and **Delete macro…**. Those four were separate buttons, and **Clear…** sat beside the step count.
+  - The status says **Ready**, **Off**, **Macros are off**, or a short reason, with the full sentence on hover. When one step is the problem, it becomes a **Fix step N** link that jumps to the step, which shows the full message.
+  - Row two is when it runs: the Ctrl/Alt/Shift/Win modifiers as one segmented group, the key or mouse button, and a **Playback** button whose label shows what is set, such as **Once** or **Loop · on press · stops on move**. Its menu replaces the **Toggle loop**, **Start on press** and **Cancel on mouse movement** check boxes with **Play once per press** / **Loop until pressed again**, **Start when released** / **Start when pressed**, and **Stop when the mouse moves**. Settings and saved macros are unchanged.
+  - **Collapse presses** is now a **Presses | All steps** switch above the list. In the step panel, **If a mouse button is held** and the wheel's **Vertical | Horizontal** choice use the same segmented style.
+  - The closed macro list no longer repeats the state word that the status beside it shows.
+  - Messages are shorter: "Assign a shortcut to play it." and "Add a step to play it."
+- **Wait Times Bar**:
+  - **Wait times…** now turns the step toolbar into a one-row bar, the way **Record** turns it into the red recording banner, instead of opening a three-line panel above the step list. The bar is the toolbar's height, so the list doesn't move or lose rows.
+  - The scope choice uses the app's segmented picker (as on the Display tab) instead of key-shaped buttons, and each scope shows how many rows it changes, such as **Press holds 5**, **Between steps 3** and **All 8**. A scope with nothing to change can't be picked.
+  - While the bar is open, the step list highlights every time the edit would change, and the highlight follows the scope you pick.
+  - The duration field shows **ms** inside it, with **Apply** and **Cancel** right beside it; **Cancel** or Escape closes the bar.
+  - The status confirms `Set to 40 ms` with a check after **Apply**. Invalid input turns the field red and says **Digits only** or **Max 3600000 ms**.
+  - The toolbar button's clock icon now uses the bar's accent color, as Record's red dot matches its banner.
+- **Readable Key Names**:
+  - Key pickers, macro step rows and shortcut text use keycap names: **Enter** instead of Return, **Backspace** instead of Back, **Caps Lock** instead of Capital, **Page Down** and **Page Up** instead of Next and PageUp, **Print Screen** instead of Snapshot, **Scroll Lock**, **Menu**, and **Left Shift**, **Right Ctrl** and **Left Win** instead of LeftShift, RightCtrl and LWin.
+  - Number pad keys read **Num 7**, **Num \***, **Num +** and so on, instead of NumPad7, Multiply and Add.
+  - Display only: saved profiles and settings are unchanged.
+- **Macro Editor Clarity**:
+  - When a macro can't play because of one step, that step's row shows a warning mark with the full message on hover, and the step editor shows the message under the step's fields. **Show step N** now lands on the explanation; the one-line status beside it is too short for most messages.
+  - Those messages use the step names from **Add step**: "a Key up must follow a matching Key down" and "add a matching Key up before the macro ends", instead of UP and DOWN.
+  - Mouse side buttons read **Button 4** and **Button 5** in step rows and the step's **Button** list, matching **Mouse Button 4** and **5** in the shortcut picker, instead of XButton1 and XButton2.
+  - Playback progress reads `Playing · 00:03 · step 12 of 40`. It used to say "12 rows", which was the current step, not a count. Recording counts steps, and a finished take reports `Recording saved · 12 steps added`, noting when it stopped at the 1000-step or 10-minute limit instead of showing internal names such as RowLimit.
+  - Changing a step's **Action** to **Wait** gives it the same 100 ms pause as a new Wait step when it had no duration. An auto-hold Key press used to become a 0 ms Wait that did nothing.
+  - The step **Action** list follows the **Add step** menu order, with **Wait** last.
+- **Macro Diagnostics & Logging**:
+  - Debug log entries for macros now identify the macro and profile by name across session starts, step playback, cancellations, and failures.
+  - When playback is interrupted or refused, the log records the exact reason—such as physical key takeovers, window focus changes, monitor layout changes, or held keys and modifiers—along with the current step number.
+
+---
+
 ## November 21, 2026
 
 ### Added

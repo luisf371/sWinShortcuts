@@ -23,6 +23,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     private int _collapsedDurationMs;
     private string _collapsedError = string.Empty;
     private bool _isPressHold;
+    private string _problem = string.Empty;
+    private bool _isWaitTarget;
 
     public MacroStepViewModel(MacroStep step, Func<bool> canEdit)
     {
@@ -54,7 +56,9 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
             Kind = value,
             Key = _step.Key == Key.None ? Key.A : _step.Key,
             MouseButton = _step.MouseButton ?? sWinShortcuts.Models.MouseButton.Left,
-            WheelDelta = _step.WheelDelta == 0 ? 120 : _step.WheelDelta
+            WheelDelta = _step.WheelDelta == 0 ? 120 : _step.WheelDelta,
+            // A 0 ms Wait does nothing (an auto-hold Key press converts to one); start it like a new Wait step.
+            DurationMs = value == MacroStepKind.Wait && _step.DurationMs == 0 ? MacroViewModel.DEFAULT_WAIT_MS : _step.DurationMs
         });
     }
     public Key Key { get => _step.Key; set => Change(_step with { Key = value }); }
@@ -64,6 +68,9 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public int DurationMs { get => _step.DurationMs; set => DurationText = value.ToString(CultureInfo.InvariantCulture); }
     public int WheelDelta { get => _step.WheelDelta; set => WheelDeltaText = value.ToString(CultureInfo.InvariantCulture); }
     public bool HorizontalWheel { get => _step.HorizontalWheel; set => Change(_step with { HorizontalWheel = value }); }
+    // Wheel direction picker: the radio being cleared writes false, which is ignored.
+    public bool IsVerticalWheel { get => !HorizontalWheel; set { if (value) HorizontalWheel = false; } }
+    public bool IsHorizontalWheel { get => HorizontalWheel; set { if (value) HorizontalWheel = true; } }
     public string XText { get => _xText; set => ChangeNumberText(ref _xText, value); }
     public string YText { get => _yText; set => ChangeNumberText(ref _yText, value); }
     public string DurationText { get => _durationText; set => ChangeNumberText(ref _durationText, value); }
@@ -134,7 +141,9 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public string DisplayTimingText => IsCollapsedPress
         ? $"{_collapsedDurationMs.ToString(CultureInfo.InvariantCulture)} ms hold"
         : TimingText;
-    public string DisplayError => IsCollapsedPress ? _collapsedError : Error;
+    // A row's own field error first, else the macro's playback problem when it names this row.
+    public string DisplayError => IsCollapsedPress ? _collapsedError : Error.Length > 0 ? Error : _problem;
+    public bool IsProblemOnly => !IsCollapsedPress && Error.Length == 0 && _problem.Length > 0;
     public string Summary => Detail.Length == 0 ? TimingText : TimingText.Length == 0 ? Detail : $"{Detail} · {TimingText}";
     public string KindHelp => Kind switch
     {
@@ -156,7 +165,14 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.UnfreezeMouse => "Lets your physical mouse move the cursor again.",
         _ => "Pauses before the next step."
     };
-    private string ButtonText => MouseButton?.ToString() ?? "Choose button";
+    private string ButtonText => MouseButton is { } button ? ButtonName(button) : "Choose button";
+    // XButton1/2 are the side buttons; the shortcut picker calls them Mouse Button 4 and 5.
+    internal static string ButtonName(MouseButton button) => button switch
+    {
+        sWinShortcuts.Models.MouseButton.XButton1 => "Button 4",
+        sWinShortcuts.Models.MouseButton.XButton2 => "Button 5",
+        _ => button.ToString()
+    };
     private string PositionText => $"{X.ToString(CultureInfo.InvariantCulture)}, {Y.ToString(CultureInfo.InvariantCulture)}";
     private string MillisecondsText => $"{DurationMs.ToString(CultureInfo.InvariantCulture)} ms";
     public string Error =>
@@ -178,6 +194,24 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         OnPropertyChanged(nameof(TimingText));
         OnPropertyChanged(nameof(DisplayTimingText));
         OnPropertyChanged(nameof(Summary));
+    }
+
+    // The open wait-time editor would change this row's time (for a collapsed press, its hold).
+    public bool IsWaitTarget => _isWaitTarget;
+    internal void SetWaitTarget(bool value)
+    {
+        if (_isWaitTarget == value) return;
+        _isWaitTarget = value;
+        OnPropertyChanged(nameof(IsWaitTarget));
+    }
+
+    // Presentation only, like SetPressHold: the one-line status trims long messages, so the named row shows it too.
+    internal void SetProblem(string problem)
+    {
+        if (_problem == problem) return;
+        _problem = problem;
+        OnPropertyChanged(nameof(DisplayError));
+        OnPropertyChanged(nameof(IsProblemOnly));
     }
 
     // Presentation only: preserve each source row and its unparsed editor text.
@@ -202,7 +236,11 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
             OnPropertyChanged(nameof(DisplayActionLabel));
         }
         if (changed || durationChanged) OnPropertyChanged(nameof(DisplayTimingText));
-        if (changed || errorChanged) OnPropertyChanged(nameof(DisplayError));
+        if (changed || errorChanged)
+        {
+            OnPropertyChanged(nameof(DisplayError));
+            OnPropertyChanged(nameof(IsProblemOnly));
+        }
     }
 
     private void Change(MacroStep value, [CallerMemberName] string? propertyName = null)
@@ -219,6 +257,11 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         OnPropertyChanged(nameof(DurationText));
         OnPropertyChanged(nameof(WheelDeltaText));
         OnPropertyChanged(propertyName);
+        if (propertyName == nameof(HorizontalWheel))
+        {
+            OnPropertyChanged(nameof(IsVerticalWheel));
+            OnPropertyChanged(nameof(IsHorizontalWheel));
+        }
         OnPropertyChanged(nameof(ActionLabel));
         OnPropertyChanged(nameof(DisplayActionLabel));
         OnPropertyChanged(nameof(Detail));
@@ -227,6 +270,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         OnPropertyChanged(nameof(Summary));
         OnPropertyChanged(nameof(Error));
         OnPropertyChanged(nameof(DisplayError));
+        OnPropertyChanged(nameof(IsProblemOnly));
         if (propertyName == nameof(Kind))
         {
             OnPropertyChanged(nameof(Key));
@@ -262,6 +306,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         }
         OnPropertyChanged(nameof(Error));
         OnPropertyChanged(nameof(DisplayError));
+        OnPropertyChanged(nameof(IsProblemOnly));
         OnPropertyChanged(nameof(Detail));
         OnPropertyChanged(nameof(TimingText));
         OnPropertyChanged(nameof(DisplayTimingText));

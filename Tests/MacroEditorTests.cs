@@ -339,9 +339,9 @@ public sealed class MacroEditorTests
 
         Assert.True(macro.IsEnabled);
         Assert.True(profile.Macros.Definitions[0].IsEnabled);
-        Assert.Equal("Assign a shortcut to play this macro.", macro.ValidationMessage);
+        Assert.Equal("Assign a shortcut to play it.", macro.ValidationMessage);
         macro.ShortcutKey = Key.F6;
-        Assert.Equal("Add at least one step to play this macro.", macro.ValidationMessage);
+        Assert.Equal("Add a step to play it.", macro.ValidationMessage);
         macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
         Assert.True(macro.IsPlayable);
 
@@ -582,5 +582,104 @@ public sealed class MacroEditorTests
         editor.DeleteMacroCommand.Execute(null);
         Assert.Empty(editor.Definitions);
         Assert.Empty(profile.Macros.Definitions);
+    }
+
+    [Fact]
+    public void PlaybackProblem_NamedStep_ShowsTheMessageOnItsRowUntilFixed()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            ShortcutKey = Key.F6,
+            Steps = [new() { Kind = MacroStepKind.KeyDown, Key = Key.LeftShift }, new() { Kind = MacroStepKind.KeyPress, Key = Key.Tab }]
+        }, () => true);
+        var down = macro.Steps[0];
+
+        Assert.Equal("Step 1: add a matching Key up before the macro ends.", macro.ValidationMessage);
+        Assert.Equal(macro.ValidationMessage, down.DisplayError);
+        Assert.True(down.IsProblemOnly);
+        Assert.Empty(down.Error);
+        Assert.Empty(macro.Steps[1].DisplayError);
+
+        // A new Key up starts on A, so the problem moves to that row; choosing the held key fixes the macro.
+        macro.AddStepCommand.Execute(MacroStepKind.KeyUp);
+        var up = macro.SelectedStep!;
+        Assert.Equal("Step 3: a Key up must follow a matching Key down.", up.DisplayError);
+        Assert.Empty(down.DisplayError);
+        up.Key = Key.LeftShift;
+
+        Assert.True(macro.IsPlayable);
+        Assert.All(macro.Steps, step => Assert.False(step.IsProblemOnly));
+    }
+
+    [Fact]
+    public void MouseButtons_SideButtons_ReadAsButton4And5()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MouseClick, MouseButton = sWinShortcuts.Models.MouseButton.XButton1, X = 1200, Y = 700 }]
+        }, () => true);
+
+        Assert.Equal("Button 4 at 1200, 700", macro.Steps[0].Detail);
+        Assert.Equal(new[] { "Left", "Right", "Middle", "Button 4", "Button 5" }, MacroViewModel.MouseButtonOptions.Select(option => option.Value));
+    }
+
+    [Fact]
+    public void Kind_AutoHoldPressChangedToWait_StartsWithTheNewWaitPause()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition { Steps = [new() { Kind = MacroStepKind.KeyPress, Key = Key.E }] }, () => true);
+        var step = macro.Steps[0];
+
+        step.Kind = MacroStepKind.Wait;
+
+        Assert.Equal(100, step.DurationMs);
+        Assert.Equal("100", step.DurationText);
+        Assert.Equal(MacroStepKind.Wait, MacroViewModel.ActionOptions[^1].Key);
+    }
+
+    [Fact]
+    public void PlaybackMenu_RadioPairsAndSummary_FollowTheMacroOptions()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition(), () => true);
+        Assert.True(macro.PlaysOnce && macro.StartsWhenReleased);
+        Assert.Equal("Once", macro.PlaybackSummary);
+
+        macro.PlaysInLoop = true;
+        macro.StartsWhenPressed = true;
+        macro.CancelOnMouseMovement = true;
+        Assert.Equal((true, true), (macro.ToggleMode, macro.StartOnPress));
+        Assert.Equal("Loop · on press · stops on move", macro.PlaybackSummary);
+
+        // Clearing a checked item is ignored; only choosing its partner changes the mode.
+        macro.PlaysInLoop = false;
+        macro.StartsWhenPressed = false;
+        Assert.Equal((true, true), (macro.ToggleMode, macro.StartOnPress));
+        macro.PlaysOnce = true;
+        macro.StartsWhenReleased = true;
+        Assert.Equal((false, false), (macro.ToggleMode, macro.StartOnPress));
+        Assert.Equal("Once · stops on move", macro.PlaybackSummary);
+    }
+
+    [Fact]
+    public void ViewSwitchAndWheelDirection_RadioProjections_IgnoreClearing()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MouseWheel, WheelDelta = 120 }]
+        }, () => true);
+        Assert.True(macro.ShowPresses && !macro.ShowAllSteps);
+        macro.ShowPresses = false;
+        Assert.True(macro.CollapseSteps);
+        macro.ShowAllSteps = true;
+        Assert.False(macro.CollapseSteps);
+        Assert.True(macro.ShowAllSteps && !macro.ShowPresses);
+
+        var wheel = macro.Steps[0];
+        Assert.True(wheel.IsVerticalWheel);
+        wheel.IsHorizontalWheel = true;
+        Assert.True(wheel.HorizontalWheel && !wheel.IsVerticalWheel);
+        wheel.IsHorizontalWheel = false;
+        Assert.True(wheel.HorizontalWheel);
+        wheel.IsVerticalWheel = true;
+        Assert.False(wheel.HorizontalWheel);
     }
 }
