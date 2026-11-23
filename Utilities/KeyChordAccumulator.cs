@@ -40,6 +40,7 @@ public sealed class KeyChordAccumulator
     private const int VK_SHIFT = 0x10;
     private const int VK_CONTROL = 0x11;
     private const int VK_MENU = 0x12;
+    private const int VK_PAUSE = 0x13;
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const int VK_LSHIFT = 0xA0;
@@ -141,8 +142,11 @@ public sealed class KeyChordAccumulator
             _multiple = true;
         }
 
-        return KeyCaptureStatus.Pending;
+        return IsMomentaryKey(vk) ? OnKeyUp(vk) : KeyCaptureStatus.Pending;
     }
+
+    // Windows reports Pause with a down edge only.
+    internal static bool IsMomentaryKey(int vk) => vk == VK_PAUSE;
 
     public KeyCaptureStatus OnKeyUp(int vk)
     {
@@ -209,15 +213,20 @@ public sealed class KeyChordAccumulator
             return KeyCaptureStatus.Finished;
         }
 
-        var index = (int)button;
-        if ((uint)index >= (uint)_mouseDown.Length || !_mouseDown[index])
+        if (!IsMouseButtonDown(button))
         {
             return KeyCaptureStatus.Pending;
         }
 
-        _mouseDown[index] = false;
+        _mouseDown[(int)button] = false;
         _downCount--;
         return TryFinish();
+    }
+
+    internal bool IsMouseButtonDown(MouseButton button)
+    {
+        var index = (int)button;
+        return (uint)index < (uint)_mouseDown.Length && _mouseDown[index];
     }
 
     /// <summary>A wheel notch is a press and release in one; it finishes the chord when nothing else is held.</summary>

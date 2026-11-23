@@ -83,7 +83,10 @@ public sealed class MacroEditorTemplateTests
             var styles = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Styles.xaml.testdata"));
             var macroTab = Assert.Single(source.Descendants(wpf + "TabItem"), item => (string?)item.Attribute("Header") == "Macros");
             XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
-            var namespaces = source.Root!.Attributes().Where(attribute => attribute.IsNamespaceDeclaration)
+            // Preserve each dictionary's prefixes when copying its resource elements out of their root.
+            var namespaces = source.Root!.Attributes()
+                .Concat(brushes.Root!.Attributes()).Concat(styles.Root!.Attributes())
+                .Where(attribute => attribute.IsNamespaceDeclaration).DistinctBy(attribute => attribute.Name)
                 .Select(attribute => new XAttribute(attribute.Name,
                     attribute.Value.StartsWith("clr-namespace:sWinShortcuts.", StringComparison.Ordinal)
                         ? attribute.Value + ";assembly=sWinShortcuts" : attribute.Value));

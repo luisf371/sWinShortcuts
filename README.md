@@ -352,6 +352,8 @@ Open **Settings** from the tray menu or main window to configure:
 
 - **Color toggle key** and **Rapid Fire arm key** — app-level hotkeys shared across all
   profiles (they are intentionally *not* per-profile settings).
+- **Enable Debug Logging** — writes verbose input-hook tracing to `debug.log`.
+- **Start minimized** and **Start with Windows** (with optional *run as administrator*).
 
 ### Assigning Keys
 
@@ -361,14 +363,16 @@ release the key or combination. Modifiers always come first (**Ctrl+E**, never E
 order Ctrl, Alt, Shift, Win, whichever order you pressed them. Pressing only a modifier
 assigns that key itself, such as **LeftShift** for Sprint. Fields that also take mouse input
 (Alt + Shortcut triggers, macro shortcuts, Hold-breath Early Cancel) capture a button or wheel
-notch over the box. Click **Cancel** or anywhere outside the box, or switch windows, to keep
-the old value; a capture also gives up after 10 seconds without a key, or 30 seconds overall.
+notch over the box. Click **Cancel**, click outside the box, or switch windows to keep
+the old value. Capture also ends after 10 seconds without input or 30 seconds overall.
 **Escape** is an ordinary key and can be assigned. While a capture runs, keystrokes go only to
 the box, so shortcuts such as Win+E, Alt+Tab and the app's own hotkeys don't fire. If input
 hooks aren't running, the box captures through the window instead and Windows shortcuts can
 still react.
-- **Enable Debug Logging** — writes verbose input-hook tracing to `debug.log`.
-- **Start minimized** and **Start with Windows** (with optional *run as administrator*).
+
+**After upgrading, reconfirm your keybinds in Settings and in each profile.** Numeric Auto-Run
+modifiers in older profile files now fall back to Ctrl. If a shortcut looks wrong,
+click **Assign** and enter it again.
 
 Elevated startup is scoped to your Windows account and runs at your logon, including
 on battery power, without a time limit. Existing startup tasks are adopted only when

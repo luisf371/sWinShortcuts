@@ -8,6 +8,7 @@ namespace Tests;
 
 public sealed class KeyChordAccumulatorTests
 {
+    private const int VK_PAUSE = 0x13;
     private const int VK_E = 0x45;
     private const int VK_F = 0x46;
     private const int VK_F5 = 0x74;
@@ -18,6 +19,26 @@ public sealed class KeyChordAccumulatorTests
     private const int VK_LMENU = 0xA4;
     private const int VK_LWIN = 0x5B;
     private const int VK_PROCESSKEY = 0xE5;
+
+    [Fact]
+    public void OnKeyDown_PauseWithoutKeyUp_FinishesCapture()
+    {
+        var accumulator = Started();
+
+        Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyDown(VK_PAUSE));
+        Assert.Equal(KeyChordResult.Completed(KeyChord.FromKey(Key.Pause)), accumulator.Result);
+    }
+
+    [Fact]
+    public void OnKeyDown_PauseWithShiftHeld_FinishesWhenShiftIsReleased()
+    {
+        var accumulator = Started();
+        accumulator.OnKeyDown(VK_LSHIFT);
+
+        Assert.Equal(KeyCaptureStatus.Pending, accumulator.OnKeyDown(VK_PAUSE));
+        Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_LSHIFT));
+        Assert.Equal(KeyChordResult.Completed(KeyChord.FromKey(Key.Pause, ModifierKeys.Shift)), accumulator.Result);
+    }
 
     [Fact]
     public void Capture_EThenCtrl_GivesCtrlE()
@@ -102,7 +123,7 @@ public sealed class KeyChordAccumulatorTests
         Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_LSHIFT));
 
         Assert.Equal(KeyChord.FromKey(Key.LeftShift, ModifierKeys.Control), accumulator.Result.Chord);
-        Assert.Equal("Ctrl+LeftShift", accumulator.Result.Chord.ToDisplayText());
+        Assert.Equal("Ctrl+Left Shift", accumulator.Result.Chord.ToDisplayText());
     }
 
     [Fact]

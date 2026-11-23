@@ -235,7 +235,10 @@ public sealed class ProfileEditorTabsTemplateTests
         var styles = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Styles.xaml.testdata"));
         var tabs = Assert.Single(source.Descendants(wpf + "TabControl"),
             control => (string?)control.Attribute("Style") == "{StaticResource SettingsTabControlStyle}");
-        var namespaces = source.Root!.Attributes().Where(attribute => attribute.IsNamespaceDeclaration)
+        // Preserve each dictionary's prefixes when copying its resource elements out of their root.
+        var namespaces = source.Root!.Attributes()
+            .Concat(brushes.Root!.Attributes()).Concat(styles.Root!.Attributes())
+            .Where(attribute => attribute.IsNamespaceDeclaration).DistinctBy(attribute => attribute.Name)
             .Select(attribute => new XAttribute(attribute.Name,
                 attribute.Value.StartsWith("clr-namespace:sWinShortcuts.", StringComparison.Ordinal)
                     ? attribute.Value + ";assembly=sWinShortcuts" : attribute.Value));

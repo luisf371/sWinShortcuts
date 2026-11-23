@@ -557,3 +557,12 @@
 - Auto-Run tests that re-press the trigger must send its up through `Handle` (the `_triggerKeyDownVk` latch), not only `ObservePhysicalEvent`.
 - Verification: no `dotnet` on the Linux implementation host; nothing compiled or run. Build/tests must run on Windows (plan §7).
 - Review fix (stuck key): `KeyCaptureGate.Begin(sink, now, isKeyDown)` snapshots held keys; `TryBeginKeyCapture` passes `_isPhysicalKeyDown` (GetAsyncKeyState, UI thread). Pre-held auto-repeat downs are swallowed but never owned/forwarded (owning one swallowed the real up after Windows saw the down). The pre-held up passes through AND is forwarded to the sink so `KeyChordAccumulator` clears its `_preheld` flag; otherwise a re-press of that key after release was ignored in hook mode.
+
+## 2026-11-23 (PR #26 rebase and capture fixes)
+
+- Rebased onto 727a509. Keep the compact macro header and Playback menu from main with the capture control in the shortcut slot. The keycap display keeps main menu and numpad names plus Num Lock and the ISO key label.
+- WPF and WinForms implicit imports overlap in code-only controls. Use local aliases for WPF types, including the Binding sentinel in the chord converter.
+- Upgrade decision: numeric Auto-Run modifiers continue to fall back to Ctrl. Tell users to reconfirm keybinds in the changelog and Assigning Keys section.
+- Capture tests reproduce Pause as a one-edge key and mouse-first chords spanning the keyboard idle deadline. The gate reads the accumulator activity so both devices share the idle decision. Mouse dispatch disables new activations while assigning and still settles prior releases.
+- The XAML template tests must preserve namespaces from merged dictionaries. Styles.xaml still uses the behaviors prefix even after the last use in MainWindow.xaml is removed.
+- The Windows Release build passed with no warnings and all 1,932 tests passed after the fixes.

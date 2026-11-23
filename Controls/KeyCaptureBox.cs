@@ -9,7 +9,16 @@ using System.Windows.Threading;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
+using Brush = System.Windows.Media.Brush;
+using Button = System.Windows.Controls.Button;
+using Color = System.Windows.Media.Color;
+using Control = System.Windows.Controls.Control;
+using Cursors = System.Windows.Input.Cursors;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using ModelMouseButton = sWinShortcuts.Models.MouseButton;
+using MouseEventArgs = System.Windows.Input.MouseEventArgs;
+using TextBox = System.Windows.Controls.TextBox;
+using UserControl = System.Windows.Controls.UserControl;
 
 namespace sWinShortcuts.Controls;
 
@@ -318,7 +327,8 @@ public sealed class KeyCaptureBox : UserControl
     // Test seam for mouse triggers over the box.
     internal bool HandleMouseButton(ModelMouseButton button, bool isDown)
     {
-        if (!_capturing || _resultPosted || !AcceptsButton(button))
+        if (!_capturing || _resultPosted ||
+            (isDown ? !AcceptsButton(button) : !_accumulator.IsMouseButtonDown(button)))
         {
             return false;
         }
@@ -509,16 +519,14 @@ public sealed class KeyCaptureBox : UserControl
 
     private void OnPreviewMouseUp(object sender, MouseButtonEventArgs e)
     {
-        if (!_capturing || IsOver(_assign, e) || IsOver(_clear, e))
+        if (!_capturing)
         {
             return;
         }
 
-        e.Handled = true;
-        if (ToModelButton(e.ChangedButton) is { } button)
-        {
-            HandleMouseButton(button, isDown: false);
-        }
+        // A press accepted by the field owns its release even if the pointer moves over a command button.
+        e.Handled = (ToModelButton(e.ChangedButton) is { } button && HandleMouseButton(button, isDown: false)) ||
+                    (!IsOver(_assign, e) && !IsOver(_clear, e));
     }
 
     private void OnPreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -711,6 +719,8 @@ public sealed class KeyCaptureBox : UserControl
     // Hook-thread adapter: only updates the accumulator and posts the finished result.
     private sealed class CaptureSink(KeyCaptureBox owner) : IKeyCaptureSink
     {
+        public bool HasStarted => owner._accumulator.HasStarted;
+
         public KeyCaptureStatus OnKey(int virtualKey, bool isDown)
         {
             if (!owner._capturing || !owner._hookCapture || owner._resultPosted)

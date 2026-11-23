@@ -19,9 +19,12 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
   - Clicking **Cancel** or anywhere outside the box, switching windows, changing profile or macro, or 10 seconds without a key press (30 seconds overall) ends the capture and keeps the old value. **Escape** is an ordinary assignable key.
   - While a capture runs, keystrokes go only to the box: profile remaps, Alt gestures, the app toggle keys, the Start menu, Win+E/R/D and Alt+Tab don't fire. Ctrl+Alt+Del and Win+L still work and cancel the capture. If input hooks aren't running (or a macro is busy), the box captures through the window instead, and Windows shortcuts such as Win+E may still react.
   - Key names read more naturally: **Print Screen**, **Scroll Lock**, **Num Lock**, **Page Up/Down**, **Caps Lock**, **Backspace**, **Left/Right Win** and **Num +** style numpad operators. Saved key names are unchanged.
-  - Profiles save a combined Auto-Run trigger as `[AutoRun] TriggerModifier=Control+Alt`. Single modifiers and None are written exactly as before, so existing files load and re-save unchanged. An older build reads a combined value as its default, **Control**.
+  - Profiles save a combined Auto-Run trigger as `[AutoRun] TriggerModifier=Control+Alt`. Single modifier names and None still load and save as before. An older build reads a combined value as its default, **Control**.
+
+**After upgrading, reconfirm your keybinds in Settings and in each profile.** Numeric Auto-Run modifiers in older profile files now fall back to Ctrl. If a shortcut looks wrong, click **Assign** and enter it again.
 
 ### Fixed
+- **Keybind capture** handles the Pause key, keeps modifiers in mouse shortcuts, and completes a captured click even if you release it over Cancel or Clear. Existing mouse bindings stay inactive while Assign is listening.
 - **Alt + Shortcut Keys Outside the Old List**: an Alt + Shortcut trigger on a key that the old dropdown didn't list, such as F13 loaded from a profile file, now fires. Alt + Shortcut now recognizes every key the trigger field accepts.
 
 ---

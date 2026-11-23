@@ -290,6 +290,31 @@ public sealed class KeyCaptureBoxTests : IDisposable
             Assert.Equal(KeyChord.FromTrigger(InputTrigger.FromMouseButton(MouseButton.Left)), box.Chord);
         });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task MouseRelease_OverCommandButton_CompletesOwnedPress(bool overClear) =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var box = new KeyCaptureBox { AllowNone = true, AcceptsMouseButtons = true };
+            box.Measure(new Size(300, 40));
+            box.Arrange(new Rect(0, 0, 300, 40));
+            box.BeginCapture();
+            Assert.True(box.HandleMouseButton(MouseButton.XButton1, isDown: true));
+
+            var button = overClear ? box.ClearButton : box.AssignButton;
+            var release = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.XButton1)
+            {
+                RoutedEvent = Mouse.PreviewMouseUpEvent
+            };
+            Assert.True(new Rect(button.RenderSize).Contains(release.GetPosition(button)));
+            button.RaiseEvent(release);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.True(release.Handled);
+            Assert.Equal(KeyChord.FromTrigger(InputTrigger.FromMouseButton(MouseButton.XButton1)), box.Chord);
+        });
+
     [Fact]
     public Task MouseButtons_NotAccepted_AreIgnored() =>
         MacroRecordingLifetimeTests.RunOnStaAsync(() =>

@@ -1,11 +1,14 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Windows.Input;
+using sWinShortcuts.Interop;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Services.Input;
 using sWinShortcuts.Utilities;
 using Tests.Fakes;
 using Xunit;
+using MouseButton = sWinShortcuts.Models.MouseButton;
 
 namespace Tests;
 
@@ -156,6 +159,37 @@ public sealed class KeyCaptureGateTests
     }
 
     [Fact]
+    public void TryHandle_MouseStartsCapture_IdleDeadlineDoesNotDropChord()
+    {
+        const int VK_LSHIFT = 0xA0;
+        var sink = new AccumulatorSink(preheldVks: []);
+        var gate = Begun(sink);
+        var afterIdleDeadline = KeyCaptureGate.IdleLimitTicks + 1;
+        Assert.Equal(KeyCaptureStatus.Pending, sink.Accumulator.OnMouseDown(MouseButton.Middle));
+
+        Assert.True(gate.TryHandle(VK_LSHIFT, isDown: true, isUp: false, now: afterIdleDeadline));
+        Assert.Equal(KeyCaptureStatus.Pending, sink.Accumulator.OnMouseUp(MouseButton.Middle));
+        Assert.True(gate.TryHandle(VK_LSHIFT, isDown: false, isUp: true, now: afterIdleDeadline + 1));
+
+        Assert.Equal(KeyChordResult.Completed(KeyChord.FromTrigger(InputTrigger.FromMouseButton(MouseButton.Middle),
+            ModifierKeys.Shift)), sink.Accumulator.Result);
+        Assert.False(gate.IsActive);
+    }
+
+    [Fact]
+    public void TryHandle_PauseDown_CompletesWithoutWaitingForUp()
+    {
+        const int VK_PAUSE = 0x13;
+        var sink = new AccumulatorSink(preheldVks: []);
+        var gate = Begun(sink);
+
+        Assert.True(gate.TryHandle(VK_PAUSE, isDown: true, isUp: false, now: 1));
+
+        Assert.Equal(KeyChordResult.Completed(KeyChord.FromKey(Key.Pause)), sink.Accumulator.Result);
+        Assert.False(gate.IsActive);
+    }
+
+    [Fact]
     public void TryHandle_HardDeadline_FailsOpenEvenWhileKeysAreHeld()
     {
         var sink = new RecordingSink();
@@ -255,6 +289,29 @@ public sealed class KeyCaptureGateTests
     }
 
     [Fact]
+    public void DispatchDecodedMouseEvent_ActiveCapture_PassesThroughExistingMacroShortcut()
+    {
+        using var service = MacroPlaybackTests.Create(new RecordingInputSender(), out var profile,
+            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        profile.Macros.Definitions = [profile.Macros.Definitions[0] with
+        {
+            ShortcutKey = Key.None,
+            ShortcutMouseButton = MouseButton.Middle
+        }];
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
+        var gate = GateOf(service);
+        gate.Begin(new RecordingSink(), Stopwatch.GetTimestamp());
+
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_MBUTTONDOWN, 0));
+        Assert.False(service.DispatchDecodedMouseEvent(NativeMethods.WM_MBUTTONUP, 0));
+        Assert.Equal(MacroSessionMode.Idle, service.GetMacroSession().Mode);
+
+        gate.End();
+        Assert.True(service.DispatchDecodedMouseEvent(NativeMethods.WM_MBUTTONDOWN, 0));
+        Assert.True(service.DispatchDecodedMouseEvent(NativeMethods.WM_MBUTTONUP, 0));
+    }
+
+    [Fact]
     public void RemapHandleKeyboardEvent_LoneUpOfMappedSource_SendsNothing()
     {
         var profile = new Profile
@@ -296,6 +353,7 @@ public sealed class KeyCaptureGateTests
     private sealed class AccumulatorSink(int[] preheldVks) : IKeyCaptureSink
     {
         public KeyChordAccumulator Accumulator { get; } = CreateAccumulator(preheldVks);
+        public bool HasStarted => Accumulator.HasStarted;
 
         public KeyCaptureStatus OnKey(int virtualKey, bool isDown) =>
             isDown ? Accumulator.OnKeyDown(virtualKey) : Accumulator.OnKeyUp(virtualKey);
@@ -312,10 +370,12 @@ public sealed class KeyCaptureGateTests
     {
         public List<(int Vk, bool IsDown)> Edges { get; } = [];
         public bool FinishOnFirstUp { get; init; }
+        public bool HasStarted { get; private set; }
 
         public KeyCaptureStatus OnKey(int virtualKey, bool isDown)
         {
             Edges.Add((virtualKey, isDown));
+            if (isDown) HasStarted = true;
             return FinishOnFirstUp && !isDown ? KeyCaptureStatus.Finished : KeyCaptureStatus.Pending;
         }
     }

@@ -9,6 +9,9 @@ namespace sWinShortcuts.Services;
 /// </summary>
 public interface IKeyCaptureSink
 {
+    /// <summary>Whether this capture has accepted its first keyboard or mouse input.</summary>
+    bool HasStarted { get; }
+
     KeyCaptureStatus OnKey(int virtualKey, bool isDown);
 }
 

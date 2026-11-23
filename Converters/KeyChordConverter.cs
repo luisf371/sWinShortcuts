@@ -46,6 +46,6 @@ public sealed class KeyChordConverter : IValueConverter
             return key;
         }
 
-        return Binding.DoNothing;
+        return System.Windows.Data.Binding.DoNothing;
     }
 }

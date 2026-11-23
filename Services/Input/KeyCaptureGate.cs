@@ -26,13 +26,14 @@ internal sealed class KeyCaptureGate
     private readonly bool[] _preheldDown = new bool[256];
     private volatile int _state;
     private int _ownedCount;
-    private bool _anyPressed;
     private long _idleDeadline;
     private long _hardDeadline;
     private IKeyCaptureSink? _sink;
 
     /// <summary>The one volatile read the keyboard hot path pays while no capture runs.</summary>
     public bool IsActive => _state != STATE_INACTIVE;
+
+    internal bool IsCapturing => _state == STATE_CAPTURING;
 
     internal bool IsDraining => _state == STATE_DRAINING;
 
@@ -53,7 +54,6 @@ internal sealed class KeyCaptureGate
         }
 
         _ownedCount = 0;
-        _anyPressed = false;
         _idleDeadline = now + IdleLimitTicks;
         _hardDeadline = now + HardLimitTicks;
         Volatile.Write(ref _sink, sink);
@@ -88,7 +88,7 @@ internal sealed class KeyCaptureGate
             return false;
         }
 
-        if (now - _hardDeadline > 0 || (!_anyPressed && now - _idleDeadline > 0))
+        if (now - _hardDeadline > 0)
         {
             End();
             return false;
@@ -111,7 +111,7 @@ internal sealed class KeyCaptureGate
         }
 
         var sink = Volatile.Read(ref _sink);
-        if (sink is null)
+        if (sink is null || (now - _idleDeadline > 0 && !sink.HasStarted))
         {
             End();
             return false;
@@ -127,13 +127,11 @@ internal sealed class KeyCaptureGate
                 return true;
             }
 
-            if (!_ownedDown[vk])
+            if (!_ownedDown[vk] && !KeyChordAccumulator.IsMomentaryKey(vk))
             {
                 _ownedDown[vk] = true;
                 _ownedCount++;
             }
-
-            _anyPressed = true;
         }
         else if (!_ownedDown[vk])
         {

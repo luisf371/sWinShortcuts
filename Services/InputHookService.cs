@@ -1825,7 +1825,8 @@ public sealed class InputHookService : IInputHookService
         CompletePendingMacroRecovery();
         var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
         var previous = isButton ? _macroPhysical.ButtonState(button) : 0;
-        var decision = isButton ? _macros.HandleButton(button, down, previous) : null;
+        var assigning = _keyCapture.IsCapturing;
+        var decision = isButton ? _macros.HandleButton(button, down, previous, allowActivation: !assigning) : null;
         // A consumed activation must not arm right-click mappings or crosshair/hold-breath state.
         if (decision != true) ObserveRightButton(message);
         var recordingPaused = _runtime.RecordingPaused;
@@ -1837,10 +1838,11 @@ public sealed class InputHookService : IInputHookService
                 unchecked((short)(mouseData >> 16))));
             handled = MacroPhysicalState.WasSuppressed(previous) && DispatchMouseFeatures(message, mouseData);
         }
-        else handled = DispatchMouseFeatures(message, mouseData);
-        // Keep physical pairing current even when capture or takeover bypasses mouse actions.
+        // While Assign is active, new clicks and wheel notches reach WPF without triggering bindings.
+        // Existing releases still settle their physical pairs.
+        else handled = (!assigning || (isButton && !down)) && DispatchMouseFeatures(message, mouseData);
         if (message == NativeMethods.WM_LBUTTONDOWN)
-            _rapidFire.HandleLeftButton(isDown: true, allowStart: !handled && !decision.HasValue && !recordingPaused);
+            _rapidFire.HandleLeftButton(isDown: true, allowStart: !assigning && !handled && !decision.HasValue && !recordingPaused);
         else if (message == NativeMethods.WM_LBUTTONUP)
             _rapidFire.HandleLeftButton(isDown: false, allowStart: false);
         if (isButton) _macroPhysical.CompleteButton(button, down, handled);
