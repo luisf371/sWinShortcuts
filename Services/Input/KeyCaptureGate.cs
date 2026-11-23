@@ -6,10 +6,11 @@ namespace sWinShortcuts.Services.Input;
 
 /// <summary>
 /// Hook-thread, allocation-free owner of a running keybind capture. While capturing, every physical key down
-/// is swallowed and forwarded to the sink; only keys whose down was swallowed have their up swallowed, so a key
-/// held before the capture releases normally. After the sink finishes, the gate drains: new downs pass through
-/// and it keeps swallowing only the ups it owns. A capture always ends: an idle limit (nothing pressed) and a
-/// hard limit fail open to <see cref="IsActive"/> false.
+/// is swallowed and forwarded to the sink; only keys whose down was swallowed have their up swallowed. Keys
+/// already held when the capture begins are snapshotted: Windows saw their down, so their auto-repeat downs are
+/// swallowed without being owned or forwarded, and their up passes through. After the sink finishes, the gate
+/// drains: new downs pass through and it keeps swallowing only the ups it owns. A capture always ends: an idle
+/// limit (nothing pressed) and a hard limit fail open to <see cref="IsActive"/> false.
 /// </summary>
 internal sealed class KeyCaptureGate
 {
@@ -21,6 +22,8 @@ internal sealed class KeyCaptureGate
     internal static readonly long HardLimitTicks = Stopwatch.Frequency * 30;
 
     private readonly bool[] _ownedDown = new bool[256];
+    // Down before Begin: Windows already has their down, so the gate must never take ownership of their up.
+    private readonly bool[] _preheldDown = new bool[256];
     private volatile int _state;
     private int _ownedCount;
     private bool _anyPressed;
@@ -33,9 +36,22 @@ internal sealed class KeyCaptureGate
 
     internal bool IsDraining => _state == STATE_DRAINING;
 
-    public void Begin(IKeyCaptureSink sink, long now)
+    /// <summary>
+    /// Starts a capture. <paramref name="isKeyDown"/> reports the keys already held (asked once per virtual key,
+    /// off the hot path); their releases pass through to Windows.
+    /// </summary>
+    public void Begin(IKeyCaptureSink sink, long now, Func<int, bool>? isKeyDown = null)
     {
         Array.Clear(_ownedDown);
+        Array.Clear(_preheldDown);
+        if (isKeyDown is not null)
+        {
+            for (var vk = 1; vk < 256; vk++)
+            {
+                _preheldDown[vk] = isKeyDown(vk);
+            }
+        }
+
         _ownedCount = 0;
         _anyPressed = false;
         _idleDeadline = now + IdleLimitTicks;
@@ -50,6 +66,7 @@ internal sealed class KeyCaptureGate
         _state = STATE_INACTIVE;
         Volatile.Write(ref _sink, null);
         Array.Clear(_ownedDown);
+        Array.Clear(_preheldDown);
         _ownedCount = 0;
     }
 
@@ -100,8 +117,16 @@ internal sealed class KeyCaptureGate
             return false;
         }
 
+        var passThrough = false;
         if (isDown)
         {
+            if (_preheldDown[vk])
+            {
+                // Auto-repeat of a key held before the capture: keep it from the features, but never own it, or
+                // its up would be swallowed after Windows saw its down (a stuck key).
+                return true;
+            }
+
             if (!_ownedDown[vk])
             {
                 _ownedDown[vk] = true;
@@ -113,7 +138,14 @@ internal sealed class KeyCaptureGate
         else if (!_ownedDown[vk])
         {
             // Held before the capture: Windows saw its down, so it must see its up.
-            return false;
+            if (!_preheldDown[vk])
+            {
+                return false;
+            }
+
+            // Forward the release so the sink clears its own held-before flag; a later fresh press then counts.
+            _preheldDown[vk] = false;
+            passThrough = true;
         }
         else
         {
@@ -131,7 +163,7 @@ internal sealed class KeyCaptureGate
             }
         }
 
-        return true;
+        return !passThrough;
     }
 
     private void ReleaseOwned(int vk)

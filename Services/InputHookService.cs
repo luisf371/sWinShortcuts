@@ -44,7 +44,9 @@ public sealed class InputHookService : IInputHookService
             return false;
         }
 
-        _keyCapture.Begin(sink, Stopwatch.GetTimestamp());
+        // Snapshot the keys already held (async state, off the hot path) so their auto-repeat can't make the gate
+        // own, and then swallow, an up whose down Windows already saw.
+        _keyCapture.Begin(sink, Stopwatch.GetTimestamp(), _isPhysicalKeyDown);
         return true;
     }
 

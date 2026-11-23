@@ -38,6 +38,69 @@ public sealed class KeyCaptureGateTests
     }
 
     [Fact]
+    public void TryHandle_PreheldKeyRepeatsThenUp_RepeatsSwallowedUnownedAndUpPassesThrough()
+    {
+        var sink = new RecordingSink();
+        var gate = new KeyCaptureGate();
+        gate.Begin(sink, now: 0, isKeyDown: vk => vk == VK_A);
+
+        // Windows auto-repeats a key held when Assign was clicked: keep the repeats from the features.
+        Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 1));
+        Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 2));
+
+        // Windows saw the original down, so the up must reach it. The sink sees it to clear its own held flag.
+        Assert.False(gate.TryHandle(VK_A, isDown: false, isUp: true, now: 3));
+        Assert.Equal(new (int, bool)[] { (VK_A, false) }, sink.Edges.ToArray());
+        Assert.True(gate.IsActive);
+    }
+
+    [Fact]
+    public void TryHandle_PreheldKeyReleasedThenPressedAgain_IsOwnedLikeAnyKey()
+    {
+        var sink = new RecordingSink();
+        var gate = new KeyCaptureGate();
+        gate.Begin(sink, now: 0, isKeyDown: vk => vk == VK_A);
+        gate.TryHandle(VK_A, isDown: false, isUp: true, now: 1);
+
+        Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 2));
+        Assert.True(gate.TryHandle(VK_A, isDown: false, isUp: true, now: 3));
+        Assert.Equal(new (int, bool)[] { (VK_A, false), (VK_A, true), (VK_A, false) }, sink.Edges.ToArray());
+    }
+
+    [Fact]
+    public void TryHandle_PreheldModifierWithChord_OnlyChordKeysOwned()
+    {
+        const int VK_LSHIFT = 0xA0;
+        var accumulatorSink = new AccumulatorSink(preheldVks: [VK_LSHIFT]);
+        var gate = new KeyCaptureGate();
+        gate.Begin(accumulatorSink, now: 0, isKeyDown: vk => vk == VK_LSHIFT);
+
+        Assert.True(gate.TryHandle(VK_LSHIFT, isDown: true, isUp: false, now: 1));
+        Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 2));
+        Assert.True(gate.TryHandle(VK_LSHIFT, isDown: true, isUp: false, now: 3));
+        Assert.False(gate.TryHandle(VK_LSHIFT, isDown: false, isUp: true, now: 4));
+        Assert.True(gate.TryHandle(VK_A, isDown: false, isUp: true, now: 5));
+
+        Assert.False(gate.IsActive);
+        Assert.True(accumulatorSink.Accumulator.Result.IsCompleted);
+        Assert.Equal(ModifierKeys.None, accumulatorSink.Accumulator.Result.Chord.Modifiers);
+    }
+
+    [Fact]
+    public void End_ClearsPreheldSnapshot_NextCaptureOwnsTheKey()
+    {
+        var sink = new RecordingSink();
+        var gate = new KeyCaptureGate();
+        gate.Begin(sink, now: 0, isKeyDown: vk => vk == VK_A);
+        gate.End();
+
+        gate.Begin(sink, now: 0);
+
+        Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 1));
+        Assert.True(gate.TryHandle(VK_A, isDown: false, isUp: true, now: 2));
+    }
+
+    [Fact]
     public void TryHandle_FinishedWithNothingOwned_GoesInactive()
     {
         var sink = new RecordingSink { FinishOnFirstUp = true };
@@ -229,6 +292,21 @@ public sealed class KeyCaptureGateTests
         (KeyCaptureGate)typeof(InputHookService)
             .GetField("_keyCapture", BindingFlags.Instance | BindingFlags.NonPublic)!
             .GetValue(service)!;
+
+    private sealed class AccumulatorSink(int[] preheldVks) : IKeyCaptureSink
+    {
+        public KeyChordAccumulator Accumulator { get; } = CreateAccumulator(preheldVks);
+
+        public KeyCaptureStatus OnKey(int virtualKey, bool isDown) =>
+            isDown ? Accumulator.OnKeyDown(virtualKey) : Accumulator.OnKeyUp(virtualKey);
+
+        private static KeyChordAccumulator CreateAccumulator(int[] preheldVks)
+        {
+            var accumulator = new KeyChordAccumulator();
+            accumulator.Begin(preheldVks);
+            return accumulator;
+        }
+    }
 
     private sealed class RecordingSink : IKeyCaptureSink
     {

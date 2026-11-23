@@ -9,7 +9,7 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 ### Changed & Improved
 - **Keybind Assignment**:
   - Every key picker is now a read-only box with an **Assign** button, replacing the key dropdowns and the macro shortcut's Ctrl/Alt/Shift/Win checkboxes. Fields where "None" is allowed also have a **✕** button that clears them.
-  - Click **Assign** and the box shows **Capturing keys…**. Capture starts at the first key you press and ends once every key pressed during it is released. A key already held when you clicked **Assign** is ignored.
+  - Click **Assign** and the box shows **Capturing keys…**. Capture starts at the first key you press and ends once every key pressed during it is released. A key already held when you clicked **Assign** is ignored until you release it, even while Windows repeats it; its release still reaches Windows, so it can't stay stuck down. Press it again to include it.
   - Modifiers always come first, in the order Ctrl, Alt, Shift, Win, whatever order you pressed them in. Pressing E then Ctrl, or Ctrl then E, both give **Ctrl+E**. Pressing only modifiers assigns the last one pressed, with its side (for example **LeftShift** for Sprint), and any others become its prefixes.
   - The macro shortcut and the Auto-Run trigger take any mix of Ctrl, Alt, Shift and Win plus one key. The Auto-Run **Trigger modifier** and **Trigger key** rows are now one **Trigger** row, and a trigger such as Ctrl+Alt+R starts only when every modifier in it is held.
   - A macro shortcut conflicts with the Auto-Run trigger when it uses the same key and holds every Auto-Run modifier: Ctrl+Shift+R conflicts with Auto-Run Ctrl+R, but Ctrl+R doesn't conflict with Auto-Run Ctrl+Shift+R.
