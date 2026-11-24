@@ -12,9 +12,10 @@ namespace sWinShortcuts.Services.Input;
 internal sealed class MacroPhysicalState : IMacroInputContext
 {
     private const int DOWN = 1, SUPPRESSED = 2, TAKEOVER = 4, ACTIVATION = 8, RECORDING_PASSTHROUGH = 16, PLAY_THROUGH = 32;
-    private static readonly int[] ModifierVirtualKeys = [0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
+    // Sided VKs only: the hook never reports the generic 0x10-0x12.
+    private static readonly int[] ModifierVirtualKeys = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
     // Alt and Win stay excluded: keys sent under a held Alt or Win become Windows shortcuts (Alt+Tab, Win+D).
-    private static readonly int[] PlayThroughVirtualKeys = [0x10, 0x11, 0xA0, 0xA1, 0xA2, 0xA3];
+    private static readonly int[] PlayThroughVirtualKeys = [0xA0, 0xA1, 0xA2, 0xA3];
     private readonly int[] _keys = new int[256];
     private readonly int[] _buttons = new int[6];
     private readonly int[] _keyRevisions = new int[256];
@@ -62,10 +63,21 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     internal static bool WasRecordingPassThrough(int state) => (state & RECORDING_PASSTHROUGH) != 0;
 
     internal ModifierKeys Modifiers =>
-        ((IsPhysicalKeyDown(0x11) || IsPhysicalKeyDown(0xA2) || IsPhysicalKeyDown(0xA3)) ? ModifierKeys.Control : 0) |
-        ((IsPhysicalKeyDown(0x12) || IsPhysicalKeyDown(0xA4) || IsPhysicalKeyDown(0xA5)) ? ModifierKeys.Alt : 0) |
-        ((IsPhysicalKeyDown(0x10) || IsPhysicalKeyDown(0xA0) || IsPhysicalKeyDown(0xA1)) ? ModifierKeys.Shift : 0) |
+        ((IsPhysicalKeyDown(0xA2) || IsPhysicalKeyDown(0xA3)) ? ModifierKeys.Control : 0) |
+        ((IsPhysicalKeyDown(0xA4) || IsPhysicalKeyDown(0xA5)) ? ModifierKeys.Alt : 0) |
+        ((IsPhysicalKeyDown(0xA0) || IsPhysicalKeyDown(0xA1)) ? ModifierKeys.Shift : 0) |
         ((IsPhysicalKeyDown(0x5B) || IsPhysicalKeyDown(0x5C)) ? ModifierKeys.Windows : 0);
+
+    // Each modifier in `modifiers` is held on its saved side: the right key when its flag is in `right`, else the
+    // left key. The hook reports sided VKs only.
+    internal bool SidesHeld(ModifierKeys modifiers, ModifierKeys right) =>
+        SideHeld(modifiers, right, ModifierKeys.Control, 0xA2, 0xA3) &&
+        SideHeld(modifiers, right, ModifierKeys.Alt, 0xA4, 0xA5) &&
+        SideHeld(modifiers, right, ModifierKeys.Shift, 0xA0, 0xA1) &&
+        SideHeld(modifiers, right, ModifierKeys.Windows, 0x5B, 0x5C);
+
+    private bool SideHeld(ModifierKeys modifiers, ModifierKeys right, ModifierKeys flag, int leftVk, int rightVk) =>
+        (modifiers & flag) == 0 || IsPhysicalKeyDown((right & flag) != 0 ? rightVk : leftVk);
 
     internal static ModifierKeys ModifierForKey(int vk) => vk switch
     {
@@ -277,7 +289,9 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         var definition = Array.Find(profile.Macros.Definitions, m => m.Id == id);
         if (definition is null || definition.ShortcutTrigger.Kind == InputTriggerKind.None) return null;
         var mods = definition.ShortcutModifiers;
-        if (profile.Macros.Definitions.Any(m => m.Id != id && m.IsEnabled && m.ShortcutTrigger == definition.ShortcutTrigger && m.ShortcutModifiers == mods))
+        // LCtrl+S and RCtrl+S are different shortcuts.
+        if (profile.Macros.Definitions.Any(m => m.Id != id && m.IsEnabled && m.ShortcutTrigger == definition.ShortcutTrigger && m.ShortcutModifiers == mods &&
+            ((m.ShortcutRightModifiers ^ definition.ShortcutRightModifiers) & mods) == 0))
             return "Another enabled macro uses this shortcut.";
         if (definition.ShortcutMouseButton is { } button)
         {
@@ -309,8 +323,11 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             RemapStateMachine.GetEffectiveCapsLockSettings(profile, windows) is { } caps &&
             (caps.Mode != CapsLockMode.Normal || caps.IsRemapEnabled))
             return "Caps Lock behavior uses this key.";
+        // Auto-Run fires when its modifiers are held on their saved sides, extras allowed, so the macro conflicts only
+        // when it holds every one of them on the same side.
         if (profile.AutoRun.IsEnabled && profile.AutoRun.TriggerKey == definition.ShortcutKey &&
-            (profile.AutoRun.TriggerModifier == ModifierKeys.None || (mods & profile.AutoRun.TriggerModifier) != 0))
+            (mods & profile.AutoRun.TriggerModifier) == profile.AutoRun.TriggerModifier &&
+            ((definition.ShortcutRightModifiers ^ profile.AutoRun.TriggerRightModifiers) & profile.AutoRun.TriggerModifier) == 0)
             return "Auto-Run uses this shortcut.";
         if (profile.RightClickHoldBreath.IsEnabled && profile.RightClickHoldBreath.SuppressEarlyCancelInput &&
             profile.RightClickHoldBreath.PanicTrigger == InputTrigger.FromKey(definition.ShortcutKey))
@@ -360,7 +377,8 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             foreach (var entry in lookup)
             {
                 if (entry.Definition.ShortcutMouseButton != button || (button is null && entry.VirtualKey != vk) ||
-                    entry.Definition.ShortcutModifiers != mods || !ReferenceEquals(entry.Owner, _runtime.ActiveProfile)) continue;
+                    entry.Definition.ShortcutModifiers != mods || !_physical.SidesHeld(mods, entry.Definition.ShortcutRightModifiers) ||
+                    !ReferenceEquals(entry.Owner, _runtime.ActiveProfile)) continue;
                 if (button is { } mouse) _physical.ObserveButton(mouse, down, activation: true);
                 else _physical.ObserveKey(vk, down, activation: true);
                 if (Interlocked.CompareExchange(ref _busy, 1, 0) == 0)

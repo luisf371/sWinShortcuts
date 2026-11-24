@@ -111,13 +111,12 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
             [MouseButton.XButton2] = new(this, MouseButton.XButton2)
         };
 
+        // The same set the Alt + Shortcut validator accepts (every VK-mapped key except Alt), so any captured
+        // trigger is registered here. Built once; the hot path stays a single dictionary lookup.
         _keyboardStates = [];
-        foreach (var key in KeyCatalog.GetCommonKeys())
+        foreach (var key in KeyCatalog.AltShortcutKeys)
         {
-            if (key is not (Key.LeftAlt or Key.RightAlt))
-            {
-                _keyboardStates[key] = new KeyboardState(this, key);
-            }
+            _keyboardStates[key] = new KeyboardState(this, key);
         }
     }
 
@@ -1190,8 +1189,15 @@ internal sealed class GestureChordStateMachine : IInputCommandGuard, IDisposable
         Interlocked.Increment(ref _altKeyboardGeneration);
         foreach (var (key, state) in _keyboardStates)
         {
-            TryCancelTimer(state.Timer);
-            if (Interlocked.Exchange(ref state.ActivePress, null) is { CompletionClaimed: 0 } && _logger.IsEnabled)
+            // Only a press arms the timer, and a timer that fires without one does nothing, so idle keys skip
+            // Timer.Change (it locks the timer queue, on every physical Alt release).
+            var press = Interlocked.Exchange(ref state.ActivePress, null);
+            if (press is not null)
+            {
+                TryCancelTimer(state.Timer);
+            }
+
+            if (press is { CompletionClaimed: 0 } && _logger.IsEnabled)
                 _logger.Log($"Alt+Keyboard: {key} press cancelled before its release; no key sent");
             if (!preserveSuppressedUps)
             {

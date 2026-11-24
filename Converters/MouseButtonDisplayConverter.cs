@@ -14,16 +14,18 @@ public sealed class MouseButtonDisplayConverter : IValueConverter
             return value?.ToString() ?? string.Empty;
         }
 
-        return button switch
-        {
-            MouseButton.Left => "Left Mouse Button",
-            MouseButton.Right => "Right Mouse Button",
-            MouseButton.Middle => "Middle Mouse Button",
-            MouseButton.XButton1 => "Mouse Button 4",
-            MouseButton.XButton2 => "Mouse Button 5",
-            _ => button.ToString()
-        };
+        return ToDisplayText(button);
     }
+
+    public static string ToDisplayText(MouseButton button) => button switch
+    {
+        MouseButton.Left => "Left Mouse Button",
+        MouseButton.Right => "Right Mouse Button",
+        MouseButton.Middle => "Middle Mouse Button",
+        MouseButton.XButton1 => "Mouse Button 4",
+        MouseButton.XButton2 => "Mouse Button 5",
+        _ => button.ToString()
+    };
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
     {

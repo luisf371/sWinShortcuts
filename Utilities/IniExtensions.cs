@@ -114,6 +114,31 @@ public static class IniExtensions
             : defaultValue;
     }
 
+    /// <summary>
+    /// Reads side-agnostic modifier flags: a name ("Control"), a "+"- or ","-joined combination ("Alt+Control"),
+    /// or a number, as older builds accepted. Unknown names and undefined bits fall back to
+    /// <paramref name="defaultValue"/>.
+    /// </summary>
+    public static ModifierKeys GetModifierKeys(this IniDocument doc, string section, string key, ModifierKeys defaultValue)
+    {
+        var value = doc.GetValue(section, key);
+        return value is not null && Enum.TryParse(value.Replace('+', ','), ignoreCase: true, out ModifierKeys parsed) &&
+               (parsed & ~AllModifierKeys) == 0
+            ? parsed
+            : defaultValue;
+    }
+
+    /// <summary>
+    /// Writes one name for a single flag (byte-identical to the old SetEnum output) and "Alt+Control" style text for
+    /// combinations. Older builds read a combination back as their default.
+    /// </summary>
+    public static void SetModifierKeys(this IniDocument doc, string section, string key, ModifierKeys value)
+    {
+        doc.SetValue(section, key, value.ToString().Replace(", ", "+"));
+    }
+
+    private const ModifierKeys AllModifierKeys = ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows;
+
     public static Key? GetKey(this IniDocument doc, string section, string key)
     {
         var value = doc.GetValue(section, key);

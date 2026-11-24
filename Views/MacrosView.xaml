@@ -4,15 +4,13 @@
              xmlns:vm="clr-namespace:sWinShortcuts.ViewModels"
              xmlns:models="clr-namespace:sWinShortcuts.Models"
              xmlns:conv="clr-namespace:sWinShortcuts.Converters"
-             xmlns:input="clr-namespace:System.Windows.Input;assembly=WindowsBase"
-             xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
+             xmlns:ctrl="clr-namespace:sWinShortcuts.Controls"
              x:Name="Editor" Unloaded="Editor_Unloaded" DataContextChanged="Editor_DataContextChanged"
              AutomationProperties.Name="Macro editor">
     <UserControl.Resources>
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
-        <conv:KeyDisplayConverter x:Key="KeyDisplay" />
-        <conv:InputTriggerDisplayConverter x:Key="ShortcutDisplay" />
+        <conv:KeyChordConverter x:Key="KeyChord" />
 
         <!-- App brushes are referenced with DynamicResource: template tests host this view without an
              Application. These local tones keep secondary text, selection and state colors at 4.5:1 or
@@ -330,37 +328,16 @@
             </Style.Triggers>
         </Style>
 
-        <DataTemplate x:Key="KeyChoice">
-            <TextBlock TextTrimming="CharacterEllipsis">
-                <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                        <Setter Property="Text" Value="{Binding Converter={StaticResource KeyDisplay}}" />
-                        <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding}" Value="{x:Static input:Key.None}">
-                                <Setter Property="Text" Value="Unassigned" />
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBlock.Style>
-            </TextBlock>
-        </DataTemplate>
-
-        <DataTemplate x:Key="ShortcutChoice">
-            <TextBlock TextTrimming="CharacterEllipsis">
-                <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                        <Setter Property="Text" Value="{Binding Converter={StaticResource ShortcutDisplay}}" />
-                        <Setter Property="Foreground" Value="{DynamicResource ForegroundPrimaryBrush}" />
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:InputTriggerKind.None}">
-                                <Setter Property="Text" Value="Unassigned" />
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBlock.Style>
-            </TextBlock>
-        </DataTemplate>
+        <!-- Read-only field of a keybind capture box: the app's input look with the macro input line. -->
+        <Style x:Key="MacroCaptureField" TargetType="TextBox">
+            <Setter Property="Foreground" Value="{DynamicResource ComboBoxForegroundBrush}" />
+            <Setter Property="Background" Value="{DynamicResource ComboBoxBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource MacroInputLineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="6,0" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
 
         <!-- Macro switcher entry: label, shortcut, and a state word whenever it cannot play as-is. -->
         <DataTemplate x:Key="MacroChoice" DataType="{x:Type vm:MacroViewModel}">
@@ -656,29 +633,14 @@
         <StackPanel Orientation="Horizontal" Margin="0,0,0,14" DataContext="{Binding SelectedMacro}" IsEnabled="{Binding CanEdit}"
                     Visibility="{Binding DataContext.HasSelection, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}">
             <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" Stroke="{StaticResource MacroMutedBrush}" Margin="2,0,10,0"
-                  ToolTip="Shortcut: hold the selected modifiers, then press the key or mouse button. F12 stops playback." />
-            <!-- Modifiers are independent toggles in the app's segmented look. -->
-            <Border Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
-                    Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}">
-                <StackPanel Orientation="Horizontal">
-                    <CheckBox Content="Ctrl" IsChecked="{Binding ControlModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
-                              AutomationProperties.Name="Shortcut Control modifier" />
-                    <CheckBox Content="Alt" IsChecked="{Binding AltModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
-                              AutomationProperties.Name="Shortcut Alt modifier" />
-                    <CheckBox Content="Shift" IsChecked="{Binding ShiftModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
-                              AutomationProperties.Name="Shortcut Shift modifier" />
-                    <CheckBox Content="Win" IsChecked="{Binding WindowsModifier}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
-                              AutomationProperties.Name="Shortcut Windows modifier" />
-                </StackPanel>
-            </Border>
-            <TextBlock Text="+" Margin="8,0,8,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
-            <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.ShortcutOptions}"
-                      SelectedItem="{Binding ShortcutTrigger}" ItemTemplate="{StaticResource ShortcutChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
-                      BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
-                      behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                      ToolTip="Choose a keyboard key or mouse button. You can also press a key while this list is open. The matching shortcut is consumed."
-                      AutomationProperties.Name="Macro shortcut"
-                      AutomationProperties.HelpText="Choose a keyboard key or one of the five mouse buttons, then select any required modifiers." />
+                  ToolTip="Shortcut: click Assign, then hold any modifiers and press a key or mouse button. F12 stops playback." />
+            <ctrl:KeyCaptureBox Width="300" Mode="Combo" AcceptsMouseButtons="True" AcceptsLeftButton="True" AllowNone="True"
+                                NoneText="No shortcut" Chord="{Binding Shortcut, Mode=TwoWay}"
+                                Validator="{x:Static vm:MacroViewModel.ShortcutValidator}"
+                                BoxStyle="{StaticResource MacroCaptureField}" ButtonStyle="{StaticResource MacroButton}"
+                                ToolTip="Click Assign, then press the shortcut (keys or a mouse button over the box). Modifiers always come first. The matching shortcut is consumed."
+                                AutomationName="Macro shortcut"
+                                AutomationProperties.HelpText="Click Assign, then press the shortcut: Ctrl, Alt, Shift or Win plus a keyboard key, or one of the five mouse buttons over the box." />
             <Button x:Name="PlaybackButton" Style="{StaticResource MacroButton}" Margin="12,0,0,0" Click="MenuButton_Click"
                     ToolTip="How the shortcut plays this macro" AutomationProperties.Name="Playback options">
                 <Button.ContextMenu>
@@ -1108,11 +1070,10 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
                                         Visibility="{Binding SelectedStep.HasKey, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
-                                <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.KeyOptions}"
-                                          SelectedItem="{Binding SelectedPressKey}" ItemTemplate="{StaticResource KeyChoice}"
-                                          ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
-                                          FocusVisualStyle="{StaticResource MacroFocusRing}" behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                          AutomationProperties.Name="Press key" />
+                                <ctrl:KeyCaptureBox Width="150" Chord="{Binding SelectedPressKey, Converter={StaticResource KeyChord}, Mode=TwoWay}"
+                                                    Validator="{x:Static vm:MacroViewModel.KeyValidator}"
+                                                    BoxStyle="{StaticResource MacroCaptureField}" ButtonStyle="{StaticResource MacroButton}"
+                                                    AutomationName="Press key" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
                                         Visibility="{Binding SelectedStep.HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
@@ -1178,11 +1139,10 @@
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasKey, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
-                                <ComboBox Width="150" MinHeight="30" MaxDropDownHeight="320" ItemsSource="{x:Static vm:MacroViewModel.KeyOptions}"
-                                          SelectedItem="{Binding Key}" ItemTemplate="{StaticResource KeyChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
-                                          BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
-                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                                          AutomationProperties.Name="Step key" />
+                                <ctrl:KeyCaptureBox Width="150" Chord="{Binding Key, Converter={StaticResource KeyChord}, Mode=TwoWay}"
+                                                    Validator="{x:Static vm:MacroViewModel.KeyValidator}"
+                                                    BoxStyle="{StaticResource MacroCaptureField}" ButtonStyle="{StaticResource MacroButton}"
+                                                    AutomationName="Step key" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />

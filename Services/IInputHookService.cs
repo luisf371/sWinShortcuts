@@ -6,7 +6,7 @@ using sWinShortcuts.Models;
 
 namespace sWinShortcuts.Services;
 
-public interface IInputHookService : IDisposable
+public interface IInputHookService : IKeyCaptureSource, IDisposable
 {
     event EventHandler? MacroSessionChanged;
 

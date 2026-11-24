@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Input;
@@ -9,7 +10,25 @@ public static class KeyCatalog
     private static readonly IReadOnlyList<Key> NumpadKeys = Enumerable.Range((int)Key.NumPad0, 10).Select(i => (Key)i).ToArray();
     private static readonly IReadOnlyList<Key> CommonKeys = BuildCommonKeys();
 
+    private static readonly Lazy<IReadOnlySet<Key>> AssignableKeySet = new(BuildAssignableKeys);
+    private static readonly Lazy<IReadOnlySet<Key>> AltShortcutKeySet = new(() =>
+        AssignableKeys.Where(key => key is not (Key.LeftAlt or Key.RightAlt)).ToHashSet());
+
     public static IReadOnlyList<Key> GetCommonKeys() => CommonKeys;
+
+    /// <summary>
+    /// Every key a capture field can store: each virtual key 0x01-0xFE that WPF maps to a <see cref="Key"/>
+    /// (mouse-button VKs map to none). Sided modifiers and Win keys are included; IME pseudo-keys are not.
+    /// </summary>
+    public static IReadOnlySet<Key> AssignableKeys => AssignableKeySet.Value;
+
+    /// <summary>
+    /// <see cref="AssignableKeys"/> without Alt, which is the Alt + Shortcut modifier itself. The gesture
+    /// state machine registers exactly this set, and the Alt + Shortcut validator accepts exactly this set.
+    /// </summary>
+    public static IReadOnlySet<Key> AltShortcutKeys => AltShortcutKeySet.Value;
+
+    public static bool IsAssignable(Key key) => AssignableKeys.Contains(key);
 
     private static IReadOnlyList<Key> GetNumpadKeys() => NumpadKeys;
 
@@ -37,6 +56,21 @@ public static class KeyCatalog
 
         // Everything else: Priority 10
         return 10;
+    }
+
+    private static IReadOnlySet<Key> BuildAssignableKeys()
+    {
+        var keys = new HashSet<Key>();
+        for (var vk = 0x01; vk <= 0xFE; vk++)
+        {
+            // FromVirtualKey dedups aliases on its own (0x10 and 0xA0 both give LeftShift).
+            if (KeyInteropUtilities.FromVirtualKey(vk) is { } key && key is not (Key.ImeProcessed or Key.DeadCharProcessed))
+            {
+                keys.Add(key);
+            }
+        }
+
+        return keys;
     }
 
     private static IReadOnlyList<Key> BuildCommonKeys()

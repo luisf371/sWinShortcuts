@@ -2,13 +2,14 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:sWinShortcuts.Converters"
-        xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
+        xmlns:vm="clr-namespace:sWinShortcuts.ViewModels"
+        xmlns:ctrl="clr-namespace:sWinShortcuts.Controls"
         Title="Settings" Width="380" Height="670"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize"
         Background="{DynamicResource BackgroundElevatedBrush}">
     <Window.Resources>
-        <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
+        <conv:KeyChordConverter x:Key="KeyChordConverter" />
     </Window.Resources>
 
     <Grid Margin="16">
@@ -53,31 +54,26 @@
                        Margin="0,0,0,8"
                        Foreground="{DynamicResource ForegroundPrimaryBrush}"/>
 
-            <!-- Title + dropdown share one line (vertically centered on each other); the
-                 description sits underneath as a full-width caption. Centering the combo
-                 against the old two-line label block parked it ~8px below the title. -->
+            <!-- Title + capture field share one line (vertically centered on each other); the
+                 description sits underneath as a full-width caption. -->
             <StackPanel Margin="0,0,0,8">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="132"/>
+                        <ColumnDefinition Width="200"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0"
                                Text="Color profile toggle key"
                                FontWeight="SemiBold"
                                Margin="0,0,12,0"
+                               TextWrapping="Wrap"
                                VerticalAlignment="Center"/>
-                    <ComboBox Grid.Column="1"
-                              ItemsSource="{Binding ColorToggleKeyOptions}"
-                              SelectedItem="{Binding ColorToggleKey, Mode=TwoWay}"
-                              behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                              Width="132">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}"/>
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
+                    <ctrl:KeyCaptureBox Grid.Column="1"
+                                        AllowNone="True"
+                                        Chord="{Binding ColorToggleKey, Converter={StaticResource KeyChordConverter}, Mode=TwoWay}"
+                                        Validator="{x:Static vm:SettingsViewModel.ToggleKeyValidator}"
+                                        AutomationName="Color profile toggle key"
+                                        VerticalAlignment="Center"/>
                 </Grid>
                 <TextBlock Text="Cycles through the enabled color presets."
                            Foreground="{DynamicResource ForegroundSecondaryBrush}"
@@ -89,24 +85,20 @@
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="132"/>
+                        <ColumnDefinition Width="200"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0"
                                Text="Rapid-fire toggle key"
                                FontWeight="SemiBold"
                                Margin="0,0,12,0"
+                               TextWrapping="Wrap"
                                VerticalAlignment="Center"/>
-                    <ComboBox Grid.Column="1"
-                              ItemsSource="{Binding ColorToggleKeyOptions}"
-                              SelectedItem="{Binding RapidFireToggleKey, Mode=TwoWay}"
-                              behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                              Width="132">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}"/>
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
+                    <ctrl:KeyCaptureBox Grid.Column="1"
+                                        AllowNone="True"
+                                        Chord="{Binding RapidFireToggleKey, Converter={StaticResource KeyChordConverter}, Mode=TwoWay}"
+                                        Validator="{x:Static vm:SettingsViewModel.ToggleKeyValidator}"
+                                        AutomationName="Rapid-fire toggle key"
+                                        VerticalAlignment="Center"/>
                 </Grid>
                 <TextBlock Text="Toggles Rapid Fire for the current profile."
                            Foreground="{DynamicResource ForegroundSecondaryBrush}"
@@ -118,7 +110,7 @@
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="132"/>
+                        <ColumnDefinition Width="200"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0"
                                Text="Crosshair offset toggle key"
@@ -126,18 +118,12 @@
                                Margin="0,0,12,0"
                                TextWrapping="Wrap"
                                VerticalAlignment="Center"/>
-                    <ComboBox Grid.Column="1"
-                              ItemsSource="{Binding ColorToggleKeyOptions}"
-                              SelectedItem="{Binding CrosshairOffsetToggleKey, Mode=TwoWay}"
-                              AutomationProperties.Name="Crosshair offset toggle key"
-                              behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True"
-                              Width="132">
-                        <ComboBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}"/>
-                            </DataTemplate>
-                        </ComboBox.ItemTemplate>
-                    </ComboBox>
+                    <ctrl:KeyCaptureBox Grid.Column="1"
+                                        AllowNone="True"
+                                        Chord="{Binding CrosshairOffsetToggleKey, Converter={StaticResource KeyChordConverter}, Mode=TwoWay}"
+                                        Validator="{x:Static vm:SettingsViewModel.ToggleKeyValidator}"
+                                        AutomationName="Crosshair offset toggle key"
+                                        VerticalAlignment="Center"/>
                 </Grid>
                 <TextBlock Text="Switches the visible crosshair between center and the profile's saved offset."
                            Foreground="{DynamicResource ForegroundSecondaryBrush}"

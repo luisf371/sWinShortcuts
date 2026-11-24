@@ -540,3 +540,51 @@
 ## 2026-11-22 (macro logging)
 - Macro debug lines now carry `macro="<label>" profile="<name>"` (state, Playback, Failed). New lines: `Cancel requested` (with reason + row), `Physical key/mouse takeover` (vk/key/button), `Input refused` (CanExecute breakdown: foreground changed, owner/advanced off, monitors). Takeover log is behind `IsEnabled` in the rare macro-owned-key branch only.
 - Diagnosed Drop Bag stops: physical D keydown while macro holds D => "Physical input took over a macro key." (user strafes with D).
+
+## 2026-11-23 (Capture-based keybind assignment, card 48af14e2)
+
+- `Controls/KeyCaptureBox` is CODE-ONLY (no .xaml): `MainWindow.xaml`/`MacrosView.xaml` template tests parse XAML at runtime via XamlReader (with `;assembly=sWinShortcuts` rewriting), and a BAML UserControl using StaticResource would fail to resolve outside the app tree. Parts use implicit TextBox/Button styles; `BoxStyle`/`ButtonStyle` DPs override (macro editor).
+- `IKeyCaptureSource.EndKeyCapture(sink)` takes the sink (deviation from plan's parameterless form) so a late deferred apply can't end another box's capture. Internal boundaries (`ReleaseAllState`, so Stop/session switch/profile switch) call `_keyCapture.End()` unconditionally.
+- `Models.MouseButton` collides with `System.Windows.Input.MouseButton` in any file outside `sWinShortcuts.Models` that imports both: add `using MouseButton = sWinShortcuts.Models.MouseButton;`.
+- Gate insertion point: `KeyboardCallback` right after the injected-event filter and the `vkCode` locals, before `!featuresActive`. `TryBeginKeyCapture` refuses off `_hookDispatcher` thread, when stopped, or while macros are busy/recording/have takeovers (no `_profileLock`: UI thread).
+- `KeyCaptureBox.Current` is `[ThreadStatic]` (per UI thread) so STA test threads never cancel each other's boxes cross-thread; `CaptureSource` stays a process static, so `KeyCaptureBoxTests` runs in a non-parallel xUnit collection and resets it in `Dispose`.
+- Capture boxes put the same automation name on the inner TextBox ("Macro shortcut") and "Assign X"/"Clear X" on buttons: template tests must find fields with `OfType<KeyCaptureBox>()`, not any control by name.
+- `MacrosView.xaml` resources can't `BasedOn` the app's implicit styles (not in scope at InitializeComponent in tests); the local `MacroCaptureField` TextBox style repeats the setters with DynamicResource.
+- `MacroViewModel.Shortcut = None` clears modifiers; `ShortcutTrigger = None` still keeps them (existing test relies on it).
+- Row uniqueness moved from per-row `SelectableSources` lists to `SourceValidator` delegates set at attach time (`ProfileViewModel.AttachCombinedVm`, `AltShortcutViewModel.AttachRow`); "Add row" defaults still come from `Available*Sources` (catalog-based).
+- `[AutoRun] TriggerModifier` uses `IniExtensions.Get/SetModifierKeys`: single names byte-identical, combos `Control+Alt` (Ctrl, Alt, Shift, Win order); `+`/`,` accepted on read; "None" only alone. Old builds read a combo as default Control.
+- Alt + Shortcut table now ~170 keys (`KeyCatalog.AltShortcutKeys`): `ResetKeyboardStates` runs `Timer.Change` on every idle timer per physical Alt release (~1.8x old count, tens of µs). Skipping unarmed timers would need an armed flag; not done.
+- Auto-Run tests that re-press the trigger must send its up through `Handle` (the `_triggerKeyDownVk` latch), not only `ObservePhysicalEvent`.
+- Verification: no `dotnet` on the Linux implementation host; nothing compiled or run. Build/tests must run on Windows (plan §7).
+- Review fix (stuck key): `KeyCaptureGate.Begin(sink, now, isKeyDown)` snapshots held keys; `TryBeginKeyCapture` passes `_isPhysicalKeyDown` (GetAsyncKeyState, UI thread). Pre-held auto-repeat downs are swallowed but never owned/forwarded (owning one swallowed the real up after Windows saw the down). The pre-held up passes through AND is forwarded to the sink so `KeyChordAccumulator` clears its `_preheld` flag; otherwise a re-press of that key after release was ignored in hook mode.
+
+## 2026-11-23 (PR #26 rebase and capture fixes)
+
+- Rebased onto 727a509. Keep the compact macro header and Playback menu from main with the capture control in the shortcut slot. The keycap display keeps main menu and numpad names plus Num Lock and the ISO key label.
+- WPF and WinForms implicit imports overlap in code-only controls. Use local aliases for WPF types, including the Binding sentinel in the chord converter.
+- Upgrade decision: numeric Auto-Run modifiers continue to fall back to Ctrl. Tell users to reconfirm keybinds in the changelog and Assigning Keys section.
+- Capture tests reproduce Pause as a one-edge key and mouse-first chords spanning the keyboard idle deadline. The gate reads the accumulator activity so both devices share the idle decision. Mouse dispatch disables new activations while assigning and still settles prior releases.
+- The XAML template tests must preserve namespaces from merged dictionaries. Styles.xaml still uses the behaviors prefix even after the last use in MainWindow.xaml is removed.
+- The Windows Release build passed with no warnings and all 1,932 tests passed after the fixes.
+
+## 2026-11-23 (PR #26 review fixes, live capture text, dimmed idle box)
+
+- Cancel restarted capture: WPF `ButtonBase.OnMouseLeftButtonUp` releases mouse capture BEFORE `OnClick`, so the box's LostMouseCapture cancelled and the Click then began a new capture. Fix: while capturing, `OnPreviewMouseDown` handles Left over Assign/Clear on press; no child ever takes capture, so `OnLostMouseCapture` just cancels. Tests raising `ButtonBase.ClickEvent` can't see this class of bug.
+- `KeyCaptureGate` has no DRAINING state: `_sink != null` is the whole state, `End()` runs as soon as the sink finishes (the box's deferred apply ended it one dispatcher turn later anyway). Held-key ups pass through unforwarded; hook captures give `KeyChordAccumulator` an empty held snapshot (only the WPF fallback needs one).
+- `HandleFallbackKey` accepts WPF keys during hook captures too: swallowed keys never reach WPF, so nothing double-counts, and the box keeps working if `ReleaseAllState` (watchdog reinstall) ends the gate mid-capture.
+- Timeouts live once in `KeyCaptureGate.IdleLimit/HardLimit` (box timer reads them).
+- Live text: `KeyChordAccumulator.Progress` = the chord releasing now would give (also feeds `BuildResult`). The box posts at most one `ShowProgress` at a time (`_progressPosted`); never touch UI inside the hook callback.
+- Idle look: `_box.Opacity = KeyCaptureBox.IDLE_OPACITY` (0.6, near WPF's 0.56 disabled TextBox, text still >4.5:1); 1 while capturing or showing a message. Opacity keeps the box enabled for UIA.
+- `[AutoRun] TriggerModifier` now parses with `Enum.TryParse(value.Replace('+', ','))` plus a bits check (numbers load again, "4" = Shift) and writes `ToString().Replace(", ", "+")` ("Alt+Control").
+- Serena MCP was bound to another project (no C# server), so this pass used the built-in tools.
+- Verification: `dotnet build Tests/Tests.csproj -c Release -r win-x64` 0 warnings/errors; `dotnet test Tests/Tests.csproj -c Release -r win-x64 --no-build --blame-hang-timeout 60s` passed 1,937/1,937.
+
+## 2026-11-23 (sided modifiers, Esc cancel and hold-to-clear)
+
+- User decision: keybinds keep their side and match it exactly (LCtrl+S never fires on Right Ctrl+S); values saved before sides existed load as LEFT (default Auto-Run Ctrl+R = LCtrl+R). Names: LCtrl/RCtrl, LAlt/RAlt, LShift/RShift, LWin/RWin, alone and as prefixes (`KeyChord` prefixes reuse `KeyDisplayConverter` names).
+- Model: `KeyChord.RightModifiers` (normalized `& Modifiers`), `AutoRunSettings.TriggerRightModifiers`, `MacroDefinition.ShortcutRightModifiers`. INI keeps the family flags where they were and adds `[AutoRun] TriggerRightModifiers` and macro `ShortcutRightModifiers`, so older builds still read the modifiers (and match either side).
+- Matching: Auto-Run checks sided VKs with GetAsyncKeyState (never the generic 0x10-0x12, which report either side). Macro activation keeps the exact family match and adds `MacroPhysicalState` side checks on sided VKs only (the hook never reports 0x10-0x12).
+- Accumulator: the last press of a modifier decides its side (LCtrl then RCtrl held = RCtrl).
+- Esc is never assigned: `KeyCaptureBox.HandleEscape` runs before the accumulator and decides on the RELEASE, so the gate keeps swallowing Esc and its auto-repeat can't trigger IsCancel buttons. User decision: Esc only cancels, with no hold-to-clear; ✕ clears. A held Esc blocks other keys from finishing the capture, so its release always cancels.
+- Tests that hold a modifier for Auto-Run through a fake `GetAsyncKeyState` must use the sided VK (0xA2), not generic 0x11 (MacroRecordingIntegrationTests needed this). Macro shortcut tests need sided VKs too.
+- Verification: Release win-x64 build 0 warnings/errors; full suite 1,965/1,965 passed.

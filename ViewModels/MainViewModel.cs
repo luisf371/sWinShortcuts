@@ -22,20 +22,14 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
     private readonly IProfileManager _profileManager;
     private readonly IDialogService _dialogService;
     private readonly ObservableCollection<ProfileViewModel> _profiles = [];
+    // Catalog keys for "Add row" defaults in each profile editor; key fields themselves are capture boxes.
     private readonly IReadOnlyList<Key> _keyOptions = KeyCatalog.GetCommonKeys();
-    private readonly IReadOnlyList<Key> _keyOptionsWithNone;
-    // Alt+Keyboard trigger keys: the common catalog minus the Alt keys (they are the modifier
-    // itself). No None — a trigger row always carries a concrete key.
-    private readonly IReadOnlyList<Key> _triggerKeyOptions;
-    private readonly IReadOnlyList<InputTrigger> _holdBreathPanicTriggers;
     private readonly IReadOnlyList<CapsLockMode> _capsLockModes =
         [CapsLockMode.Normal, CapsLockMode.DoubleNormal, CapsLockMode.Disabled];
     private readonly IReadOnlyList<HoldBreathMode> _holdBreathModes = Enum.GetValues<HoldBreathMode>();
     private readonly IReadOnlyList<SprintActivation> _sprintActivationModes = Enum.GetValues<SprintActivation>();
     private readonly IReadOnlyList<AutoRunSendMode> _autoRunSendModes = Enum.GetValues<AutoRunSendMode>();
     private readonly IReadOnlyList<AntiAfkSendMode> _antiAfkSendModes = Enum.GetValues<AntiAfkSendMode>();
-    private readonly IReadOnlyList<ModifierKeys> _triggerModifiers =
-        new[] { ModifierKeys.None, ModifierKeys.Control, ModifierKeys.Alt, ModifierKeys.Shift, ModifierKeys.Windows };
     private readonly IDisplayService _displayService;
     private readonly IColorControlService _colorControlService;
     private readonly IProfileRuntimeService? _profileRuntimeService;
@@ -99,9 +93,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         _inputHookService = inputHookService;
         _dispatcher = dispatcher ?? System.Windows.Application.Current?.Dispatcher;
         _removeBypassModifierDown = removeBypassModifierDown ?? DefaultRemoveBypassModifierDown;
-        _keyOptionsWithNone = KeyCatalog.SortKeys(new[] { Key.None }.Concat(_keyOptions)).ToArray();
-        _triggerKeyOptions = _keyOptions.Where(k => k != Key.LeftAlt && k != Key.RightAlt).ToArray();
-        _holdBreathPanicTriggers = BuildHoldBreathPanicTriggers();
         Profiles = new ReadOnlyObservableCollection<ProfileViewModel>(_profiles);
 
         _profileManager.ProfileAdded += OnProfileAdded;
@@ -114,13 +105,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     public ReadOnlyObservableCollection<ProfileViewModel> Profiles { get; }
 
-    public IReadOnlyList<Key> KeyOptions => _keyOptions;
-
-    public IReadOnlyList<Key> KeyOptionsWithNone => _keyOptionsWithNone;
-
-    public IReadOnlyList<Key> TriggerKeyOptions => _triggerKeyOptions;
-    public IReadOnlyList<InputTrigger> HoldBreathPanicTriggers => _holdBreathPanicTriggers;
-
     public IReadOnlyList<CapsLockMode> CapsLockModes => _capsLockModes;
 
     public IReadOnlyList<HoldBreathMode> HoldBreathModes => _holdBreathModes;
@@ -130,18 +114,6 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
     public IReadOnlyList<AutoRunSendMode> AutoRunSendModes => _autoRunSendModes;
 
     public IReadOnlyList<AntiAfkSendMode> AntiAfkSendModes => _antiAfkSendModes;
-
-    public IReadOnlyList<ModifierKeys> TriggerModifiers => _triggerModifiers;
-
-    private static IReadOnlyList<InputTrigger> BuildHoldBreathPanicTriggers()
-    {
-        var triggers = new List<InputTrigger> { InputTrigger.None };
-        triggers.AddRange(KeyCatalog.GetCommonKeys().Select(InputTrigger.FromKey));
-        triggers.Add(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.Middle));
-        triggers.Add(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.XButton1));
-        triggers.Add(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.XButton2));
-        return triggers;
-    }
 
     [ObservableProperty]
     private ProfileViewModel? selectedProfile;

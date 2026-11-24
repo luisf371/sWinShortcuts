@@ -125,6 +125,7 @@ internal static class ProfilePersistenceSnapshot
         {
             IsEnabled = source.IsEnabled,
             TriggerModifier = source.TriggerModifier,
+            TriggerRightModifiers = source.TriggerRightModifiers,
             TriggerKey = source.TriggerKey,
             SprintEnabled = source.SprintEnabled,
             SprintKey = source.SprintKey,

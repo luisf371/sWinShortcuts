@@ -47,6 +47,8 @@ public partial class App : System.Windows.Application
         // The toggle keys are app-level settings. Seed the hook before hosted services start so profile
         // activation never needs to resolve them from profile state.
         var inputHook = _host.Services.GetRequiredService<IInputHookService>();
+        // Keybind Assign buttons route physical keys through the hook while capturing (see KeyCaptureBox).
+        Controls.KeyCaptureBox.CaptureSource = inputHook;
         var settingsPath = AppSettings.GetSettingsPath();
 
         // Each toggle-key source is independent: a read failure for one must not drop another feature's
@@ -121,6 +123,7 @@ public partial class App : System.Windows.Application
         // One compact [EXIT] line per termination: any exit-path failure below marks it unclean, so a
         // degraded shutdown is distinguishable from a clean one in crash.log.
         var exitClean = true;
+        Controls.KeyCaptureBox.CaptureSource = null;
 
         try
         {

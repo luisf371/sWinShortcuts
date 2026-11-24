@@ -589,6 +589,110 @@ public class IniProfileStoreIntegrationTests : IDisposable
         Assert.Equal(ModifierKeys.None, loaded.AutoRun.TriggerModifier);
     }
 
+    [Theory]
+    [InlineData("Control", ModifierKeys.Control)]
+    [InlineData("Alt", ModifierKeys.Alt)]
+    [InlineData("None", ModifierKeys.None)]
+    [InlineData("Windows", ModifierKeys.Windows)]
+    [InlineData("shift", ModifierKeys.Shift)]
+    [InlineData("Control+Alt", ModifierKeys.Control | ModifierKeys.Alt)]
+    [InlineData(" alt + control ", ModifierKeys.Control | ModifierKeys.Alt)]
+    [InlineData("Control, Shift", ModifierKeys.Control | ModifierKeys.Shift)]
+    [InlineData("Control+Alt+Shift+Windows", ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows)]
+    [InlineData("Banana", ModifierKeys.Control)]
+    [InlineData("4", ModifierKeys.Shift)]
+    [InlineData("3", ModifierKeys.Alt | ModifierKeys.Control)]
+    [InlineData("16", ModifierKeys.Control)]
+    [InlineData("", ModifierKeys.Control)]
+    [InlineData("Control+", ModifierKeys.Control)]
+    [InlineData("None+Alt", ModifierKeys.Alt)]
+    [InlineData("Control+Hyper", ModifierKeys.Control)]
+    public async Task Load_AutoRunTriggerModifier_ParsesSingleAndCombinedNames(string value, ModifierKeys expected)
+    {
+        var path = Path.Combine(_root, "Profiles", "Modifiers.ini");
+        File.WriteAllText(path,
+            "[Profile]\nName=Modifiers\nExecutable=modifiers.exe\n[AutoRun]\nEnabled=true\n" +
+            $"TriggerModifier={value}\nTriggerKey=R\n");
+
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+
+        Assert.Equal(expected, profile.AutoRun.TriggerModifier);
+    }
+
+    [Theory]
+    [InlineData(ModifierKeys.None, "None")]
+    [InlineData(ModifierKeys.Control, "Control")]
+    [InlineData(ModifierKeys.Alt, "Alt")]
+    [InlineData(ModifierKeys.Shift, "Shift")]
+    [InlineData(ModifierKeys.Windows, "Windows")]
+    [InlineData(ModifierKeys.Alt | ModifierKeys.Control, "Alt+Control")]
+    [InlineData(ModifierKeys.Windows | ModifierKeys.Shift | ModifierKeys.Alt | ModifierKeys.Control, "Alt+Control+Shift+Windows")]
+    public async Task SaveAndLoad_AutoRunTriggerModifier_WritesCanonicalTextAndRoundTrips(ModifierKeys modifiers, string expectedText)
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "armods.exe");
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerModifier = modifiers;
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var saved = IniDocument.Load(profile.SourcePath);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == profile.Name);
+
+        Assert.Equal(expectedText, saved.GetValue("AutoRun", "TriggerModifier"));
+        Assert.Equal(modifiers, loaded.AutoRun.TriggerModifier);
+    }
+
+    [Theory]
+    [InlineData("Control")]
+    [InlineData("Alt")]
+    [InlineData("None")]
+    [InlineData("Windows")]
+    public async Task Save_UnchangedLegacyAutoRunTriggerModifier_ResavesIdenticalValue(string value)
+    {
+        var path = Path.Combine(_root, "Profiles", "Legacy.ini");
+        File.WriteAllText(path,
+            "[Profile]\nName=Legacy\nExecutable=legacy.exe\n[AutoRun]\nEnabled=true\n" +
+            $"TriggerModifier={value}\nTriggerKey=R\n");
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+
+        Assert.Equal(value, IniDocument.Load(path).GetValue("AutoRun", "TriggerModifier"));
+    }
+
+    [Theory]
+    [InlineData("", ModifierKeys.None)] // saved before sides existed: left
+    [InlineData("TriggerRightModifiers=Control\n", ModifierKeys.Control)]
+    [InlineData("TriggerRightModifiers=Alt\n", ModifierKeys.None)] // not one of the trigger's modifiers
+    public async Task Load_AutoRunTriggerRightModifiers_DefaultsToLeftAndKeepsOnlyTriggerModifiers(string line, ModifierKeys expected)
+    {
+        var path = Path.Combine(_root, "Profiles", "Sides.ini");
+        File.WriteAllText(path,
+            "[Profile]\nName=Sides\nExecutable=sides.exe\n[AutoRun]\nEnabled=true\nTriggerModifier=Control+Shift\n" +
+            line + "TriggerKey=R\n");
+
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => !p.IsWindowsProfile);
+
+        Assert.Equal(expected, profile.AutoRun.TriggerRightModifiers);
+    }
+
+    [Fact]
+    public async Task SaveAndLoad_AutoRunTriggerRightModifiers_RoundTrip()
+    {
+        var profile = ProfileFactory.CreateCustomProfile($"Test_{Guid.NewGuid()}", "sides.exe");
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerModifier = ModifierKeys.Control | ModifierKeys.Alt;
+        profile.AutoRun.TriggerRightModifiers = ModifierKeys.Alt;
+        _createdProfiles.Add(profile);
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var saved = IniDocument.Load(profile.SourcePath);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == profile.Name);
+
+        Assert.Equal("Alt", saved.GetValue("AutoRun", "TriggerRightModifiers"));
+        Assert.Equal(ModifierKeys.Alt, loaded.AutoRun.TriggerRightModifiers);
+    }
+
     [Fact]
     public async Task SaveAndLoad_RoundTripsAntiAfk()
     {

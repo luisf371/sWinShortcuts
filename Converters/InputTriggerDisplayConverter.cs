@@ -7,21 +7,19 @@ namespace sWinShortcuts.Converters;
 
 public sealed class InputTriggerDisplayConverter : IValueConverter
 {
-    private static readonly KeyDisplayConverter KeyConverter = new();
-    private static readonly MouseButtonDisplayConverter MouseButtonConverter = new();
-
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        if (value is not InputTrigger trigger)
-        {
-            return "None";
-        }
+        return value is InputTrigger trigger ? ToDisplayText(trigger) : "None";
+    }
 
+    // Shared with KeyChord, which prefixes the modifiers.
+    public static string ToDisplayText(InputTrigger trigger)
+    {
         return trigger.Kind switch
         {
             InputTriggerKind.None => "None",
-            InputTriggerKind.KeyboardKey => KeyConverter.Convert(trigger.Key, targetType, parameter ?? string.Empty, culture) ?? "None",
-            InputTriggerKind.MouseButton => MouseButtonConverter.Convert(trigger.MouseButton, targetType, parameter, culture) ?? "None",
+            InputTriggerKind.KeyboardKey => KeyDisplayConverter.ToDisplayText(trigger.Key),
+            InputTriggerKind.MouseButton => MouseButtonDisplayConverter.ToDisplayText(trigger.MouseButton),
             InputTriggerKind.MouseWheel when trigger.Wheel == MouseWheelDirection.Up => "Wheel Up",
             InputTriggerKind.MouseWheel when trigger.Wheel == MouseWheelDirection.Down => "Wheel Down",
             _ => "None"

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
 using sWinShortcuts.Models;
+using sWinShortcuts.Utilities;
 using MouseButton = sWinShortcuts.Models.MouseButton;
 
 namespace sWinShortcuts.ViewModels;
@@ -46,7 +47,7 @@ public sealed class AltShortcutViewModel : ViewModelBase
 
         foreach (var entry in Bindings)
         {
-            entry.Changed += OnRowChanged;
+            AttachRow(entry);
         }
         Bindings.CollectionChanged += OnBindingsChanged;
 
@@ -96,17 +97,26 @@ public sealed class AltShortcutViewModel : ViewModelBase
         _ => ProfileChangeKind.None
     };
 
+    // Each row's trigger is checked against the gesture machine's key set and the other rows' triggers.
+    private void AttachRow(AltShortcutBindingEntryViewModel entry)
+    {
+        entry.Changed += OnRowChanged;
+        entry.SourceValidator = chord => KeyBindingRules.AltShortcutSource(
+            chord, Bindings.Where(row => !ReferenceEquals(row, entry)).Select(row => row.Source));
+    }
+
     private void OnBindingsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         var kind = ProfileChangeKind.None;
         foreach (AltShortcutBindingEntryViewModel entry in e.NewItems ?? Array.Empty<AltShortcutBindingEntryViewModel>())
         {
-            entry.Changed += OnRowChanged;
+            AttachRow(entry);
             kind |= Family(entry.Source);
         }
         foreach (AltShortcutBindingEntryViewModel entry in e.OldItems ?? Array.Empty<AltShortcutBindingEntryViewModel>())
         {
             entry.Changed -= OnRowChanged;
+            entry.SourceValidator = null;
             kind |= Family(entry.Source);
         }
 

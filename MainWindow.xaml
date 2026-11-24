@@ -5,7 +5,8 @@
         xmlns:views="clr-namespace:sWinShortcuts.Views"
         xmlns:models="clr-namespace:sWinShortcuts.Models"
         xmlns:conv="clr-namespace:sWinShortcuts.Converters"
-        xmlns:behaviors="clr-namespace:sWinShortcuts.Behaviors"
+        xmlns:ctrl="clr-namespace:sWinShortcuts.Controls"
+        xmlns:util="clr-namespace:sWinShortcuts.Utilities"
         xmlns:input="clr-namespace:System.Windows.Input;assembly=WindowsBase"
         Title="sWinShortcuts"
         Icon="pack://application:,,,/Icons/Icon.ico"
@@ -37,7 +38,7 @@
     <Window.Resources>
         <conv:BooleanNegationConverter x:Key="NotConverter" />
         <conv:KeyDisplayConverter x:Key="KeyDisplayConverter" />
-        <conv:InputTriggerDisplayConverter x:Key="InputTriggerDisplayConverter" />
+        <conv:KeyChordConverter x:Key="KeyChordConverter" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfTrue" />
         <conv:BooleanToVisibilityConverterEx x:Key="VisibleIfFalse" Invert="True" />
         
@@ -477,32 +478,19 @@
                                                     <DataGridTemplateColumn Header="Source" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox SelectedItem="{Binding Source, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          ItemsSource="{Binding SelectableSources}"
-                                                                          IsSynchronizedWithCurrentItem="False"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
+                                                                <ctrl:KeyCaptureBox Chord="{Binding Source, Converter={StaticResource KeyChordConverter}, UpdateSourceTrigger=PropertyChanged}"
+                                                                                    AcceptsWheel="True"
+                                                                                    Validator="{Binding SourceValidator}"
+                                                                                    AutomationName="Mapping source" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
                                                     <DataGridTemplateColumn Header="Target" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding TargetKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          IsSynchronizedWithCurrentItem="False"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
+                                                                <ctrl:KeyCaptureBox Chord="{Binding TargetKey, Converter={StaticResource KeyChordConverter}, UpdateSourceTrigger=PropertyChanged}"
+                                                                                    Validator="{x:Static util:KeyBindingRules.AssignableKeyValidator}"
+                                                                                    AutomationName="Mapping target" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
@@ -654,58 +642,45 @@
                                                     <DataGridTemplateColumn Header="Trigger" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding SelectableSources}"
-                                                                          SelectedItem="{Binding Source, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          IsSynchronizedWithCurrentItem="False"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
+                                                                <ctrl:KeyCaptureBox Chord="{Binding Source, Converter={StaticResource KeyChordConverter}, UpdateSourceTrigger=PropertyChanged}"
+                                                                                    AcceptsMouseButtons="True"
+                                                                                    AcceptsLeftButton="True"
+                                                                                    AcceptsWheel="True"
+                                                                                    Validator="{Binding SourceValidator}"
+                                                                                    AutomationName="Alt + Shortcut trigger" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
                                                     <DataGridTemplateColumn Header="Tap" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding TapKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
+                                                                <ctrl:KeyCaptureBox Chord="{Binding TapKey, Converter={StaticResource KeyChordConverter}, UpdateSourceTrigger=PropertyChanged}"
+                                                                                    AllowNone="True"
+                                                                                    Validator="{x:Static util:KeyBindingRules.AssignableKeyValidator}"
+                                                                                    AutomationName="Tap key" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
                                                     <DataGridTemplateColumn Header="Hold" Width="*">
                                                         <DataGridTemplateColumn.CellTemplate>
                                                             <DataTemplate>
-                                                                <ComboBox ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                                          SelectedItem="{Binding HoldKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                                          IsEnabled="{Binding CanHold}"
-                                                                          ToolTip="Mouse wheel triggers support Tap only."
-                                                                          ToolTipService.ShowOnDisabled="True"
-                                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                                    <ComboBox.Style>
-                                                                        <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+                                                                <ctrl:KeyCaptureBox Chord="{Binding HoldKey, Converter={StaticResource KeyChordConverter}, UpdateSourceTrigger=PropertyChanged}"
+                                                                                    AllowNone="True"
+                                                                                    IsEnabled="{Binding CanHold}"
+                                                                                    ToolTip="Mouse wheel triggers support Tap only."
+                                                                                    ToolTipService.ShowOnDisabled="True"
+                                                                                    Validator="{x:Static util:KeyBindingRules.AssignableKeyValidator}"
+                                                                                    AutomationName="Hold key">
+                                                                    <ctrl:KeyCaptureBox.Style>
+                                                                        <Style TargetType="ctrl:KeyCaptureBox">
                                                                             <Style.Triggers>
                                                                                 <Trigger Property="IsEnabled" Value="False">
                                                                                     <Setter Property="Opacity" Value="0.5" />
                                                                                 </Trigger>
                                                                             </Style.Triggers>
                                                                         </Style>
-                                                                    </ComboBox.Style>
-                                                                    <ComboBox.ItemTemplate>
-                                                                        <DataTemplate>
-                                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                                        </DataTemplate>
-                                                                    </ComboBox.ItemTemplate>
-                                                                </ComboBox>
+                                                                    </ctrl:KeyCaptureBox.Style>
+                                                                </ctrl:KeyCaptureBox>
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
                                                     </DataGridTemplateColumn>
@@ -935,18 +910,12 @@
                                                 </Grid.ColumnDefinitions>
                                                 <TextBlock Text="Hold breath key"
                                                            VerticalAlignment="Center" />
-                                                <ComboBox Grid.Column="1"
-                                                          HorizontalAlignment="Left"
-                                                          Width="180"
-                                                          ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding RightClickHoldBreathKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
+                                                <ctrl:KeyCaptureBox Grid.Column="1"
+                                                                    HorizontalAlignment="Left"
+                                                                    Width="260"
+                                                                    Chord="{Binding RightClickHoldBreathKey, Converter={StaticResource KeyChordConverter}}"
+                                                                    Validator="{x:Static util:KeyBindingRules.AssignableKeyValidator}"
+                                                                    AutomationName="Hold breath key" />
                                             </Grid>
                                             <Grid Margin="0,0,0,8">
                                                 <Grid.ColumnDefinitions>
@@ -1008,18 +977,15 @@
                                                                ToolTipService.InitialShowDelay="0"
                                                                ToolTipService.Placement="Right" />
                                                 </StackPanel>
-                                                <ComboBox Grid.Column="1"
-                                                          HorizontalAlignment="Left"
-                                                          Width="180"
-                                                          ItemsSource="{Binding DataContext.HoldBreathPanicTriggers, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding RightClickHoldBreathPanicTrigger, Mode=TwoWay}"
-                                                          IsEnabled="{Binding RightClickHoldBreathSuppressEarlyCancelInput}">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource InputTriggerDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
+                                                <ctrl:KeyCaptureBox Grid.Column="1"
+                                                                    HorizontalAlignment="Left"
+                                                                    Width="260"
+                                                                    Chord="{Binding RightClickHoldBreathPanicTrigger, Converter={StaticResource KeyChordConverter}}"
+                                                                    IsEnabled="{Binding RightClickHoldBreathSuppressEarlyCancelInput}"
+                                                                    AllowNone="True"
+                                                                    AcceptsMouseButtons="True"
+                                                                    Validator="{x:Static util:KeyBindingRules.HoldBreathPanicValidator}"
+                                                                    AutomationName="Early Cancel trigger" />
                                             </Grid>
                                         </StackPanel>
                                     </GroupBox>
@@ -1032,7 +998,7 @@
                                                           Margin="0"
                                                           VerticalAlignment="Center" />
                                                 <TextBlock Style="{StaticResource InfoIconStyle}"
-                                                           ToolTip="Press the trigger key to toggle auto-run (continuous forward movement). Choose None to use the key by itself, or select a modifier to require a combo. Enable Sprint to also send a sprint key while auto-running."
+                                                           ToolTip="Press the trigger to toggle auto-run (continuous forward movement). Click Assign, then press a key by itself or together with any of Ctrl, Alt, Shift, and Win for a combo. Enable Sprint to also send a sprint key while auto-running."
                                                            ToolTipService.InitialShowDelay="0"
                                                            ToolTipService.Placement="Right" />
                                                 <TextBlock Style="{StaticResource WarningIconStyle}"
@@ -1050,33 +1016,15 @@
                                                     <ColumnDefinition Width="140" />
                                                     <ColumnDefinition Width="*" />
                                                 </Grid.ColumnDefinitions>
-                                                <TextBlock Text="Trigger modifier"
+                                                <TextBlock Text="Trigger"
                                                            VerticalAlignment="Center" />
-                                                <ComboBox Grid.Column="1"
-                                                          HorizontalAlignment="Left"
-                                                          Width="180"
-                                                          ItemsSource="{Binding DataContext.TriggerModifiers, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AutoRunTriggerModifier, Mode=TwoWay}" />
-                                            </Grid>
-                                            <Grid Margin="0,0,0,8">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="140" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="Trigger key"
-                                                           VerticalAlignment="Center" />
-                                                <ComboBox Grid.Column="1"
-                                                          HorizontalAlignment="Left"
-                                                          Width="180"
-                                                          ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AutoRunTriggerKey, Mode=TwoWay}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
+                                                <ctrl:KeyCaptureBox Grid.Column="1"
+                                                                    HorizontalAlignment="Left"
+                                                                    Width="260"
+                                                                    Chord="{Binding AutoRunTrigger}"
+                                                                    Mode="Combo"
+                                                                    Validator="{x:Static util:KeyBindingRules.AutoRunTriggerValidator}"
+                                                                    AutomationName="Auto-Run trigger" />
                                             </Grid>
                                             <Grid Margin="0,0,0,8">
                                                 <Grid.ColumnDefinitions>
@@ -1086,19 +1034,13 @@
                                                 <CheckBox Content="Auto-Sprint"
                                                           IsChecked="{Binding AutoRunSprintEnabled}"
                                                           VerticalAlignment="Center" />
-                                                <ComboBox Grid.Column="1"
-                                                          HorizontalAlignment="Left"
-                                                          Width="180"
-                                                          ItemsSource="{Binding DataContext.KeyOptions, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding AutoRunSprintKey, Mode=TwoWay}"
-                                                          IsEnabled="{Binding AutoRunSprintEnabled}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
+                                                <ctrl:KeyCaptureBox Grid.Column="1"
+                                                                    HorizontalAlignment="Left"
+                                                                    Width="260"
+                                                                    Chord="{Binding AutoRunSprintKey, Converter={StaticResource KeyChordConverter}}"
+                                                                    IsEnabled="{Binding AutoRunSprintEnabled}"
+                                                                    Validator="{x:Static util:KeyBindingRules.AssignableKeyValidator}"
+                                                                    AutomationName="Auto-Sprint key" />
                                             </Grid>
                                             <Grid Margin="0,0,0,8"
                                                   IsEnabled="{Binding AutoRunSprintEnabled}"
@@ -1820,19 +1762,14 @@
                                                           IsChecked="{Binding CapsLockRemapEnabled}"
                                                           IsEnabled="{Binding CanRemapCapsLock}"
                                                           VerticalAlignment="Center" />
-                                                <ComboBox Grid.Column="1"
-                                                          HorizontalAlignment="Left"
-                                                          Width="180"
-                                                          ItemsSource="{Binding DataContext.KeyOptionsWithNone, ElementName=RootWindow}"
-                                                          SelectedItem="{Binding CapsLockRemapKey, Mode=TwoWay}"
-                                                          IsEnabled="{Binding CanSelectCapsLockRemapKey}"
-                                                          behaviors:ComboBoxKeySelectionBehavior.EnableKeySelection="True">
-                                                    <ComboBox.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <TextBlock Text="{Binding Converter={StaticResource KeyDisplayConverter}}" />
-                                                        </DataTemplate>
-                                                    </ComboBox.ItemTemplate>
-                                                </ComboBox>
+                                                <ctrl:KeyCaptureBox Grid.Column="1"
+                                                                    HorizontalAlignment="Left"
+                                                                    Width="260"
+                                                                    Chord="{Binding CapsLockRemapKey, Converter={StaticResource KeyChordConverter}}"
+                                                                    IsEnabled="{Binding CanSelectCapsLockRemapKey}"
+                                                                    AllowNone="True"
+                                                                    Validator="{x:Static util:KeyBindingRules.AssignableKeyValidator}"
+                                                                    AutomationName="Caps Lock remap key" />
                                             </Grid>
                                         </StackPanel>
                                     </GroupBox>

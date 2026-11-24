@@ -32,6 +32,26 @@ public sealed class InputHookService : IInputHookService
     public void BeginMacroRecordingStopGesture(Key? key = null) => _macros.StopFromControl(key);
     public void CancelMacroPlayback(Profile owner) => _macros.Invalidate(owner);
 
+    public bool TryBeginKeyCapture(IKeyCaptureSink sink)
+    {
+        ArgumentNullException.ThrowIfNull(sink);
+        // The hook callback runs on _hookDispatcher's thread; beginning anywhere else could race it. No
+        // _profileLock: this runs on the UI thread, and the gate's state is hook-thread owned.
+        if (_runtime.IsDisposed || !_runtime.IsRunning || _keyboardHookHandle == IntPtr.Zero ||
+            _hookDispatcher is not { } dispatcher || !dispatcher.CheckAccess() ||
+            _macros.IsBusy || _macros.IsRecording || _macroPhysical.HasTakeovers)
+        {
+            return false;
+        }
+
+        // Snapshot the keys already held (async state, off the hot path) so their auto-repeat can't make the gate
+        // own, and then swallow, an up whose down Windows already saw.
+        _keyCapture.Begin(sink, Stopwatch.GetTimestamp(), _isPhysicalKeyDown);
+        return true;
+    }
+
+    public void EndKeyCapture(IKeyCaptureSink sink) => _keyCapture.End(sink);
+
     private readonly ILoggerService _logger;
     private readonly InputRuntimeState _runtime;
     private readonly InputExecutor _inputExecutor;
@@ -41,6 +61,8 @@ public sealed class InputHookService : IInputHookService
     private readonly AntiAfkStateMachine _antiAfk;
     private readonly RemapStateMachine _remaps;
     private readonly CapsHoldWinKeyBlocker _winKeyBlocker = new();
+    // Keybind capture (Assign buttons): routes physical keys only to the capture UI while it runs.
+    private readonly KeyCaptureGate _keyCapture = new();
     private readonly MacroPhysicalState _macroPhysical;
     private readonly MacroStateMachine _macros;
     private int _macroPhysicalRecoveryPending;
@@ -1516,6 +1538,14 @@ public sealed class InputHookService : IInputHookService
         bool isKeyUp = message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP;
         int vkCode = (int)data.vkCode;
 
+        // Keybind capture: physical keys go only to the Assign UI (features, toggles and shell shortcuts don't
+        // fire). Injected output was filtered above, so the app's own synthetic input keeps flowing. During a
+        // watchdog hook replacement the early return above skips this, so a capture fails open for that window.
+        if (_keyCapture.IsActive && _keyCapture.TryHandle(vkCode, isKeyDown, isKeyUp, Stopwatch.GetTimestamp()))
+        {
+            return (IntPtr)1;
+        }
+
         if (!featuresActive)
         {
             _winKeyBlocker.ObserveUnfiltered(vkCode, isKeyDown, isKeyUp);
@@ -1795,7 +1825,8 @@ public sealed class InputHookService : IInputHookService
         CompletePendingMacroRecovery();
         var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
         var previous = isButton ? _macroPhysical.ButtonState(button) : 0;
-        var decision = isButton ? _macros.HandleButton(button, down, previous) : null;
+        var assigning = _keyCapture.IsActive;
+        var decision = isButton ? _macros.HandleButton(button, down, previous, allowActivation: !assigning) : null;
         // A consumed activation must not arm right-click mappings or crosshair/hold-breath state.
         if (decision != true) ObserveRightButton(message);
         var recordingPaused = _runtime.RecordingPaused;
@@ -1807,10 +1838,11 @@ public sealed class InputHookService : IInputHookService
                 unchecked((short)(mouseData >> 16))));
             handled = MacroPhysicalState.WasSuppressed(previous) && DispatchMouseFeatures(message, mouseData);
         }
-        else handled = DispatchMouseFeatures(message, mouseData);
-        // Keep physical pairing current even when capture or takeover bypasses mouse actions.
+        // While Assign is active, new clicks and wheel notches reach WPF without triggering bindings.
+        // Existing releases still settle their physical pairs.
+        else handled = (!assigning || (isButton && !down)) && DispatchMouseFeatures(message, mouseData);
         if (message == NativeMethods.WM_LBUTTONDOWN)
-            _rapidFire.HandleLeftButton(isDown: true, allowStart: !handled && !decision.HasValue && !recordingPaused);
+            _rapidFire.HandleLeftButton(isDown: true, allowStart: !assigning && !handled && !decision.HasValue && !recordingPaused);
         else if (message == NativeMethods.WM_LBUTTONUP)
             _rapidFire.HandleLeftButton(isDown: false, allowStart: false);
         if (isButton) _macroPhysical.CompleteButton(button, down, handled);
@@ -1919,6 +1951,8 @@ public sealed class InputHookService : IInputHookService
         string? rapidFireDisarmReason = null,
         bool foregroundDeparture = false)
     {
+        // A stuck capture must never keep swallowing the keyboard across a boundary.
+        _keyCapture.End();
         _gestures.InvalidateWheel();
         var rapidFireArmCleared = preserveRapidFireArm
             ? CancelRapidFirePressAndKeepArm()

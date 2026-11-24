@@ -1,0 +1,303 @@
+using System;
+using System.Windows.Input;
+using sWinShortcuts.Models;
+using MouseButton = sWinShortcuts.Models.MouseButton;
+
+namespace sWinShortcuts.Utilities;
+
+public enum KeyCaptureStatus
+{
+    Pending,
+    Finished
+}
+
+public enum KeyChordRejection
+{
+    None,
+    MultipleKeys,
+    UnsupportedKey
+}
+
+/// <summary>Outcome of one finished capture: a chord, or the reason it was rejected.</summary>
+public readonly record struct KeyChordResult(KeyChord Chord, KeyChordRejection Rejection)
+{
+    public bool IsCompleted => Rejection == KeyChordRejection.None;
+
+    public static KeyChordResult Completed(KeyChord chord) => new(chord, KeyChordRejection.None);
+
+    public static KeyChordResult Rejected(KeyChordRejection rejection) => new(KeyChord.None, rejection);
+}
+
+/// <summary>
+/// Turns the physical edges of one capture into a <see cref="KeyChord"/>. The capture starts on the first
+/// press and finishes when every input pressed during it is released. Modifiers become prefixes that keep
+/// their side (the last press of a modifier decides it); exactly one non-modifier key, mouse button, or wheel
+/// direction is the primary input. When only modifiers are pressed, the last one pressed becomes the primary
+/// key. One instance is reused across captures, and the edge methods do not allocate.
+/// </summary>
+public sealed class KeyChordAccumulator
+{
+    private const int VK_SHIFT = 0x10;
+    private const int VK_CONTROL = 0x11;
+    private const int VK_MENU = 0x12;
+    private const int VK_PAUSE = 0x13;
+    private const int VK_LWIN = 0x5B;
+    private const int VK_RWIN = 0x5C;
+    private const int VK_LSHIFT = 0xA0;
+    private const int VK_RSHIFT = 0xA1;
+    private const int VK_LCONTROL = 0xA2;
+    private const int VK_RCONTROL = 0xA3;
+    private const int VK_LMENU = 0xA4;
+    private const int VK_RMENU = 0xA5;
+
+    private const int PRIMARY_NONE = 0;
+    private const int PRIMARY_KEY = 1;
+    private const int PRIMARY_MOUSE = 2;
+    private const int PRIMARY_WHEEL = 3;
+
+    private readonly bool[] _preheld = new bool[256];
+    private readonly bool[] _keyDown = new bool[256];
+    // Indexed by the MouseButton value (1..5).
+    private readonly bool[] _mouseDown = new bool[6];
+    private int _downCount;
+    private bool _started;
+    private bool _finished;
+    private bool _multiple;
+    private ModifierKeys _modifiers;
+    // The _modifiers flags whose latest press was the right-hand key.
+    private ModifierKeys _rightModifiers;
+    private int _lastModifierVk;
+    private int _primaryKind;
+    private int _primaryVk;
+    private MouseButton _primaryButton;
+    private MouseWheelDirection _primaryWheel;
+
+    public bool HasStarted => _started;
+
+    public KeyChordResult Result { get; private set; }
+
+    /// <summary>
+    /// The chord this capture gives if everything is released now (None before the first press). Only
+    /// modifiers: the last one pressed is the primary key, with its own side, and the others are its prefixes.
+    /// </summary>
+    public KeyChord Progress => _primaryKind switch
+    {
+        PRIMARY_KEY => KeyInteropUtilities.FromVirtualKey(_primaryVk) is { } key
+            ? KeyChord.FromKey(key, _modifiers, _rightModifiers)
+            : KeyChord.None,
+        PRIMARY_MOUSE => KeyChord.FromTrigger(InputTrigger.FromMouseButton(_primaryButton), _modifiers, _rightModifiers),
+        PRIMARY_WHEEL => KeyChord.FromTrigger(InputTrigger.FromWheel(_primaryWheel), _modifiers, _rightModifiers),
+        _ => KeyInteropUtilities.FromVirtualKey(_lastModifierVk) is { } modifier
+            ? KeyChord.FromKey(modifier, _modifiers & ~ModifierForVirtualKey(_lastModifierVk), _rightModifiers)
+            : KeyChord.None
+    };
+
+    /// <summary>Starts a new capture. Keys already held are ignored until they are released.</summary>
+    public void Begin(ReadOnlySpan<int> preheldVks)
+    {
+        Array.Clear(_preheld);
+        Array.Clear(_keyDown);
+        Array.Clear(_mouseDown);
+        _downCount = 0;
+        _started = false;
+        _finished = false;
+        _multiple = false;
+        _modifiers = ModifierKeys.None;
+        _rightModifiers = ModifierKeys.None;
+        _lastModifierVk = 0;
+        _primaryKind = PRIMARY_NONE;
+        _primaryVk = 0;
+        _primaryButton = default;
+        _primaryWheel = default;
+        Result = default;
+        foreach (var vk in preheldVks)
+        {
+            if ((uint)vk < 256)
+            {
+                _preheld[vk] = true;
+            }
+        }
+    }
+
+    public KeyCaptureStatus OnKeyDown(int vk)
+    {
+        if (_finished)
+        {
+            return KeyCaptureStatus.Finished;
+        }
+
+        if ((uint)vk >= 256 || vk == 0 || _preheld[vk] || _keyDown[vk])
+        {
+            // Out of range, still held from before the capture, or an auto-repeat.
+            return KeyCaptureStatus.Pending;
+        }
+
+        _keyDown[vk] = true;
+        _downCount++;
+        _started = true;
+        var flag = ModifierForVirtualKey(vk);
+        if (flag != ModifierKeys.None)
+        {
+            _modifiers |= flag;
+            _rightModifiers = vk is VK_RSHIFT or VK_RCONTROL or VK_RMENU or VK_RWIN ? _rightModifiers | flag : _rightModifiers & ~flag;
+            _lastModifierVk = vk;
+        }
+        else if (_primaryKind == PRIMARY_NONE)
+        {
+            _primaryKind = PRIMARY_KEY;
+            _primaryVk = vk;
+        }
+        else if (_primaryKind != PRIMARY_KEY || _primaryVk != vk)
+        {
+            _multiple = true;
+        }
+
+        return IsMomentaryKey(vk) ? OnKeyUp(vk) : KeyCaptureStatus.Pending;
+    }
+
+    // Windows reports Pause with a down edge only.
+    internal static bool IsMomentaryKey(int vk) => vk == VK_PAUSE;
+
+    public KeyCaptureStatus OnKeyUp(int vk)
+    {
+        if (_finished)
+        {
+            return KeyCaptureStatus.Finished;
+        }
+
+        if ((uint)vk >= 256)
+        {
+            return KeyCaptureStatus.Pending;
+        }
+
+        if (_preheld[vk])
+        {
+            // A key held before the capture: its release neither starts nor ends the chord.
+            _preheld[vk] = false;
+            return KeyCaptureStatus.Pending;
+        }
+
+        if (!_keyDown[vk])
+        {
+            return KeyCaptureStatus.Pending;
+        }
+
+        _keyDown[vk] = false;
+        _downCount--;
+        return TryFinish();
+    }
+
+    public KeyCaptureStatus OnMouseDown(MouseButton button)
+    {
+        if (_finished)
+        {
+            return KeyCaptureStatus.Finished;
+        }
+
+        var index = (int)button;
+        if ((uint)index >= (uint)_mouseDown.Length || index == 0 || _mouseDown[index])
+        {
+            return KeyCaptureStatus.Pending;
+        }
+
+        _mouseDown[index] = true;
+        _downCount++;
+        _started = true;
+        if (_primaryKind == PRIMARY_NONE)
+        {
+            _primaryKind = PRIMARY_MOUSE;
+            _primaryButton = button;
+        }
+        else if (_primaryKind != PRIMARY_MOUSE || _primaryButton != button)
+        {
+            _multiple = true;
+        }
+
+        return KeyCaptureStatus.Pending;
+    }
+
+    public KeyCaptureStatus OnMouseUp(MouseButton button)
+    {
+        if (_finished)
+        {
+            return KeyCaptureStatus.Finished;
+        }
+
+        if (!IsMouseButtonDown(button))
+        {
+            return KeyCaptureStatus.Pending;
+        }
+
+        _mouseDown[(int)button] = false;
+        _downCount--;
+        return TryFinish();
+    }
+
+    internal bool IsMouseButtonDown(MouseButton button)
+    {
+        var index = (int)button;
+        return (uint)index < (uint)_mouseDown.Length && _mouseDown[index];
+    }
+
+    /// <summary>A wheel notch is a press and release in one; it finishes the chord when nothing else is held.</summary>
+    public KeyCaptureStatus OnWheel(MouseWheelDirection direction)
+    {
+        if (_finished)
+        {
+            return KeyCaptureStatus.Finished;
+        }
+
+        if (!Enum.IsDefined(direction))
+        {
+            return KeyCaptureStatus.Pending;
+        }
+
+        _started = true;
+        if (_primaryKind == PRIMARY_NONE)
+        {
+            _primaryKind = PRIMARY_WHEEL;
+            _primaryWheel = direction;
+        }
+        else if (_primaryKind != PRIMARY_WHEEL || _primaryWheel != direction)
+        {
+            _multiple = true;
+        }
+
+        return TryFinish();
+    }
+
+    /// <summary>Side-agnostic modifier flag for a virtual key, or None for a non-modifier key.</summary>
+    public static ModifierKeys ModifierForVirtualKey(int vk) => vk switch
+    {
+        VK_SHIFT or VK_LSHIFT or VK_RSHIFT => ModifierKeys.Shift,
+        VK_CONTROL or VK_LCONTROL or VK_RCONTROL => ModifierKeys.Control,
+        VK_MENU or VK_LMENU or VK_RMENU => ModifierKeys.Alt,
+        VK_LWIN or VK_RWIN => ModifierKeys.Windows,
+        _ => ModifierKeys.None
+    };
+
+    private KeyCaptureStatus TryFinish()
+    {
+        if (!_started || _downCount > 0)
+        {
+            return KeyCaptureStatus.Pending;
+        }
+
+        _finished = true;
+        Result = BuildResult();
+        return KeyCaptureStatus.Finished;
+    }
+
+    private KeyChordResult BuildResult()
+    {
+        if (_multiple)
+        {
+            return KeyChordResult.Rejected(KeyChordRejection.MultipleKeys);
+        }
+
+        var chord = Progress;
+        return chord.IsEmpty || (chord.Input.Kind == InputTriggerKind.KeyboardKey && !KeyCatalog.IsAssignable(chord.Input.Key))
+            ? KeyChordResult.Rejected(KeyChordRejection.UnsupportedKey)
+            : KeyChordResult.Completed(chord);
+    }
+}

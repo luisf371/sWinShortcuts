@@ -224,6 +224,31 @@ public sealed class GestureChordStateMachineTests
         public bool EnqueuePair(in InputCommand down, in InputCommand up) => throw new NotSupportedException();
     }
 
+    [Theory]
+    [InlineData(Key.F13)]
+    [InlineData(Key.F24)]
+    [InlineData(Key.Pause)]
+    [InlineData(Key.PrintScreen)]
+    public void AltKeyboard_KeyOutsideCommonCatalog_FiresTapBinding(Key source)
+    {
+        var profile = CreateProfile();
+        profile.AltKeyboard.IsEnabled = true;
+        profile.AltKeyboard.Bindings = new Dictionary<Key, AltKeyboardBinding>
+        {
+            [source] = new() { TapKey = Key.B }
+        };
+        var queue = new RecordingInputQueue();
+        using var random = new ThreadLocal<Random>(() => new Random(1));
+        using var machine = CreateMachine(profile, queue, random);
+
+        var vk = KeyInterop.VirtualKeyFromKey(source);
+        Assert.True(machine.HandleAltKeyboard(vk, isKeyDown: true, isKeyUp: false));
+        Assert.True(machine.HandleAltKeyboard(vk, isKeyDown: false, isKeyUp: true));
+
+        Assert.Contains(queue.Commands, command => command.Key == Key.B && command.IsDown);
+        Assert.Contains(queue.Commands, command => command.Key == Key.B && !command.IsDown);
+    }
+
     [Fact]
     public void AltGestures_AdvancedModeDisabled_GuardedCommandsRemainExecutable()
     {

@@ -57,7 +57,7 @@ moment that program comes to the foreground.
     still does its normal interact.*
 - **Mouse wheel shortcuts** — select **Wheel Up** or **Wheel Down** as a Key Mapping
   source to tap a key, optionally with **Right Click Only** checked. Alt + Shortcut also
-  includes Wheel Up/Down in its trigger dropdown; wheel rows use **Tap**, with **Hold** disabled.
+  accepts Wheel Up/Down as a trigger; wheel rows use **Tap**, with **Hold** disabled.
 - **Caps Lock repurposing** — **Normal** mirrors Caps Lock down/up; **2x Normal** sends
   one full key tap on press and another on release; **Disabled** suppresses the key.
   **Remap Key** substitutes your chosen output key for Caps Lock. While a remapped 2x press is
@@ -180,11 +180,11 @@ dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
 
 ### Mouse Wheel Mappings
 
-In a custom profile, enable **Key Mapping**, add a row, and choose **Wheel Up** or
-**Wheel Down** as its source. Choose a keyboard target and check **Right Click Only**
+In a custom profile, enable **Key Mapping**, add a row, click **Assign** in its source and
+scroll the wheel once over the field. Assign a keyboard target and check **Right Click Only**
 if it should work only while the right mouse button is held. For an Alt gesture,
-enable **Alt + Shortcut**, add a binding, choose **Wheel Up** or **Wheel Down** in its
-trigger dropdown, and set **Tap** to the target key. **Hold** is disabled for wheel
+enable **Alt + Shortcut**, add a binding, click **Assign** in its trigger and scroll over
+the field, and set **Tap** to the target key. **Hold** is disabled for wheel
 rows. An assigned Alt gesture takes priority while Alt is held; otherwise an eligible
 Key Mapping can run.
 
@@ -228,7 +228,7 @@ example to record a macro again; its name, shortcut, and options stay.
 With the step list focused, use **Delete** to remove a step, **Ctrl+D** to duplicate it,
 and **Alt+Up/Down** to reorder it. **Fix step N** jumps to the row named in a validation error;
 that row shows a warning mark, and the step editor shows the full message.
-Open either key dropdown and press a key to select it directly.
+Change a key by clicking **Assign** beside it and pressing the new key.
 
 The list shows **Presses** by default; switch to **All steps** above the list to see every
 event. With **Presses**, adjacent matching Down, Wait, and Up events appear as one
@@ -354,6 +354,28 @@ Open **Settings** from the tray menu or main window to configure:
   profiles (they are intentionally *not* per-profile settings).
 - **Enable Debug Logging** — writes verbose input-hook tracing to `debug.log`.
 - **Start minimized** and **Start with Windows** (with optional *run as administrator*).
+
+### Assigning Keys
+
+Every key field is a read-only box with an **Assign** button (and **✕** to clear it where
+"None" is allowed). The box is dimmed because you can't type in it. Click **Assign**: the box
+shows **Capturing keys…**, then the keys you are holding, until you release the key or
+combination. Modifiers always come first (**LCtrl+E**, never E+LCtrl), in the
+order Ctrl, Alt, Shift, Win, whichever order you pressed them, and they keep the side you
+pressed: **LCtrl+S** fires only with Left Ctrl, and **RCtrl+S** is a different shortcut.
+Pressing only a modifier assigns that key itself, such as **LShift** for Sprint. Alt + Shortcut
+triggers, macro shortcuts and Hold-breath Early Cancel also capture a mouse button pressed over
+the box. Alt + Shortcut triggers and Key Mapping sources capture a wheel notch scrolled over it.
+Press **Esc**, click **Cancel**, click outside the box, or switch windows to keep the old value.
+**Esc** only cancels and can't be assigned. Click **✕** to clear a key.
+Capture also ends after 10 seconds without input or 30 seconds overall. While a capture runs,
+keystrokes go only to the box, so shortcuts such as Win+E, Alt+Tab and the app's own hotkeys
+don't fire. If input hooks aren't running, the box captures through the window instead and
+Windows shortcuts can still react.
+
+**After upgrading, reconfirm your keybinds in Settings and in each profile.** Shortcuts saved
+by older versions didn't record a side and now count as left-hand keys, so the default Auto-Run
+**Ctrl+R** becomes **LCtrl+R**. If a shortcut looks wrong, click **Assign** and enter it again.
 
 Elevated startup is scoped to your Windows account and runs at your logon, including
 on battery power, without a time limit. Existing startup tasks are adopted only when

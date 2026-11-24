@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
+using sWinShortcuts.Models;
 using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
 
@@ -11,9 +12,6 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
 {
     private readonly ILoggerService _loggerService = loggerService;
     private readonly IInputHookService _inputHookService = inputHookService;
-    private IReadOnlyList<Key> _colorToggleKeyOptions =
-        KeyCatalog.SortKeys(new[] { Key.None }.Concat(KeyCatalog.GetCommonKeys()
-            .Where(key => KeyInteropUtilities.NormalizeAppToggleKey(key).HasValue))).ToArray();
     private bool _startWithWindows;
     private bool _startAsAdmin;
     private bool _startMinimized;
@@ -159,7 +157,8 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
         }
     }
 
-    public IReadOnlyList<Key> ColorToggleKeyOptions => _colorToggleKeyOptions;
+    /// <summary>Capture-box rule shared by the three app toggle keys: one non-modifier key, or None.</summary>
+    public static Func<KeyChord, string?> ToggleKeyValidator { get; } = KeyBindingRules.AppToggle;
 
     /// <summary>
     /// The app-wide key that flips the active profile between its Primary and Secondary color presets.
@@ -176,7 +175,6 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
                 return;
             }
 
-            EnsureToggleKeyOption(value);
             _colorToggleKey = value;
             _inputHookService.SetColorToggleKey(value == Key.None ? null : value);
             OnPropertyChanged();
@@ -194,7 +192,6 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
                 return;
             }
 
-            EnsureToggleKeyOption(value);
             _rapidFireToggleKey = value;
             _inputHookService.SetRapidFireToggleKey(value == Key.None ? null : value);
             OnPropertyChanged();
@@ -209,18 +206,10 @@ public sealed class SettingsViewModel(ILoggerService loggerService, IInputHookSe
             value = KeyInteropUtilities.NormalizeAppToggleKey(value) ?? Key.None;
             if (_crosshairOffsetToggleKey == value) return;
 
-            EnsureToggleKeyOption(value);
             _crosshairOffsetToggleKey = value;
             _inputHookService.SetCrosshairOffsetToggleKey(value == Key.None ? null : value);
             OnPropertyChanged();
         }
-    }
-
-    private void EnsureToggleKeyOption(Key key)
-    {
-        if (_colorToggleKeyOptions.Contains(key)) return;
-        _colorToggleKeyOptions = KeyCatalog.SortKeys(_colorToggleKeyOptions.Append(key)).ToArray();
-        OnPropertyChanged(nameof(ColorToggleKeyOptions));
     }
 
     // Applies live, same pattern as EnableDebugLogging (the service reacts on its next watchdog

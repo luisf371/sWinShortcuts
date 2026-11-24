@@ -339,6 +339,7 @@ public sealed class IniProfileStore : IProfileStore
                 steps[stepIndex] = ReadMacroStep(document, stepSection);
             }
 
+            var shortcutModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutModifiers");
             definitions[index] = new MacroDefinition
             {
                 Id = id,
@@ -350,7 +351,10 @@ public sealed class IniProfileStore : IProfileStore
                 ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
                 ShortcutMouseButton = document.TryGetSourceValue(section, "ShortcutMouseButton", out _)
                     ? ReadMacroEnum<Models.MouseButton>(document, section, "ShortcutMouseButton") : null,
-                ShortcutModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutModifiers"),
+                ShortcutModifiers = shortcutModifiers,
+                // Files from before sides were saved have none, so their modifiers are left. Masked so a stray bit
+                // can't make two equal shortcuts differ.
+                ShortcutRightModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutRightModifiers", 0) & shortcutModifiers,
                 Steps = steps
             };
         }
@@ -493,6 +497,7 @@ public sealed class IniProfileStore : IProfileStore
             document.SetKey(section, "ShortcutKey", macro.ShortcutKey);
             if (macro.ShortcutMouseButton is { } button) document.SetEnum(section, "ShortcutMouseButton", button);
             document.SetInt32(section, "ShortcutModifiers", (int)macro.ShortcutModifiers);
+            document.SetInt32(section, "ShortcutRightModifiers", (int)macro.ShortcutRightModifiers);
             document.SetInt32(section, "StepCount", macro.Steps.Length);
             for (var stepIndex = 0; stepIndex < macro.Steps.Length; stepIndex++)
             {
@@ -918,9 +923,12 @@ public sealed class IniProfileStore : IProfileStore
     private static void DeserializeAutoRun(IniDocument document, AutoRunSettings settings)
     {
         settings.IsEnabled = document.GetBoolean("AutoRun", "Enabled", settings.IsEnabled);
-        // GetEnum's Enum.IsDefined guard rejects a combined ModifierKeys flag (e.g. Control|Alt=6)
-        // and falls back to the default. None is a supported single-key trigger.
-        settings.TriggerModifier = document.GetEnum("AutoRun", "TriggerModifier", settings.TriggerModifier);
+        // A name ("Control"), a "+"-joined combination ("Alt+Control"), or a number; anything else falls back to
+        // the default. None is a supported single-key trigger.
+        settings.TriggerModifier = document.GetModifierKeys("AutoRun", "TriggerModifier", settings.TriggerModifier);
+        // Which of those are the right-hand key. Files from before sides were saved have none: all left.
+        settings.TriggerRightModifiers =
+            document.GetModifierKeys("AutoRun", "TriggerRightModifiers", ModifierKeys.None) & settings.TriggerModifier;
         settings.TriggerKey = document.GetKey("AutoRun", "TriggerKey") ?? settings.TriggerKey;
         settings.SprintEnabled = document.GetBoolean("AutoRun", "SprintEnabled", settings.SprintEnabled);
         settings.SprintKey = document.GetKey("AutoRun", "SprintKey") ?? settings.SprintKey;
@@ -1066,7 +1074,8 @@ public sealed class IniProfileStore : IProfileStore
 
         var autoRun = profile.AutoRun;
         document.SetBoolean("AutoRun", "Enabled", autoRun.IsEnabled);
-        document.SetEnum("AutoRun", "TriggerModifier", autoRun.TriggerModifier);
+        document.SetModifierKeys("AutoRun", "TriggerModifier", autoRun.TriggerModifier);
+        document.SetModifierKeys("AutoRun", "TriggerRightModifiers", autoRun.TriggerRightModifiers);
         document.SetKey("AutoRun", "TriggerKey", autoRun.TriggerKey);
         document.SetBoolean("AutoRun", "SprintEnabled", autoRun.SprintEnabled);
         document.SetKey("AutoRun", "SprintKey", autoRun.SprintKey);

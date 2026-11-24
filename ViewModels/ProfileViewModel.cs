@@ -48,11 +48,9 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         AltShortcut = new AltShortcutViewModel(Model.AltMouse, Model.AltKeyboard);
         AltShortcut.Changed += (_, e) =>
         {
-            UpdateSelectableAltShortcutSources();
             OnPropertyChanged(nameof(AvailableAltShortcutSources));
             OnProfileChanged(e.Kind);
         };
-        UpdateSelectableAltShortcutSources();
 
         CombinedMappings = new ObservableCollection<CombinedMappingEntryViewModel>(
             Model.CombinedMappings.Mappings.Select(e => new CombinedMappingEntryViewModel
@@ -108,8 +106,6 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             () => CrosshairSizeAdjustment = CrosshairSettings.DefaultSizeAdjustment);
         ResetCrosshairOffsetXCommand = new RelayCommand(() => CrosshairOffsetX = 0);
         ResetCrosshairOffsetYCommand = new RelayCommand(() => CrosshairOffsetY = 0);
-
-        UpdateSelectableKeys();
     }
 
     public ICommand ResetRapidFireIntervalCommand { get; }
@@ -392,31 +388,22 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public ModifierKeys AutoRunTriggerModifier
+    // Modifiers, their sides and the key in ONE edit, so a captured LCtrl+LAlt+R saves and republishes once.
+    public KeyChord AutoRunTrigger
     {
-        get => Model.AutoRun.TriggerModifier;
+        get => KeyChord.FromKey(Model.AutoRun.TriggerKey, Model.AutoRun.TriggerModifier, Model.AutoRun.TriggerRightModifiers);
         set
         {
-            if (Model.AutoRun.TriggerModifier != value)
+            if (value.Input.Kind != InputTriggerKind.KeyboardKey || value.Input.Key == Key.None || value == AutoRunTrigger)
             {
-                Model.AutoRun.TriggerModifier = value;
-                OnPropertyChanged();
-                OnProfileChanged(ProfileChangeKind.AutoRun);
+                return;
             }
-        }
-    }
 
-    public Key AutoRunTriggerKey
-    {
-        get => Model.AutoRun.TriggerKey;
-        set
-        {
-            if (Model.AutoRun.TriggerKey != value)
-            {
-                Model.AutoRun.TriggerKey = value;
-                OnPropertyChanged();
-                OnProfileChanged(ProfileChangeKind.AutoRun);
-            }
+            Model.AutoRun.TriggerModifier = value.Modifiers;
+            Model.AutoRun.TriggerRightModifiers = value.RightModifiers;
+            Model.AutoRun.TriggerKey = value.Input.Key;
+            OnPropertyChanged();
+            OnProfileChanged(ProfileChangeKind.AutoRun);
         }
     }
 
@@ -754,8 +741,6 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public IReadOnlyList<Key> KeyOptions => _keyOptions;
-
     public ColorSettingsViewModel ColorSettings { get; }
 
     public void AddCombinedMapping()
@@ -774,7 +759,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
 
         CombinedMappings.Add(combined);
         SelectedCombinedMapping = combined;
-        // OnCombinedMappingsChanged will fire and update keys
+        // OnCombinedMappingsChanged will fire and refresh AvailableCombinedSources
     }
 
     public void RemoveCombinedMapping(CombinedMappingEntryViewModel? entry)
@@ -790,7 +775,7 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             {
                 SelectedCombinedMapping = CombinedMappings.LastOrDefault();
             }
-            // OnCombinedMappingsChanged will fire and update keys
+            // OnCombinedMappingsChanged will fire and refresh AvailableCombinedSources
         }
     }
 
@@ -832,18 +817,6 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
-    // Each row lists the triggers no other row uses, plus its own, which it keeps even when it is outside
-    // the catalog (such as F13 loaded from a file). Refreshing raises no profile event.
-    private void UpdateSelectableAltShortcutSources()
-    {
-        var used = AltShortcut.Bindings.Select(row => row.Source).ToHashSet();
-        foreach (var row in AltShortcut.Bindings)
-        {
-            var sources = _altShortcutSourceOptions.Where(source => source == row.Source || !used.Contains(source));
-            row.SelectableSources = (_altShortcutSourceOptions.Contains(row.Source) ? sources : sources.Prepend(row.Source)).ToArray();
-        }
-    }
-
     public void CommitChanges()
     {
         // Child/property edits notify their exact runtime category when they occur. Manual Save only
@@ -876,50 +849,36 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
                 DetachCombinedVm(m);
             }
         }
-        UpdateSelectableKeys();
         OnPropertyChanged(nameof(AvailableCombinedSources));
         OnProfileChanged(ProfileChangeKind.CombinedMappings);
     }
 
+    // Each row's source must be an assignable key or wheel direction that no other row uses.
     private void AttachCombinedVm(CombinedMappingEntryViewModel m)
     {
         m.PropertyChanged += OnCombinedVmChanged;
+        m.SourceValidator = chord => KeyBindingRules.CombinedSource(
+            chord, CombinedMappings.Where(row => !ReferenceEquals(row, m)).Select(row => row.Source));
     }
 
     private void DetachCombinedVm(CombinedMappingEntryViewModel m)
     {
         m.PropertyChanged -= OnCombinedVmChanged;
+        m.SourceValidator = null;
     }
 
     private void OnCombinedVmChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(CombinedMappingEntryViewModel.SelectableSources))
+        if (e.PropertyName == nameof(CombinedMappingEntryViewModel.SourceValidator))
         {
             return;
         }
         if (e.PropertyName == nameof(CombinedMappingEntryViewModel.Source))
         {
-            UpdateSelectableKeys();
             OnPropertyChanged(nameof(AvailableCombinedSources));
         }
         // Persist and notify engine immediately on any mapping change
         OnProfileChanged(ProfileChangeKind.CombinedMappings);
-    }
-
-    private void UpdateSelectableKeys()
-    {
-        var allUsed = CombinedMappings.Select(m => m.Source).ToHashSet();
-        
-        foreach (var vm in CombinedMappings)
-        {
-            // For each row, allowed keys are:
-            // 1. Keys not used by anyone
-            // 2. OR the key used by THIS row (so it can keep its own selection)
-            var allowed = _combinedSourceOptions
-                .Where(k => !allUsed.Contains(k) || k == vm.Source);
-
-            vm.SelectableSources = allowed.ToList();
-        }
     }
 
     private void OnWindowsLaunchersChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -982,8 +941,6 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
             Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
             Model.AutoRun.IsEnabled = AutoRunEnabled;
-            Model.AutoRun.TriggerModifier = AutoRunTriggerModifier;
-            Model.AutoRun.TriggerKey = AutoRunTriggerKey;
             Model.AutoRun.SprintEnabled = AutoRunSprintEnabled;
             Model.AutoRun.SprintKey = AutoRunSprintKey;
             Model.AutoRun.SprintMode = AutoRunSprintMode;

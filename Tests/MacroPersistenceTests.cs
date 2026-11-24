@@ -357,6 +357,44 @@ public sealed class MacroPersistenceTests : IDisposable
         Assert.Equal(original, File.ReadAllText(profile.SourcePath));
     }
 
+    [Fact]
+    public async Task SaveAndLoad_ShortcutRightModifiers_RoundTrip()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Sides", "sides.exe");
+        profile.Macros.Definitions =
+        [
+            new()
+            {
+                ShortcutKey = Key.F6,
+                ShortcutModifiers = ModifierKeys.Control | ModifierKeys.Shift,
+                ShortcutRightModifiers = ModifierKeys.Control,
+                Steps = [new() { Kind = MacroStepKind.KeyPress, Key = Key.A }]
+            }
+        ];
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Sides");
+
+        Assert.Equal("2", IniDocument.Load(profile.SourcePath).GetValue("Macro0", "ShortcutRightModifiers"));
+        Assert.Equal(ModifierKeys.Control, loaded.Macros.Definitions[0].ShortcutRightModifiers);
+    }
+
+    [Theory]
+    [InlineData("", ModifierKeys.None)] // saved before sides existed: left
+    [InlineData("ShortcutRightModifiers=2\n", ModifierKeys.Control)]
+    [InlineData("ShortcutRightModifiers=1\n", ModifierKeys.None)] // Alt isn't one of the shortcut's modifiers
+    public async Task LoadMacros_ShortcutRightModifiers_DefaultsToLeftAndKeepsOnlyShortcutModifiers(string line, ModifierKeys expected)
+    {
+        var path = Path.Combine(_root, "Profiles", "Broken.ini");
+        File.WriteAllText(path, ValidMacroIni.Replace("ShortcutModifiers=0\n", "ShortcutModifiers=2\n" + line) +
+            "[Macro0.Step0]\nKind=KeyPress\nKey=A\n");
+
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Broken");
+
+        Assert.False(profile.IsPersistenceSuspended);
+        Assert.Equal(expected, profile.Macros.Definitions[0].ShortcutRightModifiers);
+    }
+
     private const string ValidMacroIni = "[Profile]\nName=Broken\nExecutable=broken.exe\n" +
         "[Macros]\nVersion=1\nEnabled=True\nCount=1\n" +
         "[Macro0]\nId=14c0ad00d57449ed9f3663a0e665c057\nLabel=Valid\nEnabled=True\nShortcutKey=F6\nShortcutModifiers=0\nStepCount=1\n";
