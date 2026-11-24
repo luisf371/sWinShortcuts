@@ -27,6 +27,8 @@ public sealed record MacroDefinition
     public InputTrigger ShortcutTrigger => ShortcutMouseButton is { } button
         ? InputTrigger.FromMouseButton(button) : InputTrigger.FromKey(ShortcutKey);
     public ModifierKeys ShortcutModifiers { get; init; }
+    // The ShortcutModifiers flags held on the right-hand key; the others are the left key. Older files have none.
+    public ModifierKeys ShortcutRightModifiers { get; init; }
     public MacroStep[] Steps { get; init; } = [];
 
     public MacroDefinition Duplicate() => this with
@@ -36,6 +38,7 @@ public sealed record MacroDefinition
         ShortcutKey = Key.None,
         ShortcutMouseButton = null,
         ShortcutModifiers = ModifierKeys.None,
+        ShortcutRightModifiers = ModifierKeys.None,
         Steps = (MacroStep[])Steps.Clone()
     };
 }

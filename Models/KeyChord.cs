@@ -5,20 +5,26 @@ using sWinShortcuts.Converters;
 namespace sWinShortcuts.Models;
 
 /// <summary>
-/// A captured keybind: side-agnostic modifier flags plus one primary key, mouse button, or wheel direction.
-/// Display text always puts the modifiers first, in the order Ctrl, Alt, Shift, Win.
+/// A captured keybind: modifier flags plus one primary key, mouse button, or wheel direction.
+/// <see cref="RightModifiers"/> marks the modifiers held on the right-hand key; the others are the left key, so
+/// a chord keeps the side that was pressed. Display text puts the modifiers first, in the order Ctrl, Alt,
+/// Shift, Win, with their side (LCtrl+LShift+E).
 /// </summary>
-public readonly record struct KeyChord(ModifierKeys Modifiers, InputTrigger Input)
+public readonly record struct KeyChord(ModifierKeys Modifiers, InputTrigger Input, ModifierKeys RightModifiers = ModifierKeys.None)
 {
+    // A side only means something for a modifier the chord holds.
+    public ModifierKeys RightModifiers { get; init; } = RightModifiers & Modifiers;
+
     public static KeyChord None => default;
 
     public bool IsEmpty => Input.Kind == InputTriggerKind.None;
 
-    public static KeyChord FromKey(Key key, ModifierKeys modifiers = ModifierKeys.None) =>
-        new(modifiers, InputTrigger.FromKey(key));
+    public static KeyChord FromKey(Key key, ModifierKeys modifiers = ModifierKeys.None, ModifierKeys rightModifiers = ModifierKeys.None) =>
+        new(modifiers, InputTrigger.FromKey(key), rightModifiers);
 
-    public static KeyChord FromTrigger(InputTrigger trigger, ModifierKeys modifiers = ModifierKeys.None) =>
-        new(modifiers, trigger);
+    public static KeyChord FromTrigger(InputTrigger trigger, ModifierKeys modifiers = ModifierKeys.None,
+        ModifierKeys rightModifiers = ModifierKeys.None) =>
+        new(modifiers, trigger, rightModifiers);
 
     public string ToDisplayText(string noneText = "None")
     {
@@ -28,23 +34,20 @@ public readonly record struct KeyChord(ModifierKeys Modifiers, InputTrigger Inpu
         }
 
         var text = new StringBuilder();
-        AppendModifiers(text, Modifiers);
+        AppendModifier(text, ModifierKeys.Control, Key.LeftCtrl, Key.RightCtrl);
+        AppendModifier(text, ModifierKeys.Alt, Key.LeftAlt, Key.RightAlt);
+        AppendModifier(text, ModifierKeys.Shift, Key.LeftShift, Key.RightShift);
+        AppendModifier(text, ModifierKeys.Windows, Key.LWin, Key.RWin);
         text.Append(InputTriggerDisplayConverter.ToDisplayText(Input));
         return text.ToString();
     }
 
-    public static string FormatModifiers(ModifierKeys modifiers)
+    // Prefixes use the same names as the keys themselves, so LCtrl reads the same alone and in LCtrl+S.
+    private void AppendModifier(StringBuilder text, ModifierKeys flag, Key left, Key right)
     {
-        var text = new StringBuilder();
-        AppendModifiers(text, modifiers);
-        return text.Length == 0 ? "None" : text.ToString(0, text.Length - 1);
-    }
-
-    private static void AppendModifiers(StringBuilder text, ModifierKeys modifiers)
-    {
-        if ((modifiers & ModifierKeys.Control) != 0) text.Append("Ctrl+");
-        if ((modifiers & ModifierKeys.Alt) != 0) text.Append("Alt+");
-        if ((modifiers & ModifierKeys.Shift) != 0) text.Append("Shift+");
-        if ((modifiers & ModifierKeys.Windows) != 0) text.Append("Win+");
+        if ((Modifiers & flag) != 0)
+        {
+            text.Append(KeyDisplayConverter.ToDisplayText((RightModifiers & flag) != 0 ? right : left)).Append('+');
+        }
     }
 }

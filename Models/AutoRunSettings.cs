@@ -6,9 +6,13 @@ public sealed class AutoRunSettings
 {
     public bool IsEnabled { get; set; } = false;
 
-    // None selects a single-key trigger. Otherwise any combination of the side-agnostic Ctrl/Alt/Shift/Win
-    // flags; every flag must be held. Persisted by IniExtensions.Get/SetModifierKeys ("Control+Alt").
+    // None selects a single-key trigger. Otherwise any combination of the Ctrl/Alt/Shift/Win flags; every flag
+    // must be held. Persisted by IniExtensions.Get/SetModifierKeys ("Alt+Control").
     public ModifierKeys TriggerModifier { get; set; } = ModifierKeys.Control;
+
+    // The TriggerModifier flags held on the right-hand key; the others are the left key (LCtrl+R by default).
+    // Files from before sides were recorded have none, so their modifiers are left.
+    public ModifierKeys TriggerRightModifiers { get; set; }
 
     public Key TriggerKey { get; set; } = Key.R;
 

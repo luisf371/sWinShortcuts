@@ -20,8 +20,6 @@ public static class KeyBindingRules
     public static Func<KeyChord, string?> HoldBreathPanicValidator { get; } = HoldBreathPanic;
     public static Func<KeyChord, string?> AutoRunTriggerValidator { get; } = AutoRunTrigger;
 
-    public static bool IsAssignableKey(Key key) => KeyCatalog.IsAssignable(key);
-
     /// <summary>Any single assignable key (output keys such as Target, Tap, Hold, Sprint, Hold-breath, Caps remap).</summary>
     public static string? AssignableKey(KeyChord chord)
     {
@@ -30,7 +28,7 @@ public static class KeyBindingRules
             return null;
         }
 
-        return chord.Input.Kind == InputTriggerKind.KeyboardKey && IsAssignableKey(chord.Input.Key)
+        return chord.Input.Kind == InputTriggerKind.KeyboardKey && KeyCatalog.IsAssignable(chord.Input.Key)
             ? null
             : CantUse(chord);
     }
@@ -43,7 +41,7 @@ public static class KeyBindingRules
             return null;
         }
 
-        if (chord.Input.Kind != InputTriggerKind.KeyboardKey || !IsAssignableKey(chord.Input.Key))
+        if (chord.Input.Kind != InputTriggerKind.KeyboardKey || !KeyCatalog.IsAssignable(chord.Input.Key))
         {
             return CantUse(chord);
         }
@@ -79,7 +77,7 @@ public static class KeyBindingRules
         var input = chord.Input;
         var allowed = input.Kind switch
         {
-            InputTriggerKind.KeyboardKey => IsAssignableKey(input.Key),
+            InputTriggerKind.KeyboardKey => KeyCatalog.IsAssignable(input.Key),
             InputTriggerKind.MouseWheel => true,
             _ => false
         };
@@ -93,7 +91,7 @@ public static class KeyBindingRules
         return input.Kind switch
         {
             InputTriggerKind.None => null,
-            InputTriggerKind.KeyboardKey when IsAssignableKey(input.Key) => null,
+            InputTriggerKind.KeyboardKey when KeyCatalog.IsAssignable(input.Key) => null,
             InputTriggerKind.MouseButton when input.MouseButton is MouseButton.Middle or MouseButton.XButton1 or MouseButton.XButton2 => null,
             _ => CantUse(chord)
         };
@@ -136,7 +134,7 @@ public static class KeyBindingRules
         }
 
         return MacroValidation.IsValidModifiers(chord.Modifiers) &&
-               chord.Input.Kind == InputTriggerKind.KeyboardKey && IsAssignableKey(chord.Input.Key)
+               chord.Input.Kind == InputTriggerKind.KeyboardKey && KeyCatalog.IsAssignable(chord.Input.Key)
             ? null
             : CantUse(chord);
     }

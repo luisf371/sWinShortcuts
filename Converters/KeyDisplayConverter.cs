@@ -51,8 +51,15 @@ public sealed partial class KeyDisplayConverter : IValueConverter
             case Key.PrintScreen: return "Print Screen";
             case Key.Scroll: return "Scroll Lock";
             case Key.Apps: return "Menu";
-            case Key.LWin: return "Left Win";
-            case Key.RWin: return "Right Win";
+            // Sided modifiers read the same alone and as prefixes (LCtrl, LCtrl+S).
+            case Key.LeftCtrl: return "LCtrl";
+            case Key.RightCtrl: return "RCtrl";
+            case Key.LeftAlt: return "LAlt";
+            case Key.RightAlt: return "RAlt";
+            case Key.LeftShift: return "LShift";
+            case Key.RightShift: return "RShift";
+            case Key.LWin: return "LWin";
+            case Key.RWin: return "RWin";
             case Key.Multiply: return "Num *";
             case Key.Add: return "Num +";
             case Key.Subtract: return "Num -";
@@ -64,7 +71,7 @@ public sealed partial class KeyDisplayConverter : IValueConverter
             return "Num " + (char)('0' + (key - Key.NumPad0));
         }
 
-        // LeftShift -> Left Shift, PageUp -> Page Up, VolumeUp -> Volume Up; F13 stays whole.
+        // PageUp -> Page Up, VolumeUp -> Volume Up; F13 stays whole.
         return WordStart().Replace(key.ToString(), " ");
     }
 

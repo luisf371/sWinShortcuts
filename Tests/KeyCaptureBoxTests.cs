@@ -6,6 +6,7 @@ using System.Windows.Threading;
 using sWinShortcuts.Controls;
 using sWinShortcuts.Converters;
 using sWinShortcuts.Models;
+using sWinShortcuts.Utilities;
 using Tests.Fakes;
 using Xunit;
 using MouseButton = sWinShortcuts.Models.MouseButton;
@@ -20,7 +21,9 @@ public sealed class KeyCaptureBoxCollection { }
 public sealed class KeyCaptureBoxTests : IDisposable
 {
     private const int VK_E = 0x45;
+    private const int VK_ESCAPE = 0x1B;
     private const int VK_LCONTROL = 0xA2;
+    private const int VK_RCONTROL = 0xA3;
 
     public KeyCaptureBoxTests() => KeyCaptureBox.CaptureSource = null;
 
@@ -34,9 +37,11 @@ public sealed class KeyCaptureBoxTests : IDisposable
             Assert.Equal("No shortcut", box.DisplayBox.Text);
             Assert.True(box.DisplayBox.IsReadOnly);
             Assert.False(box.DisplayBox.Focusable);
+            // Dimmed while idle so it doesn't read as a field you type into; Assign changes it.
+            Assert.Equal(KeyCaptureBox.IDLE_OPACITY, box.DisplayBox.Opacity);
 
             box.Chord = KeyChord.FromKey(Key.E, ModifierKeys.Shift | ModifierKeys.Control);
-            Assert.Equal("Ctrl+Shift+E", box.DisplayBox.Text);
+            Assert.Equal("LCtrl+LShift+E", box.DisplayBox.Text);
             Assert.Equal("Assign", box.AssignButton.Content);
             Assert.Equal(Visibility.Collapsed, box.ClearButton.Visibility);
             return Task.CompletedTask;
@@ -57,6 +62,7 @@ public sealed class KeyCaptureBoxTests : IDisposable
             Assert.Same(box, KeyCaptureBox.Current);
             Assert.Equal(KeyCaptureBox.CapturingText, box.DisplayBox.Text);
             Assert.Equal("Cancel", box.AssignButton.Content);
+            Assert.Equal(1, box.DisplayBox.Opacity);
             Assert.Equal(1, source.BeginCount);
 
             ClickAssign(box);
@@ -64,6 +70,7 @@ public sealed class KeyCaptureBoxTests : IDisposable
             Assert.Null(KeyCaptureBox.Current);
             Assert.Equal("None", box.DisplayBox.Text);
             Assert.Equal("Assign", box.AssignButton.Content);
+            Assert.Equal(KeyCaptureBox.IDLE_OPACITY, box.DisplayBox.Opacity);
             Assert.Equal(1, source.BeginCount);
             Assert.Equal(1, source.EndCount);
             return Task.CompletedTask;
@@ -95,7 +102,7 @@ public sealed class KeyCaptureBoxTests : IDisposable
 
             Assert.Equal(KeyChord.FromKey(Key.E, ModifierKeys.Control), box.Chord);
             Assert.Equal(KeyChord.FromKey(Key.E, ModifierKeys.Control), model.Shortcut);
-            Assert.Equal("Ctrl+E", box.DisplayBox.Text);
+            Assert.Equal("LCtrl+E", box.DisplayBox.Text);
             Assert.Equal(1, source.EndCount);
             Assert.False(box.IsCapturing);
             Assert.Null(KeyCaptureBox.Current);
@@ -225,21 +232,134 @@ public sealed class KeyCaptureBoxTests : IDisposable
         });
 
     [Fact]
-    public Task HookCapture_IgnoresFallbackKeyEvents() =>
+    public Task HookCapture_KeysTheHookLetThrough_StillCount() =>
         MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
         {
+            // The hook can end the gate on its own (e.g. a watchdog reinstall). Keys then reach WPF, and the box
+            // keeps capturing instead of showing "Capturing keys…" while ignoring them.
             var source = new FakeKeyCaptureSource();
             KeyCaptureBox.CaptureSource = source;
             var box = new KeyCaptureBox { Chord = KeyChord.FromKey(Key.F5) };
             box.BeginCapture();
+            Assert.True(box.UsesHookCapture);
 
             box.HandleFallbackKey(Key.E, isDown: true);
             box.HandleFallbackKey(Key.E, isDown: false);
             await Dispatcher.Yield(DispatcherPriority.Background);
 
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.FromKey(Key.E), box.Chord);
+        });
+
+    [Fact]
+    public Task Capture_ShowsTheKeysPressedSoFar() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var source = new FakeKeyCaptureSource();
+            KeyCaptureBox.CaptureSource = source;
+            var box = new KeyCaptureBox { Mode = KeyCaptureMode.Combo };
+            ClickAssign(box);
+
+            // Each step shows what releasing now would assign, with the side kept throughout.
+            source.Press(VK_RCONTROL);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.Equal("RCtrl", box.DisplayBox.Text);
+
+            source.Press(VK_E);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.Equal("RCtrl+E", box.DisplayBox.Text);
             Assert.True(box.IsCapturing);
+
+            source.Release(VK_E);
+            source.Release(VK_RCONTROL);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.FromKey(Key.E, ModifierKeys.Control, rightModifiers: ModifierKeys.Control), box.Chord);
+            Assert.Equal("RCtrl+E", box.DisplayBox.Text);
+        });
+
+    [Fact]
+    public Task EscTap_CancelsAndIsNeverAssigned() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var source = new FakeKeyCaptureSource();
+            KeyCaptureBox.CaptureSource = source;
+            var box = new KeyCaptureBox { AllowNone = true, Chord = KeyChord.FromKey(Key.F5) };
+            ClickAssign(box);
+
+            Assert.Equal(KeyCaptureStatus.Pending, source.Press(VK_ESCAPE));
+            // The release ends the hook capture, so the gate stops swallowing keys right away.
+            Assert.Equal(KeyCaptureStatus.Finished, source.Release(VK_ESCAPE));
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.False(box.IsCapturing);
             Assert.Equal(KeyChord.FromKey(Key.F5), box.Chord);
-            box.CancelCapture();
+            Assert.Equal("F5", box.DisplayBox.Text);
+        });
+
+    [Fact]
+    public Task EscHold_ClearsAFieldThatAllowsNone() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var box = new KeyCaptureBox { AllowNone = true, Chord = KeyChord.FromKey(Key.F5) };
+            box.BeginCapture();
+
+            box.HandleFallbackKey(Key.Escape, isDown: true);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.Equal(KeyCaptureBox.HoldToClearText, box.DisplayBox.Text);
+
+            await Task.Delay(KeyCaptureBox.ClearHoldTime + TimeSpan.FromMilliseconds(300));
+            Assert.Equal(KeyCaptureBox.ReleaseToClearText, box.DisplayBox.Text);
+            box.HandleFallbackKey(Key.Escape, isDown: true);
+            box.HandleFallbackKey(Key.Escape, isDown: false);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.None, box.Chord);
+            Assert.Equal("None", box.DisplayBox.Text);
+        });
+
+    [Fact]
+    public Task EscHold_OnFieldThatNeedsAKey_OnlyCancels() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var box = new KeyCaptureBox { Chord = KeyChord.FromKey(Key.F5) };
+            box.BeginCapture();
+
+            box.HandleFallbackKey(Key.Escape, isDown: true);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            // No hold-to-clear hint: there is nothing to clear, so Esc only cancels.
+            Assert.Equal(KeyCaptureBox.CapturingText, box.DisplayBox.Text);
+            box.HandleFallbackKey(Key.Escape, isDown: false);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.FromKey(Key.F5), box.Chord);
+        });
+
+    [Fact]
+    public Task PressOnCancel_WhileCapturing_CancelsAndIsConsumed() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var box = new KeyCaptureBox { Chord = KeyChord.FromKey(Key.F5) };
+            box.Measure(new Size(300, 40));
+            box.Arrange(new Rect(0, 0, 300, 40));
+            box.BeginCapture();
+
+            // Handled on press, so the Button never takes capture or clicks. Its capture release used to cancel
+            // and its Click then started a new capture.
+            var press = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            };
+            Assert.True(new Rect(box.AssignButton.RenderSize).Contains(press.GetPosition(box.AssignButton)));
+            box.AssignButton.RaiseEvent(press);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.True(press.Handled);
+            Assert.False(box.IsCapturing);
+            Assert.Equal("F5", box.DisplayBox.Text);
+            Assert.Equal("Assign", box.AssignButton.Content);
         });
 
     [Fact]

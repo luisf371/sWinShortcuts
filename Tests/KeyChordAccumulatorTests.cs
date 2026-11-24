@@ -50,7 +50,7 @@ public sealed class KeyChordAccumulatorTests
         Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_LCONTROL));
 
         Assert.Equal(KeyChordResult.Completed(KeyChord.FromKey(Key.E, ModifierKeys.Control)), accumulator.Result);
-        Assert.Equal("Ctrl+E", accumulator.Result.Chord.ToDisplayText());
+        Assert.Equal("LCtrl+E", accumulator.Result.Chord.ToDisplayText());
     }
 
     [Fact]
@@ -63,6 +63,32 @@ public sealed class KeyChordAccumulatorTests
         Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_LCONTROL));
 
         Assert.Equal(KeyChord.FromKey(Key.E, ModifierKeys.Control), accumulator.Result.Chord);
+    }
+
+    [Fact]
+    public void Capture_RightCtrlWithE_KeepsTheRightSide()
+    {
+        var accumulator = Started();
+        accumulator.OnKeyDown(VK_RCONTROL);
+        accumulator.OnKeyDown(VK_E);
+        accumulator.OnKeyUp(VK_E);
+        Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_RCONTROL));
+
+        Assert.Equal(KeyChord.FromKey(Key.E, ModifierKeys.Control, rightModifiers: ModifierKeys.Control), accumulator.Result.Chord);
+        Assert.Equal("RCtrl+E", accumulator.Result.Chord.ToDisplayText());
+    }
+
+    [Fact]
+    public void Capture_RightCtrlThenLeftShift_PrefixKeepsItsSide()
+    {
+        // The same names alone and as a prefix: RCtrl stays RCtrl in RCtrl+LShift.
+        var accumulator = Started();
+        accumulator.OnKeyDown(VK_RCONTROL);
+        accumulator.OnKeyDown(VK_LSHIFT);
+        accumulator.OnKeyUp(VK_LSHIFT);
+        Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_RCONTROL));
+
+        Assert.Equal("RCtrl+LShift", accumulator.Result.Chord.ToDisplayText());
     }
 
     public static TheoryData<int> ModifierSubsets()
@@ -123,7 +149,7 @@ public sealed class KeyChordAccumulatorTests
         Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_LSHIFT));
 
         Assert.Equal(KeyChord.FromKey(Key.LeftShift, ModifierKeys.Control), accumulator.Result.Chord);
-        Assert.Equal("Ctrl+Left Shift", accumulator.Result.Chord.ToDisplayText());
+        Assert.Equal("LCtrl+LShift", accumulator.Result.Chord.ToDisplayText());
     }
 
     [Fact]
@@ -137,15 +163,35 @@ public sealed class KeyChordAccumulatorTests
     }
 
     [Fact]
-    public void Capture_LeftThenRightShift_KeepsShiftPrefix()
+    public void Capture_LeftThenRightShift_GivesRightShift()
     {
+        // A key can't be its own prefix (a macro refuses Shift+Right Shift), so the last Shift wins alone.
         var accumulator = Started();
         accumulator.OnKeyDown(VK_LSHIFT);
         accumulator.OnKeyDown(VK_RSHIFT);
         accumulator.OnKeyUp(VK_LSHIFT);
         accumulator.OnKeyUp(VK_RSHIFT);
 
-        Assert.Equal(KeyChord.FromKey(Key.RightShift, ModifierKeys.Shift), accumulator.Result.Chord);
+        Assert.Equal(KeyChord.FromKey(Key.RightShift), accumulator.Result.Chord);
+    }
+
+    [Fact]
+    public void Progress_IsTheChordReleasingNowWouldGive()
+    {
+        var accumulator = Started();
+        Assert.Equal(KeyChord.None, accumulator.Progress);
+
+        accumulator.OnKeyDown(VK_LCONTROL);
+        Assert.Equal(KeyChord.FromKey(Key.LeftCtrl), accumulator.Progress);
+        accumulator.OnKeyDown(VK_LSHIFT);
+        Assert.Equal(KeyChord.FromKey(Key.LeftShift, ModifierKeys.Control), accumulator.Progress);
+        accumulator.OnKeyDown(VK_E);
+        Assert.Equal("LCtrl+LShift+E", accumulator.Progress.ToDisplayText());
+
+        accumulator.OnKeyUp(VK_E);
+        accumulator.OnKeyUp(VK_LSHIFT);
+        accumulator.OnKeyUp(VK_LCONTROL);
+        Assert.Equal(accumulator.Progress, accumulator.Result.Chord);
     }
 
     [Fact]
@@ -211,7 +257,7 @@ public sealed class KeyChordAccumulatorTests
 
         Assert.Equal(KeyChord.FromTrigger(InputTrigger.FromMouseButton(MouseButton.XButton1), ModifierKeys.Control),
             accumulator.Result.Chord);
-        Assert.Equal("Ctrl+Mouse Button 4", accumulator.Result.Chord.ToDisplayText());
+        Assert.Equal("LCtrl+Mouse Button 4", accumulator.Result.Chord.ToDisplayText());
     }
 
     [Fact]
@@ -231,7 +277,7 @@ public sealed class KeyChordAccumulatorTests
         Assert.Equal(KeyCaptureStatus.Pending, accumulator.OnWheel(MouseWheelDirection.Down));
         Assert.Equal(KeyCaptureStatus.Finished, accumulator.OnKeyUp(VK_LCONTROL));
 
-        Assert.Equal("Ctrl+Wheel Down", accumulator.Result.Chord.ToDisplayText());
+        Assert.Equal("LCtrl+Wheel Down", accumulator.Result.Chord.ToDisplayText());
     }
 
     [Theory]
@@ -280,8 +326,19 @@ public sealed class KeyChordAccumulatorTests
     {
         var chord = KeyChord.FromKey(Key.F5, ModifierKeys.Windows | ModifierKeys.Shift | ModifierKeys.Alt | ModifierKeys.Control);
 
-        Assert.Equal("Ctrl+Alt+Shift+Win+F5", chord.ToDisplayText());
-        Assert.Equal("Shift+Win+F5", KeyChord.FromKey(Key.F5, ModifierKeys.Windows | ModifierKeys.Shift).ToDisplayText());
+        Assert.Equal("LCtrl+LAlt+LShift+LWin+F5", chord.ToDisplayText());
+        Assert.Equal("LShift+LWin+F5", KeyChord.FromKey(Key.F5, ModifierKeys.Windows | ModifierKeys.Shift).ToDisplayText());
+        Assert.Equal("RCtrl+LShift+S",
+            KeyChord.FromKey(Key.S, ModifierKeys.Control | ModifierKeys.Shift, rightModifiers: ModifierKeys.Control).ToDisplayText());
+    }
+
+    [Fact]
+    public void RightModifiers_OnlyKeepFlagsTheChordHolds()
+    {
+        var chord = KeyChord.FromKey(Key.S, ModifierKeys.Shift, rightModifiers: ModifierKeys.Control | ModifierKeys.Shift);
+
+        Assert.Equal(ModifierKeys.Shift, chord.RightModifiers);
+        Assert.NotEqual(KeyChord.FromKey(Key.S, ModifierKeys.Shift), chord);
     }
 
     [Fact]

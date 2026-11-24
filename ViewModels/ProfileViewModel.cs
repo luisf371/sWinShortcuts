@@ -388,34 +388,24 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
         }
     }
 
-    // Modifiers plus key in ONE edit, so a captured Ctrl+Alt+R saves and republishes once.
+    // Modifiers, their sides and the key in ONE edit, so a captured LCtrl+LAlt+R saves and republishes once.
     public KeyChord AutoRunTrigger
     {
-        get => KeyChord.FromKey(Model.AutoRun.TriggerKey, Model.AutoRun.TriggerModifier);
+        get => KeyChord.FromKey(Model.AutoRun.TriggerKey, Model.AutoRun.TriggerModifier, Model.AutoRun.TriggerRightModifiers);
         set
         {
-            if (value.Input.Kind != InputTriggerKind.KeyboardKey || value.Input.Key == Key.None)
-            {
-                return;
-            }
-
-            if (Model.AutoRun.TriggerModifier == value.Modifiers && Model.AutoRun.TriggerKey == value.Input.Key)
+            if (value.Input.Kind != InputTriggerKind.KeyboardKey || value.Input.Key == Key.None || value == AutoRunTrigger)
             {
                 return;
             }
 
             Model.AutoRun.TriggerModifier = value.Modifiers;
+            Model.AutoRun.TriggerRightModifiers = value.RightModifiers;
             Model.AutoRun.TriggerKey = value.Input.Key;
             OnPropertyChanged();
-            OnPropertyChanged(nameof(AutoRunTriggerModifier));
-            OnPropertyChanged(nameof(AutoRunTriggerKey));
             OnProfileChanged(ProfileChangeKind.AutoRun);
         }
     }
-
-    public ModifierKeys AutoRunTriggerModifier => Model.AutoRun.TriggerModifier;
-
-    public Key AutoRunTriggerKey => Model.AutoRun.TriggerKey;
 
     public bool AutoRunSprintEnabled
     {
@@ -951,8 +941,6 @@ public sealed class ProfileViewModel : ViewModelBase, IDisposable
             Model.RightClickHoldBreath.Mode = RightClickHoldBreathMode;
             Model.RightClickHoldBreath.DelayMilliseconds = RightClickHoldBreathDelay;
             Model.AutoRun.IsEnabled = AutoRunEnabled;
-            Model.AutoRun.TriggerModifier = AutoRunTriggerModifier;
-            Model.AutoRun.TriggerKey = AutoRunTriggerKey;
             Model.AutoRun.SprintEnabled = AutoRunSprintEnabled;
             Model.AutoRun.SprintKey = AutoRunSprintKey;
             Model.AutoRun.SprintMode = AutoRunSprintMode;

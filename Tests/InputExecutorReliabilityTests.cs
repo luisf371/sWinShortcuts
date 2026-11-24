@@ -86,7 +86,7 @@ public sealed class InputExecutorReliabilityTests
         using var random = new ThreadLocal<Random>(() => new Random(1));
         var autoRun = new AutoRunStateMachine(runtime, queue, random, new NullLoggerService());
 
-        Assert.True(autoRun.IsTriggerModifierDown(ModifierKeys.None));
+        Assert.True(autoRun.IsTriggerModifierDown(ModifierKeys.None, ModifierKeys.None));
     }
 
     [Fact]

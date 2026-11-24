@@ -566,3 +566,25 @@
 - Capture tests reproduce Pause as a one-edge key and mouse-first chords spanning the keyboard idle deadline. The gate reads the accumulator activity so both devices share the idle decision. Mouse dispatch disables new activations while assigning and still settles prior releases.
 - The XAML template tests must preserve namespaces from merged dictionaries. Styles.xaml still uses the behaviors prefix even after the last use in MainWindow.xaml is removed.
 - The Windows Release build passed with no warnings and all 1,932 tests passed after the fixes.
+
+## 2026-11-23 (PR #26 review fixes, live capture text, dimmed idle box)
+
+- Cancel restarted capture: WPF `ButtonBase.OnMouseLeftButtonUp` releases mouse capture BEFORE `OnClick`, so the box's LostMouseCapture cancelled and the Click then began a new capture. Fix: while capturing, `OnPreviewMouseDown` handles Left over Assign/Clear on press; no child ever takes capture, so `OnLostMouseCapture` just cancels. Tests raising `ButtonBase.ClickEvent` can't see this class of bug.
+- `KeyCaptureGate` has no DRAINING state: `_sink != null` is the whole state, `End()` runs as soon as the sink finishes (the box's deferred apply ended it one dispatcher turn later anyway). Held-key ups pass through unforwarded; hook captures give `KeyChordAccumulator` an empty held snapshot (only the WPF fallback needs one).
+- `HandleFallbackKey` accepts WPF keys during hook captures too: swallowed keys never reach WPF, so nothing double-counts, and the box keeps working if `ReleaseAllState` (watchdog reinstall) ends the gate mid-capture.
+- Timeouts live once in `KeyCaptureGate.IdleLimit/HardLimit` (box timer reads them).
+- Live text: `KeyChordAccumulator.Progress` = the chord releasing now would give (also feeds `BuildResult`). The box posts at most one `ShowProgress` at a time (`_progressPosted`); never touch UI inside the hook callback.
+- Idle look: `_box.Opacity = KeyCaptureBox.IDLE_OPACITY` (0.6, near WPF's 0.56 disabled TextBox, text still >4.5:1); 1 while capturing or showing a message. Opacity keeps the box enabled for UIA.
+- `[AutoRun] TriggerModifier` now parses with `Enum.TryParse(value.Replace('+', ','))` plus a bits check (numbers load again, "4" = Shift) and writes `ToString().Replace(", ", "+")` ("Alt+Control").
+- Serena MCP was bound to another project (no C# server), so this pass used the built-in tools.
+- Verification: `dotnet build Tests/Tests.csproj -c Release -r win-x64` 0 warnings/errors; `dotnet test Tests/Tests.csproj -c Release -r win-x64 --no-build --blame-hang-timeout 60s` passed 1,937/1,937.
+
+## 2026-11-23 (sided modifiers, Esc cancel and hold-to-clear)
+
+- User decision: keybinds keep their side and match it exactly (LCtrl+S never fires on Right Ctrl+S); values saved before sides existed load as LEFT (default Auto-Run Ctrl+R = LCtrl+R). Names: LCtrl/RCtrl, LAlt/RAlt, LShift/RShift, LWin/RWin, alone and as prefixes (`KeyChord` prefixes reuse `KeyDisplayConverter` names).
+- Model: `KeyChord.RightModifiers` (normalized `& Modifiers`), `AutoRunSettings.TriggerRightModifiers`, `MacroDefinition.ShortcutRightModifiers`. INI keeps the family flags where they were and adds `[AutoRun] TriggerRightModifiers` and macro `ShortcutRightModifiers`, so older builds still read the modifiers (and match either side).
+- Matching: Auto-Run checks sided VKs with GetAsyncKeyState (never the generic 0x10-0x12, which report either side). Macro activation keeps the exact family match and adds `MacroPhysicalState` side checks, where a tracked generic VK counts as left.
+- Accumulator: the last press of a modifier decides its side (LCtrl then RCtrl held = RCtrl).
+- Esc is never assigned: `KeyCaptureBox.HandleEscape` runs before the accumulator and decides on the RELEASE, so the gate keeps swallowing Esc and its auto-repeat can't trigger IsCancel buttons. Tap = cancel. On AllowNone fields a `ClearHoldTime` (800 ms) DispatcherTimer arms the clear and switches the text to "Release Esc to clear", so the release does what the box shows. Fields that need a key: Esc only cancels.
+- Tests that hold a modifier for Auto-Run through a fake `GetAsyncKeyState` must use the sided VK (0xA2), not generic 0x11 (MacroRecordingIntegrationTests needed this). Macro tests may still use generic VKs for left bindings.
+- Verification: Release win-x64 build 0 warnings/errors; full suite 1,965/1,965 passed.

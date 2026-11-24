@@ -18,7 +18,6 @@ public sealed class KeyChordConverter : IValueConverter
     {
         Key key => KeyChord.FromKey(key),
         InputTrigger trigger => KeyChord.FromTrigger(trigger),
-        KeyChord chord => chord,
         _ => KeyChord.None
     };
 
@@ -28,11 +27,6 @@ public sealed class KeyChordConverter : IValueConverter
         if (targetType == typeof(InputTrigger))
         {
             return chord.Input;
-        }
-
-        if (targetType == typeof(KeyChord))
-        {
-            return chord;
         }
 
         var key = chord.Input.Kind == InputTriggerKind.KeyboardKey ? chord.Input.Key : Key.None;

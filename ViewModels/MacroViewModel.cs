@@ -86,28 +86,13 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     // ignored) are left out so every combination fits the row.
     public string PlaybackSummary => (ToggleMode ? "Loop" : "Once") + (StartOnPress ? " · on press" : string.Empty) +
         (CancelOnMouseMovement ? " · stops on move" : string.Empty);
-    public Key ShortcutKey { get => _definition.ShortcutKey; set => Change(_definition with { ShortcutKey = value, ShortcutMouseButton = null }, nameof(ShortcutKey)); }
-    public InputTrigger ShortcutTrigger
-    {
-        get => _definition.ShortcutTrigger;
-        set
-        {
-            if (value.Kind is not (InputTriggerKind.None or InputTriggerKind.KeyboardKey or InputTriggerKind.MouseButton) ||
-                (value.Kind == InputTriggerKind.MouseButton && !Enum.IsDefined(value.MouseButton))) return;
-            Change(_definition with
-            {
-                ShortcutKey = value.Kind == InputTriggerKind.KeyboardKey ? value.Key : Key.None,
-                ShortcutMouseButton = value.Kind == InputTriggerKind.MouseButton ? value.MouseButton : null
-            }, nameof(ShortcutTrigger));
-        }
-    }
-    public ModifierKeys ShortcutModifiers { get => _definition.ShortcutModifiers; set => Change(_definition with { ShortcutModifiers = value }, nameof(ShortcutModifiers)); }
-
-    // The capture box's value: modifiers plus one key or mouse button, applied as one edit. Clearing the
-    // trigger also clears the modifiers, so a None shortcut never keeps stale prefixes.
+    // The capture box's value: modifiers with their sides plus one key or mouse button, applied as one edit.
+    // Clearing the trigger also clears the modifiers, so a None shortcut never keeps stale prefixes.
     public KeyChord Shortcut
     {
-        get => ShortcutTrigger.Kind == InputTriggerKind.None ? KeyChord.None : new KeyChord(ShortcutModifiers, ShortcutTrigger);
+        get => _definition.ShortcutTrigger.Kind == InputTriggerKind.None
+            ? KeyChord.None
+            : new KeyChord(_definition.ShortcutModifiers, _definition.ShortcutTrigger, _definition.ShortcutRightModifiers);
         set
         {
             var trigger = value.Input;
@@ -117,7 +102,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             {
                 ShortcutKey = trigger.Kind == InputTriggerKind.KeyboardKey ? trigger.Key : Key.None,
                 ShortcutMouseButton = trigger.Kind == InputTriggerKind.MouseButton ? trigger.MouseButton : null,
-                ShortcutModifiers = trigger.Kind == InputTriggerKind.None ? ModifierKeys.None : value.Modifiers
+                ShortcutModifiers = trigger.Kind == InputTriggerKind.None ? ModifierKeys.None : value.Modifiers,
+                ShortcutRightModifiers = trigger.Kind == InputTriggerKind.None ? ModifierKeys.None : value.RightModifiers
             }, nameof(Shortcut));
         }
     }
@@ -347,14 +333,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         if (!CanEdit || value == _definition) return;
         _definition = value;
         OnPropertyChanged(propertyName);
-        if (propertyName is nameof(ShortcutKey) or nameof(Shortcut)) OnPropertyChanged(nameof(ShortcutTrigger));
-        if (propertyName is nameof(ShortcutTrigger) or nameof(Shortcut)) OnPropertyChanged(nameof(ShortcutKey));
-        if (propertyName == nameof(Shortcut)) OnPropertyChanged(nameof(ShortcutModifiers));
-        if (propertyName is nameof(ShortcutKey) or nameof(ShortcutTrigger) or nameof(ShortcutModifiers) or nameof(Shortcut))
-        {
-            if (propertyName != nameof(Shortcut)) OnPropertyChanged(nameof(Shortcut));
-            OnPropertyChanged(nameof(ShortcutText));
-        }
+        if (propertyName == nameof(Shortcut)) OnPropertyChanged(nameof(ShortcutText));
         if (propertyName is nameof(ToggleMode) or nameof(StartOnPress) or nameof(CancelOnMouseMovement))
         {
             OnPropertyChanged(nameof(PlaysOnce));

@@ -8,34 +8,28 @@ namespace sWinShortcuts.Services.Input;
 /// Hook-thread, allocation-free owner of a running keybind capture. While capturing, every physical key down
 /// is swallowed and forwarded to the sink; only keys whose down was swallowed have their up swallowed. Keys
 /// already held when the capture begins are snapshotted: Windows saw their down, so their auto-repeat downs are
-/// swallowed without being owned or forwarded, and their up passes through. After the sink finishes, the gate
-/// drains: new downs pass through and it keeps swallowing only the ups it owns. A capture always ends: an idle
-/// limit (nothing pressed) and a hard limit fail open to <see cref="IsActive"/> false.
+/// swallowed without being owned or forwarded, and their up passes through. The capture ends as soon as the sink
+/// finishes; a still-held owned key's up then passes through as a lone up. An idle limit (nothing pressed) and
+/// a hard limit fail open, so a capture always ends.
 /// </summary>
 internal sealed class KeyCaptureGate
 {
-    private const int STATE_INACTIVE = 0;
-    private const int STATE_CAPTURING = 1;
-    private const int STATE_DRAINING = 2;
-
-    internal static readonly long IdleLimitTicks = Stopwatch.Frequency * 10;
-    internal static readonly long HardLimitTicks = Stopwatch.Frequency * 30;
+    // Shared with KeyCaptureBox's own timer, so the UI and this fail-open safety net always agree.
+    internal static readonly TimeSpan IdleLimit = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan HardLimit = TimeSpan.FromSeconds(30);
+    internal static readonly long IdleLimitTicks = (long)(IdleLimit.TotalSeconds * Stopwatch.Frequency);
+    internal static readonly long HardLimitTicks = (long)(HardLimit.TotalSeconds * Stopwatch.Frequency);
 
     private readonly bool[] _ownedDown = new bool[256];
     // Down before Begin: Windows already has their down, so the gate must never take ownership of their up.
     private readonly bool[] _preheldDown = new bool[256];
-    private volatile int _state;
-    private int _ownedCount;
     private long _idleDeadline;
     private long _hardDeadline;
+    // Non-null while a capture runs.
     private IKeyCaptureSink? _sink;
 
     /// <summary>The one volatile read the keyboard hot path pays while no capture runs.</summary>
-    public bool IsActive => _state != STATE_INACTIVE;
-
-    internal bool IsCapturing => _state == STATE_CAPTURING;
-
-    internal bool IsDraining => _state == STATE_DRAINING;
+    public bool IsActive => Volatile.Read(ref _sink) is not null;
 
     /// <summary>
     /// Starts a capture. <paramref name="isKeyDown"/> reports the keys already held (asked once per virtual key,
@@ -53,71 +47,32 @@ internal sealed class KeyCaptureGate
             }
         }
 
-        _ownedCount = 0;
         _idleDeadline = now + IdleLimitTicks;
         _hardDeadline = now + HardLimitTicks;
         Volatile.Write(ref _sink, sink);
-        _state = STATE_CAPTURING;
     }
 
     /// <summary>Ends the capture unconditionally. A still-held owned key's up later passes through as a lone up.</summary>
-    public void End()
-    {
-        _state = STATE_INACTIVE;
-        Volatile.Write(ref _sink, null);
-        Array.Clear(_ownedDown);
-        Array.Clear(_preheldDown);
-        _ownedCount = 0;
-    }
+    public void End() => Volatile.Write(ref _sink, null);
 
     /// <summary>Ends the capture only if <paramref name="sink"/> still owns it.</summary>
-    public void End(IKeyCaptureSink sink)
-    {
-        if (ReferenceEquals(Volatile.Read(ref _sink), sink))
-        {
-            End();
-        }
-    }
+    public void End(IKeyCaptureSink sink) => Interlocked.CompareExchange(ref _sink, null, sink);
 
     /// <summary>Returns true when the physical event must be consumed.</summary>
     public bool TryHandle(int vk, bool isDown, bool isUp, long now)
     {
-        var state = _state;
-        if (state == STATE_INACTIVE || (uint)vk >= 256 || (!isDown && !isUp))
-        {
-            return false;
-        }
-
-        if (now - _hardDeadline > 0)
-        {
-            End();
-            return false;
-        }
-
-        if (state == STATE_DRAINING)
-        {
-            if (!_ownedDown[vk])
-            {
-                return false;
-            }
-
-            // An owned key's auto-repeat stays swallowed; its up releases ownership.
-            if (isUp)
-            {
-                ReleaseOwned(vk);
-            }
-
-            return true;
-        }
-
         var sink = Volatile.Read(ref _sink);
-        if (sink is null || (now - _idleDeadline > 0 && !sink.HasStarted))
+        if (sink is null || (uint)vk >= 256 || (!isDown && !isUp))
+        {
+            return false;
+        }
+
+        if (now - _hardDeadline > 0 || (now - _idleDeadline > 0 && !sink.HasStarted))
         {
             End();
             return false;
         }
 
-        var passThrough = false;
         if (isDown)
         {
             if (_preheldDown[vk])
@@ -127,49 +82,29 @@ internal sealed class KeyCaptureGate
                 return true;
             }
 
-            if (!_ownedDown[vk] && !KeyChordAccumulator.IsMomentaryKey(vk))
+            if (!KeyChordAccumulator.IsMomentaryKey(vk))
             {
                 _ownedDown[vk] = true;
-                _ownedCount++;
             }
         }
-        else if (!_ownedDown[vk])
+        else if (_ownedDown[vk])
         {
-            // Held before the capture: Windows saw its down, so it must see its up.
-            if (!_preheldDown[vk])
-            {
-                return false;
-            }
-
-            // Forward the release so the sink clears its own held-before flag; a later fresh press then counts.
-            _preheldDown[vk] = false;
-            passThrough = true;
+            _ownedDown[vk] = false;
         }
         else
         {
-            _ownedDown[vk] = false;
-            _ownedCount--;
+            // Held before the capture (or never seen): Windows saw its down, so it must see its up. A later
+            // press of the same key is a fresh press.
+            _preheldDown[vk] = false;
+            return false;
         }
 
-        if (sink.OnKey(vk, isDown) == KeyCaptureStatus.Finished && _state == STATE_CAPTURING)
+        if (sink.OnKey(vk, isDown) == KeyCaptureStatus.Finished)
         {
-            // Switch before returning: keys pressed before the deferred apply runs reach the features normally.
-            _state = _ownedCount == 0 ? STATE_INACTIVE : STATE_DRAINING;
-            if (_ownedCount == 0)
-            {
-                Volatile.Write(ref _sink, null);
-            }
+            // End before returning: keys pressed before the deferred apply runs reach the features normally.
+            End(sink);
         }
 
-        return !passThrough;
-    }
-
-    private void ReleaseOwned(int vk)
-    {
-        _ownedDown[vk] = false;
-        if (--_ownedCount <= 0)
-        {
-            End();
-        }
+        return true;
     }
 }

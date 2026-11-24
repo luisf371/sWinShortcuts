@@ -53,8 +53,7 @@ public sealed class ProfileRuntimeNotificationTests
         var owner = vm.Profiles.Single(profile => ReferenceEquals(profile.Model, model));
         owner.Macros.NewMacroCommand.Execute(null);
         var macro = owner.Macros.SelectedMacro!;
-        macro.ShortcutKey = Key.F6;
-        macro.ShortcutModifiers |= ModifierKeys.Control;
+        macro.Shortcut = KeyChord.FromKey(Key.F6, ModifierKeys.Control);
         input.MacroShortcutError = (_, _) => "This key is reserved by an app-level toggle.";
 
         input.RaiseMacroSessionChanged();

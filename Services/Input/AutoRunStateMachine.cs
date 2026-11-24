@@ -103,6 +103,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
     private int _triggerKeyDownVk;
     private int _snapshotTriggerVk;
     private ModifierKeys _snapshotModifier;
+    private ModifierKeys _snapshotRightModifier;
     private bool _wPhysicallyDown;
     private bool _sPhysicallyDown;
     private bool _sprintPhysicallyDown;
@@ -219,7 +220,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         }
 
         if (active && isKeyDown && (physicalEvent.FreshW || physicalEvent.FreshS)
-            && !(vkCode == _snapshotTriggerVk && IsTriggerModifierDown(_snapshotModifier)))
+            && !(vkCode == _snapshotTriggerVk && IsTriggerModifierDown(_snapshotModifier, _snapshotRightModifier)))
         {
             if (!_isBackground || ForegroundIsTargetProcess())
             {
@@ -271,7 +272,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             if (_snapshotTriggerVk == 0 || vkCode != _snapshotTriggerVk || !isKeyDown) return false;
             if (_triggerKeyDownVk == vkCode) return false;
             _triggerKeyDownVk = vkCode;
-            if (!IsTriggerModifierDown(_snapshotModifier))
+            if (!IsTriggerModifierDown(_snapshotModifier, _snapshotRightModifier))
             {
                 if (_sprintToggleable && sprintVk == vkCode && vkCode != VK_W && vkCode != VK_S)
                 {
@@ -299,7 +300,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         if (triggerVk == 0 || vkCode != triggerVk || !isKeyDown) return false;
         if (_triggerKeyDownVk == vkCode) return false;
         _triggerKeyDownVk = vkCode;
-        if (!IsTriggerModifierDown(settings.TriggerModifier)) return false;
+        if (!IsTriggerModifierDown(settings.TriggerModifier, settings.TriggerRightModifiers)) return false;
         if (!Activate(settings, profile, configurationGeneration)) return false;
 
         _consumedTriggerVk = vkCode;
@@ -489,8 +490,9 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         return false;
     }
 
-    // Every flag in the mask must be down; extra modifiers are allowed. Undefined bits never match.
-    internal bool IsTriggerModifierDown(ModifierKeys modifier)
+    // Every flag in the mask must be down on its saved side: the right key when the flag is in `right`, else the
+    // left key. Extra modifiers are allowed. Undefined bits never match.
+    internal bool IsTriggerModifierDown(ModifierKeys modifier, ModifierKeys right)
     {
         const ModifierKeys supported = ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows;
         if ((modifier & ~supported) != 0)
@@ -498,11 +500,15 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             return false;
         }
 
-        return ((modifier & ModifierKeys.Control) == 0 || IsDown(0x11)) &&
-               ((modifier & ModifierKeys.Alt) == 0 || IsDown(0x12)) &&
-               ((modifier & ModifierKeys.Shift) == 0 || IsDown(0x10)) &&
-               ((modifier & ModifierKeys.Windows) == 0 || IsDown(0x5B) || IsDown(0x5C));
+        // Sided VKs only: GetAsyncKeyState reports them exactly, while 0x10-0x12 report either side.
+        return IsSideDown(modifier, right, ModifierKeys.Control, 0xA2, 0xA3) &&
+               IsSideDown(modifier, right, ModifierKeys.Alt, 0xA4, 0xA5) &&
+               IsSideDown(modifier, right, ModifierKeys.Shift, 0xA0, 0xA1) &&
+               IsSideDown(modifier, right, ModifierKeys.Windows, 0x5B, 0x5C);
     }
+
+    private bool IsSideDown(ModifierKeys modifier, ModifierKeys right, ModifierKeys flag, int leftVk, int rightVk) =>
+        (modifier & flag) == 0 || IsDown((right & flag) != 0 ? rightVk : leftVk);
 
     private bool IsDown(int virtualKey) => (_transport.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 
@@ -526,6 +532,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
         bool sprintToggleable;
         int triggerVk;
         ModifierKeys triggerModifier;
+        ModifierKeys triggerRightModifier;
         lock (_autoRunLock)
         {
             if (_macroReserved || !CanActivate(profile, configurationGeneration) || _active || _activationPending
@@ -540,6 +547,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
             sprintToggleable = sprintEnabled && settings.SprintMode == SprintActivation.Hold;
             triggerVk = KeyInteropUtilities.ToVirtualKey(settings.TriggerKey);
             triggerModifier = settings.TriggerModifier;
+            triggerRightModifier = settings.TriggerRightModifiers;
         }
         try
         {
@@ -580,6 +588,7 @@ internal sealed class AutoRunStateMachine : IInputCommandGuard
                 _sprintInjected = false;
                 _snapshotTriggerVk = triggerVk;
                 _snapshotModifier = triggerModifier;
+                _snapshotRightModifier = triggerRightModifier;
                 _physicalWHandoff = _wPhysicallyDown;
                 _suppressedPhysicalWUp = false;
                 _stopOnPhysicalWUp = false;

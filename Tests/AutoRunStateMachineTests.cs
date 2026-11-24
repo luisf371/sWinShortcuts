@@ -853,18 +853,18 @@ public sealed class AutoRunStateMachineTests
 
         try
         {
-            transport.KeyStates[0x11] = unchecked((short)0x8000);
+            transport.KeyStates[0xA2] = unchecked((short)0x8000);
             Assert.False(Activate(machine, profile));
             Assert.False(machine.IsActive);
             machine.Handle(r, isKeyDown: false, isKeyUp: true, machine.ObservePhysicalEvent(r, isKeyDown: false, isKeyUp: true));
 
-            transport.KeyStates[0x11] = 0;
-            transport.KeyStates[0x12] = unchecked((short)0x8000);
+            transport.KeyStates[0xA2] = 0;
+            transport.KeyStates[0xA4] = unchecked((short)0x8000);
             Assert.False(Activate(machine, profile));
             Assert.False(machine.IsActive);
             machine.Handle(r, isKeyDown: false, isKeyUp: true, machine.ObservePhysicalEvent(r, isKeyDown: false, isKeyUp: true));
 
-            transport.KeyStates[0x11] = unchecked((short)0x8000);
+            transport.KeyStates[0xA2] = unchecked((short)0x8000);
             Assert.True(Activate(machine, profile));
             Assert.True(machine.IsActive);
         }
@@ -875,16 +875,54 @@ public sealed class AutoRunStateMachineTests
         }
     }
 
+    [Fact]
+    public void Activation_RightCtrlTrigger_StartsAndStopsOnlyWithRightCtrl()
+    {
+        var (machine, _, transport, profile) = CreateMachine(AutoRunSendMode.Foreground);
+        profile.AutoRun.TriggerModifier = ModifierKeys.Control;
+        profile.AutoRun.TriggerRightModifiers = ModifierKeys.Control;
+        var r = KeyInterop.VirtualKeyFromKey(Key.R);
+
+        try
+        {
+            // RCtrl+R: the left Ctrl doesn't satisfy it.
+            transport.KeyStates[0xA2] = unchecked((short)0x8000);
+            Assert.False(Activate(machine, profile));
+            Assert.False(machine.IsActive);
+            machine.Handle(r, isKeyDown: false, isKeyUp: true, machine.ObservePhysicalEvent(r, isKeyDown: false, isKeyUp: true));
+
+            transport.KeyStates[0xA2] = 0;
+            transport.KeyStates[0xA3] = unchecked((short)0x8000);
+            Assert.True(Activate(machine, profile));
+            Assert.True(machine.IsActive);
+            machine.Handle(r, isKeyDown: false, isKeyUp: true, machine.ObservePhysicalEvent(r, isKeyDown: false, isKeyUp: true));
+
+            // The running trigger keeps its side: RCtrl+R again stops it.
+            Assert.True(Activate(machine, profile));
+            Assert.False(machine.IsActive);
+        }
+        finally
+        {
+            machine.Release(includeBackground: true);
+            machine.JoinBackgroundInputThread();
+        }
+    }
+
     [Theory]
-    [InlineData(ModifierKeys.None, new int[0], true)]
-    [InlineData(ModifierKeys.Control | ModifierKeys.Shift, new[] { 0x11 }, false)]
-    [InlineData(ModifierKeys.Control | ModifierKeys.Shift, new[] { 0x11, 0x10 }, true)]
-    [InlineData(ModifierKeys.Control, new[] { 0x11, 0x10 }, true)]
-    [InlineData(ModifierKeys.Windows | ModifierKeys.Alt, new[] { 0x12, 0x5C }, true)]
-    [InlineData(ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows, new[] { 0x11, 0x12, 0x10 }, false)]
-    [InlineData(ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows, new[] { 0x11, 0x12, 0x10, 0x5B }, true)]
-    [InlineData((ModifierKeys)0x10, new[] { 0x11, 0x12, 0x10, 0x5B }, false)]
-    public void IsTriggerModifierDown_CombinedMask_RequiresEveryFlag(ModifierKeys mask, int[] downKeys, bool expected)
+    [InlineData(ModifierKeys.None, ModifierKeys.None, new int[0], true)]
+    [InlineData(ModifierKeys.Control | ModifierKeys.Shift, ModifierKeys.None, new[] { 0xA2 }, false)]
+    [InlineData(ModifierKeys.Control | ModifierKeys.Shift, ModifierKeys.None, new[] { 0xA2, 0xA0 }, true)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.None, new[] { 0xA2, 0xA0 }, true)]
+    [InlineData(ModifierKeys.Windows | ModifierKeys.Alt, ModifierKeys.Windows, new[] { 0xA4, 0x5C }, true)]
+    [InlineData(ModifierKeys.Windows | ModifierKeys.Alt, ModifierKeys.None, new[] { 0xA4, 0x5C }, false)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.None, new[] { 0xA3 }, false)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.Control, new[] { 0xA3 }, true)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.Control, new[] { 0xA2 }, false)]
+    [InlineData(ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows, ModifierKeys.None, new[] { 0xA2, 0xA4, 0xA0 }, false)]
+    [InlineData(ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows, ModifierKeys.None, new[] { 0xA2, 0xA4, 0xA0, 0x5B }, true)]
+    [InlineData((ModifierKeys)0x10, ModifierKeys.None, new[] { 0xA2, 0xA4, 0xA0, 0x5B }, false)]
+    public void IsTriggerModifierDown_CombinedMask_RequiresEveryFlagOnItsSide(ModifierKeys mask, ModifierKeys right, int[] downKeys,
+        bool expected)
     {
         var (machine, _, transport, _) = CreateMachine(AutoRunSendMode.Foreground);
         foreach (var vk in downKeys)
@@ -894,7 +932,7 @@ public sealed class AutoRunStateMachineTests
 
         try
         {
-            Assert.Equal(expected, machine.IsTriggerModifierDown(mask));
+            Assert.Equal(expected, machine.IsTriggerModifierDown(mask, right));
         }
         finally
         {

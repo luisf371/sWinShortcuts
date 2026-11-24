@@ -1825,7 +1825,7 @@ public sealed class InputHookService : IInputHookService
         CompletePendingMacroRecovery();
         var isButton = MacroRecorder.TryDecodeButton(message, mouseData, out var button, out var down);
         var previous = isButton ? _macroPhysical.ButtonState(button) : 0;
-        var assigning = _keyCapture.IsCapturing;
+        var assigning = _keyCapture.IsActive;
         var decision = isButton ? _macros.HandleButton(button, down, previous, allowActivation: !assigning) : null;
         // A consumed activation must not arm right-click mappings or crosshair/hold-breath state.
         if (decision != true) ObserveRightButton(message);

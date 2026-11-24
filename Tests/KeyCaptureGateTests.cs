@@ -51,9 +51,9 @@ public sealed class KeyCaptureGateTests
         Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 1));
         Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 2));
 
-        // Windows saw the original down, so the up must reach it. The sink sees it to clear its own held flag.
+        // Windows saw the original down, so the up must reach it. The sink never hears about the held key.
         Assert.False(gate.TryHandle(VK_A, isDown: false, isUp: true, now: 3));
-        Assert.Equal(new (int, bool)[] { (VK_A, false) }, sink.Edges.ToArray());
+        Assert.Empty(sink.Edges);
         Assert.True(gate.IsActive);
     }
 
@@ -67,14 +67,15 @@ public sealed class KeyCaptureGateTests
 
         Assert.True(gate.TryHandle(VK_A, isDown: true, isUp: false, now: 2));
         Assert.True(gate.TryHandle(VK_A, isDown: false, isUp: true, now: 3));
-        Assert.Equal(new (int, bool)[] { (VK_A, false), (VK_A, true), (VK_A, false) }, sink.Edges.ToArray());
+        Assert.Equal(new (int, bool)[] { (VK_A, true), (VK_A, false) }, sink.Edges.ToArray());
     }
 
     [Fact]
     public void TryHandle_PreheldModifierWithChord_OnlyChordKeysOwned()
     {
         const int VK_LSHIFT = 0xA0;
-        var accumulatorSink = new AccumulatorSink(preheldVks: [VK_LSHIFT]);
+        // Hook captures give the accumulator no held-key snapshot: the gate alone filters held keys.
+        var accumulatorSink = new AccumulatorSink(preheldVks: []);
         var gate = new KeyCaptureGate();
         gate.Begin(accumulatorSink, now: 0, isKeyDown: vk => vk == VK_LSHIFT);
 
@@ -116,7 +117,7 @@ public sealed class KeyCaptureGateTests
     }
 
     [Fact]
-    public void TryHandle_FinishedWhileKeyOwned_DrainsOwnedUpsOnly()
+    public void TryHandle_FinishedWhileKeyOwned_EndsAndLaterEdgesPassThrough()
     {
         var sink = new RecordingSink { FinishOnFirstUp = true };
         var gate = Begun(sink);
@@ -124,16 +125,13 @@ public sealed class KeyCaptureGateTests
         gate.TryHandle(VK_B, isDown: true, isUp: false, now: 1);
 
         Assert.True(gate.TryHandle(VK_A, isDown: false, isUp: true, now: 2));
-        Assert.True(gate.IsDraining);
+        Assert.False(gate.IsActive);
         var forwarded = sink.Edges.Count;
 
-        // A new key reaches the features; the owned key's repeat and up stay swallowed and are not forwarded.
+        // The box's apply would end the capture a moment later anyway: the still-held key's up is a lone up.
+        Assert.False(gate.TryHandle(VK_B, isDown: false, isUp: true, now: 3));
         Assert.False(gate.TryHandle(VK_C, isDown: true, isUp: false, now: 3));
-        Assert.True(gate.TryHandle(VK_B, isDown: true, isUp: false, now: 3));
-        Assert.False(gate.TryHandle(VK_C, isDown: false, isUp: true, now: 4));
-        Assert.True(gate.TryHandle(VK_B, isDown: false, isUp: true, now: 4));
         Assert.Equal(forwarded, sink.Edges.Count);
-        Assert.False(gate.IsActive);
     }
 
     [Fact]

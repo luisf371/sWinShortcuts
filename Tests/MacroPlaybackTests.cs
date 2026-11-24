@@ -307,6 +307,53 @@ public sealed class MacroPlaybackTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Shortcut_SidedCtrl_FiresOnlyWithThatSide(bool rightCtrl)
+    {
+        var sender = new RecordingInputSender();
+        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        profile.Macros.Definitions = [profile.Macros.Definitions[0] with
+        {
+            ShortcutModifiers = ModifierKeys.Control,
+            ShortcutRightModifiers = rightCtrl ? ModifierKeys.Control : ModifierKeys.None
+        }];
+        service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
+        var (held, other) = rightCtrl ? (0xA3, 0xA2) : (0xA2, 0xA3);
+
+        // The other Ctrl: no match, F6 passes through.
+        service.DispatchDecodedKeyboardEvent(other, true, false);
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x75, true, false));
+        Assert.False(service.DispatchDecodedKeyboardEvent(0x75, false, true));
+        service.DispatchDecodedKeyboardEvent(other, false, true);
+        Assert.Empty(sender.Transitions);
+
+        service.DispatchDecodedKeyboardEvent(held, true, false);
+        Press(service, 0x75);
+        service.DispatchDecodedKeyboardEvent(held, false, true);
+        WaitUntil(() => sender.Transitions.Any(x => x.Key == Key.A && !x.IsDown));
+    }
+
+    [Theory]
+    [InlineData(ModifierKeys.None, false)]
+    [InlineData(ModifierKeys.Control, true)]
+    public void GetShortcutError_SameKeyAndModifiers_ConflictsOnlyOnTheSameSides(ModifierKeys otherRight, bool conflicts)
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.Macros.IsEnabled = true;
+        var macro = new MacroDefinition
+        {
+            IsEnabled = true, ShortcutKey = Key.F6, ShortcutModifiers = ModifierKeys.Control, ShortcutRightModifiers = ModifierKeys.Control
+        };
+        var other = macro with { Id = Guid.NewGuid(), ShortcutRightModifiers = otherRight };
+        profile.Macros.Definitions = [macro, other];
+
+        var error = MacroStateMachine.GetShortcutError(profile, macro.Id, null, 0, 0, 0);
+
+        Assert.Equal(conflicts ? "Another enabled macro uses this shortcut." : null, error);
+    }
+
+    [Theory]
     [InlineData(ModifierKeys.None, ModifierKeys.Control, true)]
     [InlineData(ModifierKeys.Control, ModifierKeys.Control, true)]
     [InlineData(ModifierKeys.Control, ModifierKeys.Control | ModifierKeys.Shift, true)]
@@ -323,6 +370,31 @@ public sealed class MacroPlaybackTests
         profile.AutoRun.TriggerModifier = autoRunModifiers;
         profile.Macros.IsEnabled = true;
         var macro = new MacroDefinition { IsEnabled = true, ShortcutKey = Key.F6, ShortcutModifiers = macroModifiers };
+        profile.Macros.Definitions = [macro];
+
+        var error = MacroStateMachine.GetShortcutError(profile, macro.Id, null, 0, 0, 0);
+
+        Assert.Equal(conflicts ? "Auto-Run uses this shortcut." : null, error);
+    }
+
+    [Theory]
+    [InlineData(ModifierKeys.None, ModifierKeys.None, true)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.Control, true)]
+    [InlineData(ModifierKeys.Control, ModifierKeys.None, false)]
+    [InlineData(ModifierKeys.None, ModifierKeys.Control, false)]
+    public void GetShortcutError_AutoRunSidedTrigger_ConflictsOnlyOnTheSameSide(
+        ModifierKeys autoRunRight, ModifierKeys macroRight, bool conflicts)
+    {
+        var profile = new Profile { Name = "Game", Executable = "game.exe" };
+        profile.AutoRun.IsEnabled = true;
+        profile.AutoRun.TriggerKey = Key.F6;
+        profile.AutoRun.TriggerModifier = ModifierKeys.Control;
+        profile.AutoRun.TriggerRightModifiers = autoRunRight;
+        profile.Macros.IsEnabled = true;
+        var macro = new MacroDefinition
+        {
+            IsEnabled = true, ShortcutKey = Key.F6, ShortcutModifiers = ModifierKeys.Control, ShortcutRightModifiers = macroRight
+        };
         profile.Macros.Definitions = [macro];
 
         var error = MacroStateMachine.GetShortcutError(profile, macro.Id, null, 0, 0, 0);

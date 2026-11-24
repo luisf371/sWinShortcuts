@@ -35,18 +35,17 @@ public sealed class MacroEditorTemplateTests
                 new Binding(nameof(MacroViewModel.Shortcut)) { Source = macro, Mode = BindingMode.TwoWay });
             await Dispatcher.Yield(DispatcherPriority.DataBind);
 
-            Assert.Equal(key, macro.ShortcutKey);
+            Assert.Equal(KeyChord.FromKey(key), macro.Shortcut);
             Assert.Equal(KeyChord.FromKey(key), box.Chord);
             Assert.Equal(KeyDisplayConverter.ToDisplayText(key), box.DisplayBox.Text);
             box.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.None);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
-            Assert.Equal(Key.None, macro.ShortcutKey);
+            Assert.Equal(KeyChord.None, macro.Shortcut);
             Assert.Equal("No shortcut", box.DisplayBox.Text);
             box.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.FromKey(key, ModifierKeys.Control | ModifierKeys.Windows));
             await Dispatcher.Yield(DispatcherPriority.DataBind);
-            Assert.Equal(key, macro.ShortcutKey);
-            Assert.Equal(ModifierKeys.Control | ModifierKeys.Windows, macro.ShortcutModifiers);
-            Assert.Equal("Ctrl+Win+" + KeyDisplayConverter.ToDisplayText(key), box.DisplayBox.Text);
+            Assert.Equal(KeyChord.FromKey(key, ModifierKeys.Control | ModifierKeys.Windows), macro.Shortcut);
+            Assert.Equal("LCtrl+LWin+" + KeyDisplayConverter.ToDisplayText(key), box.DisplayBox.Text);
         });
 
     [Fact]
@@ -225,24 +224,23 @@ public sealed class MacroEditorTemplateTests
                 var trigger = InputTrigger.FromMouseButton(button);
                 shortcutPicker.SetCurrentValue(KeyCaptureBox.ChordProperty, KeyChord.FromTrigger(trigger));
                 await Dispatcher.Yield(DispatcherPriority.DataBind);
-                Assert.Equal(trigger, macro.ShortcutTrigger);
-                Assert.Equal(Key.None, macro.ShortcutKey);
+                Assert.Equal(KeyChord.FromTrigger(trigger), macro.Shortcut);
+                Assert.Equal(Key.None, profile.Model.Macros.Definitions[0].ShortcutKey);
                 Assert.Equal(button, profile.Model.Macros.Definitions[0].ShortcutMouseButton);
             }
             macro.Shortcut = KeyChord.FromTrigger(InputTrigger.FromMouseButton(sWinShortcuts.Models.MouseButton.Middle),
                 ModifierKeys.Control | ModifierKeys.Alt);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
-            Assert.Equal("Ctrl+Alt+Middle Mouse Button", macro.ShortcutText);
+            Assert.Equal("LCtrl+LAlt+Middle Mouse Button", macro.ShortcutText);
             Assert.Equal(macro.Shortcut, shortcutPicker.Chord);
-            Assert.Equal("Ctrl+Alt+Middle Mouse Button", shortcutPicker.DisplayBox.Text);
+            Assert.Equal("LCtrl+LAlt+Middle Mouse Button", shortcutPicker.DisplayBox.Text);
             host.UpdateLayout();
             var shortcutBounds = shortcutPicker.TransformToAncestor(host).TransformBounds(new Rect(shortcutPicker.RenderSize));
             Assert.True(new Rect(host.RenderSize).Contains(shortcutBounds));
-            macro.ShortcutModifiers = ModifierKeys.None;
             var selector = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Selected macro");
             var originalEnabled = macro.IsEnabled;
             var originalDuration = macro.SelectedStep!.DurationText;
-            macro.ShortcutKey = Key.F24;
+            macro.Shortcut = KeyChord.FromKey(Key.F24);
             macro.SelectedStep.Key = Key.A;
             // Materialize the real selector item without opening a native popup. Selected shortcut
             // and status text must remain readable in ready, off, and unsaved-draft states.
@@ -291,7 +289,7 @@ public sealed class MacroEditorTemplateTests
             var playbackBounds = playbackButton.TransformToAncestor(host).TransformBounds(new Rect(playbackButton.RenderSize));
             Assert.True(new Rect(host.RenderSize).Contains(playbackBounds), $"Playback options exceed the view: {playbackBounds}.");
             macro.IsEnabled = originalEnabled;
-            macro.ShortcutKey = Key.None;
+            macro.Shortcut = KeyChord.None;
             macro.SelectedStep.Key = Key.None;
             macro.SelectedStep.DurationText = originalDuration;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
@@ -412,7 +410,7 @@ public sealed class MacroEditorTemplateTests
             }
             Assert.Equal(2, macro.Steps.Count);
 
-            second.ShortcutKey = Key.F6;
+            second.Shortcut = KeyChord.FromKey(Key.F6);
             second.InsertRecording(second.Steps.Count, Enumerable.Repeat(new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 2 },
                 1000 - second.Steps.Count).ToArray());
             second.SelectedStep = second.Steps[^1];
@@ -430,7 +428,7 @@ public sealed class MacroEditorTemplateTests
             Assert.NotNull(list.ItemContainerGenerator.ContainerFromIndex(999));
 
             var grouped = profile.Macros.AddMacro("Grouped")!;
-            grouped.ShortcutKey = Key.F7;
+            grouped.Shortcut = KeyChord.FromKey(Key.F7);
             grouped.InsertRecording(0,
             [
                 new() { Kind = MacroStepKind.KeyDown, Key = Key.A },

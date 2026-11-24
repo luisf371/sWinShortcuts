@@ -358,21 +358,24 @@ Open **Settings** from the tray menu or main window to configure:
 ### Assigning Keys
 
 Every key field is a read-only box with an **Assign** button (and **✕** to clear it where
-"None" is allowed). Click **Assign**: the box shows **Capturing keys…** until you press and
-release the key or combination. Modifiers always come first (**Ctrl+E**, never E+Ctrl), in the
-order Ctrl, Alt, Shift, Win, whichever order you pressed them. Pressing only a modifier
-assigns that key itself, such as **LeftShift** for Sprint. Fields that also take mouse input
-(Alt + Shortcut triggers, macro shortcuts, Hold-breath Early Cancel) capture a button or wheel
-notch over the box. Click **Cancel**, click outside the box, or switch windows to keep
-the old value. Capture also ends after 10 seconds without input or 30 seconds overall.
-**Escape** is an ordinary key and can be assigned. While a capture runs, keystrokes go only to
-the box, so shortcuts such as Win+E, Alt+Tab and the app's own hotkeys don't fire. If input
-hooks aren't running, the box captures through the window instead and Windows shortcuts can
-still react.
+"None" is allowed). The box is dimmed because you can't type in it. Click **Assign**: the box
+shows **Capturing keys…**, then the keys you are holding, until you release the key or
+combination. Modifiers always come first (**LCtrl+E**, never E+LCtrl), in the
+order Ctrl, Alt, Shift, Win, whichever order you pressed them, and they keep the side you
+pressed: **LCtrl+S** fires only with Left Ctrl, and **RCtrl+S** is a different shortcut.
+Pressing only a modifier assigns that key itself, such as **LShift** for Sprint. Fields that
+also take mouse input (Alt + Shortcut triggers, macro shortcuts, Hold-breath Early Cancel)
+capture a button or wheel notch over the box. Press **Esc**, click **Cancel**, click outside
+the box, or switch windows to keep the old value. **Esc** can't be assigned. On fields with
+**✕**, hold **Esc** until the box reads **Release Esc to clear**, then let go to clear the key.
+Capture also ends after 10 seconds without input or 30 seconds overall. While a capture runs,
+keystrokes go only to the box, so shortcuts such as Win+E, Alt+Tab and the app's own hotkeys
+don't fire. If input hooks aren't running, the box captures through the window instead and
+Windows shortcuts can still react.
 
-**After upgrading, reconfirm your keybinds in Settings and in each profile.** Numeric Auto-Run
-modifiers in older profile files now fall back to Ctrl. If a shortcut looks wrong,
-click **Assign** and enter it again.
+**After upgrading, reconfirm your keybinds in Settings and in each profile.** Shortcuts saved
+by older versions didn't record a side and now count as left-hand keys, so the default Auto-Run
+**Ctrl+R** becomes **LCtrl+R**. If a shortcut looks wrong, click **Assign** and enter it again.
 
 Elevated startup is scoped to your Windows account and runs at your logon, including
 on battery power, without a time limit. Existing startup tasks are adopted only when

@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using sWinShortcuts.Models;
 using sWinShortcuts.Services;
+using sWinShortcuts.Services.Input;
 using sWinShortcuts.Utilities;
 using Brush = System.Windows.Media.Brush;
 using Button = System.Windows.Controls.Button;
@@ -32,18 +33,26 @@ public enum KeyCaptureMode
 }
 
 /// <summary>
-/// A keybind field: <c>[read-only box][Assign]</c>, plus <c>[Clear]</c> when None is allowed. Assign shows
-/// "Capturing keys…" until the user presses and releases a key or chord; the result is applied after the
-/// input event returns, through <see cref="Validator"/>. While capturing, the keyboard hook routes physical
-/// keys only here (<see cref="CaptureSource"/>); without a hook it falls back to WPF key events, where
+/// A keybind field: <c>[read-only box][Assign]</c>, plus <c>[Clear]</c> when None is allowed. The idle box is
+/// dimmed like a disabled field, since only Assign changes it. Assign shows "Capturing keys…", then the keys
+/// pressed so far, until the user releases the key or chord; the result is applied after the input event
+/// returns, through <see cref="Validator"/>. Esc is never assigned: releasing it cancels, and holding it for
+/// <see cref="ClearHoldTime"/> clears a field that allows None. While capturing, the keyboard hook routes
+/// physical keys only here (<see cref="CaptureSource"/>); without a hook it falls back to WPF key events, where
 /// Windows shell shortcuts such as Win+E can still fire.
 /// </summary>
 public sealed class KeyCaptureBox : UserControl
 {
     public const string CapturingText = "Capturing keys…";
-    internal static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(10);
-    internal static readonly TimeSpan HardTimeout = TimeSpan.FromSeconds(30);
+    internal const string HoldToClearText = "Hold Esc to clear";
+    internal const string ReleaseToClearText = "Release Esc to clear";
+    private const string AssignToolTip = "Click, then press the new key. Esc cancels.";
+    private const string AssignToolTipWithClear = "Click, then press the new key. Esc cancels; hold Esc to clear.";
     internal static readonly TimeSpan MessageDuration = TimeSpan.FromMilliseconds(2500);
+    internal static readonly TimeSpan ClearHoldTime = TimeSpan.FromMilliseconds(800);
+    // Close to WPF's own disabled-TextBox look (0.56) while keeping the value text above 4.5:1 contrast.
+    internal const double IDLE_OPACITY = 0.6;
+    private const int VK_ESCAPE = 0x1B;
 
     private static readonly Brush MessageBrush = CreateFrozenBrush(Color.FromRgb(0xFF, 0xAA, 0x00));
 
@@ -87,14 +96,21 @@ public sealed class KeyCaptureBox : UserControl
     private readonly KeyChordAccumulator _accumulator = new();
     private readonly CaptureSink _sink;
     private readonly Action _applyPendingResult;
+    private readonly Action _showProgress;
+    private readonly Action _showEscapeHint;
     private readonly Stopwatch _captureClock = new();
     private DispatcherTimer? _timeoutTimer;
     private DispatcherTimer? _messageTimer;
+    private DispatcherTimer? _clearHoldTimer;
     private Window? _window;
     private bool _capturing;
     private bool _hookCapture;
-    private bool _releasingMouseCapture;
     private bool _resultPosted;
+    private bool _progressPosted;
+    private bool _escapeHeld;
+    // Set once Esc was held for ClearHoldTime on a field that allows None: releasing it now clears.
+    private bool _clearArmed;
+    private bool _pendingCancel;
     private int _captureId;
     private int _pendingCaptureId;
     private KeyChordResult _pendingResult;
@@ -103,6 +119,8 @@ public sealed class KeyCaptureBox : UserControl
     {
         _sink = new CaptureSink(this);
         _applyPendingResult = ApplyPendingResult;
+        _showProgress = ShowProgress;
+        _showEscapeHint = ShowEscapeHint;
 
         _box = new TextBox
         {
@@ -121,7 +139,8 @@ public sealed class KeyCaptureBox : UserControl
             Content = "Assign",
             MinWidth = 64,
             Margin = new Thickness(4, 0, 0, 0),
-            Padding = new Thickness(8, 2, 8, 2)
+            Padding = new Thickness(8, 2, 8, 2),
+            ToolTip = AssignToolTip
         };
         _assign.Click += OnAssignClick;
 
@@ -272,12 +291,13 @@ public sealed class KeyCaptureBox : UserControl
         }
 
         StopMessageTimer();
-        _accumulator.Begin(GetHeldVirtualKeys());
         _capturing = true;
         _resultPosted = false;
         _captureId++;
         Current = this;
         _hookCapture = CaptureSource?.TryBeginKeyCapture(_sink) == true;
+        // The hook filters keys held before Assign by itself; only the WPF fallback needs this snapshot.
+        _accumulator.Begin(_hookCapture ? ReadOnlySpan<int>.Empty : GetHeldVirtualKeys());
 
         // Keyboard focus stays inside the box, so the WPF fallback receives keys and Space/Enter can't click Cancel.
         _assign.Focus();
@@ -306,23 +326,71 @@ public sealed class KeyCaptureBox : UserControl
         ShowIdle();
     }
 
-    // Test seam for the WPF fallback: the Preview key handlers route here.
+    // WPF key events: the whole capture in the fallback, and in a hook capture only what the hook let through
+    // (a held key's release, or every key once the hook ended the gate), so no edge is counted twice.
+    // Also the test seam for both.
     internal void HandleFallbackKey(Key key, bool isDown)
     {
-        if (!_capturing || _hookCapture || _resultPosted)
+        if (!_capturing || _resultPosted)
         {
             return;
         }
 
         var virtualKey = key == Key.None ? 0 : KeyInterop.VirtualKeyFromKey(key);
-        if (virtualKey == 0)
+        if (virtualKey != 0)
         {
-            return;
+            HandleKeyEdge(virtualKey, isDown);
+        }
+    }
+
+    // Both key routes land here; for hook captures this runs inside the keyboard hook callback.
+    private KeyCaptureStatus HandleKeyEdge(int virtualKey, bool isDown)
+    {
+        if (virtualKey == VK_ESCAPE)
+        {
+            return HandleEscape(isDown);
         }
 
         var status = isDown ? _accumulator.OnKeyDown(virtualKey) : _accumulator.OnKeyUp(virtualKey);
-        PostIfFinished(status);
+        OnCaptureEdge(status);
+        return status;
     }
+
+    // Esc is never assigned. Its release decides: cancel, or clear when the hold armed it. Deciding on the
+    // release keeps the gate swallowing Esc until then, so its auto-repeat can't reach the window (IsCancel).
+    private KeyCaptureStatus HandleEscape(bool isDown)
+    {
+        if (isDown)
+        {
+            if (!_escapeHeld)
+            {
+                _escapeHeld = true;
+                Dispatcher.BeginInvoke(DispatcherPriority.Input, _showEscapeHint);
+            }
+
+            return KeyCaptureStatus.Pending;
+        }
+
+        if (!_escapeHeld)
+        {
+            // Pressed before the capture began.
+            return KeyCaptureStatus.Pending;
+        }
+
+        if (_clearArmed)
+        {
+            PostResult(KeyChordResult.Completed(KeyChord.None), cancel: false);
+        }
+        else
+        {
+            PostResult(default, cancel: true);
+        }
+
+        return KeyCaptureStatus.Finished;
+    }
+
+    // Esc held counts as input, so neither timeout drops a capture while the user decides.
+    private bool HasInput => _accumulator.HasStarted || _escapeHeld;
 
     // Test seam for mouse triggers over the box.
     internal bool HandleMouseButton(ModelMouseButton button, bool isDown)
@@ -333,7 +401,7 @@ public sealed class KeyCaptureBox : UserControl
             return false;
         }
 
-        PostIfFinished(isDown ? _accumulator.OnMouseDown(button) : _accumulator.OnMouseUp(button));
+        OnCaptureEdge(isDown ? _accumulator.OnMouseDown(button) : _accumulator.OnMouseUp(button));
         return true;
     }
 
@@ -344,23 +412,38 @@ public sealed class KeyCaptureBox : UserControl
             return false;
         }
 
-        PostIfFinished(_accumulator.OnWheel(direction));
+        OnCaptureEdge(_accumulator.OnWheel(direction));
         return true;
     }
 
     private bool AcceptsButton(ModelMouseButton button) =>
         AcceptsMouseButtons && (button != ModelMouseButton.Left || AcceptsLeftButton);
 
-    // Runs inside the keyboard hook callback for hook captures: record the result and post; nothing else.
-    private void PostIfFinished(KeyCaptureStatus status)
+    // Runs inside the keyboard hook callback for hook captures: record and post only, never touch the UI here.
+    private void OnCaptureEdge(KeyCaptureStatus status)
     {
-        if (status != KeyCaptureStatus.Finished || _resultPosted)
+        if (_resultPosted)
         {
             return;
         }
 
+        if (status == KeyCaptureStatus.Finished)
+        {
+            PostResult(_accumulator.Result, cancel: false);
+        }
+        else if (!_progressPosted && _accumulator.HasStarted)
+        {
+            // One refresh at a time; it reads the latest state, so auto-repeat can't flood the queue.
+            _progressPosted = true;
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, _showProgress);
+        }
+    }
+
+    private void PostResult(KeyChordResult result, bool cancel)
+    {
         _resultPosted = true;
-        _pendingResult = _accumulator.Result;
+        _pendingResult = result;
+        _pendingCancel = cancel;
         _pendingCaptureId = _captureId;
         Dispatcher.BeginInvoke(DispatcherPriority.Input, _applyPendingResult);
     }
@@ -374,7 +457,13 @@ public sealed class KeyCaptureBox : UserControl
         }
 
         var result = _pendingResult;
+        var cancel = _pendingCancel;
         EndCapture();
+        if (cancel)
+        {
+            ShowIdle();
+            return;
+        }
 
         var message = GetRejection(result);
         if (message is not null)
@@ -395,6 +484,12 @@ public sealed class KeyCaptureBox : UserControl
         }
 
         var chord = result.Chord;
+        if (chord.IsEmpty)
+        {
+            // Only a held Esc gives None, and only on a field that allows it (AllowNone may have changed since).
+            return AllowNone ? null : "This key can't be cleared";
+        }
+
         if (Mode == KeyCaptureMode.SingleKey && chord.Modifiers != ModifierKeys.None)
         {
             return "Press one key without modifiers";
@@ -419,6 +514,9 @@ public sealed class KeyCaptureBox : UserControl
         }
 
         _timeoutTimer?.Stop();
+        _clearHoldTimer?.Stop();
+        _escapeHeld = false;
+        _clearArmed = false;
         _captureClock.Reset();
         if (_window is not null)
         {
@@ -428,15 +526,8 @@ public sealed class KeyCaptureBox : UserControl
 
         if (ReferenceEquals(Mouse.Captured, this))
         {
-            _releasingMouseCapture = true;
-            try
-            {
-                ReleaseMouseCapture();
-            }
-            finally
-            {
-                _releasingMouseCapture = false;
-            }
+            // Raises LostMouseCapture with _capturing already false, so OnLostMouseCapture ignores it.
+            ReleaseMouseCapture();
         }
     }
 
@@ -452,7 +543,9 @@ public sealed class KeyCaptureBox : UserControl
         }
     }
 
-    private void OnClearClick(object sender, RoutedEventArgs e)
+    private void OnClearClick(object sender, RoutedEventArgs e) => ClearChord();
+
+    private void ClearChord()
     {
         CancelCapture();
         StopMessageTimer();
@@ -467,7 +560,7 @@ public sealed class KeyCaptureBox : UserControl
             return;
         }
 
-        // Hook captures never see these (the hook consumed them); a key held before Assign may still repeat here.
+        // Keys the hook swallowed never arrive here.
         e.Handled = true;
         HandleFallbackKey(GetRealKey(e), isDown: true);
     }
@@ -498,13 +591,27 @@ public sealed class KeyCaptureBox : UserControl
             return;
         }
 
-        if (IsOver(_assign, e) || IsOver(_clear, e))
+        e.Handled = true;
+        var overAssign = IsOver(_assign, e);
+        if (overAssign || IsOver(_clear, e))
         {
-            // The buttons keep working: Cancel cancels, Clear clears.
+            // Act on the press: a Button releases mouse capture before raising Click, so letting Cancel click
+            // normally would cancel on the capture loss and then start a new capture on the Click.
+            if (e.ChangedButton == System.Windows.Input.MouseButton.Left)
+            {
+                if (overAssign)
+                {
+                    CancelCapture();
+                }
+                else
+                {
+                    ClearChord();
+                }
+            }
+
             return;
         }
 
-        e.Handled = true;
         if (!IsOver(this, e))
         {
             CancelCapture();
@@ -524,9 +631,13 @@ public sealed class KeyCaptureBox : UserControl
             return;
         }
 
-        // A press accepted by the field owns its release even if the pointer moves over a command button.
-        e.Handled = (ToModelButton(e.ChangedButton) is { } button && HandleMouseButton(button, isDown: false)) ||
-                    (!IsOver(_assign, e) && !IsOver(_clear, e));
+        // The command buttons act on press while capturing, so every release belongs to the capture, even one
+        // that ends over a button.
+        e.Handled = true;
+        if (ToModelButton(e.ChangedButton) is { } button)
+        {
+            HandleMouseButton(button, isDown: false);
+        }
     }
 
     private void OnPreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -545,18 +656,12 @@ public sealed class KeyCaptureBox : UserControl
 
     private void OnLostMouseCapture(object sender, MouseEventArgs e)
     {
-        if (!_capturing || _releasingMouseCapture)
+        // Every press inside the box is handled while capturing, so no child takes capture: a loss means the
+        // user went elsewhere.
+        if (_capturing)
         {
-            return;
+            CancelCapture();
         }
-
-        // A button inside the box takes capture while pressed; anything else means the user went elsewhere.
-        if (Mouse.Captured is Visual captured && IsAncestorOf(captured))
-        {
-            return;
-        }
-
-        CancelCapture();
     }
 
     private void OnWindowDeactivated(object? sender, EventArgs e) => CancelCapture();
@@ -570,7 +675,7 @@ public sealed class KeyCaptureBox : UserControl
         }
 
         var elapsed = _captureClock.Elapsed;
-        if (elapsed >= HardTimeout || (!_accumulator.HasStarted && elapsed >= IdleTimeout))
+        if (elapsed >= KeyCaptureGate.HardLimit || (!HasInput && elapsed >= KeyCaptureGate.IdleLimit))
         {
             CancelCapture();
         }
@@ -579,15 +684,11 @@ public sealed class KeyCaptureBox : UserControl
     private void ShowIdle()
     {
         StopMessageTimer();
-        _box.Text = _capturing ? CapturingText : Chord.ToDisplayText(NoneText ?? "None");
-        if (_capturing)
-        {
-            return;
-        }
-
+        _box.Text = Chord.ToDisplayText(NoneText ?? "None");
         _box.ClearValue(Control.BorderBrushProperty);
         _box.ClearValue(Control.ForegroundProperty);
         _box.ClearValue(Control.FontStyleProperty);
+        _box.Opacity = IDLE_OPACITY;
         _assign.Content = "Assign";
     }
 
@@ -597,7 +698,51 @@ public sealed class KeyCaptureBox : UserControl
         _box.SetResourceReference(Control.BorderBrushProperty, "AccentBrush");
         _box.SetResourceReference(Control.ForegroundProperty, "ForegroundSecondaryBrush");
         _box.FontStyle = FontStyles.Italic;
+        _box.Opacity = 1;
         _assign.Content = "Cancel";
+    }
+
+    private void ShowProgress()
+    {
+        _progressPosted = false;
+        var chord = _accumulator.Progress;
+        // A held Esc keeps its hint until it is released.
+        if (!_capturing || _resultPosted || _escapeHeld || chord.IsEmpty)
+        {
+            return;
+        }
+
+        // The keys pressed so far read as real input, not as the placeholder.
+        _box.Text = chord.ToDisplayText();
+        _box.ClearValue(Control.ForegroundProperty);
+        _box.ClearValue(Control.FontStyleProperty);
+    }
+
+    private void ShowEscapeHint()
+    {
+        // A field that needs a key has nothing to clear: there Esc only cancels, so the text stays.
+        if (!_capturing || _resultPosted || !_escapeHeld || !AllowNone)
+        {
+            return;
+        }
+
+        _box.Text = HoldToClearText;
+        _clearHoldTimer ??= CreateTimer(ClearHoldTime, OnClearHoldElapsed);
+        _clearHoldTimer.Stop();
+        _clearHoldTimer.Start();
+    }
+
+    // Arms the clear in step with the text, so the release does what the box says.
+    private void OnClearHoldElapsed(object? sender, EventArgs e)
+    {
+        _clearHoldTimer?.Stop();
+        if (!_capturing || _resultPosted || !_escapeHeld)
+        {
+            return;
+        }
+
+        _clearArmed = true;
+        _box.Text = ReleaseToClearText;
     }
 
     private void ShowMessage(string message)
@@ -606,6 +751,7 @@ public sealed class KeyCaptureBox : UserControl
         _box.ClearValue(Control.BorderBrushProperty);
         _box.Foreground = MessageBrush;
         _box.FontStyle = FontStyles.Italic;
+        _box.Opacity = 1;
         _assign.Content = "Assign";
         _messageTimer ??= CreateTimer(MessageDuration, (_, _) => ShowIdle());
         _messageTimer.Stop();
@@ -684,8 +830,13 @@ public sealed class KeyCaptureBox : UserControl
         }
     }
 
-    private static void OnAllowNoneChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((KeyCaptureBox)d)._clear.Visibility = e.NewValue is true ? Visibility.Visible : Visibility.Collapsed;
+    private static void OnAllowNoneChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var box = (KeyCaptureBox)d;
+        var allowNone = e.NewValue is true;
+        box._clear.Visibility = allowNone ? Visibility.Visible : Visibility.Collapsed;
+        box._assign.ToolTip = allowNone ? AssignToolTipWithClear : AssignToolTip;
+    }
 
     private static void OnAutomationNameChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
         ((KeyCaptureBox)d).ApplyAutomationNames(e.NewValue as string ?? string.Empty);
@@ -716,10 +867,10 @@ public sealed class KeyCaptureBox : UserControl
         }
     }
 
-    // Hook-thread adapter: only updates the accumulator and posts the finished result.
+    // Hook-thread adapter: only updates the capture state and posts UI work.
     private sealed class CaptureSink(KeyCaptureBox owner) : IKeyCaptureSink
     {
-        public bool HasStarted => owner._accumulator.HasStarted;
+        public bool HasStarted => owner.HasInput;
 
         public KeyCaptureStatus OnKey(int virtualKey, bool isDown)
         {
@@ -728,9 +879,7 @@ public sealed class KeyCaptureBox : UserControl
                 return owner._resultPosted ? KeyCaptureStatus.Finished : KeyCaptureStatus.Pending;
             }
 
-            var status = isDown ? owner._accumulator.OnKeyDown(virtualKey) : owner._accumulator.OnKeyUp(virtualKey);
-            owner.PostIfFinished(status);
-            return status;
+            return owner.HandleKeyEdge(virtualKey, isDown);
         }
     }
 }

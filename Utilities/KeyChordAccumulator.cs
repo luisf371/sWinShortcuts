@@ -30,10 +30,10 @@ public readonly record struct KeyChordResult(KeyChord Chord, KeyChordRejection R
 
 /// <summary>
 /// Turns the physical edges of one capture into a <see cref="KeyChord"/>. The capture starts on the first
-/// press and finishes when every input pressed during it is released. Modifiers become side-agnostic
-/// prefixes; exactly one non-modifier key, mouse button, or wheel direction is the primary input. When only
-/// modifiers are pressed, the last one pressed becomes the (sided) primary key. One instance is reused across
-/// captures, and the edge methods do not allocate.
+/// press and finishes when every input pressed during it is released. Modifiers become prefixes that keep
+/// their side (the last press of a modifier decides it); exactly one non-modifier key, mouse button, or wheel
+/// direction is the primary input. When only modifiers are pressed, the last one pressed becomes the primary
+/// key. One instance is reused across captures, and the edge methods do not allocate.
 /// </summary>
 public sealed class KeyChordAccumulator
 {
@@ -55,12 +55,6 @@ public sealed class KeyChordAccumulator
     private const int PRIMARY_MOUSE = 2;
     private const int PRIMARY_WHEEL = 3;
 
-    private static readonly int[] ModifierVks =
-    [
-        VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN,
-        VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU
-    ];
-
     private readonly bool[] _preheld = new bool[256];
     private readonly bool[] _keyDown = new bool[256];
     // Indexed by the MouseButton value (1..5).
@@ -70,8 +64,8 @@ public sealed class KeyChordAccumulator
     private bool _finished;
     private bool _multiple;
     private ModifierKeys _modifiers;
-    // One bit per ModifierVks entry pressed during the capture.
-    private int _modifierVkMask;
+    // The _modifiers flags whose latest press was the right-hand key.
+    private ModifierKeys _rightModifiers;
     private int _lastModifierVk;
     private int _primaryKind;
     private int _primaryVk;
@@ -81,6 +75,22 @@ public sealed class KeyChordAccumulator
     public bool HasStarted => _started;
 
     public KeyChordResult Result { get; private set; }
+
+    /// <summary>
+    /// The chord this capture gives if everything is released now (None before the first press). Only
+    /// modifiers: the last one pressed is the primary key, with its own side, and the others are its prefixes.
+    /// </summary>
+    public KeyChord Progress => _primaryKind switch
+    {
+        PRIMARY_KEY => KeyInteropUtilities.FromVirtualKey(_primaryVk) is { } key
+            ? KeyChord.FromKey(key, _modifiers, _rightModifiers)
+            : KeyChord.None,
+        PRIMARY_MOUSE => KeyChord.FromTrigger(InputTrigger.FromMouseButton(_primaryButton), _modifiers, _rightModifiers),
+        PRIMARY_WHEEL => KeyChord.FromTrigger(InputTrigger.FromWheel(_primaryWheel), _modifiers, _rightModifiers),
+        _ => KeyInteropUtilities.FromVirtualKey(_lastModifierVk) is { } modifier
+            ? KeyChord.FromKey(modifier, _modifiers & ~ModifierForVirtualKey(_lastModifierVk), _rightModifiers)
+            : KeyChord.None
+    };
 
     /// <summary>Starts a new capture. Keys already held are ignored until they are released.</summary>
     public void Begin(ReadOnlySpan<int> preheldVks)
@@ -93,7 +103,7 @@ public sealed class KeyChordAccumulator
         _finished = false;
         _multiple = false;
         _modifiers = ModifierKeys.None;
-        _modifierVkMask = 0;
+        _rightModifiers = ModifierKeys.None;
         _lastModifierVk = 0;
         _primaryKind = PRIMARY_NONE;
         _primaryVk = 0;
@@ -129,7 +139,7 @@ public sealed class KeyChordAccumulator
         if (flag != ModifierKeys.None)
         {
             _modifiers |= flag;
-            _modifierVkMask |= 1 << Array.IndexOf(ModifierVks, vk);
+            _rightModifiers = vk is VK_RSHIFT or VK_RCONTROL or VK_RMENU or VK_RWIN ? _rightModifiers | flag : _rightModifiers & ~flag;
             _lastModifierVk = vk;
         }
         else if (_primaryKind == PRIMARY_NONE)
@@ -285,34 +295,9 @@ public sealed class KeyChordAccumulator
             return KeyChordResult.Rejected(KeyChordRejection.MultipleKeys);
         }
 
-        switch (_primaryKind)
-        {
-            case PRIMARY_KEY:
-                return KeyInteropUtilities.FromVirtualKey(_primaryVk) is { } key && KeyCatalog.IsAssignable(key)
-                    ? KeyChordResult.Completed(KeyChord.FromKey(key, _modifiers))
-                    : KeyChordResult.Rejected(KeyChordRejection.UnsupportedKey);
-            case PRIMARY_MOUSE:
-                return KeyChordResult.Completed(KeyChord.FromTrigger(InputTrigger.FromMouseButton(_primaryButton), _modifiers));
-            case PRIMARY_WHEEL:
-                return KeyChordResult.Completed(KeyChord.FromTrigger(InputTrigger.FromWheel(_primaryWheel), _modifiers));
-        }
-
-        // Only modifiers: the last one pressed is the primary key, with its own side; the rest are prefixes.
-        if (KeyInteropUtilities.FromVirtualKey(_lastModifierVk) is not { } modifierKey || !KeyCatalog.IsAssignable(modifierKey))
-        {
-            return KeyChordResult.Rejected(KeyChordRejection.UnsupportedKey);
-        }
-
-        // Rebuild the prefixes from every other modifier key pressed, so Left Shift + Right Shift stays Shift+RightShift.
-        var prefixes = ModifierKeys.None;
-        for (var bit = 0; bit < ModifierVks.Length; bit++)
-        {
-            if ((_modifierVkMask & (1 << bit)) != 0 && ModifierVks[bit] != _lastModifierVk)
-            {
-                prefixes |= ModifierForVirtualKey(ModifierVks[bit]);
-            }
-        }
-
-        return KeyChordResult.Completed(KeyChord.FromKey(modifierKey, prefixes));
+        var chord = Progress;
+        return chord.IsEmpty || (chord.Input.Kind == InputTriggerKind.KeyboardKey && !KeyCatalog.IsAssignable(chord.Input.Key))
+            ? KeyChordResult.Rejected(KeyChordRejection.UnsupportedKey)
+            : KeyChordResult.Completed(chord);
     }
 }

@@ -79,7 +79,7 @@ public sealed class MacroRecordingIntegrationTests
             service.StopMacroRecording();
             await take.WaitAsync(TimeSpan.FromSeconds(3));
         }
-        transport.KeyStates[0x11] = unchecked((short)0x8000);
+        transport.KeyStates[0xA2] = unchecked((short)0x8000);
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
         var consumed = service.DispatchDecodedKeyboardEvent(0x77, true, false);
         service.DispatchDecodedKeyboardEvent(0x77, false, true);
