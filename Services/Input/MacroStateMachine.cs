@@ -12,9 +12,10 @@ namespace sWinShortcuts.Services.Input;
 internal sealed class MacroPhysicalState : IMacroInputContext
 {
     private const int DOWN = 1, SUPPRESSED = 2, TAKEOVER = 4, ACTIVATION = 8, RECORDING_PASSTHROUGH = 16, PLAY_THROUGH = 32;
-    private static readonly int[] ModifierVirtualKeys = [0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
+    // Sided VKs only: the hook never reports the generic 0x10-0x12.
+    private static readonly int[] ModifierVirtualKeys = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
     // Alt and Win stay excluded: keys sent under a held Alt or Win become Windows shortcuts (Alt+Tab, Win+D).
-    private static readonly int[] PlayThroughVirtualKeys = [0x10, 0x11, 0xA0, 0xA1, 0xA2, 0xA3];
+    private static readonly int[] PlayThroughVirtualKeys = [0xA0, 0xA1, 0xA2, 0xA3];
     private readonly int[] _keys = new int[256];
     private readonly int[] _buttons = new int[6];
     private readonly int[] _keyRevisions = new int[256];
@@ -62,22 +63,21 @@ internal sealed class MacroPhysicalState : IMacroInputContext
     internal static bool WasRecordingPassThrough(int state) => (state & RECORDING_PASSTHROUGH) != 0;
 
     internal ModifierKeys Modifiers =>
-        ((IsPhysicalKeyDown(0x11) || IsPhysicalKeyDown(0xA2) || IsPhysicalKeyDown(0xA3)) ? ModifierKeys.Control : 0) |
-        ((IsPhysicalKeyDown(0x12) || IsPhysicalKeyDown(0xA4) || IsPhysicalKeyDown(0xA5)) ? ModifierKeys.Alt : 0) |
-        ((IsPhysicalKeyDown(0x10) || IsPhysicalKeyDown(0xA0) || IsPhysicalKeyDown(0xA1)) ? ModifierKeys.Shift : 0) |
+        ((IsPhysicalKeyDown(0xA2) || IsPhysicalKeyDown(0xA3)) ? ModifierKeys.Control : 0) |
+        ((IsPhysicalKeyDown(0xA4) || IsPhysicalKeyDown(0xA5)) ? ModifierKeys.Alt : 0) |
+        ((IsPhysicalKeyDown(0xA0) || IsPhysicalKeyDown(0xA1)) ? ModifierKeys.Shift : 0) |
         ((IsPhysicalKeyDown(0x5B) || IsPhysicalKeyDown(0x5C)) ? ModifierKeys.Windows : 0);
 
     // Each modifier in `modifiers` is held on its saved side: the right key when its flag is in `right`, else the
-    // left key. A generic VK counts as left (the hook reports sided VKs; older sources may not). Win has none.
+    // left key. The hook reports sided VKs only.
     internal bool SidesHeld(ModifierKeys modifiers, ModifierKeys right) =>
-        SideHeld(modifiers, right, ModifierKeys.Control, 0xA2, 0xA3, 0x11) &&
-        SideHeld(modifiers, right, ModifierKeys.Alt, 0xA4, 0xA5, 0x12) &&
-        SideHeld(modifiers, right, ModifierKeys.Shift, 0xA0, 0xA1, 0x10) &&
-        SideHeld(modifiers, right, ModifierKeys.Windows, 0x5B, 0x5C, 0x5B);
+        SideHeld(modifiers, right, ModifierKeys.Control, 0xA2, 0xA3) &&
+        SideHeld(modifiers, right, ModifierKeys.Alt, 0xA4, 0xA5) &&
+        SideHeld(modifiers, right, ModifierKeys.Shift, 0xA0, 0xA1) &&
+        SideHeld(modifiers, right, ModifierKeys.Windows, 0x5B, 0x5C);
 
-    private bool SideHeld(ModifierKeys modifiers, ModifierKeys right, ModifierKeys flag, int leftVk, int rightVk, int genericVk) =>
-        (modifiers & flag) == 0 ||
-        ((right & flag) != 0 ? IsPhysicalKeyDown(rightVk) : IsPhysicalKeyDown(leftVk) || IsPhysicalKeyDown(genericVk));
+    private bool SideHeld(ModifierKeys modifiers, ModifierKeys right, ModifierKeys flag, int leftVk, int rightVk) =>
+        (modifiers & flag) == 0 || IsPhysicalKeyDown((right & flag) != 0 ? rightVk : leftVk);
 
     internal static ModifierKeys ModifierForKey(int vk) => vk switch
     {

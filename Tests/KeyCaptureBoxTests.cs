@@ -298,7 +298,32 @@ public sealed class KeyCaptureBoxTests : IDisposable
         });
 
     [Fact]
-    public Task EscHold_ClearsAFieldThatAllowsNone() =>
+    public Task EscHeldWhileAnotherKeyIsTapped_KeepsSwallowingAndCancelsOnRelease() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var source = new FakeKeyCaptureSource();
+            KeyCaptureBox.CaptureSource = source;
+            var box = new KeyCaptureBox { AllowNone = true, Chord = KeyChord.FromKey(Key.F5) };
+            ClickAssign(box);
+
+            Assert.Equal(KeyCaptureStatus.Pending, source.Press(VK_ESCAPE));
+            Assert.Equal(KeyCaptureStatus.Pending, source.Press(VK_E));
+            // E's release would finish the chord, but the held Esc keeps the gate swallowing, so its
+            // auto-repeat can't reach the window's Cancel button.
+            Assert.Equal(KeyCaptureStatus.Pending, source.Release(VK_E));
+            Assert.Equal(KeyCaptureStatus.Pending, source.Press(VK_ESCAPE));
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            Assert.True(box.IsCapturing);
+
+            Assert.Equal(KeyCaptureStatus.Finished, source.Release(VK_ESCAPE));
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.FromKey(Key.F5), box.Chord);
+        });
+
+    [Fact]
+    public Task EscHold_OnlyCancels() =>
         MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
         {
             var box = new KeyCaptureBox { AllowNone = true, Chord = KeyChord.FromKey(Key.F5) };
@@ -306,29 +331,7 @@ public sealed class KeyCaptureBoxTests : IDisposable
 
             box.HandleFallbackKey(Key.Escape, isDown: true);
             await Dispatcher.Yield(DispatcherPriority.Background);
-            Assert.Equal(KeyCaptureBox.HoldToClearText, box.DisplayBox.Text);
-
-            await Task.Delay(KeyCaptureBox.ClearHoldTime + TimeSpan.FromMilliseconds(300));
-            Assert.Equal(KeyCaptureBox.ReleaseToClearText, box.DisplayBox.Text);
             box.HandleFallbackKey(Key.Escape, isDown: true);
-            box.HandleFallbackKey(Key.Escape, isDown: false);
-            await Dispatcher.Yield(DispatcherPriority.Background);
-
-            Assert.False(box.IsCapturing);
-            Assert.Equal(KeyChord.None, box.Chord);
-            Assert.Equal("None", box.DisplayBox.Text);
-        });
-
-    [Fact]
-    public Task EscHold_OnFieldThatNeedsAKey_OnlyCancels() =>
-        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
-        {
-            var box = new KeyCaptureBox { Chord = KeyChord.FromKey(Key.F5) };
-            box.BeginCapture();
-
-            box.HandleFallbackKey(Key.Escape, isDown: true);
-            await Dispatcher.Yield(DispatcherPriority.Background);
-            // No hold-to-clear hint: there is nothing to clear, so Esc only cancels.
             Assert.Equal(KeyCaptureBox.CapturingText, box.DisplayBox.Text);
             box.HandleFallbackKey(Key.Escape, isDown: false);
             await Dispatcher.Yield(DispatcherPriority.Background);

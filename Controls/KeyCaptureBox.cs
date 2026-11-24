@@ -36,20 +36,16 @@ public enum KeyCaptureMode
 /// A keybind field: <c>[read-only box][Assign]</c>, plus <c>[Clear]</c> when None is allowed. The idle box is
 /// dimmed like a disabled field, since only Assign changes it. Assign shows "Capturing keys…", then the keys
 /// pressed so far, until the user releases the key or chord; the result is applied after the input event
-/// returns, through <see cref="Validator"/>. Esc is never assigned: releasing it cancels, and holding it for
-/// <see cref="ClearHoldTime"/> clears a field that allows None. While capturing, the keyboard hook routes
+/// returns, through <see cref="Validator"/>. Esc is never assigned: releasing it cancels, and the Clear button
+/// sets a field that allows None. While capturing, the keyboard hook routes
 /// physical keys only here (<see cref="CaptureSource"/>); without a hook it falls back to WPF key events, where
 /// Windows shell shortcuts such as Win+E can still fire.
 /// </summary>
 public sealed class KeyCaptureBox : UserControl
 {
     public const string CapturingText = "Capturing keys…";
-    internal const string HoldToClearText = "Hold Esc to clear";
-    internal const string ReleaseToClearText = "Release Esc to clear";
     private const string AssignToolTip = "Click, then press the new key. Esc cancels.";
-    private const string AssignToolTipWithClear = "Click, then press the new key. Esc cancels; hold Esc to clear.";
     internal static readonly TimeSpan MessageDuration = TimeSpan.FromMilliseconds(2500);
-    internal static readonly TimeSpan ClearHoldTime = TimeSpan.FromMilliseconds(800);
     // Close to WPF's own disabled-TextBox look (0.56) while keeping the value text above 4.5:1 contrast.
     internal const double IDLE_OPACITY = 0.6;
     private const int VK_ESCAPE = 0x1B;
@@ -97,19 +93,16 @@ public sealed class KeyCaptureBox : UserControl
     private readonly CaptureSink _sink;
     private readonly Action _applyPendingResult;
     private readonly Action _showProgress;
-    private readonly Action _showEscapeHint;
     private readonly Stopwatch _captureClock = new();
     private DispatcherTimer? _timeoutTimer;
     private DispatcherTimer? _messageTimer;
-    private DispatcherTimer? _clearHoldTimer;
     private Window? _window;
     private bool _capturing;
     private bool _hookCapture;
     private bool _resultPosted;
     private bool _progressPosted;
+    // A held Esc cancels on its release, whatever else is pressed meanwhile.
     private bool _escapeHeld;
-    // Set once Esc was held for ClearHoldTime on a field that allows None: releasing it now clears.
-    private bool _clearArmed;
     private bool _pendingCancel;
     private int _captureId;
     private int _pendingCaptureId;
@@ -120,7 +113,6 @@ public sealed class KeyCaptureBox : UserControl
         _sink = new CaptureSink(this);
         _applyPendingResult = ApplyPendingResult;
         _showProgress = ShowProgress;
-        _showEscapeHint = ShowEscapeHint;
 
         _box = new TextBox
         {
@@ -351,23 +343,18 @@ public sealed class KeyCaptureBox : UserControl
             return HandleEscape(isDown);
         }
 
-        var status = isDown ? _accumulator.OnKeyDown(virtualKey) : _accumulator.OnKeyUp(virtualKey);
-        OnCaptureEdge(status);
-        return status;
+        OnCaptureEdge(isDown ? _accumulator.OnKeyDown(virtualKey) : _accumulator.OnKeyUp(virtualKey));
+        // The gate keeps swallowing keys until a result is posted, so a held Esc stays out of the window.
+        return _resultPosted ? KeyCaptureStatus.Finished : KeyCaptureStatus.Pending;
     }
 
-    // Esc is never assigned. Its release decides: cancel, or clear when the hold armed it. Deciding on the
-    // release keeps the gate swallowing Esc until then, so its auto-repeat can't reach the window (IsCancel).
+    // Esc is never assigned and only cancels. Its release decides, so the gate swallows Esc until then and its
+    // auto-repeat can't reach the window (IsCancel).
     private KeyCaptureStatus HandleEscape(bool isDown)
     {
         if (isDown)
         {
-            if (!_escapeHeld)
-            {
-                _escapeHeld = true;
-                Dispatcher.BeginInvoke(DispatcherPriority.Input, _showEscapeHint);
-            }
-
+            _escapeHeld = true;
             return KeyCaptureStatus.Pending;
         }
 
@@ -377,15 +364,7 @@ public sealed class KeyCaptureBox : UserControl
             return KeyCaptureStatus.Pending;
         }
 
-        if (_clearArmed)
-        {
-            PostResult(KeyChordResult.Completed(KeyChord.None), cancel: false);
-        }
-        else
-        {
-            PostResult(default, cancel: true);
-        }
-
+        PostResult(default, cancel: true);
         return KeyCaptureStatus.Finished;
     }
 
@@ -429,7 +408,11 @@ public sealed class KeyCaptureBox : UserControl
 
         if (status == KeyCaptureStatus.Finished)
         {
-            PostResult(_accumulator.Result, cancel: false);
+            // With Esc held, its release cancels instead.
+            if (!_escapeHeld)
+            {
+                PostResult(_accumulator.Result, cancel: false);
+            }
         }
         else if (!_progressPosted && _accumulator.HasStarted)
         {
@@ -484,12 +467,6 @@ public sealed class KeyCaptureBox : UserControl
         }
 
         var chord = result.Chord;
-        if (chord.IsEmpty)
-        {
-            // Only a held Esc gives None, and only on a field that allows it (AllowNone may have changed since).
-            return AllowNone ? null : "This key can't be cleared";
-        }
-
         if (Mode == KeyCaptureMode.SingleKey && chord.Modifiers != ModifierKeys.None)
         {
             return "Press one key without modifiers";
@@ -514,9 +491,7 @@ public sealed class KeyCaptureBox : UserControl
         }
 
         _timeoutTimer?.Stop();
-        _clearHoldTimer?.Stop();
         _escapeHeld = false;
-        _clearArmed = false;
         _captureClock.Reset();
         if (_window is not null)
         {
@@ -706,7 +681,7 @@ public sealed class KeyCaptureBox : UserControl
     {
         _progressPosted = false;
         var chord = _accumulator.Progress;
-        // A held Esc keeps its hint until it is released.
+        // A held Esc will cancel, so the keys pressed with it are not shown as the result.
         if (!_capturing || _resultPosted || _escapeHeld || chord.IsEmpty)
         {
             return;
@@ -716,33 +691,6 @@ public sealed class KeyCaptureBox : UserControl
         _box.Text = chord.ToDisplayText();
         _box.ClearValue(Control.ForegroundProperty);
         _box.ClearValue(Control.FontStyleProperty);
-    }
-
-    private void ShowEscapeHint()
-    {
-        // A field that needs a key has nothing to clear: there Esc only cancels, so the text stays.
-        if (!_capturing || _resultPosted || !_escapeHeld || !AllowNone)
-        {
-            return;
-        }
-
-        _box.Text = HoldToClearText;
-        _clearHoldTimer ??= CreateTimer(ClearHoldTime, OnClearHoldElapsed);
-        _clearHoldTimer.Stop();
-        _clearHoldTimer.Start();
-    }
-
-    // Arms the clear in step with the text, so the release does what the box says.
-    private void OnClearHoldElapsed(object? sender, EventArgs e)
-    {
-        _clearHoldTimer?.Stop();
-        if (!_capturing || _resultPosted || !_escapeHeld)
-        {
-            return;
-        }
-
-        _clearArmed = true;
-        _box.Text = ReleaseToClearText;
     }
 
     private void ShowMessage(string message)
@@ -833,9 +781,7 @@ public sealed class KeyCaptureBox : UserControl
     private static void OnAllowNoneChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var box = (KeyCaptureBox)d;
-        var allowNone = e.NewValue is true;
-        box._clear.Visibility = allowNone ? Visibility.Visible : Visibility.Collapsed;
-        box._assign.ToolTip = allowNone ? AssignToolTipWithClear : AssignToolTip;
+        box._clear.Visibility = e.NewValue is true ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static void OnAutomationNameChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>

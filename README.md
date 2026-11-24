@@ -363,11 +363,11 @@ shows **Capturing keys…**, then the keys you are holding, until you release th
 combination. Modifiers always come first (**LCtrl+E**, never E+LCtrl), in the
 order Ctrl, Alt, Shift, Win, whichever order you pressed them, and they keep the side you
 pressed: **LCtrl+S** fires only with Left Ctrl, and **RCtrl+S** is a different shortcut.
-Pressing only a modifier assigns that key itself, such as **LShift** for Sprint. Fields that
-also take mouse input (Alt + Shortcut triggers, macro shortcuts, Hold-breath Early Cancel)
-capture a button or wheel notch over the box. Press **Esc**, click **Cancel**, click outside
-the box, or switch windows to keep the old value. **Esc** can't be assigned. On fields with
-**✕**, hold **Esc** until the box reads **Release Esc to clear**, then let go to clear the key.
+Pressing only a modifier assigns that key itself, such as **LShift** for Sprint. Alt + Shortcut
+triggers, macro shortcuts and Hold-breath Early Cancel also capture a mouse button pressed over
+the box. Alt + Shortcut triggers and Key Mapping sources capture a wheel notch scrolled over it.
+Press **Esc**, click **Cancel**, click outside the box, or switch windows to keep the old value.
+**Esc** only cancels and can't be assigned. Click **✕** to clear a key.
 Capture also ends after 10 seconds without input or 30 seconds overall. While a capture runs,
 keystrokes go only to the box, so shortcuts such as Win+E, Alt+Tab and the app's own hotkeys
 don't fire. If input hooks aren't running, the box captures through the window instead and
