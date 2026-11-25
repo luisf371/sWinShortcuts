@@ -17,7 +17,7 @@ public sealed class MacroTogglePlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         EnableToggle(service, profile, shortcut: shortcut);
         var vk = KeyInterop.VirtualKeyFromKey(shortcut);
 
@@ -79,7 +79,7 @@ public sealed class MacroTogglePlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+            MacroPresses.Press(Key.A));
         EnableToggle(service, profile, control: true);
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
         Press(service, 0x75);
@@ -96,12 +96,12 @@ public sealed class MacroTogglePlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         EnableToggle(service, profile);
         profile.Macros.Definitions = [profile.Macros.Definitions[0], new MacroDefinition
         {
             IsEnabled = true, ToggleMode = true, ShortcutKey = Key.F7,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.B }]
+            Steps = [.. MacroPresses.Press(Key.B)]
         }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
         Press(service, 0x75);
@@ -126,7 +126,7 @@ public sealed class MacroTogglePlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         EnableToggle(service, profile);
         Press(service, 0x75);
         WaitUntil(() => sender.Transitions.Count(edge => !edge.IsDown) >= 2);

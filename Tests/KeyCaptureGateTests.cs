@@ -290,7 +290,7 @@ public sealed class KeyCaptureGateTests
     public void DispatchDecodedMouseEvent_ActiveCapture_PassesThroughExistingMacroShortcut()
     {
         using var service = MacroPlaybackTests.Create(new RecordingInputSender(), out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+            MacroPresses.Press(Key.A));
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with
         {
             ShortcutKey = Key.None,

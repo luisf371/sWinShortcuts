@@ -5,6 +5,7 @@ using sWinShortcuts.Configuration;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
+using Tests.Fakes;
 using Xunit;
 using AppMouseButton = sWinShortcuts.Models.MouseButton;
 
@@ -98,7 +99,8 @@ public sealed class MacroPersistenceTests : IDisposable
             Assert.True(loaded.Macros.Definitions[0].StartOnPress);
             Assert.True(loaded.Macros.Definitions[0].CancelOnMouseMovement);
             Assert.Equal(ModifierKeys.Control | ModifierKeys.Alt, loaded.Macros.Definitions[0].ShortcutModifiers);
-            Assert.Equal(profile.Macros.Definitions[0].Steps, loaded.Macros.Definitions[0].Steps);
+            // Old Key press and Mouse click steps load as Down, Wait, Up groups.
+            Assert.Equal(IniProfileStore.ExpandCompactPresses(profile.Macros.Definitions[0].Steps), loaded.Macros.Definitions[0].Steps);
             Assert.Equal(Key.None, loaded.Macros.Definitions[1].ShortcutKey);
             Assert.False(loaded.Macros.Definitions[1].ToggleMode);
             Assert.False(loaded.Macros.Definitions[1].StartOnPress);
@@ -341,7 +343,7 @@ public sealed class MacroPersistenceTests : IDisposable
     }
 
     [Fact]
-    public async Task LoadMacros_MissingOptionalFields_UsesAutomaticDurationAndKeepsOptionalModesOff()
+    public async Task LoadMacros_MissingOptionalFields_ConvertsAutomaticHoldAndKeepsOptionalModesOff()
     {
         var path = Path.Combine(_root, "Profiles", "Broken.ini");
         File.WriteAllText(path, ValidMacroIni + "[Macro0.Step0]\nKind=KeyPress\nKey=A\n");
@@ -350,7 +352,7 @@ public sealed class MacroPersistenceTests : IDisposable
 
         Assert.False(profile.IsPersistenceSuspended);
         var macro = Assert.Single(profile.Macros.Definitions);
-        Assert.Equal(0, Assert.Single(macro.Steps).DurationMs);
+        Assert.Equal(MacroPresses.Press(Key.A), macro.Steps);
         Assert.False(macro.ToggleMode);
         Assert.False(macro.StartOnPress);
         Assert.False(macro.CancelOnMouseMovement);
@@ -429,6 +431,149 @@ public sealed class MacroPersistenceTests : IDisposable
         Assert.False(profile.IsPersistenceSuspended);
         Assert.Equal(expected, profile.Macros.Definitions[0].ShortcutRightModifiers);
     }
+
+    [Fact]
+    public void ExpandCompactPresses_KeyPress_BecomesDownWaitUp()
+    {
+        var steps = IniProfileStore.ExpandCompactPresses([new() { Kind = MacroStepKind.KeyPress, Key = Key.Q, DurationMs = 70 }]);
+
+        Assert.Equal(MacroPresses.Press(Key.Q, 70), steps);
+    }
+
+    [Fact]
+    public void ExpandCompactPresses_AutoHold_Becomes50Ms()
+    {
+        var steps = IniProfileStore.ExpandCompactPresses([new() { Kind = MacroStepKind.KeyPress, Key = Key.Q }]);
+
+        Assert.Equal(50, steps[1].DurationMs);
+    }
+
+    [Fact]
+    public void ExpandCompactPresses_MouseClick_BecomesMoveToThenGroup()
+    {
+        var steps = IniProfileStore.ExpandCompactPresses(
+            [new() { Kind = MacroStepKind.MouseClick, MouseButton = AppMouseButton.Right, X = -40, Y = 900 }]);
+
+        Assert.Equal(MacroPresses.Click(AppMouseButton.Right, -40, 900), steps);
+        Assert.Equal(MacroHeldButtonPolicy.Stop, steps[0].HeldButtons);
+    }
+
+    [Fact]
+    public void ExpandCompactPresses_NoCompactSteps_ReturnsSameArray()
+    {
+        MacroStep[] steps = [.. MacroPresses.Press(Key.A), new() { Kind = MacroStepKind.MouseWheel, WheelDelta = 120 }];
+
+        Assert.Same(steps, IniProfileStore.ExpandCompactPresses(steps));
+    }
+
+    [Fact]
+    public void ExpandCompactPresses_MixedSteps_KeepsOrder()
+    {
+        var wheel = new MacroStep { Kind = MacroStepKind.MouseWheel, WheelDelta = -120 };
+        var wait = new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 300 };
+
+        var steps = IniProfileStore.ExpandCompactPresses(
+        [
+            wheel,
+            new() { Kind = MacroStepKind.KeyPress, Key = Key.B, DurationMs = 20 },
+            wait,
+            new() { Kind = MacroStepKind.MouseClick, MouseButton = AppMouseButton.Left, X = 5, Y = 6, DurationMs = 15 }
+        ]);
+
+        Assert.Equal([wheel, .. MacroPresses.Press(Key.B, 20), wait, .. MacroPresses.Click(AppMouseButton.Left, 5, 6, 15)], steps);
+    }
+
+    [Fact]
+    public void ExpandCompactPresses_KeyPressOnHeldKey_ReturnsOriginal()
+    {
+        // Converting would turn this unplayable macro into a playable repeated Key down.
+        MacroStep[] steps =
+        [
+            new() { Kind = MacroStepKind.KeyDown, Key = Key.A },
+            new() { Kind = MacroStepKind.KeyPress, Key = Key.A },
+            new() { Kind = MacroStepKind.KeyUp, Key = Key.A }
+        ];
+
+        Assert.Same(steps, IniProfileStore.ExpandCompactPresses(steps));
+    }
+
+    [Theory]
+    [InlineData(MacroValidation.MaxSteps - 2, true)]
+    [InlineData(MacroValidation.MaxSteps - 1, false)]
+    public void ExpandCompactPresses_StepLimit_ConvertsOnlyWhenItFits(int length, bool converts)
+    {
+        // One Key press adds two rows: 998 steps become exactly 1,000, 999 would become 1,001.
+        MacroStep[] steps = [new() { Kind = MacroStepKind.KeyPress, Key = Key.A }, .. Enumerable.Repeat(new MacroStep { Kind = MacroStepKind.Wait }, length - 1)];
+
+        var result = IniProfileStore.ExpandCompactPresses(steps);
+
+        Assert.Equal(converts ? MacroValidation.MaxSteps : length, result.Length);
+        Assert.Equal(converts ? MacroStepKind.KeyDown : MacroStepKind.KeyPress, result[0].Kind);
+    }
+
+    [Fact]
+    public async Task Load_OldKeyPressAndMouseClick_ConvertsThenSavesNewForm()
+    {
+        var path = Path.Combine(_root, "Profiles", "Broken.ini");
+        File.WriteAllText(path, MacroIni(2) + "[Macro0.Step0]\nKind=KeyPress\nKey=A\nDurationMs=0\n" +
+            "[Macro0.Step1]\nKind=MouseClick\nMouseButton=Left\nX=10\nY=20\nDurationMs=30\n");
+
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Broken");
+        MacroStep[] expected = [.. MacroPresses.Press(Key.A), .. MacroPresses.Click(AppMouseButton.Left, 10, 20, 30)];
+
+        Assert.False(profile.IsPersistenceSuspended);
+        Assert.Equal(expected, Assert.Single(profile.Macros.Definitions).Steps);
+        Assert.Null(MacroValidation.GetPlaybackError(profile.Macros.Definitions[0]));
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        Assert.Equal("KeyDown", IniDocument.Load(path).GetValue("Macro0.Step0", "Kind"));
+        Assert.Equal("7", IniDocument.Load(path).GetValue("Macro0", "StepCount"));
+        var reloaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Broken");
+        Assert.Equal(expected, reloaded.Macros.Definitions[0].Steps);
+    }
+
+    [Fact]
+    public async Task Load_InvalidStepAfterCompactStep_ErrorNamesOriginalStep()
+    {
+        // -1 parses but fails the format check, so the definition is not converted and step numbers stay as written.
+        var path = Path.Combine(_root, "Profiles", "Broken.ini");
+        File.WriteAllText(path, MacroIni(2) + "[Macro0.Step0]\nKind=KeyPress\nKey=A\n[Macro0.Step1]\nKind=Wait\nDurationMs=-1\n");
+
+        var profile = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Broken");
+
+        Assert.True(profile.IsPersistenceSuspended);
+        Assert.Contains("Step 2:", profile.Macros.LoadError);
+    }
+
+    [Fact]
+    public async Task Load_ConversionOverMaxSteps_KeepsOldStepsAndBlocksPlayback()
+    {
+        var path = Path.Combine(_root, "Profiles", "Broken.ini");
+        var count = MacroValidation.MaxSteps - 1;
+        var ini = new System.Text.StringBuilder(MacroIni(count) + "[Macro0.Step0]\nKind=KeyPress\nKey=A\n");
+        for (var i = 1; i < count; i++) ini.Append(CultureInfo.InvariantCulture, $"[Macro0.Step{i}]\nKind=Wait\nDurationMs=1\n");
+        File.WriteAllText(path, ini.ToString());
+
+        var macro = Assert.Single((await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Broken").Macros.Definitions);
+
+        Assert.Equal(count, macro.Steps.Length);
+        Assert.Equal(MacroStepKind.KeyPress, macro.Steps[0].Kind);
+        Assert.Equal("Step 1: replace this old Key press step.", MacroValidation.GetPlaybackError(macro));
+    }
+
+    [Fact]
+    public async Task Load_KeyPressOnHeldKey_KeepsOldStepsAndBlocksPlayback()
+    {
+        var path = Path.Combine(_root, "Profiles", "Broken.ini");
+        File.WriteAllText(path, MacroIni(3) + "[Macro0.Step0]\nKind=KeyDown\nKey=A\n[Macro0.Step1]\nKind=KeyPress\nKey=A\n" +
+            "[Macro0.Step2]\nKind=KeyUp\nKey=A\n");
+
+        var macro = Assert.Single((await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Broken").Macros.Definitions);
+
+        Assert.Equal(MacroStepKind.KeyPress, macro.Steps[1].Kind);
+        Assert.Equal("Step 2: replace this old Key press step.", MacroValidation.GetPlaybackError(macro));
+    }
+
+    private static string MacroIni(int stepCount) => ValidMacroIni.Replace("StepCount=1", FormattableString.Invariant($"StepCount={stepCount}"));
 
     private const string ValidMacroIni = "[Profile]\nName=Broken\nExecutable=broken.exe\n" +
         "[Macros]\nVersion=1\nEnabled=True\nCount=1\n" +

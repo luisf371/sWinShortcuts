@@ -230,26 +230,31 @@ outside your screens. Codes from a newer version of the app ask you to update fi
 The sequence stays beside an inspector for the selected step. New steps and recordings go
 at the end unless you select a step, which inserts after it; the **New steps go** hint in
 the toolbar shows where. **Add step** lets you choose an action directly: a new **Wait**
-starts at 100 ms. A new **Move** starts in **Position** mode. Both **Move** and **Mouse click**
-start at the macro's nearest earlier position. **Clear all steps…** (under **⋯**) removes every
+starts at 100 ms. **Key press** and **Mouse click** each add a Down, a 50 ms Wait and an Up,
+shown as one press. **Mouse click** clicks where the cursor is, so add a **Move** before it to
+click somewhere specific. A new **Move** starts in **Position** mode at the macro's nearest
+earlier position. For a single **Key down**, **Key up**, **Mouse down** or **Mouse up**, change
+a step's **Action**. **Clear all steps…** (under **⋯**) removes every
 step after asking, for example to record a macro again; its name, shortcut, and options stay.
 With the step list focused, use **Delete** to remove a step, **Ctrl+D** to duplicate it,
 and **Alt+Up/Down** to reorder it. **Fix step N** jumps to the row named in a validation error;
 that row shows a warning mark, and the step editor shows the full message.
 Change a key by clicking **Assign** beside it and pressing the new key.
 
-The list shows **Presses** by default; switch to **All steps** above the list to see every
-event. With **Presses**, adjacent matching Down, Wait, and Up events appear as one
-press with their original step numbers and hold time. Intervening actions keep the events
-separate. Edit a grouped press's key/button and hold directly, or use **Show all steps**
-to edit the original events. Moving, duplicating, or deleting a collapsed row operates on
-all three. This changes the view only: saved steps,
-playback, and the 1,000-step limit still use the original events. A Wait that holds a press
-shows its time as a hold even when presses are expanded.
+Adjacent matching Down, Wait, and Up events appear as one press with their original step
+numbers and hold time. Intervening actions keep the events separate, and presses don't nest:
+Shift held around a press shows as plain Shift rows around one press row. Edit a closed press's
+key/button and hold directly. Open it with its arrow, the Right key, or **Show the 3 steps** to edit
+the three events, and close it with the arrow or the Left key. **Expand all** and **Collapse all**
+above the list open or close every press. Every press starts closed when the profile editor opens.
+A press that stops matching and then matches again keeps its open state unless **Collapse all**
+ran in between. Moving, duplicating, or deleting a closed row operates on all three. This changes
+the view only: saved steps, playback, and the 1,000-step limit still use the original events. A
+Wait that holds a press shows its time as a hold even when the press is open.
 
 **Wait times…** turns the sequence toolbar into a one-row bar, as **Record** does for its
 banner, so the step list keeps its size. Choose **Press holds** (how long each key or button
-stays down: the Wait inside a press, plus Key press and Mouse click holds), **Between steps**
+stays down: the Wait inside a press), **Between steps**
 (Wait steps that pause between actions), or **All**. Each choice shows how many rows it
 changes, and the list highlights those rows' times while the bar is open. Enter a duration
 from **0 to 3,600,000 ms** and choose **Apply** (or press Enter in the duration field). It opens on **Press holds** with a suggested 50 ms, enough for most
@@ -259,11 +264,15 @@ cursor before releasing; waits around a key's typematic repeats or other input c
 between steps. The bar's close button or Escape discards the input; switching macros, leaving the
 editor, or starting a recording closes it automatically.
 
-Use the step editor to insert, duplicate, delete, and reorder key presses, explicit
-key/button down and up events, waits, mouse clicks, cursor moves (to a position or by an offset), vertical or
-horizontal scrolling, and **Freeze mouse**/**Unfreeze mouse** steps. A press or click with a hold of **0 ms** uses the existing automatic
-hold timing; explicit waits and holds keep their entered durations. Explicit down/up
-sequences must balance before playback is enabled.
+Use the step editor to insert, duplicate, delete, and reorder key presses, mouse clicks,
+explicit key/button down and up events, waits, cursor moves (to a position or by an offset), vertical or
+horizontal scrolling, and **Freeze mouse**/**Unfreeze mouse** steps. Waits and holds keep their
+entered durations. Down/up sequences must balance before playback is enabled.
+
+One-step Key press and Mouse click steps from older versions convert automatically when a profile
+loads or a code is imported: an automatic hold becomes 50 ms, and a mouse click becomes a **Move**
+to its position followed by the click. A step that can't convert shows "replace this old Key press
+step" (or Mouse click), and the macro doesn't play until you replace it with a new press.
 
 **Record** captures physical keyboard/button/wheel actions and their timing once the
 profile's application is in front: choose **Record**, then switch to the application (the
@@ -276,8 +285,7 @@ does not capture free cursor movement. Interrupted or capacity-limited takes ret
 their captured prefix and add release rows for inputs still held. Each macro supports
 1,000 steps, each profile supports 64 macros, and one recording lasts at most 10 minutes.
 
-**Move** in **Position** mode moves to a fixed screen position. **Position** and **Mouse click**
-use signed physical screen pixels, including monitors left of or above the primary display.
+**Move** in **Position** mode moves to a fixed screen position. **Position** uses signed physical screen pixels, including monitors left of or above the primary display.
 **Pick in 3 s** gives you three seconds to move the cursor and shows a countdown beside it; the
 Windows cursor itself never changes. While it runs, the button becomes **Cancel**. Playback travels along a quick, slightly curved path with a shared
 9,000-pixel/second speed cap and checks arrival before clicking. Travel adds time to
@@ -307,7 +315,7 @@ movement does not trigger this option. Coordinate actions still require arrival 
 requested pixel before continuing.
 
 A **Freeze mouse** step blocks your physical mouse movement from that row on, so **Move**
-and **Mouse click** steps are not pushed off their pixels; an **Unfreeze mouse** step lets the
+steps and the clicks after them are not pushed off their pixels; an **Unfreeze mouse** step lets the
 mouse move again. Only physical movement is blocked: the macro's own cursor moves, your mouse
 buttons, and the wheel work as usual. A freeze always ends with the run, whether it completes
 or stops on **F12**, the toggle shortcut, focus loss, or a failure. In a toggle loop it

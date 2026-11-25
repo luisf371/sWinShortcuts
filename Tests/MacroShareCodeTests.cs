@@ -4,8 +4,10 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using System.Windows.Input;
+using sWinShortcuts.Configuration;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
+using Tests.Fakes;
 using Xunit;
 using AppMouseButton = sWinShortcuts.Models.MouseButton;
 
@@ -53,7 +55,8 @@ public sealed class MacroShareCodeTests
 
         Assert.Equal(MacroImportError.None, result.Error);
         var macro = result.Macro!;
-        Assert.Equal(Full.Steps, macro.Steps);
+        // Old Key press and Mouse click steps import as Down, Wait, Up groups.
+        Assert.Equal(IniProfileStore.ExpandCompactPresses(Full.Steps), macro.Steps);
         Assert.Equal((Full.Label, Full.ToggleMode, Full.StartOnPress, Full.CancelOnMouseMovement),
             (macro.Label, macro.ToggleMode, macro.StartOnPress, macro.CancelOnMouseMovement));
         Assert.False(result.LayoutDiffers);
@@ -150,7 +153,7 @@ public sealed class MacroShareCodeTests
         var result = MacroShareCode.Import(split + lineBreak + "see you", Desktop);
 
         Assert.Equal(MacroImportError.None, result.Error);
-        Assert.Equal(Full.Steps, result.Macro!.Steps);
+        Assert.Equal(IniProfileStore.ExpandCompactPresses(Full.Steps), result.Macro!.Steps);
     }
 
     [Fact]
@@ -261,7 +264,16 @@ public sealed class MacroShareCodeTests
         var result = MacroShareCode.Import(Encode(Payload("1.1", "Kind=KeyPress\nKey=E\nDurationMs=0\nFuture=1")), Desktop);
 
         Assert.Equal(MacroImportError.None, result.Error);
-        Assert.Equal(Key.E, Assert.Single(result.Macro!.Steps).Key);
+        Assert.Equal(MacroPresses.Press(Key.E), result.Macro!.Steps);
+    }
+
+    [Fact]
+    public void Import_OldCompactSteps_Converts()
+    {
+        var result = MacroShareCode.Import(Encode(Payload("1.0", "Kind=MouseClick\nMouseButton=Right\nX=10\nY=20\nDurationMs=0")), Desktop);
+
+        Assert.Equal(MacroImportError.None, result.Error);
+        Assert.Equal(MacroPresses.Click(AppMouseButton.Right, 10, 20), result.Macro!.Steps);
     }
 
     [Fact]

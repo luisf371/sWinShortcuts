@@ -223,8 +223,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     private int _recordStopRequested;
     private int _disposed;
     private int _closing;
-    private int _verifyClickPosition;
-    private int _clickX, _clickY;
     private Rectangle[]? _movementMonitors;
     private string? _failure;
 
@@ -536,7 +534,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             $"liveMatches={(entry is not null && _foreground is not null && _runtime.LiveForegroundMatches(entry.Owner, _foreground.Generation))} " +
             $"startFg={_foreground?.Executable}/pid{_foreground?.ProcessId} nowFg={live?.Executable}/pid{live?.ProcessId} " +
             $"monitorsChanged={Volatile.Read(ref _movementMonitors) is { } m && !m.SequenceEqual(_monitors())} " +
-            $"clickVerify={Volatile.Read(ref _verifyClickPosition) != 0} physicalModifiers={_physical.PhysicalModifiersDown} " +
+            $"physicalModifiers={_physical.PhysicalModifiersDown} " +
             $"physicalHeld=[{string.Join(",", Enumerable.Range(0, 256).Where(_physical.IsPhysicalKeyDown).Select(KeyInterop.KeyFromVirtualKey))}]";
     }
 
@@ -562,11 +560,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
             !_runtime.LiveForegroundMatches(entry.Owner, _foreground.Generation)) return false;
         var expectedMonitors = Volatile.Read(ref _movementMonitors);
         if (expectedMonitors is not null && !expectedMonitors.SequenceEqual(_monitors())) return false;
-        if (Volatile.Read(ref _verifyClickPosition) != 0)
-        {
-            var point = _cursor();
-            if (point.X != _clickX || point.Y != _clickY) return false;
-        }
         return Current() && (command.Token == 0 || command.Token == Volatile.Read(ref _sessionId)) &&
             ReferenceEquals(_foreground, _runtime.ForegroundIdentity);
     }
@@ -726,7 +719,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 _logger.Log($"[Macros] Playback session={_sessionId} mouse freeze lifted at session end");
             _physical.EndModifierPlayThrough();
             Volatile.Write(ref _movementMonitors, null);
-            Volatile.Write(ref _verifyClickPosition, 0);
             Publish(MacroSessionMode.Finishing);
             // Failed preparation has no captured rows. Report it promptly even when a prior native
             // call is stuck; the worker keeps the slot and queued cleanup until accounting finishes.
@@ -761,9 +753,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         switch (step.Kind)
         {
             case MacroStepKind.Wait: Wait(step.DurationMs); break;
-            case MacroStepKind.KeyPress:
-                SendKey(step.Key, true); Wait(step.DurationMs == 0 ? Random.Shared.Next(GestureChordStateMachine.KEY_PRESS_MIN_MS,
-                    GestureChordStateMachine.KEY_PRESS_MAX_MS + 1) : step.DurationMs); SendKey(step.Key, false); break;
             case MacroStepKind.KeyDown: SendKey(step.Key, true); break;
             case MacroStepKind.KeyUp: SendKey(step.Key, false); break;
             case MacroStepKind.MoveTo: MoveTo(step.X, step.Y, step.HeldButtons); break;
@@ -790,15 +779,6 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 }
                 MoveTo(x, y, step.HeldButtons);
                 break;
-            case MacroStepKind.MouseClick:
-                MoveTo(step.X, step.Y);
-                _clickX = step.X; _clickY = step.Y;
-                Volatile.Write(ref _verifyClickPosition, 1);
-                try { SendButton(step.MouseButton!.Value, true); }
-                finally { Volatile.Write(ref _verifyClickPosition, 0); }
-                Wait(step.DurationMs == 0 ? Random.Shared.Next(RapidFireStateMachine.HOLD_MIN_MS,
-                    RapidFireStateMachine.HOLD_MAX_MS + 1) : step.DurationMs);
-                SendButton(step.MouseButton!.Value, false); break;
             case MacroStepKind.MouseDown: SendButton(step.MouseButton!.Value, true); break;
             case MacroStepKind.MouseUp: SendButton(step.MouseButton!.Value, false); break;
             case MacroStepKind.MouseWheel:
@@ -921,7 +901,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         }
     }
 
-    private void MoveTo(int x, int y, MacroHeldButtonPolicy policy = MacroHeldButtonPolicy.Stop)
+    private void MoveTo(int x, int y, MacroHeldButtonPolicy policy)
     {
         HoldForMouseButtons(policy);
         var start = _cursor();

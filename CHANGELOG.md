@@ -4,7 +4,7 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
-## Unreleased
+## November 25, 2026
 
 ### Added
 - **Saved Positions in Macros**: a new Save position step remembers where the cursor is, and a Move step set to Saved returns to it later in the macro.
@@ -25,10 +25,24 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
   - Rows show `+40, -5 px` or `+40, -5 raw`. Saved macros are unchanged and still load in older versions.
 - **Esc in Macro Steps**: a **Key press**, **Key down** or **Key up** step can now be set to Esc. Press Esc in the step's **Key** box to assign it, and use **Cancel** or click outside the box to cancel. Every other key box still uses Esc only to cancel.
 - **Countdown Next to the Cursor**: **Pick in 3 s** shows a countdown beside the cursor, and its button becomes **Cancel** while it runs. The Windows cursor itself never changes.
+- **Wait Times Bar**: its **Cancel** button is now **Close**. Times you already applied stay; it only closes the bar.
+- **Simpler Key Press and Mouse Click Steps**: **Add step** now has one **Key press** and one **Mouse click**. Each adds a key or button down, a 50 ms hold and an up, shown as one step whose key and hold time you can change without opening it.
+  - Open any press with its arrow, or with the Right key, to see its three steps. **Expand all** and **Collapse all** replace **Presses** and **All steps**. Putting another step between the three shows them as separate steps, and restoring the order groups them again.
+  - To add a single **Key down**, **Key up**, **Mouse down** or **Mouse up**, add a step such as Wait and change its **Action**.
+  - **Mouse click** now clicks where the cursor is. Add a **Move** before it to click a specific spot.
+  - Key press and Mouse click steps from older versions convert when the profile loads or a code is imported. Automatic holds become 50 ms, and each mouse click becomes a Move to its position followed by the click.
+  - Old steps that can't convert no longer play. This happens when converting would take a macro over 1,000 steps, or when a key press targets a key the macro already holds. The step shows "replace this old Key press step" (or Mouse click), and the macro won't play until you replace it.
+
+**After upgrading, check macros that show "replace this old Key press step" or "replace this old Mouse click step".** To replace one:
+1. Select the step and note its key or button, its hold, and for a mouse click its position.
+2. Delete the step.
+3. Use **Add step** to add a **Key press** or **Mouse click**, and set its key or button and hold.
+4. For a mouse click, add a **Move** set to the old position before it.
 
 ### Fixed
-- **Changing a Move Step's Action**: changing an offset move to **Mouse click** no longer uses the offset as a screen position.
 - **Pick Status After Changing a Step**: changing a step to another action while **Pick in 3 s** counts down no longer leaves "Point to the screen position…" showing.
+
+---
 
 ## November 23, 2026
 

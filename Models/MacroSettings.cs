@@ -54,7 +54,7 @@ public readonly record struct MacroStep
     public int DurationMs { get; init; }
     public int WheelDelta { get; init; }
     public bool HorizontalWheel { get; init; }
-    // Move steps only (MoveTo, MoveCursorBy, MoveMouseBy, MoveToSaved). Mouse click always stops.
+    // Move steps only (MoveTo, MoveCursorBy, MoveMouseBy, MoveToSaved).
     public MacroHeldButtonPolicy HeldButtons { get; init; }
 }
 

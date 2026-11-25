@@ -160,8 +160,9 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public string DurationLabel => Kind == MacroStepKind.Wait ? "Wait" : "Hold";
     public string ActionLabel => Kind switch
     {
-        MacroStepKind.KeyPress => "Key press", MacroStepKind.KeyDown => "Key down", MacroStepKind.KeyUp => "Key up",
-        MacroStepKind.MouseClick => "Mouse click", MacroStepKind.MouseDown => "Mouse down", MacroStepKind.MouseUp => "Mouse up",
+        // Old one-step presses no longer play; the label tells the user which rows to replace.
+        MacroStepKind.KeyPress => "Old key press", MacroStepKind.KeyDown => "Key down", MacroStepKind.KeyUp => "Key up",
+        MacroStepKind.MouseClick => "Old mouse click", MacroStepKind.MouseDown => "Mouse down", MacroStepKind.MouseUp => "Mouse up",
         MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy or MacroStepKind.MoveToSaved => "Move",
         MacroStepKind.SavePosition => "Save position",
         MacroStepKind.MouseWheel => "Mouse wheel",
@@ -201,7 +202,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public string AutomationStepLabel => IsCollapsedPress
         ? $"Steps {Number.ToString(CultureInfo.InvariantCulture)} to {(Number + 2).ToString(CultureInfo.InvariantCulture)}"
         : $"Step {Number.ToString(CultureInfo.InvariantCulture)}";
-    public string DisplayActionLabel => IsCollapsedPress ? (HasKey ? "Key press" : "Mouse press") : ActionLabel;
+    public string DisplayActionLabel => IsCollapsedPress ? (HasKey ? "Key press" : "Mouse click") : ActionLabel;
     public string DisplayTimingText => IsCollapsedPress
         ? $"{_collapsedDurationMs.ToString(CultureInfo.InvariantCulture)} ms hold"
         : TimingText;
@@ -211,10 +212,11 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public string Summary => Detail.Length == 0 ? TimingText : TimingText.Length == 0 ? Detail : $"{Detail} · {TimingText}";
     public string KindHelp => Kind switch
     {
-        MacroStepKind.KeyPress => "Presses and releases the key.",
+        MacroStepKind.KeyPress => "This old step no longer plays. Note its key and hold, delete it, then add a Key press from Add step.",
         MacroStepKind.KeyDown => "Holds the key until a later Key up step releases it.",
         MacroStepKind.KeyUp => "Releases a key held by an earlier Key down step.",
-        MacroStepKind.MouseClick => "Moves the cursor to the position, then presses and releases the button.",
+        MacroStepKind.MouseClick => "This old step no longer plays. Note its button and hold, delete it, then add a Mouse click " +
+            "from Add step. Add a Move to its position first.",
         MacroStepKind.MouseDown => "Holds the button where the cursor is until a later Mouse up step.",
         MacroStepKind.MouseUp => "Releases a button held by an earlier Mouse down step.",
         MacroStepKind.MoveTo => "Moves the cursor to exact screen pixels at up to 9,000 px/s.",
@@ -231,7 +233,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.UnfreezeMouse => "Lets your physical mouse move the cursor again.",
         _ => "Pauses before the next step."
     };
-    private string ButtonText => MouseButton is { } button ? ButtonName(button) : "Choose button";
+    private string ButtonText =>MouseButton is { } button ? ButtonName(button) : "Choose button";
     // XButton1/2 are the side buttons; the shortcut picker calls them Mouse Button 4 and 5.
     internal static string ButtonName(MouseButton button) => button switch
     {
@@ -279,6 +281,15 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         _problem = problem;
         OnPropertyChanged(nameof(DisplayError));
         OnPropertyChanged(nameof(IsProblemOnly));
+    }
+
+    // Presentation only, like SetCollapsedWait: this row's place in a Down, Wait, Up group, or None.
+    public MacroPressGroupPart PressGroupPart { get; private set; }
+    internal void SetPressGroupPart(MacroPressGroupPart value)
+    {
+        if (PressGroupPart == value) return;
+        PressGroupPart = value;
+        OnPropertyChanged(nameof(PressGroupPart));
     }
 
     // Presentation only: preserve each source row and its unparsed editor text.
@@ -390,4 +401,14 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         OnPropertyChanged(nameof(Summary));
         Changed?.Invoke(this, EventArgs.Empty);
     }
+}
+
+// A row's place in a Down, Wait, Up press group. A closed group shows as its head row; an open one shows all three.
+public enum MacroPressGroupPart
+{
+    None,
+    ClosedHead,
+    OpenHead,
+    OpenMiddle,
+    OpenLast
 }

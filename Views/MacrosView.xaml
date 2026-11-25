@@ -309,6 +309,7 @@
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="MinHeight" Value="30" />
             <Setter Property="FocusVisualStyle" Value="{StaticResource MacroInsetFocusRing}" />
+            <Setter Property="AutomationProperties.ItemStatus" Value="" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
@@ -319,6 +320,13 @@
                 </Setter.Value>
             </Setter>
             <Style.Triggers>
+                <!-- Screen readers hear a press group's open state with the row. -->
+                <DataTrigger Binding="{Binding PressGroupPart}" Value="{x:Static vm:MacroPressGroupPart.ClosedHead}">
+                    <Setter Property="AutomationProperties.ItemStatus" Value="Collapsed" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding PressGroupPart}" Value="{x:Static vm:MacroPressGroupPart.OpenHead}">
+                    <Setter Property="AutomationProperties.ItemStatus" Value="Expanded" />
+                </DataTrigger>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="{StaticResource MacroRowHoverBrush}" />
                 </Trigger>
@@ -383,27 +391,60 @@
             <Grid x:Name="Row" Background="Transparent" ToolTip="{Binding DisplayError}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="64" />
+                    <ColumnDefinition Width="16" />
                     <ColumnDefinition Width="24" />
                     <ColumnDefinition Width="92" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="84" />
                 </Grid.ColumnDefinitions>
+                <!-- A 1 px margin line marks the three rows of an open press group. -->
+                <Border x:Name="OpenPressLine" Width="1" HorizontalAlignment="Left" Margin="2,-1,0,-1"
+                        Background="{StaticResource MacroLineBrush}" Visibility="Collapsed" />
                 <TextBlock x:Name="Number" Text="{Binding DisplayNumber}" FontSize="12" TextAlignment="Right" Margin="0,0,10,0"
                            VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
-                <Path x:Name="Icon" Grid.Column="1" Style="{StaticResource MacroIcon}" HorizontalAlignment="Left"
+                <Button x:Name="PressToggle" Grid.Column="1" Focusable="False" Visibility="Collapsed" Padding="0"
+                        Background="Transparent" BorderThickness="0" Cursor="Hand"
+                        Command="{Binding DataContext.TogglePressGroupCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                        CommandParameter="{Binding}" AutomationProperties.Name="Collapse press">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border Background="{TemplateBinding Background}"><ContentPresenter /></Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <Path x:Name="PressChevron" Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconChevron}"
+                          Stroke="{StaticResource MacroMutedBrush}" RenderTransformOrigin="0.5,0.5" />
+                </Button>
+                <Path x:Name="Icon" Grid.Column="2" Style="{StaticResource MacroIcon}" HorizontalAlignment="Left"
                       Data="{StaticResource MacroIconKeyboard}" Stroke="{StaticResource MacroMutedBrush}" />
-                <TextBlock Grid.Column="2" Text="{Binding DisplayActionLabel}" FontSize="13" VerticalAlignment="Center"
+                <TextBlock Grid.Column="3" Text="{Binding DisplayActionLabel}" FontSize="13" VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis" Foreground="{DynamicResource ForegroundPrimaryBrush}" />
-                <TextBlock Grid.Column="3" Text="{Binding Detail}" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"
+                <TextBlock Grid.Column="4" Text="{Binding Detail}" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0"
                            TextTrimming="CharacterEllipsis" Foreground="{StaticResource MacroDetailBrush}" />
-                <Path x:Name="ErrorMark" Grid.Column="4" Style="{StaticResource MacroIcon}" Margin="0,0,4,0"
+                <Path x:Name="ErrorMark" Grid.Column="5" Style="{StaticResource MacroIcon}" Margin="0,0,4,0"
                       Data="{StaticResource MacroIconWarning}" Stroke="{StaticResource MacroErrorBrush}" />
-                <TextBlock x:Name="Timing" Grid.Column="5" Text="{Binding DisplayTimingText}" FontSize="12" TextAlignment="Right"
+                <TextBlock x:Name="Timing" Grid.Column="6" Text="{Binding DisplayTimingText}" FontSize="12" TextAlignment="Right"
                            VerticalAlignment="Center" Margin="0,0,10,0" TextTrimming="CharacterEllipsis"
                            Foreground="{StaticResource MacroMutedBrush}" />
             </Grid>
             <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding PressGroupPart}" Value="{x:Static vm:MacroPressGroupPart.ClosedHead}">
+                    <Setter TargetName="PressToggle" Property="Visibility" Value="Visible" />
+                    <Setter TargetName="PressToggle" Property="AutomationProperties.Name" Value="Expand press" />
+                    <Setter TargetName="PressChevron" Property="RenderTransform">
+                        <Setter.Value><RotateTransform Angle="-90" /></Setter.Value>
+                    </Setter>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding PressGroupPart}" Value="{x:Static vm:MacroPressGroupPart.OpenHead}">
+                    <Setter TargetName="PressToggle" Property="Visibility" Value="Visible" />
+                    <Setter TargetName="OpenPressLine" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding PressGroupPart}" Value="{x:Static vm:MacroPressGroupPart.OpenMiddle}">
+                    <Setter TargetName="OpenPressLine" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding PressGroupPart}" Value="{x:Static vm:MacroPressGroupPart.OpenLast}">
+                    <Setter TargetName="OpenPressLine" Property="Visibility" Value="Visible" />
+                </DataTrigger>
                 <DataTrigger Binding="{Binding HasMouseButton}" Value="True">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMouse}" />
                 </DataTrigger>
@@ -707,25 +748,17 @@
                     <Button.ContextMenu>
                         <ContextMenu MinWidth="180" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                      ItemContainerStyle="{DynamicResource MacroContextMenuItemStyle}">
-                            <MenuItem Header="Key press" CommandParameter="{x:Static models:MacroStepKind.KeyPress}" Command="{Binding AddStepCommand}">
+                            <MenuItem Header="Key press" CommandParameter="{x:Static models:MacroStepKind.KeyPress}" Command="{Binding AddStepCommand}"
+                                      ToolTipService.ShowOnDisabled="True"
+                                      ToolTip="Adds Key down, a 50 ms hold and Key up as one step. Needs 3 free steps. Macros hold up to 1,000.">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
                             </MenuItem>
-                            <MenuItem Header="Key down" CommandParameter="{x:Static models:MacroStepKind.KeyDown}" Command="{Binding AddStepCommand}">
-                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
-                            </MenuItem>
-                            <MenuItem Header="Key up" CommandParameter="{x:Static models:MacroStepKind.KeyUp}" Command="{Binding AddStepCommand}">
-                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconKeyboard}" /></MenuItem.Icon>
+                            <MenuItem Header="Mouse click" CommandParameter="{x:Static models:MacroStepKind.MouseClick}" Command="{Binding AddStepCommand}"
+                                      ToolTipService.ShowOnDisabled="True"
+                                      ToolTip="Adds Mouse down, a 50 ms hold and Mouse up as one step. Needs 3 free steps. Macros hold up to 1,000.">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
                             </MenuItem>
                             <Separator Style="{StaticResource MacroMenuSeparator}" />
-                            <MenuItem Header="Mouse click" CommandParameter="{x:Static models:MacroStepKind.MouseClick}" Command="{Binding AddStepCommand}">
-                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
-                            </MenuItem>
-                            <MenuItem Header="Mouse down" CommandParameter="{x:Static models:MacroStepKind.MouseDown}" Command="{Binding AddStepCommand}">
-                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
-                            </MenuItem>
-                            <MenuItem Header="Mouse up" CommandParameter="{x:Static models:MacroStepKind.MouseUp}" Command="{Binding AddStepCommand}">
-                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
-                            </MenuItem>
                             <MenuItem Header="Move" CommandParameter="{x:Static models:MacroStepKind.MoveTo}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
                             </MenuItem>
@@ -819,7 +852,7 @@
 
             <!-- Wait times, in one row: the segment counts say what each scope changes and the list highlights those
                  rows, so nothing needs a second line. Same height as the commands, so the list never moves. -->
-            <!-- The shaded bar ends at Cancel; the status sits after it on the row's background. -->
+            <!-- The shaded bar ends at Close; the status sits after it on the row's background. -->
             <Grid Visibility="{Binding IsWaitEditorOpen, Converter={StaticResource VisibleIfTrue}}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
@@ -904,9 +937,9 @@
                     <Button Grid.Column="3" Content="Apply" Style="{StaticResource MacroPrimaryButton}" MinHeight="28" Margin="8,0,0,0"
                             Command="{Binding ApplyWaitTimesCommand}" Click="WaitEditorApply_Click"
                             ToolTip="Set every highlighted time to this value (Enter)." AutomationProperties.Name="Apply wait time" />
-                    <Button Grid.Column="4" Content="Cancel" Style="{StaticResource MacroButton}" MinHeight="28" Margin="6,0,0,0"
+                    <Button Grid.Column="4" Content="Close" Style="{StaticResource MacroButton}" MinHeight="28" Margin="6,0,0,0"
                             Command="{Binding CloseWaitEditorCommand}" Click="WaitEditorClose_Click"
-                            ToolTip="Close (Esc)" AutomationProperties.Name="Cancel wait time editor" />
+                            ToolTip="Close (Esc)" AutomationProperties.Name="Close wait time editor" />
                 </Grid>
             </Border>
                     <!-- The result only; an icon repeats success and errors beside the color. -->
@@ -987,7 +1020,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="12" />
-                <ColumnDefinition Width="252" />
+                <ColumnDefinition Width="236" />
             </Grid.ColumnDefinitions>
             <Border CornerRadius="6" BorderThickness="1" IsEnabled="{Binding CanEdit}"
                     Background="{StaticResource MacroPanelBrush}" BorderBrush="{StaticResource MacroLineBrush}">
@@ -998,18 +1031,15 @@
                     </Grid.RowDefinitions>
                     <Border Padding="10,4,6,4" BorderThickness="0,0,0,1" BorderBrush="{StaticResource MacroLineBrush}">
                         <DockPanel>
-                            <!-- How the list shows presses: one row each, or every down, wait and up. Display only. -->
-                            <Border DockPanel.Dock="Right" Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
-                                    Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}">
-                                <StackPanel Orientation="Horizontal">
-                                    <RadioButton Content="Presses" IsChecked="{Binding ShowPresses}" Padding="8,3" Style="{DynamicResource SegmentRadioButtonStyle}"
-                                                 ToolTip="Show each key or button down, wait, and matching up as one press row. Saved steps don't change."
-                                                 AutomationProperties.Name="Group presses" />
-                                    <RadioButton Content="All steps" IsChecked="{Binding ShowAllSteps}" Padding="8,3" Style="{DynamicResource SegmentRadioButtonStyle}"
-                                                 ToolTip="Show every down, wait, and up as its own row."
-                                                 AutomationProperties.Name="Show every step" />
-                                </StackPanel>
-                            </Border>
+                            <!-- Open or close every Down, Wait, Up press group. Display only. -->
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="Expand all" Style="{StaticResource MacroLinkButton}" FontSize="12" Margin="0,0,8,0"
+                                        Command="{Binding ExpandAllCommand}" ToolTip="Show the Down, Wait and Up steps of every press."
+                                        AutomationProperties.Name="Expand all presses" />
+                                <Button Content="Collapse all" Style="{StaticResource MacroLinkButton}" FontSize="12"
+                                        Command="{Binding CollapseAllCommand}" ToolTip="Show every press as one step."
+                                        AutomationProperties.Name="Collapse all presses" />
+                            </StackPanel>
                             <TextBlock Text="{Binding StepCountText}" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center"
                                        Foreground="{StaticResource MacroMutedBrush}" />
                         </DockPanel>
@@ -1023,7 +1053,7 @@
                                  VirtualizingPanel.VirtualizationMode="Recycling"
                                  SelectionChanged="StepList_SelectionChanged" PreviewKeyDown="StepList_PreviewKeyDown"
                                  AutomationProperties.Name="Ordered macro steps"
-                                 AutomationProperties.HelpText="Delete removes the selected step, Ctrl+D duplicates it, and Alt+Up or Alt+Down moves it." />
+                                 AutomationProperties.HelpText="Delete removes the selected step, Ctrl+D duplicates it, and Alt+Up or Alt+Down moves it. Right opens a press and Left closes it." />
                         <StackPanel MaxWidth="300" Margin="20" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
                             <StackPanel.Style>
                                 <Style TargetType="StackPanel">
@@ -1079,7 +1109,7 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
                                         Visibility="{Binding SelectedStep.HasKey, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
-                                <ctrl:KeyCaptureBox Width="150" Chord="{Binding SelectedPressKey, Converter={StaticResource KeyChord}, Mode=TwoWay}"
+                                <ctrl:KeyCaptureBox Width="134" Chord="{Binding SelectedPressKey, Converter={StaticResource KeyChord}, Mode=TwoWay}"
                                                     Validator="{x:Static vm:MacroViewModel.KeyValidator}" AcceptsEscape="True"
                                                     BoxStyle="{StaticResource MacroCaptureField}" ButtonStyle="{StaticResource MacroButton}"
                                                     AutomationName="Press key" />
@@ -1087,7 +1117,7 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8"
                                         Visibility="{Binding SelectedStep.HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />
-                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtonOptions}"
+                                <ComboBox Width="134" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtonOptions}"
                                           DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding SelectedPressMouseButton}"
                                           ItemContainerStyle="{StaticResource MacroComboItem}"
                                           BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
@@ -1106,17 +1136,19 @@
                             <TextBlock FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" Foreground="{StaticResource MacroMutedBrush}">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
-                                        <Setter Property="Text" Value="Key down, Wait, and Key up, shown as one press." />
+                                        <Setter Property="Text" Value="Key down, Wait and Key up, shown as one step." />
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding SelectedStep.HasMouseButton}" Value="True">
-                                                <Setter Property="Text" Value="Mouse down, Wait, and Mouse up at the current cursor position, shown as one press." />
+                                                <Setter Property="Text" Value="Mouse down, Wait and Mouse up where the cursor is. Add a Move before it to click somewhere specific." />
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
                                 </TextBlock.Style>
                             </TextBlock>
-                            <Button Content="Show all steps" Style="{StaticResource MacroLinkButton}" HorizontalAlignment="Left"
-                                    Command="{Binding ExpandSelectedStepCommand}" AutomationProperties.Name="Show all steps" />
+                            <!-- Opening hides this panel with the focused link, so the click moves focus to the group's Down row. -->
+                            <Button Content="Show the 3 steps" Style="{StaticResource MacroLinkButton}" HorizontalAlignment="Left"
+                                    Command="{Binding ExpandSelectedStepCommand}" Click="ShowPressSteps_Click"
+                                    AutomationProperties.Name="Expand press" />
                         </StackPanel>
 
                         <StackPanel DataContext="{Binding SelectedStep}">
@@ -1141,7 +1173,7 @@
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock Text="Action" Style="{StaticResource MacroFieldLabel}" />
-                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.ActionOptions}" DisplayMemberPath="Value"
+                                <ComboBox Width="134" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.ActionOptions}" DisplayMemberPath="Value"
                                           SelectedValuePath="Key" SelectedValue="{Binding ActionChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
                                           BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
                                           AutomationProperties.Name="Step action" />
@@ -1161,14 +1193,14 @@
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasKey, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
-                                <ctrl:KeyCaptureBox Width="150" Chord="{Binding Key, Converter={StaticResource KeyChord}, Mode=TwoWay}"
+                                <ctrl:KeyCaptureBox Width="134" Chord="{Binding Key, Converter={StaticResource KeyChord}, Mode=TwoWay}"
                                                     Validator="{x:Static vm:MacroViewModel.KeyValidator}" AcceptsEscape="True"
                                                     BoxStyle="{StaticResource MacroCaptureField}" ButtonStyle="{StaticResource MacroButton}"
                                                     AutomationName="Step key" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasMouseButton, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Button" Style="{StaticResource MacroFieldLabel}" />
-                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtonOptions}"
+                                <ComboBox Width="134" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.MouseButtonOptions}"
                                           DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding MouseButton}"
                                           ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
                                           FocusVisualStyle="{StaticResource MacroFocusRing}" AutomationProperties.Name="Step mouse button" />
@@ -1176,7 +1208,7 @@
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasSlot, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Saved position" Style="{StaticResource MacroFieldLabel}" TextWrapping="Wrap" />
-                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroStepViewModel.SlotOptions}"
+                                <ComboBox Width="134" MinHeight="30" ItemsSource="{x:Static vm:MacroStepViewModel.SlotOptions}"
                                           DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding Slot}"
                                           ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
                                           FocusVisualStyle="{StaticResource MacroFocusRing}" AutomationProperties.Name="Saved position number" />

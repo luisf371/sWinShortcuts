@@ -26,7 +26,7 @@ public sealed class MacroMovementTests
         using var releaseCursor = new ManualResetEventSlim(!duringMove);
         var sender = new RecordingInputSender();
         using var service = MacroPlaybackTests.Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.MouseClick, MouseButton = sWinShortcuts.Models.MouseButton.Left, X = 50, Y = 20, DurationMs = 30000 });
+            MacroPresses.Click(sWinShortcuts.Models.MouseButton.Left, 50, 20, 30000));
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { CancelOnMouseMovement = cancel }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
         var macros = (MacroStateMachine)typeof(InputHookService).GetField("_macros", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(service)!;
@@ -115,7 +115,7 @@ public sealed class MacroMovementTests
         var profile = new Profile { Name = "Game", Executable = "game.exe" };
         profile.Macros.IsEnabled = true;
         profile.Macros.Definitions = [new MacroDefinition { IsEnabled = true, ShortcutKey = Key.F6,
-            Steps = [new MacroStep { Kind = MacroStepKind.MouseClick, MouseButton = sWinShortcuts.Models.MouseButton.Left, X = 50, Y = 20 }] }];
+            Steps = MacroPresses.Click(sWinShortcuts.Models.MouseButton.Left, 50, 20) }];
         runtime.SetActiveProfile(profile, 1);
         runtime.SetForegroundIdentity((IntPtr)100, 42, "game.exe", 1);
         var sender = new RecordingInputSender();

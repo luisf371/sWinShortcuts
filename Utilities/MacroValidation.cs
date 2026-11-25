@@ -11,6 +11,8 @@ public static class MacroValidation
     public const int MaxSteps = 1_000;
     public const int MaxPositionSlots = 8;
     public const int MaxDurationMs = 3_600_000;
+    // A press's hold when none is set: long enough for games to register it.
+    public const int DefaultPressHoldMs = 50;
 
     public static string? GetFormatError(MacroSettings settings)
     {
@@ -171,6 +173,7 @@ public static class MacroValidation
         }
 
         var keysDown = new Dictionary<ushort, int>();
+        var keysReleased = new Dictionary<ushort, int>();
         var mouseDown = new Dictionary<Models.MouseButton, int>();
         var savedSlots = 0;
         for (var index = 0; index < macro.Steps.Length; index++)
@@ -191,20 +194,23 @@ public static class MacroValidation
                     keysDown.TryAdd(KeyInteropUtilities.ToVirtualKey(step.Key), index);
                     break;
                 case MacroStepKind.KeyUp:
-                    if (!keysDown.Remove(KeyInteropUtilities.ToVirtualKey(step.Key)))
+                    var upKey = KeyInteropUtilities.ToVirtualKey(step.Key);
+                    if (!keysDown.Remove(upKey))
                     {
-                        return $"Step {index + 1}: a Key up must follow a matching Key down.";
+                        // A press added inside a hold of the same key releases it early; name that release.
+                        var released = keysReleased.TryGetValue(upKey, out var earlier)
+                            ? $" Step {earlier + 1} already released {Converters.KeyDisplayConverter.ToDisplayText(step.Key)}."
+                            : string.Empty;
+                        return $"Step {index + 1}: a Key up must follow a matching Key down.{released}";
                     }
+                    keysReleased[upKey] = index;
                     break;
                 case MacroStepKind.KeyPress:
-                    if (keysDown.ContainsKey(KeyInteropUtilities.ToVirtualKey(step.Key)))
-                    {
-                        return $"Step {index + 1}: a key press cannot target a key already held by this macro.";
-                    }
-                    break;
+                    return $"Step {index + 1}: replace this old Key press step.";
+                case MacroStepKind.MouseClick:
+                    return $"Step {index + 1}: replace this old Mouse click step.";
                 case MacroStepKind.MouseDown:
                 case MacroStepKind.MouseUp:
-                case MacroStepKind.MouseClick:
                     var button = step.MouseButton.GetValueOrDefault();
                     if (step.Kind == MacroStepKind.MouseUp)
                     {

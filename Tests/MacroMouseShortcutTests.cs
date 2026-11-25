@@ -74,7 +74,7 @@ public sealed class MacroMouseShortcutTests
         var profile = new Profile { Name = "Game", Executable = "game.exe" };
         profile.Macros.IsEnabled = true;
         profile.Macros.Definitions = [new MacroDefinition { IsEnabled = true,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }] }];
+            Steps = [.. MacroPresses.Press(Key.A)] }];
         service.ConfigureActiveProfileForTesting(profile, 1, false);
         Configure(service, profile, MouseButton.Right);
         service.SetRightButtonObservation(true);
@@ -183,7 +183,7 @@ public sealed class MacroMouseShortcutTests
         var profile = new Profile { Name = "Game", Executable = "game.exe" };
         profile.Macros.IsEnabled = true;
         profile.Macros.Definitions = [new MacroDefinition { IsEnabled = true,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }] }];
+            Steps = [.. MacroPresses.Press(Key.A)] }];
         service.ConfigureActiveProfileForTesting(profile, 1, false);
         Configure(service, profile, MouseButton.Right);
         var observed = new List<bool>();
@@ -266,12 +266,12 @@ public sealed class MacroMouseShortcutTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         Configure(service, profile, MouseButton.Middle, ModifierKeys.Control | ModifierKeys.Alt, true);
         profile.Macros.Definitions = [profile.Macros.Definitions[0], new MacroDefinition
         {
             IsEnabled = true, ShortcutKey = Key.F7,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.B }]
+            Steps = [.. MacroPresses.Press(Key.B)]
         }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
         Modifiers(service, true);
@@ -300,7 +300,7 @@ public sealed class MacroMouseShortcutTests
         profile.Macros.Definitions = [profile.Macros.Definitions[0], new MacroDefinition
         {
             IsEnabled = true, ShortcutMouseButton = MouseButton.Middle,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.B }]
+            Steps = [.. MacroPresses.Press(Key.B)]
         }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
         Press(service, 0x75);
@@ -317,7 +317,7 @@ public sealed class MacroMouseShortcutTests
     [Fact]
     public void AltKeyboardConflict_ReportsAltShortcutBindingOnlyWhileBound()
     {
-        using var service = Create(new RecordingInputSender(), out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(new RecordingInputSender(), out var profile, MacroPresses.Press(Key.A));
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = Key.Q, ShortcutModifiers = ModifierKeys.Alt }];
         profile.AltKeyboard.IsEnabled = true;
         profile.AltKeyboard.Bindings = new() { [Key.Q] = new AltKeyboardBinding { HoldKey = Key.B } };
@@ -332,7 +332,7 @@ public sealed class MacroMouseShortcutTests
     public void AltMouseConflict_KeepsOriginalBindingAndExcludesMacro()
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(sender, out var profile, MacroPresses.Press(Key.A));
         profile.AltMouse.IsEnabled = true;
         profile.AltMouse.Bindings[MouseButton.Middle] = new MouseButtonBinding { TapKey = Key.B };
         Configure(service, profile, MouseButton.Middle, ModifierKeys.Control | ModifierKeys.Alt);
@@ -351,7 +351,7 @@ public sealed class MacroMouseShortcutTests
     public void Recovery_ConsumedMousePair_RetainsHeldPairAndClearsMissedRelease(bool swapped)
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(sender, out var profile, MacroPresses.Press(Key.A));
         Configure(service, profile, MouseButton.Left);
         Assert.True(Button(service, MouseButton.Left, true));
         service.CancelMacroPlayback(profile);
@@ -371,7 +371,7 @@ public sealed class MacroMouseShortcutTests
     public void MouseCallback_ReplacementAfterCancellation_StillConsumesActivationUp()
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(sender, out var profile, MacroPresses.Press(Key.A));
         Configure(service, profile, MouseButton.Middle);
         Assert.True(Button(service, MouseButton.Middle, true));
         service.CancelMacroPlayback(profile);

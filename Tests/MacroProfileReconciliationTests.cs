@@ -14,7 +14,7 @@ public sealed class MacroProfileReconciliationTests
     {
         var sender = new RecordingInputSender();
         using var service = MacroPlaybackTests.Create(sender, out var active,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+            MacroPresses.Press(Key.A));
         var removed = new Profile { Name = "Other", Executable = "other.exe" };
 
         // Removal queues a foreground republish before reconciliation; its worker can settle

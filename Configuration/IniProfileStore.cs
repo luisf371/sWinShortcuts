@@ -335,6 +335,57 @@ public sealed class IniProfileStore : IProfileStore
         return settings;
     }
 
+    // Old one-step Key press and Mouse click steps become Down, Wait, Up (a click gets a Move to its position first).
+    // The macro keeps its old steps, which then block playback, when the result would exceed the step limit or a Key
+    // press targets a key an earlier Key down still holds: converting would make that unplayable macro playable.
+    internal static MacroStep[] ExpandCompactPresses(MacroStep[] steps)
+    {
+        var length = steps.Length;
+        foreach (var step in steps)
+        {
+            if (step.Kind == MacroStepKind.KeyPress) length += 2;
+            else if (step.Kind == MacroStepKind.MouseClick) length += 3;
+        }
+        if (length == steps.Length || length > MacroValidation.MaxSteps) return steps;
+
+        var heldKeys = new HashSet<ushort>();
+        foreach (var step in steps)
+        {
+            var key = KeyInteropUtilities.ToVirtualKey(step.Key);
+            if (step.Kind == MacroStepKind.KeyDown) heldKeys.Add(key);
+            else if (step.Kind == MacroStepKind.KeyUp) heldKeys.Remove(key);
+            else if (step.Kind == MacroStepKind.KeyPress && heldKeys.Contains(key)) return steps;
+        }
+
+        var result = new List<MacroStep>(length);
+        foreach (var step in steps)
+        {
+            var hold = new MacroStep
+            {
+                Kind = MacroStepKind.Wait,
+                DurationMs = step.DurationMs == 0 ? MacroValidation.DefaultPressHoldMs : step.DurationMs
+            };
+            if (step.Kind == MacroStepKind.KeyPress)
+            {
+                result.Add(new MacroStep { Kind = MacroStepKind.KeyDown, Key = step.Key });
+                result.Add(hold);
+                result.Add(new MacroStep { Kind = MacroStepKind.KeyUp, Key = step.Key });
+            }
+            else if (step.Kind == MacroStepKind.MouseClick)
+            {
+                result.Add(new MacroStep { Kind = MacroStepKind.MoveTo, X = step.X, Y = step.Y, HeldButtons = MacroHeldButtonPolicy.Stop });
+                result.Add(new MacroStep { Kind = MacroStepKind.MouseDown, MouseButton = step.MouseButton });
+                result.Add(hold);
+                result.Add(new MacroStep { Kind = MacroStepKind.MouseUp, MouseButton = step.MouseButton });
+            }
+            else
+            {
+                result.Add(step);
+            }
+        }
+        return result.ToArray();
+    }
+
     // One [MacroN] section and its steps. Without identity (share codes) the definition keeps the record defaults:
     // a new Id, off, and no shortcut.
     internal static MacroDefinition ReadMacroDefinition(IniDocument document, string section, HashSet<string> indexedSections,
@@ -363,6 +414,13 @@ public sealed class IniProfileStore : IProfileStore
             CancelOnMouseMovement = ReadMacroBoolean(document, section, "CancelOnMouseMovement", false),
             Steps = steps
         };
+        // Before the identity early return, so share-code import converts too. An invalid definition keeps its
+        // steps so the load error names the step number as written.
+        if (MacroValidation.GetFormatError(macro) is null)
+        {
+            macro = macro with { Steps = ExpandCompactPresses(steps) };
+        }
+
         if (!includeIdentity)
         {
             return macro;
