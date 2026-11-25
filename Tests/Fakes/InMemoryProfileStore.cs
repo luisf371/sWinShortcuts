@@ -31,6 +31,8 @@ public sealed class InMemoryProfileStore : IProfileStore
     public TaskCompletionSource? SaveEntered { get; set; }
     public Action? Saving { get; set; }
 
+    public IReadOnlyList<string> SkippedProfileFiles => [];
+
     public Task<IReadOnlyList<Profile>> LoadProfilesAsync(CancellationToken cancellationToken)
     {
         return Task.FromResult<IReadOnlyList<Profile>>(_profiles.ToList());

@@ -105,6 +105,8 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
     public ReadOnlyObservableCollection<ProfileViewModel> Profiles { get; }
 
+    public IReadOnlyList<string> SkippedProfileFiles => _profileManager.SkippedProfileFiles;
+
     public IReadOnlyList<CapsLockMode> CapsLockModes => _capsLockModes;
 
     public IReadOnlyList<HoldBreathMode> HoldBreathModes => _holdBreathModes;
@@ -697,6 +699,25 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         var pending = _pendingMacroRecording;
         if (requestStop && !pending.IsCompleted) _inputHookService?.StopMacroRecording();
         await pending.ConfigureAwait(false);
+    }
+
+    // A macro with an invalid field saves only its last valid version, so Exit would drop the newer edits.
+    public (ProfileViewModel Profile, MacroViewModel Macro)? FindInvalidMacroDraft()
+    {
+        foreach (var profile in _profiles)
+        {
+            if (profile.Macros.Definitions.FirstOrDefault(macro => macro.HasFormatError) is { } macro)
+                return (profile, macro);
+        }
+        return null;
+    }
+
+    public void ShowInvalidMacroDraft(ProfileViewModel profile, MacroViewModel macro)
+    {
+        SelectedProfile = profile;
+        SelectedTabIndex = TabIndexMacros;
+        profile.Macros.SelectedMacro = macro;
+        if (macro.ShowProblemStepCommand.CanExecute(null)) macro.ShowProblemStepCommand.Execute(null);
     }
 
     public Task<int> PrepareForCloseAsync()

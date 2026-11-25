@@ -18,13 +18,13 @@ public sealed class MacroPlaybackTests
     {
         var sender = new RecordingInputSender(failFirstDown: true);
         using var service = Create(sender, out _,
-            new MacroStep { Kind = MacroStepKind.Wait },
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+            [new MacroStep { Kind = MacroStepKind.Wait },
+            .. MacroPresses.Press(Key.A)]);
 
         Press(service, 0x75);
         WaitUntil(() => service.GetMacroSession() is { SessionId: 1, Mode: MacroSessionMode.Idle });
 
-        Assert.Equal("Step 2/2 (KeyPress): Macro input was refused or could not be inserted.",
+        Assert.Equal("Step 2/4 (KeyDown): Macro input was refused or could not be inserted.",
             service.GetMacroSession().FailureReason);
     }
 
@@ -86,7 +86,7 @@ public sealed class MacroPlaybackTests
     public void Shortcut_ConsumedAlt_DoesNotActivateAltMouse(Key alt)
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(sender, out var profile, MacroPresses.Press(Key.A));
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = alt }];
         profile.AltMouse.IsEnabled = true;
         profile.AltMouse.Bindings[MouseButton.Left] = new MouseButtonBinding { TapKey = Key.B };
@@ -107,9 +107,9 @@ public sealed class MacroPlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out _,
-            new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.LeftCtrl },
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.S },
-            new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.LeftCtrl });
+            [new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.LeftCtrl },
+            .. MacroPresses.Press(Key.S),
+            new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.LeftCtrl }]);
         var downCount = 0;
         sender.KeyResult = (key, down, _) =>
         {
@@ -143,9 +143,9 @@ public sealed class MacroPlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A },
+            [.. MacroPresses.Press(Key.A),
             new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 250 },
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.F6 });
+            .. MacroPresses.Press(Key.F6)]);
         if (control)
         {
             profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutModifiers = ModifierKeys.Control }];
@@ -210,10 +210,10 @@ public sealed class MacroPlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.A },
+            [new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.A },
             new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 150 },
             new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.A },
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.B });
+            .. MacroPresses.Press(Key.B)]);
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutModifiers = ModifierKeys.Control }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
@@ -236,10 +236,10 @@ public sealed class MacroPlaybackTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out _,
-            new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.LeftCtrl },
+            [new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.LeftCtrl },
             new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 150 },
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.S },
-            new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.LeftCtrl });
+            .. MacroPresses.Press(Key.S),
+            new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.LeftCtrl }]);
         Press(service, 0x75);
         WaitUntil(() => sender.Transitions.Any(x => x.Key == Key.LeftCtrl && x.IsDown));
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
@@ -270,7 +270,7 @@ public sealed class MacroPlaybackTests
     public void Shortcut_ToggleReassignmentAndRollback_UpdatesActivationAndConflict()
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(sender, out var profile, MacroPresses.Press(Key.A));
         var id = profile.Macros.Definitions[0].Id;
         service.SetColorToggleKey(Key.F6);
         Assert.NotNull(service.GetMacroShortcutError(profile, id));
@@ -287,7 +287,7 @@ public sealed class MacroPlaybackTests
     public void Shortcut_CtrlAltShiftWin_FiresOnlyWithAllFourModifiers()
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(sender, out var profile, MacroPresses.Press(Key.A));
         const ModifierKeys all = ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Shift | ModifierKeys.Windows;
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutModifiers = all }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
@@ -312,7 +312,7 @@ public sealed class MacroPlaybackTests
     public void Shortcut_SidedCtrl_FiresOnlyWithThatSide(bool rightCtrl)
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out var profile, new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+        using var service = Create(sender, out var profile, MacroPresses.Press(Key.A));
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with
         {
             ShortcutModifiers = ModifierKeys.Control,

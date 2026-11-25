@@ -61,8 +61,8 @@ public sealed class MacroSavedPositionTests
     public void MoveToSaved_PointNoLongerOnAMonitor_FailsLikeMoveTo()
     {
         var sender = new RecordingInputSender();
-        using var service = MacroPlaybackTests.Create(sender, out _, Save(1), Move(60, 50),
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }, Return(1));
+        using var service = MacroPlaybackTests.Create(sender, out _, [Save(1), Move(60, 50),
+            .. MacroPresses.Press(Key.A), Return(1)]);
         MacroMoveCursorByTests.FakeDesktop(service, sender);
         var monitorRemoved = false;
         sender.KeyResult = (_, _, _) => monitorRemoved = true;

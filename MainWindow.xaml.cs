@@ -121,10 +121,16 @@ public partial class MainWindow : Window
         // the window + tray are up — the file is preserved and edits to it won't persist until it can be
         // read again. Genuine init defects are intentionally NOT caught here (codex #6): they should surface
         // via the crash handler rather than be masked while hooks/tray keep running.
+        var loadWarnings = new List<string>();
         if (_viewModel.Profiles.Any(p => p.Model.IsPersistenceSuspended))
+            loadWarnings.Add("A profile settings file could not be read. Its existing file was left untouched and the affected profile is read-only. See the profile's loading warning; correct the file and restart to enable editing.");
+        if (_viewModel.SkippedProfileFiles is { Count: > 0 } skipped)
+            loadWarnings.Add("These profile files could not be loaded and were left untouched:\n" + string.Join("\n", skipped) +
+                "\nClose any program that is using them, then restart sWinShortcuts.");
+        if (loadWarnings.Count > 0)
         {
             System.Windows.MessageBox.Show(this,
-                "A profile settings file could not be read. Its existing file was left untouched and the affected profile is read-only. See the profile's loading warning; correct the file and restart to enable editing.",
+                string.Join("\n\n", loadWarnings),
                 "sWinShortcuts",
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Warning);
@@ -569,6 +575,22 @@ public partial class MainWindow : Window
 
     private async Task ExitCoreAsync()
     {
+        if (_viewModel.FindInvalidMacroDraft() is (var profile, var macro))
+        {
+            RestoreFromTray();
+            var choice = System.Windows.MessageBox.Show(this,
+                $"The macro \"{macro.Label}\" in \"{profile.Name}\" has a field that isn't valid. Its changes since it was last valid will be lost.\n\nExit anyway?",
+                "Unsaved macro changes",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning,
+                System.Windows.MessageBoxResult.No);
+            if (choice != System.Windows.MessageBoxResult.Yes)
+            {
+                _viewModel.ShowInvalidMacroDraft(profile, macro);
+                return;
+            }
+        }
+
         try
         {
             var unsaved = await _viewModel.PrepareForCloseAsync();

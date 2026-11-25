@@ -158,4 +158,22 @@ public sealed class MacroShareTests
         Assert.Equal("Different screen layout", notice.Title);
         Assert.Contains("1 screen position is outside your screens", notice.Message);
     }
+
+    [Fact]
+    public void ImportMacro_SameLayoutWithOffScreenPosition_Warns()
+    {
+        using var editor = Create();
+        _clipboard = MacroShareCode.Export(new MacroDefinition
+        {
+            Label = "Click",
+            Steps = [new() { Kind = MacroStepKind.MouseClick, MouseButton = sWinShortcuts.Models.MouseButton.Left, X = 2000, Y = 10 }]
+        }, Desktop);
+
+        editor.ImportMacroCommand.Execute(null);
+
+        Assert.Single(editor.Definitions);
+        var notice = Assert.Single(_notices);
+        Assert.Equal("Screen position outside your screens", notice.Title);
+        Assert.Contains("1 screen position is outside your screens", notice.Message);
+    }
 }

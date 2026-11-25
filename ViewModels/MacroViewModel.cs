@@ -19,8 +19,6 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
 {
     // New Wait steps start as a visible pause; 0 would add a row that does nothing.
     internal const int DEFAULT_WAIT_MS = 100;
-    // The wait-time editor suggests this press hold: long enough for games to register a press.
-    private const int SUGGESTED_PRESS_HOLD_MS = 50;
     private MacroDefinition _definition;
     private MacroDefinition _lastRepresentable;
     private readonly Func<bool> _canEdit;
@@ -38,7 +36,10 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     private int? _problemStepNumber;
     private bool _hasFormatError;
     private bool _batchChangingSteps;
-    private bool _collapseSteps = true;
+    // Open press groups, keyed by their Down row, so a group that breaks and re-forms finds its state again.
+    private readonly HashSet<MacroStepViewModel> _openPresses = [];
+    private int _openPressCount;
+    private int _closedPressCount;
     private bool _refreshingVisibleSteps;
     private bool _isWaitEditorOpen;
     private string _waitDurationText = string.Empty;
@@ -57,8 +58,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         RenumberSteps();
         // New steps and takes append by default; selecting a row inserts after it instead.
         _selectedStep = Steps.LastOrDefault();
-        InsertStepCommand = new RelayCommand(InsertStep, () => CanAddStep);
-        AddStepCommand = new RelayCommand<MacroStepKind>(AddStep, _ => CanAddStep);
+        InsertStepCommand = new RelayCommand(InsertStep, () => CanAddStepOf(MacroStepKind.KeyPress));
+        AddStepCommand = new RelayCommand<MacroStepKind>(AddStep, CanAddStepOf);
         DuplicateStepCommand = new RelayCommand(DuplicateStep, () => CanEdit && SelectedStep is not null && Steps.Count + SelectedStep.SourceStepCount <= MacroValidation.MaxSteps);
         DeleteStepCommand = new RelayCommand(DeleteStep, () => CanEdit && SelectedStep is not null);
         MoveStepUpCommand = new RelayCommand(() => MoveStep(-1), () => CanEdit && SelectedIndex > 0);
@@ -69,7 +70,18 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         // A running AsyncRelayCommand reports CanExecute false, so Cancel needs its own command.
         CancelCoordinatePickCommand = new RelayCommand(CancelCoordinatePick, () => _coordinatePick is not null);
         ShowProblemStepCommand = new RelayCommand(ShowProblemStep, () => CanEdit && ProblemStepNumber <= Steps.Count);
-        ExpandSelectedStepCommand = new RelayCommand(() => CollapseSteps = false, () => CanEdit && SelectedStep?.IsCollapsedPress == true);
+        ExpandSelectedStepCommand = new RelayCommand(() => ChangeOpenPresses(open => open.Add(SelectedStep!)),
+            () => CanEdit && SelectedStep?.IsCollapsedPress == true);
+        CollapseSelectedStepCommand = new RelayCommand(() => ChangeOpenPresses(open => open.Remove(OpenPressHead(SelectedStep)!)),
+            () => CanEdit && OpenPressHead(SelectedStep) is not null);
+        TogglePressGroupCommand = new RelayCommand<MacroStepViewModel>(
+            row => ChangeOpenPresses(open => { if (!open.Add(row!)) open.Remove(row!); }),
+            row => CanEdit && row?.PressGroupPart is MacroPressGroupPart.ClosedHead or MacroPressGroupPart.OpenHead);
+        ExpandAllCommand = new RelayCommand(
+            () => ChangeOpenPresses(open => open.UnionWith(Steps.Where(row => row.PressGroupPart == MacroPressGroupPart.ClosedHead))),
+            () => CanEdit && _closedPressCount > 0);
+        // Forgets every open state, including groups that are broken right now.
+        CollapseAllCommand = new RelayCommand(() => ChangeOpenPresses(open => open.Clear()), () => CanEdit && _openPressCount > 0);
         ShowWaitEditorCommand = new RelayCommand(ShowWaitEditor, () => CanEdit && WaitTargetCount(MacroWaitScope.AllWaits) > 0);
         CloseWaitEditorCommand = new RelayCommand(CloseWaitEditor, () => IsWaitEditorOpen);
         ApplyWaitTimesCommand = new RelayCommand(ApplyWaitTimes, CanApplyWaitTimes);
@@ -123,21 +135,6 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public static Func<KeyChord, string?> KeyValidator { get; } = KeyBindingRules.MacroKey;
     public ReadOnlyObservableCollection<MacroStepViewModel> Steps => _steps;
     public IReadOnlyList<MacroStepViewModel> VisibleSteps => _visibleSteps;
-    public bool CollapseSteps
-    {
-        get => _collapseSteps;
-        set
-        {
-            if (!CanEdit || !SetProperty(ref _collapseSteps, value)) return;
-            OnPropertyChanged(nameof(ShowPresses));
-            OnPropertyChanged(nameof(ShowAllSteps));
-            RefreshVisibleSteps();
-            RefreshCommands();
-        }
-    }
-    // The list's view switch: a press as one row, or every step. The radio being cleared writes false, which is ignored.
-    public bool ShowPresses { get => CollapseSteps; set { if (value) CollapseSteps = true; } }
-    public bool ShowAllSteps { get => !CollapseSteps; set { if (value) CollapseSteps = false; } }
     public int WaitStepCount => Steps.Count(step => step.Kind == MacroStepKind.Wait);
     // How long each key or button is held: the Wait inside a press plus every Key press and Mouse click hold.
     public int PressHoldCount => _holdWaitCount + _compactHoldCount;
@@ -273,6 +270,10 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public bool IsCapturingCoordinates => _coordinatePick is not null;
     public IRelayCommand ShowProblemStepCommand { get; }
     public IRelayCommand ExpandSelectedStepCommand { get; }
+    public IRelayCommand CollapseSelectedStepCommand { get; }
+    public IRelayCommand<MacroStepViewModel> TogglePressGroupCommand { get; }
+    public IRelayCommand ExpandAllCommand { get; }
+    public IRelayCommand CollapseAllCommand { get; }
     public IRelayCommand ShowWaitEditorCommand { get; }
     public IRelayCommand CloseWaitEditorCommand { get; }
     public IRelayCommand ApplyWaitTimesCommand { get; }
@@ -281,13 +282,12 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         MouseButtons.Select(button => new KeyValuePair<MouseButton, string>(button, MacroStepViewModel.ButtonName(button))).ToArray();
     public static IReadOnlyList<KeyValuePair<MacroStepKind, string>> ActionOptions { get; } =
     [
-        new(MacroStepKind.KeyPress, "Key press"), new(MacroStepKind.KeyDown, "Key down"), new(MacroStepKind.KeyUp, "Key up"),
-        new(MacroStepKind.MouseClick, "Mouse click"), new(MacroStepKind.MouseDown, "Mouse down"),
-        new(MacroStepKind.MouseUp, "Mouse up"), new(MacroStepKind.MoveTo, "Move"),
-        new(MacroStepKind.SavePosition, "Save position"),
+        // Single Down and Up steps live here; Add step inserts them as Key press and Mouse click groups.
+        new(MacroStepKind.KeyDown, "Key down"), new(MacroStepKind.KeyUp, "Key up"),
+        new(MacroStepKind.MouseDown, "Mouse down"), new(MacroStepKind.MouseUp, "Mouse up"),
+        new(MacroStepKind.MoveTo, "Move"), new(MacroStepKind.SavePosition, "Save position"),
         new(MacroStepKind.MouseWheel, "Mouse wheel"),
         new(MacroStepKind.FreezeMouse, "Freeze mouse"), new(MacroStepKind.UnfreezeMouse, "Unfreeze mouse"),
-        // Same order as the Add step menu.
         new(MacroStepKind.Wait, "Wait")
     ];
 
@@ -415,7 +415,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         // without touching the pauses that give the macro its rhythm.
         _waitScope = PressHoldCount > 0 ? MacroWaitScope.PressHolds : MacroWaitScope.BetweenSteps;
         _waitDurationText = _waitScope == MacroWaitScope.PressHolds
-            ? SUGGESTED_PRESS_HOLD_MS.ToString(CultureInfo.InvariantCulture) : string.Empty;
+            ? MacroValidation.DefaultPressHoldMs.ToString(CultureInfo.InvariantCulture) : string.Empty;
         SetProperty(ref _isWaitEditorOpen, true, nameof(IsWaitEditorOpen));
         NotifyWaitScope();
         OnPropertyChanged(nameof(WaitDurationText));
@@ -514,13 +514,28 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             if (changed) PublishChange();
         }
     }
+    // Key press and Mouse click insert a Down, Wait, Up group; every other kind is one row.
+    private bool CanAddStepOf(MacroStepKind kind) => CanEdit && Enum.IsDefined(kind) &&
+        Steps.Count + (kind is MacroStepKind.KeyPress or MacroStepKind.MouseClick ? 3 : 1) <= MacroValidation.MaxSteps;
+
     private void AddStep(MacroStepKind kind)
     {
-        if (!CanAddStep || !Enum.IsDefined(kind)) return;
+        if (!CanAddStepOf(kind)) return;
         var index = RecordingInsertionIndex;
         var step = new MacroStep { Kind = kind, Key = Key.A, MouseButton = MouseButton.Left, WheelDelta = 120 };
+        var hold = step with { Kind = MacroStepKind.Wait, DurationMs = MacroValidation.DefaultPressHoldMs };
+        if (kind == MacroStepKind.KeyPress)
+        {
+            InsertRecording(index, [step with { Kind = MacroStepKind.KeyDown }, hold, step with { Kind = MacroStepKind.KeyUp }]);
+            return;
+        }
+        if (kind == MacroStepKind.MouseClick)
+        {
+            InsertRecording(index, [step with { Kind = MacroStepKind.MouseDown }, hold, step with { Kind = MacroStepKind.MouseUp }]);
+            return;
+        }
         if (kind == MacroStepKind.Wait) step = step with { DurationMs = DEFAULT_WAIT_MS };
-        else if (kind is MacroStepKind.MoveTo or MacroStepKind.MouseClick && FindPositionBefore(index) is { } position)
+        else if (kind == MacroStepKind.MoveTo && FindPositionBefore(index) is { } position)
             step = step with { X = position.X, Y = position.Y };
         else if (kind == MacroStepKind.SavePosition)
         {
@@ -612,6 +627,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             step.Changed += OnStepChanged;
         }
         _steps = new(new(rows));
+        // Removed rows leave the open set; rows still present keep their state even when not a group head now.
+        _openPresses.IntersectWith(rows);
         RenumberSteps();
         _selectedStep = selectedIndex >= 0 ? Steps[selectedIndex] : null;
         OnPropertyChanged(nameof(Steps));
@@ -633,9 +650,9 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         return step;
     }
 
-    private bool CanCollapseTriplet(int index, HashSet<ushort> heldKeys, HashSet<MouseButton> heldButtons)
+    private bool IsPressGroup(int index, HashSet<ushort> heldKeys, HashSet<MouseButton> heldButtons)
     {
-        if (!CollapseSteps || index + 2 >= Steps.Count ||
+        if (index + 2 >= Steps.Count ||
             (ProblemStepNumber is int problem && (problem == index + 1 || problem == index + 3))) return false;
         var down = Steps[index];
         var wait = Steps[index + 1];
@@ -711,12 +728,32 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         {
             RefreshPressHolds();
             var visible = new List<MacroStepViewModel>(Steps.Count);
+            var parts = new MacroPressGroupPart[Steps.Count];
             HashSet<ushort> heldKeys = [];
             HashSet<MouseButton> heldButtons = [];
+            _openPressCount = 0;
+            _closedPressCount = 0;
             for (var i = 0; i < Steps.Count; i++)
             {
                 var row = Steps[i];
-                var wait = CanCollapseTriplet(i, heldKeys, heldButtons) ? Steps[i + 1] : null;
+                MacroStepViewModel? wait = null;
+                if (IsPressGroup(i, heldKeys, heldButtons))
+                {
+                    if (_openPresses.Contains(row))
+                    {
+                        // An open group's rows are visited one by one below, so held-key tracking matches a closed one.
+                        parts[i] = MacroPressGroupPart.OpenHead;
+                        parts[i + 1] = MacroPressGroupPart.OpenMiddle;
+                        parts[i + 2] = MacroPressGroupPart.OpenLast;
+                        _openPressCount++;
+                    }
+                    else
+                    {
+                        parts[i] = MacroPressGroupPart.ClosedHead;
+                        wait = Steps[i + 1];
+                        _closedPressCount++;
+                    }
+                }
                 row.SetCollapsedWait(wait);
                 visible.Add(row);
                 if (wait is null)
@@ -734,6 +771,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
                 Steps[++i].SetCollapsedWait(null);
                 Steps[++i].SetCollapsedWait(null);
             }
+            for (var i = 0; i < Steps.Count; i++) Steps[i].SetPressGroupPart(parts[i]);
             var changed = !_visibleSteps.SequenceEqual(visible);
             if (changed)
             {
@@ -776,7 +814,29 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         OnPropertyChanged(nameof(IsCapturingCoordinates));
         ShowProblemStepCommand.NotifyCanExecuteChanged();
         ExpandSelectedStepCommand.NotifyCanExecuteChanged();
+        CollapseSelectedStepCommand.NotifyCanExecuteChanged();
+        TogglePressGroupCommand.NotifyCanExecuteChanged();
+        ExpandAllCommand.NotifyCanExecuteChanged();
+        CollapseAllCommand.NotifyCanExecuteChanged();
         NotifyWaitEditor();
+    }
+
+    // The Down row of the open group that holds this row (its Down, Wait or Up), or null.
+    private MacroStepViewModel? OpenPressHead(MacroStepViewModel? row) => row?.PressGroupPart switch
+    {
+        MacroPressGroupPart.OpenHead => row,
+        MacroPressGroupPart.OpenMiddle => Steps[row.Number - 2],
+        MacroPressGroupPart.OpenLast => Steps[row.Number - 3],
+        _ => null
+    };
+
+    // Opening or closing changes the selected row's step count outside the SelectedStep setter, so commands refresh too.
+    private void ChangeOpenPresses(Action<HashSet<MacroStepViewModel>> change)
+    {
+        if (!CanEdit) return;
+        change(_openPresses);
+        RefreshVisibleSteps();
+        RefreshCommands();
     }
 
     private async Task PickCoordinatesAsync()

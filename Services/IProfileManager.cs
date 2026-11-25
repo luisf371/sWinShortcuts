@@ -12,6 +12,8 @@ public interface IProfileManager
 
     Profile WindowsProfile { get; }
 
+    IReadOnlyList<string> SkippedProfileFiles { get; }
+
     event EventHandler<Profile>? ProfileAdded;
 
     event EventHandler<Profile>? ProfileRemoved;

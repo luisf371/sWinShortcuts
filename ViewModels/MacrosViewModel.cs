@@ -294,6 +294,14 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
             Notify(new MacroNotice("Different screen layout",
                 $"\"{macro.Label}\" was made on a different screen layout and keeps its screen positions. {positions}", IsWarning: true));
         }
+        else if (result.OffScreenPositions > 0)
+        {
+            var positions = result.OffScreenPositions == 1
+                ? "1 screen position is outside your screens"
+                : $"{result.OffScreenPositions.ToString(CultureInfo.InvariantCulture)} screen positions are outside your screens";
+            Notify(new MacroNotice("Screen position outside your screens",
+                $"In \"{macro.Label}\", {positions}; change it before you play the macro.", IsWarning: true));
+        }
     }
 
     private static readonly MacroNotice ClipboardBusyNotice = new("Clipboard busy",

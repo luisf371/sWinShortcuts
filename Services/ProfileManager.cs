@@ -32,6 +32,8 @@ public sealed class ProfileManager(IProfileStore store) : IProfileManager
 
     public Profile WindowsProfile => _snapshot.First(p => p.IsWindowsProfile);
 
+    public IReadOnlyList<string> SkippedProfileFiles => _store.SkippedProfileFiles;
+
     // Must be called while holding _gate.
     private void RebuildSnapshot() => _snapshot = _profiles.ToArray();
 

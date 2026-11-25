@@ -161,8 +161,13 @@ public partial class MacrosView : UserControl
         (Key.D, ModifierKeys.Control) => macro.DuplicateStepCommand,
         (Key.Up, ModifierKeys.Alt) => macro.MoveStepUpCommand,
         (Key.Down, ModifierKeys.Alt) => macro.MoveStepDownCommand,
+        // Only when they can run, so Left and Right keep their default behavior on other rows.
+        (Key.Right, ModifierKeys.None) when macro.ExpandSelectedStepCommand.CanExecute(null) => macro.ExpandSelectedStepCommand,
+        (Key.Left, ModifierKeys.None) when macro.CollapseSelectedStepCommand.CanExecute(null) => macro.CollapseSelectedStepCommand,
         _ => null
     };
+
+    private void ShowPressSteps_Click(object sender, RoutedEventArgs e) => FocusSelectedStep(StepList);
 
     private static void FocusSelectedStep(ListBox list)
     {

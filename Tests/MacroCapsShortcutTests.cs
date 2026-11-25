@@ -17,7 +17,7 @@ public sealed class MacroCapsShortcutTests
     {
         var sender = new RecordingInputSender();
         using var service = MacroPlaybackTests.Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+            MacroPresses.Press(Key.A));
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = Key.CapsLock }];
         // An enabled custom Normal/unremapped setting still falls back to a global override.
         profile.CapsLock.IsEnabled = customCapsEnabled;
@@ -46,7 +46,7 @@ public sealed class MacroCapsShortcutTests
     {
         var sender = new RecordingInputSender();
         using var service = MacroPlaybackTests.Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A });
+            MacroPresses.Press(Key.A));
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = Key.CapsLock }];
         profile.CapsLock.IsEnabled = true;
         var windows = CreateWindowsCapsProfile();

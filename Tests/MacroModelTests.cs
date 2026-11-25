@@ -2,6 +2,7 @@ using System.Windows.Input;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
 using sWinShortcuts.Utilities;
+using Tests.Fakes;
 using Xunit;
 using AppMouseButton = sWinShortcuts.Models.MouseButton;
 
@@ -19,7 +20,7 @@ public sealed class MacroModelTests
         var macro = new MacroDefinition
         {
             ShortcutKey = key, ShortcutModifiers = modifier,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }]
+            Steps = MacroPresses.Press(Key.A)
         };
         Assert.Null(MacroValidation.GetFormatError(macro));
         Assert.Contains("modifiers", MacroValidation.GetPlaybackError(macro));
@@ -114,29 +115,54 @@ public sealed class MacroModelTests
     }
 
     [Fact]
-    public void GetPlaybackError_TapAlreadyHeldKey_IsNotPlayable()
+    public void GetPlaybackError_OldKeyPress_AsksToReplace()
     {
         var macro = Assigned(
-            new() { Kind = MacroStepKind.KeyDown, Key = Key.C },
-            new() { Kind = MacroStepKind.KeyPress, Key = Key.C },
-            new() { Kind = MacroStepKind.KeyUp, Key = Key.C });
+            new() { Kind = MacroStepKind.Wait, DurationMs = 5 },
+            new() { Kind = MacroStepKind.KeyPress, Key = Key.C });
 
         Assert.Null(MacroValidation.GetFormatError(macro));
-        Assert.NotNull(MacroValidation.GetPlaybackError(macro));
+        Assert.Equal("Step 2: replace this old Key press step.", MacroValidation.GetPlaybackError(macro));
     }
 
-    [Theory]
-    [InlineData(MacroStepKind.MouseDown)]
-    [InlineData(MacroStepKind.MouseClick)]
-    public void GetPlaybackError_RepeatedHeldMouseInput_IsNotPlayable(MacroStepKind secondKind)
+    [Fact]
+    public void GetPlaybackError_OldMouseClick_AsksToReplace()
     {
+        // The replace message comes before the held-button check.
         var macro = Assigned(
             new() { Kind = MacroStepKind.MouseDown, MouseButton = AppMouseButton.Left },
-            new() { Kind = secondKind, MouseButton = AppMouseButton.Left },
+            new() { Kind = MacroStepKind.MouseClick, MouseButton = AppMouseButton.Left },
             new() { Kind = MacroStepKind.MouseUp, MouseButton = AppMouseButton.Left });
 
         Assert.Null(MacroValidation.GetFormatError(macro));
-        Assert.NotNull(MacroValidation.GetPlaybackError(macro));
+        Assert.Equal("Step 2: replace this old Mouse click step.", MacroValidation.GetPlaybackError(macro));
+    }
+
+    [Fact]
+    public void GetPlaybackError_RepeatedHeldMouseDown_IsNotPlayable()
+    {
+        var macro = Assigned(
+            new() { Kind = MacroStepKind.MouseDown, MouseButton = AppMouseButton.Left },
+            new() { Kind = MacroStepKind.MouseDown, MouseButton = AppMouseButton.Left },
+            new() { Kind = MacroStepKind.MouseUp, MouseButton = AppMouseButton.Left });
+
+        Assert.Equal("Step 2: a mouse button already held by this macro cannot be pressed again.", MacroValidation.GetPlaybackError(macro));
+    }
+
+    [Fact]
+    public void GetPlaybackError_UnmatchedKeyUpAfterEarlierRelease_NamesThatStep()
+    {
+        // A Key press added inside a hold of A releases A early, so the hold's own Key up has nothing to release.
+        var macro = Assigned(
+        [
+            new() { Kind = MacroStepKind.KeyDown, Key = Key.A },
+            .. MacroPresses.Press(Key.A),
+            new() { Kind = MacroStepKind.KeyUp, Key = Key.A }
+        ]);
+
+        Assert.Equal("Step 5: a Key up must follow a matching Key down. Step 4 already released A.", MacroValidation.GetPlaybackError(macro));
+        Assert.Equal("Step 1: a Key up must follow a matching Key down.",
+            MacroValidation.GetPlaybackError(Assigned(new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.A })));
     }
 
     [Fact]

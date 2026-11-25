@@ -18,7 +18,7 @@ public sealed class MacroStartOnPressTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         Configure(service, profile, shortcut: shortcut);
         var vk = KeyInterop.VirtualKeyFromKey(shortcut);
 
@@ -43,7 +43,7 @@ public sealed class MacroStartOnPressTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         Configure(service, profile, modifiers: modifier);
 
         Assert.False(service.DispatchDecodedKeyboardEvent(modifierVk, true, false));
@@ -81,7 +81,7 @@ public sealed class MacroStartOnPressTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         Configure(service, profile, modifiers: ModifierKeys.Alt);
 
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA4, true, false));
@@ -104,9 +104,9 @@ public sealed class MacroStartOnPressTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 },
+            [.. MacroPresses.Press(Key.A, 1),
             new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 1000 },
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.B, DurationMs = 1 });
+            .. MacroPresses.Press(Key.B, 1)]);
         Configure(service, profile, modifiers: ModifierKeys.Control);
 
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
@@ -129,12 +129,12 @@ public sealed class MacroStartOnPressTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         Configure(service, profile, modifiers: ModifierKeys.Control);
         profile.Macros.Definitions = [profile.Macros.Definitions[0], new MacroDefinition
         {
             IsEnabled = true, ShortcutKey = Key.F7, ShortcutModifiers = ModifierKeys.Control,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.B, DurationMs = 1 }]
+            Steps = [.. MacroPresses.Press(Key.B, 1)]
         }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
 
@@ -156,7 +156,7 @@ public sealed class MacroStartOnPressTests
     {
         var sender = new RecordingInputSender();
         using var service = Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A, DurationMs = 1 });
+            MacroPresses.Press(Key.A, 1));
         Configure(service, profile, toggle: true);
 
         Assert.True(service.DispatchDecodedKeyboardEvent(0x75, true, false));

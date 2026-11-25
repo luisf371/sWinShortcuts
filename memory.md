@@ -603,3 +603,15 @@
 - Duplicate's counter starts at 0, so a first copy of "Ammo" is "Ammo 1". Share-code import reuses that rule via `MacrosViewModel.GetFreeLabel`.
 - Measure rulers complete the shared result in `Closed`; Alt+F4 closes one ruler (learn.microsoft.com/dotnet/desktop/wpf/windows). Unshown windows raise `Closed` too, so tests skip `Show()`.
 - Macro share codes require both markers. Check `BrotliDecoder.Decompress` bytes consumed to reject trailing bytes. https://learn.microsoft.com/dotnet/api/system.io.compression.brotlidecoder.decompress
+
+### 2026-11-25 (macro press groups plan)
+
+- Plan: `docs/superpowers/plans/2026-11-25-macro-press-groups.md` (local, Codex gpt-6.2-sol reviewed). `ContextMenuItemStyle` (Resources/Styles.xaml) has no `PART_Popup`/`ItemsPresenter`: any MenuItem submenu needs a new template.
+- Press groups: Narrator gets open state from `AutomationProperties.ItemStatus` set by `MacroStepItem` DataTriggers, no custom peer. https://learn.microsoft.com/dotnet/api/system.windows.automation.automationproperties.itemstatus
+- `IniProfileStore.ExpandCompactPresses` runs only on format-valid definitions, before the `includeIdentity` return, so share import converts and load errors keep file step numbers.
+- `MacrosView.xaml` can't use `BasedOn="{StaticResource MacroContextMenuItemStyle}"`: Styles.xaml loads dynamically and template tests throw "Cannot find resource".
+
+# 2026-11-25 (Exit and load warnings)
+
+- `MainWindow.ExitCoreAsync` closes the window in its `finally`, so any check that can cancel Exit must return before that `try`.
+- `CHANGELOG.md` uses dated headings and CI `build-N` tags, not semantic versions. The newest `build-N` tag marks the last release; there is nothing to bump.

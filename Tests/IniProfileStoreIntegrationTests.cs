@@ -56,6 +56,25 @@ public class IniProfileStoreIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadProfiles_LockedFile_ListsItAsSkippedAndKeepsTheFile()
+    {
+        var path = Path.Combine(_root, "Profiles", "Locked.ini");
+        File.WriteAllText(path, "[Profile]\nName=Locked\nExecutable=locked.exe\n");
+
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var profiles = await _store.LoadProfilesAsync(CancellationToken.None);
+
+            Assert.DoesNotContain(profiles, p => p.Name == "Locked");
+            Assert.Equal(path, Assert.Single(_store.SkippedProfileFiles));
+        }
+
+        Assert.True(File.Exists(path));
+        await _store.LoadProfilesAsync(CancellationToken.None);
+        Assert.Empty(_store.SkippedProfileFiles);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_MixedWheelMappings_PreservesKeyboardFormatAndWheelRows()
     {
         var path = Path.Combine(_root, "Profiles", "Wheels.ini");

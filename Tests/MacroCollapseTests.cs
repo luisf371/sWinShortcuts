@@ -20,13 +20,13 @@ public sealed class MacroCollapseTests
         using var macro = Create(rows);
 
         var representative = Assert.Single(macro.VisibleSteps);
-        Assert.True(macro.CollapseSteps);
+        Assert.Equal(MacroPressGroupPart.ClosedHead, representative.PressGroupPart);
         Assert.Same(macro.Steps[0], representative);
         Assert.True(representative.IsCollapsedPress);
         Assert.Equal(3, representative.SourceStepCount);
         Assert.Same(macro.Steps[1], representative.CollapsedWait);
         Assert.Equal("0 ms hold", representative.DisplayTimingText);
-        Assert.Equal(mouse ? "Mouse press" : "Key press", representative.DisplayActionLabel);
+        Assert.Equal(mouse ? "Mouse click" : "Key press", representative.DisplayActionLabel);
         Assert.Equal("Steps 1 to 3", representative.AutomationStepLabel);
         Assert.Equal(rows, macro.ToDefinition().Steps);
         Assert.Equal(3, macro.RecordingInsertionIndex);
@@ -40,6 +40,7 @@ public sealed class MacroCollapseTests
             [KeyRow(MacroStepKind.KeyDown), Wait(5), KeyRow(MacroStepKind.KeyUp, Key.B)],
             [Mouse(MacroStepKind.MouseDown), Wait(5), Mouse(MacroStepKind.MouseUp, MouseButton.Right)],
             [KeyRow(MacroStepKind.KeyDown), KeyRow(MacroStepKind.KeyUp)],
+            [KeyRow(MacroStepKind.KeyDown), new() { Kind = MacroStepKind.MouseWheel, WheelDelta = 120 }, KeyRow(MacroStepKind.KeyUp)],
             [KeyRow(MacroStepKind.KeyDown), Wait(5)],
             [KeyRow(MacroStepKind.KeyDown), Wait(5), Wait(5), KeyRow(MacroStepKind.KeyUp)],
             [Mouse(MacroStepKind.MouseDown), Wait(5), new() { Kind = MacroStepKind.MoveTo }, Mouse(MacroStepKind.MouseUp)],
@@ -66,14 +67,14 @@ public sealed class MacroCollapseTests
         var models = macro.ToDefinition().Steps;
         var changes = 0;
         macro.Changed += (_, _) => changes++;
-        macro.CollapseSteps = false;
+        macro.TogglePressGroupCommand.Execute(original[0]);
         macro.SelectedStep = original[1];
 
         macro.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(MacroViewModel.VisibleSteps)) macro.SelectedStep = null;
         };
-        macro.CollapseSteps = true;
+        macro.TogglePressGroupCommand.Execute(original[0]);
 
         Assert.Same(original, macro.Steps);
         Assert.Same(original[0], macro.SelectedStep);
@@ -81,7 +82,7 @@ public sealed class MacroCollapseTests
         Assert.Equal(0, changes);
         Assert.True(macro.ExpandSelectedStepCommand.CanExecute(null));
         macro.ExpandSelectedStepCommand.Execute(null);
-        Assert.False(macro.CollapseSteps);
+        Assert.Equal(MacroPressGroupPart.OpenHead, original[0].PressGroupPart);
         Assert.Same(original[0], macro.SelectedStep);
         Assert.Equal(3, macro.VisibleSteps.Count);
         Assert.Equal("Step 1", macro.SelectedStep!.AutomationStepLabel);
@@ -108,7 +109,6 @@ public sealed class MacroCollapseTests
         Assert.Contains(nameof(MacroStepViewModel.DisplayError), notifications);
         macro.SelectedStep = macro.Steps[3];
         macro.ShowProblemStepCommand.Execute(null);
-        Assert.True(macro.CollapseSteps);
         Assert.Same(representative, macro.SelectedStep);
         Assert.Equal(0, macro.SelectedIndex);
 
@@ -304,7 +304,7 @@ public sealed class MacroCollapseTests
             macro.SelectedPressMouseButton = MouseButton.Right;
         }
         Assert.Equal(1, changes);
-        macro.CollapseSteps = false;
+        macro.TogglePressGroupCommand.Execute(macro.Steps[0]);
         macro.SelectedPressKey = Key.C;
         macro.SelectedPressMouseButton = MouseButton.Middle;
         Assert.Equal(1, changes);
@@ -347,8 +347,254 @@ public sealed class MacroCollapseTests
         Assert.All(macro.VisibleSteps, row => Assert.False(row.IsCollapsedPress));
         Assert.Equal(3, macro.ProblemStepNumber);
         macro.ShowProblemStepCommand.Execute(null);
-        Assert.True(macro.CollapseSteps);
         Assert.Same(macro.Steps[2], macro.SelectedStep);
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.KeyPress, MacroStepKind.KeyDown, MacroStepKind.KeyUp, "Key press")]
+    [InlineData(MacroStepKind.MouseClick, MacroStepKind.MouseDown, MacroStepKind.MouseUp, "Mouse click")]
+    public void AddStep_Press_InsertsClosedGroupWith50MsHold(MacroStepKind kind, MacroStepKind down, MacroStepKind up, string label)
+    {
+        using var macro = Create([new() { Kind = MacroStepKind.MoveTo, X = 300, Y = 400 }]);
+
+        macro.AddStepCommand.Execute(kind);
+
+        Assert.Equal(new[] { MacroStepKind.MoveTo, down, MacroStepKind.Wait, up }, macro.Steps.Select(row => row.Kind));
+        Assert.Equal(50, macro.Steps[2].DurationMs);
+        var head = macro.SelectedStep!;
+        Assert.Same(macro.Steps[1], head);
+        Assert.Equal(MacroPressGroupPart.ClosedHead, head.PressGroupPart);
+        Assert.Equal(label, head.DisplayActionLabel);
+        Assert.Equal("50 ms hold", head.DisplayTimingText);
+        // A Mouse click clicks where the cursor is: none of its rows takes the earlier position.
+        Assert.All(macro.Steps.Skip(1), row => Assert.Equal((0, 0), (row.X, row.Y)));
+        Assert.Equal(2, macro.VisibleSteps.Count);
+    }
+
+    [Fact]
+    public void InsertStep_InsertsKeyPressGroup()
+    {
+        using var macro = Create([]);
+
+        macro.InsertStepCommand.Execute(null);
+
+        Assert.Equal(new[] { MacroStepKind.KeyDown, MacroStepKind.Wait, MacroStepKind.KeyUp }, macro.Steps.Select(row => row.Kind));
+        Assert.Equal((Key.A, 50, Key.A), (macro.Steps[0].Key, macro.Steps[1].DurationMs, macro.Steps[2].Key));
+        Assert.True(macro.SelectedStep!.IsCollapsedPress);
+    }
+
+    [Fact]
+    public void AddStep_TwoFreeSteps_GroupItemsDisabled()
+    {
+        using var macro = Create([.. Enumerable.Repeat(Wait(1), MacroValidation.MaxSteps - 2)]);
+
+        Assert.False(macro.AddStepCommand.CanExecute(MacroStepKind.KeyPress));
+        Assert.False(macro.AddStepCommand.CanExecute(MacroStepKind.MouseClick));
+        Assert.False(macro.InsertStepCommand.CanExecute(null));
+        Assert.True(macro.AddStepCommand.CanExecute(MacroStepKind.Wait));
+        Assert.True(macro.CanAddStep);
+        // A direct call does nothing instead of overflowing the step limit.
+        macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
+        macro.InsertStepCommand.Execute(null);
+        Assert.Equal(MacroValidation.MaxSteps - 2, macro.Steps.Count);
+        macro.AddStepCommand.Execute(MacroStepKind.Wait);
+        Assert.Equal(MacroValidation.MaxSteps - 1, macro.Steps.Count);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void CollapseSelected_FromWaitOrUp_ClosesGroupAndSelectsHead(int offset)
+    {
+        using var macro = Create([.. Press(Key.A), Wait(77)]);
+        macro.TogglePressGroupCommand.Execute(macro.Steps[0]);
+        macro.SelectedStep = macro.Steps[offset];
+        Assert.Same(macro.Steps[offset], macro.SelectedStep);
+
+        Assert.Same(macro.CollapseSelectedStepCommand, sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Left, ModifierKeys.None));
+        Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Right, ModifierKeys.None));
+        macro.CollapseSelectedStepCommand.Execute(null);
+
+        Assert.Same(macro.Steps[0], macro.SelectedStep);
+        Assert.Equal(MacroPressGroupPart.ClosedHead, macro.Steps[0].PressGroupPart);
+        Assert.Same(macro.ExpandSelectedStepCommand, sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Right, ModifierKeys.None));
+        Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Left, ModifierKeys.None));
+        // Plain rows keep the list's own Left and Right behavior.
+        macro.SelectedStep = macro.Steps[3];
+        Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Right, ModifierKeys.None));
+        Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Left, ModifierKeys.None));
+    }
+
+    [Fact]
+    public void AddStep_KeyPressInsideHeldA_ErrorNamesEarlierRelease()
+    {
+        using var macro = Create(Press(Key.A, 500));
+        macro.TogglePressGroupCommand.Execute(macro.Steps[0]);
+        macro.SelectedStep = macro.Steps[1];
+
+        macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
+
+        Assert.Equal("Step 6: a Key up must follow a matching Key down. Step 5 already released A.", macro.ValidationMessage);
+        Assert.Equal(6, macro.ProblemStepNumber);
+    }
+
+    [Fact]
+    public void AddStep_MouseClickInsideHeldLeft_ErrorsAtNewDown()
+    {
+        using var macro = Create([Mouse(MacroStepKind.MouseDown), Wait(500), Mouse(MacroStepKind.MouseUp)]);
+        macro.TogglePressGroupCommand.Execute(macro.Steps[0]);
+        macro.SelectedStep = macro.Steps[1];
+
+        macro.AddStepCommand.Execute(MacroStepKind.MouseClick);
+
+        Assert.Equal("Step 3: a mouse button already held by this macro cannot be pressed again.", macro.ValidationMessage);
+    }
+
+    [Fact]
+    public void TogglePressGroup_OpensOnlyThatGroup()
+    {
+        using var macro = Create([.. Press(Key.A), .. Press(Key.B)]);
+
+        Assert.False(macro.TogglePressGroupCommand.CanExecute(macro.Steps[1]));
+        macro.TogglePressGroupCommand.Execute(macro.Steps[3]);
+
+        Assert.Equal(new[] { MacroPressGroupPart.ClosedHead, MacroPressGroupPart.None, MacroPressGroupPart.None,
+            MacroPressGroupPart.OpenHead, MacroPressGroupPart.OpenMiddle, MacroPressGroupPart.OpenLast }, macro.Steps.Select(row => row.PressGroupPart));
+        Assert.Equal(4, macro.VisibleSteps.Count);
+        Assert.Equal(Press(Key.A).Concat(Press(Key.B)), macro.ToDefinition().Steps);
+        macro.TogglePressGroupCommand.Execute(macro.Steps[3]);
+        Assert.Equal(2, macro.VisibleSteps.Count);
+    }
+
+    [Fact]
+    public void ExpandAllAndCollapseAll_OpenAndCloseEveryGroup()
+    {
+        using var macro = Create([.. Press(Key.A), Wait(9), .. Press(Key.B)]);
+        Assert.False(macro.CollapseAllCommand.CanExecute(null));
+
+        macro.ExpandAllCommand.Execute(null);
+
+        Assert.Equal(7, macro.VisibleSteps.Count);
+        Assert.False(macro.ExpandAllCommand.CanExecute(null));
+        Assert.True(macro.CollapseAllCommand.CanExecute(null));
+        macro.CollapseAllCommand.Execute(null);
+        Assert.Equal(3, macro.VisibleSteps.Count);
+        Assert.All(new[] { macro.Steps[0], macro.Steps[4] }, row => Assert.Equal(MacroPressGroupPart.ClosedHead, row.PressGroupPart));
+    }
+
+    [Fact]
+    public void OpenGroup_InsertBetweenDownAndWait_ShowsPlainSteps()
+    {
+        using var macro = Create(Press(Key.A));
+        macro.TogglePressGroupCommand.Execute(macro.Steps[0]);
+        macro.SelectedStep = macro.Steps[0];
+
+        macro.AddStepCommand.Execute(MacroStepKind.Wait);
+
+        Assert.Equal(4, macro.VisibleSteps.Count);
+        Assert.All(macro.Steps, row => Assert.Equal(MacroPressGroupPart.None, row.PressGroupPart));
+    }
+
+    [Fact]
+    public void OpenGroup_MoveWaitOutAndBack_ReformsOpen()
+    {
+        using var macro = Create([.. Press(Key.A), Wait(77)]);
+        var down = macro.Steps[0];
+        macro.TogglePressGroupCommand.Execute(down);
+        macro.SelectedStep = macro.Steps[1];
+
+        macro.MoveStepDownCommand.Execute(null);
+        Assert.All(macro.Steps, row => Assert.Equal(MacroPressGroupPart.None, row.PressGroupPart));
+        macro.MoveStepUpCommand.Execute(null);
+
+        Assert.Equal(MacroPressGroupPart.OpenHead, down.PressGroupPart);
+        Assert.Equal(4, macro.VisibleSteps.Count);
+    }
+
+    [Fact]
+    public void CollapseAll_ForgetsBrokenGroup_ReformsClosed()
+    {
+        using var macro = Create([.. Press(Key.A), Wait(77)]);
+        var down = macro.Steps[0];
+        macro.TogglePressGroupCommand.Execute(down);
+        macro.SelectedStep = macro.Steps[1];
+        macro.MoveStepDownCommand.Execute(null);
+
+        macro.CollapseAllCommand.Execute(null);
+        macro.MoveStepUpCommand.Execute(null);
+
+        Assert.Equal(MacroPressGroupPart.ClosedHead, down.PressGroupPart);
+        Assert.Equal(2, macro.VisibleSteps.Count);
+    }
+
+    [Fact]
+    public void OpenGroup_WithTwoFreeSteps_RefreshesDuplicateAvailability()
+    {
+        using var macro = Create([.. Press(Key.A), .. Enumerable.Repeat(Wait(1), MacroValidation.MaxSteps - 5)]);
+        macro.SelectedStep = macro.Steps[0];
+        Assert.False(macro.DuplicateStepCommand.CanExecute(null));
+        var raised = 0;
+        macro.DuplicateStepCommand.CanExecuteChanged += (_, _) => raised++;
+
+        macro.ExpandSelectedStepCommand.Execute(null);
+
+        Assert.True(raised > 0);
+        Assert.True(macro.DuplicateStepCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void ShiftAroundPress_ShowsPlainShiftRowsAndClosedInnerGroup()
+    {
+        using var macro = Create([KeyRow(MacroStepKind.KeyDown, Key.LeftShift), .. Press(Key.A), KeyRow(MacroStepKind.KeyUp, Key.LeftShift)]);
+
+        Assert.Equal(new[] { macro.Steps[0], macro.Steps[1], macro.Steps[4] }, macro.VisibleSteps);
+        Assert.Equal(new[] { MacroPressGroupPart.None, MacroPressGroupPart.ClosedHead, MacroPressGroupPart.None, MacroPressGroupPart.None,
+            MacroPressGroupPart.None }, macro.Steps.Select(row => row.PressGroupPart));
+    }
+
+    [Fact]
+    public void RecordedClick_IsPlainButCountsAsPressHold()
+    {
+        // The recorder adds a Move before each captured Mouse up, so a recorded click never groups.
+        using var macro = Create([Mouse(MacroStepKind.MouseDown), Wait(40), new() { Kind = MacroStepKind.MoveTo, X = 5, Y = 5 }, Mouse(MacroStepKind.MouseUp)]);
+
+        Assert.Equal(4, macro.VisibleSteps.Count);
+        Assert.True(macro.Steps[1].IsPressHold);
+        Assert.Equal(1, macro.PressHoldCount);
+    }
+
+    [Fact]
+    public void ActionOptions_ExcludesKeyPressAndMouseClick()
+    {
+        Assert.Equal(new[] { MacroStepKind.KeyDown, MacroStepKind.KeyUp, MacroStepKind.MouseDown, MacroStepKind.MouseUp, MacroStepKind.MoveTo,
+            MacroStepKind.SavePosition, MacroStepKind.MouseWheel, MacroStepKind.FreezeMouse, MacroStepKind.UnfreezeMouse, MacroStepKind.Wait },
+            MacroViewModel.ActionOptions.Select(option => option.Key));
+    }
+
+    [Fact]
+    public void OldRow_ShowsOldLabelAndReplaceHelp()
+    {
+        using var macro = Create([KeyRow(MacroStepKind.KeyPress), new() { Kind = MacroStepKind.MouseClick, MouseButton = MouseButton.Left, X = 1, Y = 2 }]);
+
+        Assert.Equal("Old key press", macro.Steps[0].ActionLabel);
+        Assert.Equal("Old mouse click", macro.Steps[1].ActionLabel);
+        Assert.StartsWith("This old step no longer plays.", macro.Steps[0].KindHelp);
+        Assert.EndsWith("Add a Move to its position first.", macro.Steps[1].KindHelp);
+        Assert.Equal("Step 1: replace this old Key press step.", macro.ValidationMessage);
+        Assert.Equal(macro.ValidationMessage, macro.Steps[0].DisplayError);
+    }
+
+    [Fact]
+    public void NewlyLoadedMacro_AllGroupsClosed()
+    {
+        var profile = sWinShortcuts.Factories.ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new() { ShortcutKey = Key.F6, Steps = [.. Press(Key.A), .. Press(Key.B)] }];
+        using var editor = new MacrosViewModel(profile, () => { });
+
+        var macro = editor.SelectedMacro!;
+
+        Assert.Equal(2, macro.VisibleSteps.Count);
+        Assert.All(macro.VisibleSteps, row => Assert.Equal(MacroPressGroupPart.ClosedHead, row.PressGroupPart));
     }
 
     private static MacroViewModel Create(MacroStep[] rows) => new(new MacroDefinition { ShortcutKey = Key.F6, Steps = rows }, () => true);

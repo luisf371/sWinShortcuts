@@ -1,6 +1,7 @@
 using System.Windows.Input;
 using sWinShortcuts.Factories;
 using sWinShortcuts.Models;
+using sWinShortcuts.Utilities;
 using sWinShortcuts.ViewModels;
 using Xunit;
 
@@ -192,18 +193,20 @@ public sealed class MacroEditorTests
         macro.Shortcut = KeyChord.FromKey(Key.F6);
         macro.InsertStepCommand.Execute(null);
         Assert.False(macro.HasFormatError);
-        macro.SelectedStep!.DurationText = "letters";
-        macro.SelectedStep.Key = Key.B;
+        var hold = macro.SelectedStep!.CollapsedWait!;
+        hold.DurationText = "letters";
+        macro.SelectedPressKey = Key.B;
 
-        Assert.Equal("letters", macro.SelectedStep.DurationText);
+        Assert.Equal("letters", hold.DurationText);
         Assert.False(profile.Macros.Definitions[0].IsEnabled);
         Assert.Contains("Not saved", macro.ValidationMessage);
         Assert.True(macro.HasFormatError);
-        Assert.Equal(1, macro.ProblemStepNumber);
+        Assert.Equal(2, macro.ProblemStepNumber);
 
-        macro.SelectedStep.DurationText = "25";
+        hold.DurationText = "25";
         Assert.True(profile.Macros.Definitions[0].IsEnabled);
-        Assert.Equal(25, profile.Macros.Definitions[0].Steps[0].DurationMs);
+        Assert.Equal(25, profile.Macros.Definitions[0].Steps[1].DurationMs);
+        Assert.Equal(Key.B, profile.Macros.Definitions[0].Steps[2].Key);
         Assert.False(macro.HasFormatError);
         Assert.False(macro.HasProblemStep);
     }
@@ -218,17 +221,18 @@ public sealed class MacroEditorTests
         macro.IsEnabled = true;
         macro.Shortcut = KeyChord.FromKey(Key.F6);
         macro.InsertStepCommand.Execute(null);
-        macro.SelectedStep!.DurationMs = -1;
+        var hold = macro.SelectedStep!.CollapsedWait!;
+        hold.DurationMs = -1;
 
         Assert.True(macro.IsEnabled);
         Assert.False(profile.Macros.Definitions[0].IsEnabled);
-        Assert.Equal(0, profile.Macros.Definitions[0].Steps[0].DurationMs);
+        Assert.Equal(MacroValidation.DefaultPressHoldMs, profile.Macros.Definitions[0].Steps[1].DurationMs);
         Assert.Contains("Not saved", macro.ValidationMessage);
 
-        macro.SelectedStep.DurationMs = 25;
+        hold.DurationMs = 25;
 
         Assert.True(profile.Macros.Definitions[0].IsEnabled);
-        Assert.Equal(25, profile.Macros.Definitions[0].Steps[0].DurationMs);
+        Assert.Equal(25, profile.Macros.Definitions[0].Steps[1].DurationMs);
         Assert.True(macro.IsPlayable);
     }
 
@@ -239,19 +243,21 @@ public sealed class MacroEditorTests
         using var editor = new MacrosViewModel(profile, () => { });
         editor.NewMacroCommand.Execute(null);
         var macro = editor.SelectedMacro!;
+        Key[] PressedKeys() => profile.Macros.Definitions[0].Steps.Where(step => step.Kind == MacroStepKind.KeyDown).Select(step => step.Key).ToArray();
         macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
-        macro.SelectedStep!.Key = Key.A;
+        macro.SelectedPressKey = Key.A;
         sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.D, ModifierKeys.Control)!.Execute(null);
-        macro.SelectedStep!.Key = Key.B;
+        macro.SelectedPressKey = Key.B;
         sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Up, ModifierKeys.Alt)!.Execute(null);
-        Assert.Equal(new[] { Key.B, Key.A }, profile.Macros.Definitions[0].Steps.Select(step => step.Key));
-        Assert.Equal("after step 1", macro.InsertionHint);
+        Assert.Equal(new[] { Key.B, Key.A }, PressedKeys());
+        Assert.Equal("after step 3", macro.InsertionHint);
         sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Down, ModifierKeys.Alt)!.Execute(null);
-        Assert.Equal(new[] { Key.A, Key.B }, profile.Macros.Definitions[0].Steps.Select(step => step.Key));
+        Assert.Equal(new[] { Key.A, Key.B }, PressedKeys());
         Assert.Equal("at the end", macro.InsertionHint);
-        Assert.Equal(new[] { 1, 2 }, macro.Steps.Select(step => step.Number));
+        Assert.Equal(new[] { 1, 2, 3, 4, 5, 6 }, macro.Steps.Select(step => step.Number));
         sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Delete, ModifierKeys.None)!.Execute(null);
-        Assert.Equal(Key.A, Assert.Single(profile.Macros.Definitions[0].Steps).Key);
+        Assert.Equal(new[] { Key.A }, PressedKeys());
+        Assert.Equal(3, profile.Macros.Definitions[0].Steps.Length);
         Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.D, ModifierKeys.None));
         Assert.Null(sWinShortcuts.Views.MacrosView.GetStepKeyCommand(macro, Key.Delete, ModifierKeys.Control));
     }
@@ -341,7 +347,7 @@ public sealed class MacroEditorTests
         editor.NewMacroCommand.Execute(null);
         var macro = editor.SelectedMacro!;
         macro.Shortcut = KeyChord.FromKey(Key.F6);
-        macro.InsertStepCommand.Execute(null);
+        macro.AddStepCommand.Execute(MacroStepKind.Wait);
         macro.SelectedStep!.Kind = MacroStepKind.KeyUp;
 
         Assert.Single(profile.Macros.Definitions[0].Steps);
@@ -353,7 +359,7 @@ public sealed class MacroEditorTests
         Assert.Equal(1, macro.SelectedIndex);
         macro.ShowProblemStepCommand.Execute(null);
         Assert.Equal(0, macro.SelectedIndex);
-        macro.SelectedStep!.Kind = MacroStepKind.KeyPress;
+        macro.SelectedStep!.Kind = MacroStepKind.Wait;
         Assert.False(macro.HasProblemStep);
         Assert.False(macro.ShowProblemStepCommand.CanExecute(null));
     }
@@ -384,7 +390,7 @@ public sealed class MacroEditorTests
         Assert.False(macro.InsertStepCommand.CanExecute(null));
         Assert.False(macro.AddStepCommand.CanExecute(MacroStepKind.Wait));
         macro.AddStepCommand.Execute(MacroStepKind.Wait);
-        Assert.Single(macro.Steps);
+        Assert.Equal(3, macro.Steps.Count);
     }
 
     [Fact]
@@ -432,7 +438,7 @@ public sealed class MacroEditorTests
         macro.SelectedStep = macro.Steps[0];
         macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
         Assert.Equal(1, macro.SelectedIndex);
-        Assert.Equal("after step 2", macro.InsertionHint);
+        Assert.Equal("after step 4", macro.InsertionHint);
     }
 
     [Fact]
@@ -445,13 +451,13 @@ public sealed class MacroEditorTests
 
         macro.AddStepCommand.Execute(MacroStepKind.Wait);
         Assert.Equal(100, macro.SelectedStep!.DurationMs);
-        macro.AddStepCommand.Execute(MacroStepKind.MouseClick);
+        macro.AddStepCommand.Execute(MacroStepKind.MoveTo);
         Assert.Equal((-1280, 300), (macro.SelectedStep!.X, macro.SelectedStep.Y));
         macro.SelectedStep.SetPosition(40, 50);
         macro.AddStepCommand.Execute(MacroStepKind.MoveTo);
         Assert.Equal((40, 50), (macro.SelectedStep!.X, macro.SelectedStep.Y));
         macro.AddStepCommand.Execute(MacroStepKind.KeyPress);
-        Assert.Equal(0, macro.SelectedStep!.DurationMs);
+        Assert.Equal(MacroValidation.DefaultPressHoldMs, macro.SelectedStep!.CollapsedWait!.DurationMs);
 
         using var empty = new MacroViewModel(new MacroDefinition(), () => true);
         empty.AddStepCommand.Execute(MacroStepKind.MoveTo);
@@ -962,7 +968,7 @@ public sealed class MacroEditorTests
         using var macro = new MacroViewModel(new MacroDefinition
         {
             ShortcutKey = Key.F6,
-            Steps = [new() { Kind = MacroStepKind.KeyDown, Key = Key.LeftShift }, new() { Kind = MacroStepKind.KeyPress, Key = Key.Tab }]
+            Steps = [new() { Kind = MacroStepKind.KeyDown, Key = Key.LeftShift }, .. Tests.Fakes.MacroPresses.Press(Key.Tab)]
         }, () => true);
         var down = macro.Steps[0];
 
@@ -975,7 +981,7 @@ public sealed class MacroEditorTests
         // A new Key up starts on A, so the problem moves to that row; choosing the held key fixes the macro.
         macro.AddStepCommand.Execute(MacroStepKind.KeyUp);
         var up = macro.SelectedStep!;
-        Assert.Equal("Step 3: a Key up must follow a matching Key down.", up.DisplayError);
+        Assert.Equal("Step 5: a Key up must follow a matching Key down.", up.DisplayError);
         Assert.Empty(down.DisplayError);
         up.Key = Key.LeftShift;
 
@@ -1032,18 +1038,12 @@ public sealed class MacroEditorTests
     }
 
     [Fact]
-    public void ViewSwitchAndWheelDirection_RadioProjections_IgnoreClearing()
+    public void WheelDirection_RadioProjections_IgnoreClearing()
     {
         using var macro = new MacroViewModel(new MacroDefinition
         {
             Steps = [new() { Kind = MacroStepKind.MouseWheel, WheelDelta = 120 }]
         }, () => true);
-        Assert.True(macro.ShowPresses && !macro.ShowAllSteps);
-        macro.ShowPresses = false;
-        Assert.True(macro.CollapseSteps);
-        macro.ShowAllSteps = true;
-        Assert.False(macro.CollapseSteps);
-        Assert.True(macro.ShowAllSteps && !macro.ShowPresses);
 
         var wheel = macro.Steps[0];
         Assert.True(wheel.IsVerticalWheel);

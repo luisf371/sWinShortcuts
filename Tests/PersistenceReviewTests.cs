@@ -291,6 +291,7 @@ public sealed class PersistenceReviewTests
     {
         public int CallerThread;
         public int StorageThread;
+        public IReadOnlyList<string> SkippedProfileFiles => [];
         public Task<IReadOnlyList<Profile>> LoadProfilesAsync(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<Profile>>([new Profile { Name = "Old", Executable = "old.exe" }]);
         public Task SaveProfileAsync(Profile profile, CancellationToken cancellationToken)

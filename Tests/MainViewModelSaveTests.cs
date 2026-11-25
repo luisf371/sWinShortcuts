@@ -42,6 +42,40 @@ public class MainViewModelSaveTests
     }
 
     [Fact]
+    public async Task FindInvalidMacroDraft_InvalidField_ReturnsMacroAndShowShowsIt()
+    {
+        var store = new InMemoryProfileStore();
+        var seeded = sWinShortcuts.Factories.ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        seeded.Macros.Definitions =
+        [
+            new sWinShortcuts.Models.MacroDefinition { Label = "Ok" },
+            new sWinShortcuts.Models.MacroDefinition
+            {
+                Label = "Ammo",
+                Steps = [new() { Kind = sWinShortcuts.Models.MacroStepKind.Wait, DurationMs = 100 }]
+            }
+        ];
+        store.Profiles.Add(seeded);
+        var vm = new MainViewModel(new ProfileManager(store), new FakeDialogService(), new FakeDisplayService(), new RecordingColorControlService());
+        await vm.InitializeAsync();
+        var profileVm = vm.Profiles.Single(p => ReferenceEquals(p.Model, seeded));
+        var ammo = profileVm.Macros.Definitions.Single(m => m.Label == "Ammo");
+        Assert.Null(vm.FindInvalidMacroDraft());
+
+        ammo.Steps[0].DurationText = "-";
+
+        var draft = vm.FindInvalidMacroDraft();
+        Assert.NotNull(draft);
+        Assert.Same(profileVm, draft.Value.Profile);
+        Assert.Same(ammo, draft.Value.Macro);
+
+        vm.ShowInvalidMacroDraft(profileVm, ammo);
+        Assert.Same(profileVm, vm.SelectedProfile);
+        Assert.Equal(MainViewModel.TabIndexMacros, vm.SelectedTabIndex);
+        Assert.Same(ammo, profileVm.Macros.SelectedMacro);
+    }
+
+    [Fact]
     public async Task DetachDuringSave_PostSaveGuard_DoesNotRequeue()
     {
         var (vm, store, _, _, profileVm) = await BuildWithProfileAsync();

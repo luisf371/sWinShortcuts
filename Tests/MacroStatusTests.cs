@@ -57,7 +57,7 @@ public sealed class MacroStatusTests(ITestOutputHelper output)
     {
         var profile = new Profile { Name = "Game", Executable = "game.exe" };
         profile.Macros.Definitions = [new MacroDefinition { IsEnabled = true, ShortcutKey = Key.F6,
-            Steps = [new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A }] }];
+            Steps = [.. MacroPresses.Press(Key.A)] }];
         var store = new InMemoryProfileStore();
         store.Profiles.Add(profile);
         var input = new FakeInputHookService();

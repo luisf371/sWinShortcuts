@@ -210,14 +210,14 @@ public sealed class MacroRecordingIntegrationTests
     {
         var sender = new RecordingInputSender();
         using var service = MacroPlaybackTests.Create(sender, out var profile,
-            new MacroStep { Kind = MacroStepKind.KeyPress, Key = Key.A },
-            new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 30000 });
+            [.. MacroPresses.Press(Key.A),
+            new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 30000 }]);
         ConfigureAutoRun(service, profile);
         profile.Macros.Definitions = [profile.Macros.Definitions[0] with { ShortcutKey = movementKey }];
         service.ReconcileProfileSettings(profile, ProfileChangeKind.Macros);
         MacroPlaybackTests.Press(service, movementVk);
         MacroPlaybackTests.WaitUntil(() => sender.Transitions.Any(edge => edge.Key == Key.A && !edge.IsDown));
-        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession() is { Mode: MacroSessionMode.Playing, RowCount: 2 });
+        MacroPlaybackTests.WaitUntil(() => service.GetMacroSession() is { Mode: MacroSessionMode.Playing, RowCount: 4 });
         Assert.Single(sender.Transitions, edge => edge.Key == Key.A && edge.IsDown);
         Assert.True(service.DispatchDecodedKeyboardEvent(movementVk, true, false));
         MacroPlaybackTests.Press(service, 0x7B);
