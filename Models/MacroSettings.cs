@@ -50,10 +50,11 @@ public readonly record struct MacroStep
     public MouseButton? MouseButton { get; init; }
     public int X { get; init; }
     public int Y { get; init; }
+    public int Slot { get; init; }
     public int DurationMs { get; init; }
     public int WheelDelta { get; init; }
     public bool HorizontalWheel { get; init; }
-    // Move steps only (MoveTo, MoveCursorBy, MoveMouseBy). Mouse click always stops.
+    // Move steps only (MoveTo, MoveCursorBy, MoveMouseBy, MoveToSaved). Mouse click always stops.
     public MacroHeldButtonPolicy HeldButtons { get; init; }
 }
 
@@ -81,7 +82,9 @@ public enum MacroStepKind
     // X/Y are an offset. MoveCursorBy moves the on-screen cursor (absolute input, arrival-checked);
     // MoveMouseBy sends device-like relative motion that games read as mouse movement.
     MoveCursorBy,
-    MoveMouseBy
+    MoveMouseBy,
+    SavePosition,
+    MoveToSaved
 }
 
 public enum MacroSessionMode

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -9,6 +10,7 @@ using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using ListBox = System.Windows.Controls.ListBox;
 using ListBoxItem = System.Windows.Controls.ListBoxItem;
 using UserControl = System.Windows.Controls.UserControl;
+using WinForms = System.Windows.Forms;
 
 namespace sWinShortcuts.Views;
 
@@ -23,13 +25,47 @@ public partial class MacrosView : UserControl
             previous.LeaveEditor();
             previous.ConfigureNaming(null);
             previous.ConfigureConfirmation(null);
+            previous.ConfigureCoordinateCapture(null, null, null);
+            previous.ConfigureShare(null, null, null);
         }
         if (e.NewValue is MacrosViewModel editor)
         {
             editor.ConfigureNaming(label => RequestMacroName(editor, label));
             editor.ConfigureConfirmation(request => RequestConfirmation(editor, request));
+            editor.ConfigureCoordinateCapture(CursorCountdownWindow.CountdownAsync, CursorCountdownWindow.ShowMessage,
+                OffsetRulerWindow.MeasureAsync);
+            editor.ConfigureShare(SetClipboardText, GetClipboardText, ShowNotice);
         }
     }
+
+    // WinForms clipboard calls already retry 10 times, 100 ms apart, before reporting the clipboard busy.
+    private static bool SetClipboardText(string text)
+    {
+        try
+        {
+            WinForms.Clipboard.SetDataObject(text, copy: true);
+            return true;
+        }
+        catch (ExternalException)
+        {
+            return false;
+        }
+    }
+
+    private static string? GetClipboardText()
+    {
+        try
+        {
+            return WinForms.Clipboard.GetText();
+        }
+        catch (ExternalException)
+        {
+            return null;
+        }
+    }
+
+    private void ShowNotice(MacroNotice notice) => System.Windows.MessageBox.Show(Window.GetWindow(this)!, notice.Message, notice.Title,
+        MessageBoxButton.OK, notice.IsWarning ? MessageBoxImage.Warning : MessageBoxImage.Information);
 
     // New and Rename ask through a modal dialog owned by this window. A name comes back only while this view
     // still edits the same profile; the view model rechecks availability and the target macro itself.

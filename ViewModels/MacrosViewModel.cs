@@ -1,5 +1,6 @@
 using System;
 using System.Collections.ObjectModel;
+using System.Drawing;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
@@ -7,6 +8,7 @@ using System.Threading.Tasks;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
 using sWinShortcuts.Models;
+using sWinShortcuts.Services;
 using sWinShortcuts.Utilities;
 
 namespace sWinShortcuts.ViewModels;
@@ -25,6 +27,12 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     private Action? _leaveEditor;
     private Func<string?, string?>? _requestName;
     private Func<MacroConfirmation, bool>? _confirm;
+    private Func<string, CancellationToken, Task<(int X, int Y)?>>? _countdown;
+    private Action<string>? _showCaptured;
+    private Func<string, bool>? _setClipboardText;
+    private Func<string?>? _getClipboardText;
+    private Action<MacroNotice>? _notify;
+    private Func<bool, CancellationToken, Task<(int X, int Y)?>>? _measure;
     private Func<Guid, string?>? _shortcutError;
     private bool _disposed;
     private bool _disposeRequested;
@@ -46,6 +54,8 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         ClearStepsCommand = new RelayCommand(ClearSelectedSteps, () => CanEdit && SelectedMacro is { Steps.Count: > 0 });
         RecordCommand = new AsyncRelayCommand(RecordAsync, CanRecord);
         StopRecordingCommand = new RelayCommand(() => _stop?.Invoke(), () => IsRecording);
+        ExportMacroCommand = new RelayCommand(ExportSelectedMacro, () => SelectedMacro is { HasFormatError: false });
+        ImportMacroCommand = new RelayCommand(ImportMacro, CanAddMacro);
     }
 
     public ReadOnlyObservableCollection<MacroViewModel> Definitions { get; }
@@ -91,6 +101,8 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     public IRelayCommand ClearStepsCommand { get; }
     public IAsyncRelayCommand RecordCommand { get; }
     public IRelayCommand StopRecordingCommand { get; }
+    public IRelayCommand ExportMacroCommand { get; }
+    public IRelayCommand ImportMacroCommand { get; }
 
     internal void ConfigureRuntime(
         Func<MacroViewModel, Task> record, Action stop, Action<Key?> stopGesture,
@@ -114,6 +126,31 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     // callers without an attached view proceed unasked, as they do for naming.
     internal void ConfigureConfirmation(Func<MacroConfirmation, bool>? confirm) => _confirm = confirm;
 
+    // The editor view supplies the cursor countdown badge, the captured flash and the Measure ruler.
+    // Null restores the view-less defaults on every macro.
+    internal void ConfigureCoordinateCapture(
+        Func<string, CancellationToken, Task<(int X, int Y)?>>? countdown,
+        Action<string>? showCaptured,
+        Func<bool, CancellationToken, Task<(int X, int Y)?>>? measure)
+    {
+        _countdown = countdown;
+        _showCaptured = showCaptured;
+        _measure = measure;
+        foreach (var macro in _definitions) macro.ConfigureCoordinateCapture(countdown, showCaptured, measure);
+    }
+
+    // The editor view supplies the clipboard and its notices. setText returns false and getText null while
+    // another app holds the clipboard.
+    internal void ConfigureShare(Func<string, bool>? setText, Func<string?>? getText, Action<MacroNotice>? notify)
+    {
+        _setClipboardText = setText;
+        _getClipboardText = getText;
+        _notify = notify;
+    }
+
+    // Physical monitor bounds, the same pixels saved positions use. Tests replace it.
+    internal Func<Rectangle[]> Monitors { get; set; } = WindowsInputSender.GetPhysicalMonitorBounds;
+
     // Label rules only: a clean temporary definition keeps unrelated draft errors from blocking a name.
     internal static string? GetLabelError(string? label) =>
         MacroValidation.GetFormatError(new MacroDefinition { Label = label?.Trim() ?? string.Empty });
@@ -121,6 +158,7 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     private MacroViewModel CreateMacro(MacroDefinition definition)
     {
         var macro = new MacroViewModel(definition, () => CanEdit);
+        macro.ConfigureCoordinateCapture(_countdown, _showCaptured, _measure);
         macro.Changed += OnMacroChanged;
         return macro;
     }
@@ -171,8 +209,24 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
     private void DuplicateMacro()
     {
         if (!DuplicateMacroCommand.CanExecute(null)) return;
+        // The source always holds its own name, so a duplicate always gets the next number.
         var definition = SelectedMacro!.GetRepresentableDefinition().Duplicate();
-        var baseLabel = definition.Label.Trim();
+        var duplicate = CreateMacro(definition with { Label = GetFreeLabel(definition.Label) });
+        _definitions.Add(duplicate);
+        SelectedMacro = duplicate;
+        Publish();
+    }
+
+    // The label itself when no macro uses it, else the next free trailing number: "Ammo" becomes "Ammo 1", "Ammo 1" becomes "Ammo 2".
+    private string GetFreeLabel(string label)
+    {
+        var baseLabel = label.Trim();
+        // Invalid editor fields retain an older saved label; reserve both names.
+        var names = Definitions.Select(macro => macro.Label.Trim())
+            .Concat(_profile.Macros.Definitions.Select(macro => macro.Label.Trim()))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!names.Contains(baseLabel)) return baseLabel;
+
         var number = BigInteger.Zero;
         var separator = baseLabel.LastIndexOf(' ');
         if (separator > 0 && BigInteger.TryParse(baseLabel.AsSpan(separator + 1), NumberStyles.None,
@@ -182,24 +236,69 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
             number = existingNumber;
         }
 
-        // Invalid editor fields retain an older saved label; reserve both names.
-        var names = Definitions.Select(macro => macro.Label.Trim())
-            .Concat(_profile.Macros.Definitions.Select(macro => macro.Label.Trim()))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        string label;
+        string free;
         do
         {
             var suffix = (++number).ToString(CultureInfo.InvariantCulture);
             var baseLength = Math.Min(baseLabel.Length, 100 - suffix.Length - 1);
             if (baseLength > 0 && char.IsHighSurrogate(baseLabel[baseLength - 1])) baseLength--;
-            label = baseLength > 0 ? $"{baseLabel[..baseLength].TrimEnd()} {suffix}" : suffix;
-        } while (names.Contains(label));
-
-        var duplicate = CreateMacro(definition with { Label = label });
-        _definitions.Add(duplicate);
-        SelectedMacro = duplicate;
-        Publish();
+            free = baseLength > 0 ? $"{baseLabel[..baseLength].TrimEnd()} {suffix}" : suffix;
+        } while (names.Contains(free));
+        return free;
     }
+
+    private void ExportSelectedMacro()
+    {
+        if (!ExportMacroCommand.CanExecute(null) || _setClipboardText is null) return;
+        var macro = SelectedMacro!;
+        var code = MacroShareCode.Export(macro.GetRepresentableDefinition(), Monitors());
+        Notify(_setClipboardText(code)
+            ? new MacroNotice("Macro copied", $"The code for \"{macro.Label.Trim()}\" is on the clipboard. Paste it anywhere to share the macro.")
+            : ClipboardBusyNotice);
+    }
+
+    private void ImportMacro()
+    {
+        if (!CanAddMacro() || _getClipboardText is null) return;
+        if (_getClipboardText() is not { } text)
+        {
+            Notify(ClipboardBusyNotice);
+            return;
+        }
+
+        var result = MacroShareCode.Import(text, Monitors());
+        if (result.Macro is not { } definition)
+        {
+            Notify(new MacroNotice("Can't import macro", result.Error switch
+            {
+                MacroImportError.NotFound => $"The clipboard has no macro code. Copy one complete code from {MacroShareCode.Prefix} through {MacroShareCode.Suffix}.",
+                MacroImportError.NewerVersion => "This macro code was made with a newer version of sWinShortcuts. Update the app to import it.",
+                MacroImportError.NewerMinor => "This macro code uses options from a newer version of sWinShortcuts. Update the app to import it.",
+                _ => $"The clipboard must contain one valid macro code. Copy it from {MacroShareCode.Prefix} through {MacroShareCode.Suffix} and try again."
+            }, IsWarning: true));
+            return;
+        }
+
+        var macro = CreateMacro(definition with { Label = GetFreeLabel(definition.Label) });
+        _definitions.Add(macro);
+        SelectedMacro = macro;
+        Publish();
+        if (result.LayoutDiffers)
+        {
+            var positions = result.OffScreenPositions switch
+            {
+                0 => "Its screen positions are all on your screens, but they may point at different things.",
+                1 => "1 screen position is outside your screens; change it before you play the macro.",
+                var count => $"{count.ToString(CultureInfo.InvariantCulture)} screen positions are outside your screens; change them before you play the macro."
+            };
+            Notify(new MacroNotice("Different screen layout",
+                $"\"{macro.Label}\" was made on a different screen layout and keeps its screen positions. {positions}", IsWarning: true));
+        }
+    }
+
+    private static readonly MacroNotice ClipboardBusyNotice = new("Clipboard busy",
+        "Another app is using the clipboard. Try again in a moment.", IsWarning: true);
+    private void Notify(MacroNotice notice) => _notify?.Invoke(notice);
     private void DeleteMacro()
     {
         if (!DeleteMacroCommand.CanExecute(null)) return;
@@ -323,6 +422,8 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
         RenameMacroCommand.NotifyCanExecuteChanged();
         RecordCommand.NotifyCanExecuteChanged();
         StopRecordingCommand.NotifyCanExecuteChanged();
+        ExportMacroCommand.NotifyCanExecuteChanged();
+        ImportMacroCommand.NotifyCanExecuteChanged();
         foreach (var macro in Definitions) macro.RefreshCommands();
     }
     public void Dispose()
@@ -345,3 +446,6 @@ public sealed class MacrosViewModel : ViewModelBase, IDisposable
 
 // A destructive edit the view confirms: the question, what is lost, and the specific action button text.
 internal readonly record struct MacroConfirmation(string Title, string Message, string ActionText);
+
+// A message the view shows after Export or Import; a warning uses the warning icon.
+internal readonly record struct MacroNotice(string Title, string Message, bool IsWarning = false);

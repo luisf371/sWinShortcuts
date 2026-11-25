@@ -1,195 +1,36 @@
-# PROJECT KNOWLEDGE BASE
+# Repository Guidelines
 
-**Generated:** 2026-01-19 (structure counts, code map, and notes refreshed 2026-08-14)
-**Commit:** e3bdec7 (refresh at 1e2436f)
-**Branch:** fixupv2 (refresh on tekky/bug-hunt-a5364214)
+## Project structure and module organization
 
-## OVERVIEW
+sWinShortcuts is a Windows .NET 10 WPF desktop app for profile-based keyboard and mouse shortcuts. The app project and main window live at the repository root. Use the directory that owns the behavior you are changing.
 
-Windows keyboard/mouse remapping app (.NET 10 WPF) using low-level hooks (`WH_KEYBOARD_LL`, `WH_MOUSE_LL`). Profiles activate per-executable for Alt + Shortcut gestures (keys, mouse buttons, wheel), right-click chords, Caps Lock modes, Windows Launcher.
+- `Views/` and `Controls/` contain WPF UI. `ViewModels/` uses CommunityToolkit.Mvvm. Shared XAML styles and image assets live in `Resources/` and `Icons/`.
+- `Models/` defines profiles and settings. `Services/` manages runtime behavior, with input state machines in `Services/Input/`.
+- `Configuration/` handles profile persistence. `Tests/` contains the separate test project and its fakes.
 
-## STRUCTURE
+## Build, test, and development commands
 
-```
-sWinShortcuts/
-├── Services/         # Business logic, hooks, Windows API (24 files)
-├── ViewModels/       # MVVM with CommunityToolkit.Mvvm (11 files)
-├── Models/           # Domain models, settings classes (17 files)
-├── Utilities/        # Helpers: KeySerializer, ProcessLauncher, IniDocument
-├── Configuration/    # IniProfileStore - INI-based persistence
-├── Interop/          # NativeMethods.cs - ALL P/Invoke centralized
-├── Converters/       # WPF value converters
-├── Behaviors/        # WPF behaviors (MouseWheel)
-├── Controls/         # Code-only WPF controls (KeyCaptureBox: [read-only][Assign] keybind capture)
-├── Factories/        # ProfileFactory
-├── Views/            # XAML dialogs (AddProfile, Settings)
-├── Resources/        # Brushes.xaml, Styles.xaml
-└── Tests/            # xUnit tests (separate .csproj, nested in main)
-```
+Run these commands from the repository root on Windows with the .NET SDK specified in `global.json`.
 
-## WHERE TO LOOK
+- `dotnet build sWinShortcuts.csproj` compiles the desktop app.
+- `dotnet run --project sWinShortcuts.csproj` starts the app in the system tray.
+- `dotnet test Tests/Tests.csproj` runs the full test suite.
+- `.\BUILD_WINDOWS.bat` publishes a single-file Windows x64 executable that requires the .NET 10 Desktop Runtime.
 
-| Task | Location | Notes |
-|------|----------|-------|
-| Add per-profile feature | `Models/` → `Profile.cs` → `ProfileFactory` → `IniProfileStore` → `ProfileViewModel` → `InputHookService` | 7-step pattern |
-| Input hook logic | `Services/InputHookService.cs` | 5664 lines, lock-free hot path |
-| Profile persistence | `Configuration/IniProfileStore.cs` | INI format, handle migrations |
-| P/Invoke declarations | `Interop/NativeMethods.cs` | Keep centralized |
-| Service registration | `App.xaml.cs` | DI via Microsoft.Extensions.Hosting |
-| Add test | `Tests/` + use `Tests/Fakes/` | Manual fakes, no mocking libs |
-| Document changes | `CHANGELOG.md` | Plain English, bold topic titles, grouped by milestone |
-| Keybind field (Assign button) | `Controls/KeyCaptureBox.cs` + `Utilities/KeyBindingRules.cs` | Hook capture via `IKeyCaptureSource` / `KeyCaptureGate`; WPF fallback |
+## Coding style and naming conventions
 
-## CODE MAP
+Use four spaces, Allman braces, and file-scoped namespaces in C#. Use PascalCase for types and methods, `_camelCase` for private fields, and the `Async` suffix for asynchronous methods. Follow the surrounding XAML layout and the analyzer settings in `Tests/.editorconfig`.
 
-### Critical Components
+Keep P/Invoke declarations in `Interop/NativeMethods.cs`. Use `Utilities/IniExtensions.cs` for culture-invariant INI values. Keep allocations, locks, and long-running work out of input hook callbacks.
 
-| File | Lines | Role | Caution |
-|------|-------|------|---------|
-| `InputHookService.cs` | 5664 | Keyboard/mouse callbacks | Lock-free, zero GC in callbacks; hosts the one-shot Rapid Fire click timer |
-| `ProfileViewModel.cs` | 816 | Profile editor VM | Auto-saves on property change |
-| `IniProfileStore.cs` | 790 | Profile serialization | Backward compat migrations |
-| `WindowsGammaService.cs` | 104 | Vendor-neutral Windows GDI gamma | Per-display fail-closed DC targeting |
-| `NvidiaColorControlService.cs` | 464 | NVIDIA digital vibrance | Graceful NVAPI fallback |
-| `AmdColorControlService.cs` | 302 | AMD vibrance routing/value mapping | ADL2 is serialized and fail-closed |
-| `MainViewModel.cs` | 861 | Profile list management | - |
-| `MainWindow.xaml.cs` | 537 | UI code-behind | - |
+When a macro step kind or macro INI key changes, follow the share-code engine bump rule beside `EngineMajor` in `Utilities/MacroShareCode.cs`.
 
-### Service Interfaces
+## Testing guidelines
 
-| Interface | Implementation | Purpose |
-|-----------|----------------|---------|
-| `IProfileManager` | `ProfileManager` | CRUD, executable matching |
-| `IInputHookService` | `InputHookService` | Global hooks, input synthesis |
-| `IProfileStore` | `IniProfileStore` | INI persistence |
-| `IForegroundWatcher` | `ForegroundWatcher` | Window focus detection |
-| `IColorControlService` | `CompositeColorControlService` | Display gamma + vendor-routed vibrance |
+Use xUnit v3 and name tests `MethodName_Scenario_ExpectedResult`. Reuse hand-written fakes in `Tests/Fakes/`. Add focused regression tests for behavior changes. CI runs the full suite on Windows x64 without a numeric coverage gate.
 
-## CONVENTIONS
+Run one class with `dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"`.
 
-### Naming
-- Private fields: `_camelCase`
-- Constants: `SCREAMING_SNAKE` (e.g., `TIMER_IDLE`, `KEY_PRESS_DURATION_MIN_MS`)
-- Async methods: suffix `Async`
+## Commit and pull request guidelines
 
-### Patterns
-- Primary constructors for DI: `public sealed class ProfileManager(IProfileStore store)`
-- File-scoped namespaces: `namespace sWinShortcuts.Services;`
-- Collection expressions: `[]` not `new List<T>()`
-- `ConfigureAwait(false)` in all service code
-- Allman braces, 4-space indent
-
-### Testing
-- Test naming: `MethodName_Scenario_ExpectedResult`
-- Manual fakes in `Tests/Fakes/` (no Moq/NSubstitute)
-- Integration tests implement `IDisposable` for cleanup
-
-### Changelog
-- Always update `CHANGELOG.md` with relevant, changelog-style entries whenever implementing notable changes, new features, improvements, or bug fixes:
-  - Follow the established format: group entries chronologically under the latest release/build milestone in plain English.
-  - Categorize changes under standard markdown headers: `### Added`, `### Changed & Improved`, or `### Fixed`.
-  - Use bold topic titles (`- **Feature / Topic Name**:`) followed by clear explanations and indented sub-bullets that document concrete user-facing behavior, edge cases, settings/INI changes, and migrations.
-
-## ANTI-PATTERNS (THIS PROJECT)
-
-### CRITICAL: InputHookService Hot Path
-```csharp
-// NEVER in KeyboardCallback/MouseCallback:
-- Allocations (no new objects, no LINQ, no string interpolation)
-- Locks (use volatile + Interlocked only)
-- Long-running operations
-
-// ALWAYS:
-- Check _isRunning first for early exit
-- Use pre-allocated timers
-- Guard LogDebug with IsDebugEnabled check
-```
-
-### Forbidden
-```csharp
-// CRITICAL: Do NOT fall back to standard launch if de-elevation fails
-// (ProcessLauncher.Launch: the catch after LaunchAsDesktopUser throws by design)
-
-```
-
-### Type Safety
-- Never `as any` or suppress errors
-- Nullability enabled project-wide
-
-## UNIQUE STYLES
-
-### Profile Switch State Management
-`ReleaseAllState()` called on profile switch:
-- Cancels all pending timers
-- Releases pressed keys (sends key-up)
-- Resets mouse button states
-- Clears override dictionaries
-
-### Timing Variance
-Synthetic input uses randomized hold/gap durations so presses register reliably and feel natural:
-- Thread-local `Random` shared by the input state machines
-- Variable key-press and click-hold durations; Rapid Fire adds 0–N ms to its base interval
-- This is NOT detection protection: every `SendInput` event carries the OS injected flag
-  (`LLKHF_INJECTED`/`LLMHF_INJECTED`) and a `dwExtraInfo` ownership tag. Do not describe or
-  extend it as anti-cheat evasion.
-
-### Alt Gesture Latch
-Alt gestures arm only on *physical* Alt, tracked per side in `GestureChordStateMachine`:
-- Physical Alt sides change only from non-injected hook events. The app's own tagged Alt holds
-  (hold-breath, macros, mappings) are tracked apart, because `GetAsyncKeyState` counts both
-- Each Alt trigger confirms the latched side with `GetAsyncKeyState`, which is exact inside a
-  non-Alt event; a side Windows reports up had its release missed, so it is cleared
-- Boundary re-baselines (`AdoptHeldAltFromWindows`) only add sides the app is not holding
-- Tests that press Alt must also set Windows' fake key state (`SetWindowsKeyDownForTesting`)
-
-### Special Profiles
-- **Window [Default]** (`ProfileConstants.WindowsProfileName`): Global fallback and global color settings, undeletable
-
-## COMMANDS
-
-```powershell
-# Build
-dotnet build sWinShortcuts.csproj
-
-# Run (starts minimized to tray)
-dotnet run --project sWinShortcuts.csproj
-
-# Test all
-dotnet test Tests/Tests.csproj
-
-# Test single class
-dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~ProfileManagerTests"
-
-# Test single method
-dotnet test Tests/Tests.csproj --filter "FullyQualifiedName~AddProfileAsync_DuplicateName"
-```
-
-## NOTES
-
-### Project Structure Quirks
-- Tests nested inside main project (excluded via .csproj `<Compile Remove="Tests\**\*.cs" />`)
-- Manual `AssemblyInfo.cs` (auto-generation disabled)
-- Uses both WPF and WinForms (`UseWindowsForms=true` for NotifyIcon)
-
-### Performance Considerations
-- Hooks fire on EVERY input event - keep callbacks fast
-- String interpolation in logs allocates - guard with `if (IsDebugEnabled)`
-- Pre-allocate `System.Threading.Timer` per mouse button
-
-### Known Limitations
-- Some protected processes don't expose executable path (falls back to process name)
-- Digital vibrance requires a supported NVIDIA driver or AMD Radeon Software Adrenalin 25.3.1+; other GPUs retain gamma-only color controls
-- De-elevation uses COM Shell.Application (complex path in ProcessLauncher)
-
-### Data Locations
-- Profiles: `%APPDATA%\sWinShortcuts\Profiles\{Name}.ini`
-- Window [Default] profile: `%APPDATA%\sWinShortcuts\Win.ini`
-- Debug log: `%APPDATA%\sWinShortcuts\debug.log`
-- Crash report: `%APPDATA%\sWinShortcuts\crash.log` (always on, independent of debug logging; capped at 512 KiB)
-
-### App-Level Toggle Keys & Rapid Fire
-- `ColorToggleKey` and `RapidFireToggleKey` are app-level toggle keys persisted in `sWinShortcuts.ini` `[App]`, assigned via Settings, and shown read-only in profile panes — they are NOT per-profile settings
-- Rapid Fire arm is a sticky SINGLE-OWNER session state: it survives profile switches, same-profile republishes, watchdog hook reinstalls, and `ReleaseForegroundState`, and clicks only while its owner is the settled active profile (`ProfileInputGenerationIsCurrent` + owner == active). Toggling in another RF-capable app RE-TARGETS the owner; toggling in a settled non-eligible context (desktop, or a profile without Rapid Fire) DISARMS the live arm — the primary-key escape hatch for an owner whose game was quit, at the cost that an incidental press in an app binding the same key also disarms (pick a non-conflicting key); a toggle during a foreground-generation mismatch still fails closed
-- Full disarm happens ONLY on: toggle-off, toggle-key reassignment, owner Identity edits, owner removal or master-off (both `ReconcileProfileSettings` paths), Advanced Mode off, session switch, and Stop/Start. Rapid Fire settings edits (enable, interval, jitter, right-button gate) keep the arm and only cancel the owner's burst in progress
-- `RapidFireArmChanged` (may-change event; handlers re-query `GetRapidFireArmStatus` and dedup) feeds the status dot overlay (`RapidFireStatusService`): green = Ready, gray = ArmedNotReady, hidden = Off
-- All INI persist/parse goes through `Utilities/IniExtensions.cs` with `CultureInfo.InvariantCulture` — never use culture-sensitive formatting in new keys
+Use Conventional Commit subjects such as `fix(input): stop auto-run refocus stutter`. Add a scope when it identifies the affected area. Describe the user-facing change and verification in the pull request. Link a related issue when one exists. Update `CHANGELOG.md` and the pending version for notable user-facing changes. Commit, push, or open or merge pull requests only when explicitly requested.

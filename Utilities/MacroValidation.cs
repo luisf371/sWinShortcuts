@@ -9,6 +9,7 @@ public static class MacroValidation
 {
     public const int MaxDefinitions = 64;
     public const int MaxSteps = 1_000;
+    public const int MaxPositionSlots = 8;
     public const int MaxDurationMs = 3_600_000;
 
     public static string? GetFormatError(MacroSettings settings)
@@ -118,6 +119,12 @@ public static class MacroValidation
             return "Wheel delta must be a nonzero signed 16-bit value.";
         }
 
+        if (step.Kind is MacroStepKind.SavePosition or MacroStepKind.MoveToSaved &&
+            step.Slot is < 1 or > MaxPositionSlots)
+        {
+            return $"Choose a saved position from 1 to {MaxPositionSlots}.";
+        }
+
         if (!Enum.IsDefined(step.HeldButtons))
         {
             return "The held mouse button option is unsupported.";
@@ -165,11 +172,21 @@ public static class MacroValidation
 
         var keysDown = new Dictionary<ushort, int>();
         var mouseDown = new Dictionary<Models.MouseButton, int>();
+        var savedSlots = 0;
         for (var index = 0; index < macro.Steps.Length; index++)
         {
             var step = macro.Steps[index];
             switch (step.Kind)
             {
+                case MacroStepKind.SavePosition:
+                    savedSlots |= 1 << (step.Slot - 1);
+                    break;
+                case MacroStepKind.MoveToSaved:
+                    if ((savedSlots & (1 << (step.Slot - 1))) == 0)
+                    {
+                        return $"Step {index + 1}: save position #{step.Slot} before moving to it.";
+                    }
+                    break;
                 case MacroStepKind.KeyDown:
                     keysDown.TryAdd(KeyInteropUtilities.ToVirtualKey(step.Key), index);
                     break;

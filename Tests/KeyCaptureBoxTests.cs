@@ -297,6 +297,62 @@ public sealed class KeyCaptureBoxTests : IDisposable
             Assert.Equal("F5", box.DisplayBox.Text);
         });
 
+    // Remaps, Alt + Shortcut, Auto-Run and Settings boxes never set AcceptsEscape, so Esc only cancels there.
+    [Fact]
+    public Task AcceptsEscape_ByDefault_IsOff() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(() =>
+        {
+            Assert.False(new KeyCaptureBox().AcceptsEscape);
+            return Task.CompletedTask;
+        });
+
+    [Fact]
+    public Task EscTap_AcceptsEscape_AssignsEscThroughTheHook() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var source = new FakeKeyCaptureSource();
+            KeyCaptureBox.CaptureSource = source;
+            var box = new KeyCaptureBox { AcceptsEscape = true, Chord = KeyChord.FromKey(Key.F5) };
+            ClickAssign(box);
+
+            Assert.Equal(KeyCaptureStatus.Pending, source.Press(VK_ESCAPE));
+            Assert.Equal(KeyCaptureStatus.Finished, source.Release(VK_ESCAPE));
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.FromKey(Key.Escape), box.Chord);
+        });
+
+    [Fact]
+    public Task EscTap_AcceptsEscapeWithoutAHook_AssignsEsc() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var box = new KeyCaptureBox { AcceptsEscape = true, Chord = KeyChord.FromKey(Key.F5) };
+            box.BeginCapture();
+
+            box.HandleFallbackKey(Key.Escape, isDown: true);
+            box.HandleFallbackKey(Key.Escape, isDown: false);
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.FromKey(Key.Escape), box.Chord);
+        });
+
+    [Fact]
+    public Task Cancel_AcceptsEscape_StillCancelsWithTheButton() =>
+        MacroRecordingLifetimeTests.RunOnStaAsync(async () =>
+        {
+            var box = new KeyCaptureBox { AcceptsEscape = true, Chord = KeyChord.FromKey(Key.F5) };
+            box.BeginCapture();
+            Assert.Equal("Cancel", box.AssignButton.Content);
+
+            box.AssignButton.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            await Dispatcher.Yield(DispatcherPriority.Background);
+
+            Assert.False(box.IsCapturing);
+            Assert.Equal(KeyChord.FromKey(Key.F5), box.Chord);
+        });
+
     [Fact]
     public Task EscHeldWhileAnotherKeyIsTapped_KeepsSwallowingAndCancelsOnRelease() =>
         MacroRecordingLifetimeTests.RunOnStaAsync(async () =>

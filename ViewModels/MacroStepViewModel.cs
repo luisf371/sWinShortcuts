@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using sWinShortcuts.Converters;
@@ -14,6 +16,11 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
 {
     private MacroStep _step;
     private readonly Func<bool> _canEdit;
+    private readonly Func<MacroStepViewModel, (int X, int Y)?> _positionBefore;
+    private readonly Func<MacroStepViewModel, int> _savedSlotBefore;
+    private (int X, int Y)? _lastPosition;
+    private (int X, int Y)? _lastOffset;
+    private MacroStepKind _lastOffsetKind = MacroStepKind.MoveCursorBy;
     private int _number;
     private string _xText;
     private string _yText;
@@ -26,10 +33,17 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     private string _problem = string.Empty;
     private bool _isWaitTarget;
 
-    public MacroStepViewModel(MacroStep step, Func<bool> canEdit)
+    public static IReadOnlyList<KeyValuePair<int, string>> SlotOptions { get; } =
+        Enumerable.Range(1, MacroValidation.MaxPositionSlots)
+            .Select(slot => new KeyValuePair<int, string>(slot, FormatSlot(slot))).ToArray();
+
+    public MacroStepViewModel(MacroStep step, Func<bool> canEdit, Func<MacroStepViewModel, (int X, int Y)?> positionBefore,
+        Func<MacroStepViewModel, int> savedSlotBefore)
     {
         _step = step;
         _canEdit = canEdit;
+        _positionBefore = positionBefore;
+        _savedSlotBefore = savedSlotBefore;
         _xText = step.X.ToString(CultureInfo.InvariantCulture);
         _yText = step.Y.ToString(CultureInfo.InvariantCulture);
         _durationText = step.DurationMs.ToString(CultureInfo.InvariantCulture);
@@ -51,16 +65,46 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public MacroStepKind Kind
     {
         get => _step.Kind;
-        set => Change(_step with
+        set
         {
-            Kind = value,
-            Key = _step.Key == Key.None ? Key.A : _step.Key,
-            MouseButton = _step.MouseButton ?? sWinShortcuts.Models.MouseButton.Left,
-            WheelDelta = _step.WheelDelta == 0 ? 120 : _step.WheelDelta,
-            // A 0 ms Wait does nothing (an auto-hold Key press converts to one); start it like a new Wait step.
-            DurationMs = value == MacroStepKind.Wait && _step.DurationMs == 0 ? MacroViewModel.DEFAULT_WAIT_MS : _step.DurationMs
-        });
+            if (!_canEdit()) return;
+            if (HasOffset && Kind != value) _lastOffsetKind = Kind;
+
+            var isPosition = value is MacroStepKind.MoveTo or MacroStepKind.MouseClick;
+            var isOffset = value is MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy;
+            var groupChanged = HasCoordinates != isPosition || HasOffset != isOffset;
+            var coordinates = (X, Y);
+            if (groupChanged)
+            {
+                if (HasCoordinates) _lastPosition = coordinates;
+                if (HasOffset) _lastOffset = coordinates;
+
+                if (isPosition) coordinates = _lastPosition ?? _positionBefore(this) ?? (0, 0);
+                if (isOffset) coordinates = _lastOffset ?? (0, 0);
+            }
+
+            var slot = Slot;
+            if (slot == 0)
+            {
+                if (value == MacroStepKind.SavePosition) slot = 1;
+                if (value == MacroStepKind.MoveToSaved) slot = _savedSlotBefore(this);
+            }
+
+            Change(_step with
+            {
+                Kind = value,
+                Slot = slot,
+                X = coordinates.X,
+                Y = coordinates.Y,
+                Key = _step.Key == Key.None ? Key.A : _step.Key,
+                MouseButton = _step.MouseButton ?? sWinShortcuts.Models.MouseButton.Left,
+                WheelDelta = _step.WheelDelta == 0 ? 120 : _step.WheelDelta,
+                // A 0 ms Wait does nothing (an auto-hold Key press converts to one); start it like a new Wait step.
+                DurationMs = value == MacroStepKind.Wait && _step.DurationMs == 0 ? MacroViewModel.DEFAULT_WAIT_MS : _step.DurationMs
+            }, resetCoordinateText: groupChanged);
+        }
     }
+    public int Slot { get => _step.Slot; set => Change(_step with { Slot = value }); }
     public Key Key { get => _step.Key; set => Change(_step with { Key = value }); }
     public MouseButton? MouseButton { get => _step.MouseButton; set => Change(_step with { MouseButton = value }); }
     public int X { get => _step.X; set => XText = value.ToString(CultureInfo.InvariantCulture); }
@@ -79,7 +123,22 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public bool HasMouseButton => Kind is MacroStepKind.MouseClick or MacroStepKind.MouseDown or MacroStepKind.MouseUp;
     public bool HasCoordinates => Kind is MacroStepKind.MouseClick or MacroStepKind.MoveTo;
     public bool HasOffset => Kind is MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy;
-    public bool HasHeldButtons => Kind is MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy;
+    public bool HasSlot => Kind is MacroStepKind.SavePosition or MacroStepKind.MoveToSaved;
+    public bool IsMove => Kind is MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy or MacroStepKind.MoveToSaved;
+    public MacroStepKind ActionChoice
+    {
+        get => IsMove ? MacroStepKind.MoveTo : Kind;
+        set
+        {
+            if (value != MacroStepKind.MoveTo || !IsMove) Kind = value;
+        }
+    }
+    public bool MoveIsPosition { get => Kind == MacroStepKind.MoveTo; set { if (value) Kind = MacroStepKind.MoveTo; } }
+    public bool MoveIsOffset { get => HasOffset; set { if (value && !HasOffset) Kind = _lastOffsetKind; } }
+    public bool MoveIsSaved { get => Kind == MacroStepKind.MoveToSaved; set { if (value) Kind = MacroStepKind.MoveToSaved; } }
+    public bool MoveAsPixels { get => Kind == MacroStepKind.MoveCursorBy; set { if (value) Kind = MacroStepKind.MoveCursorBy; } }
+    public bool MoveAsRaw { get => Kind == MacroStepKind.MoveMouseBy; set { if (value) Kind = MacroStepKind.MoveMouseBy; } }
+    public bool HasHeldButtons => IsMove;
     public MacroHeldButtonPolicy HeldButtons
     {
         get => _step.HeldButtons;
@@ -103,7 +162,9 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     {
         MacroStepKind.KeyPress => "Key press", MacroStepKind.KeyDown => "Key down", MacroStepKind.KeyUp => "Key up",
         MacroStepKind.MouseClick => "Mouse click", MacroStepKind.MouseDown => "Mouse down", MacroStepKind.MouseUp => "Mouse up",
-        MacroStepKind.MoveTo => "Move to", MacroStepKind.MoveCursorBy => "Move cursor by", MacroStepKind.MoveMouseBy => "Move mouse by", MacroStepKind.MouseWheel => "Mouse wheel",
+        MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy or MacroStepKind.MoveToSaved => "Move",
+        MacroStepKind.SavePosition => "Save position",
+        MacroStepKind.MouseWheel => "Mouse wheel",
         MacroStepKind.FreezeMouse => "Freeze mouse", MacroStepKind.UnfreezeMouse => "Unfreeze mouse", _ => "Wait"
     };
 
@@ -114,7 +175,10 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.MouseClick => $"{ButtonText} at {PositionText}",
         MacroStepKind.MouseDown or MacroStepKind.MouseUp => ButtonText,
         MacroStepKind.MoveTo => PositionText,
-        MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy => $"{X.ToString("+0;-0;0", CultureInfo.InvariantCulture)}, {Y.ToString("+0;-0;0", CultureInfo.InvariantCulture)}",
+        MacroStepKind.SavePosition => FormatSlot(Slot),
+        MacroStepKind.MoveToSaved => $"to saved {FormatSlot(Slot)}",
+        MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy =>
+            FormattableString.Invariant($"{X:+0;-0;0}, {Y:+0;-0;0} {(MoveAsPixels ? "px" : "raw")}"),
         MacroStepKind.MouseWheel => $"{WheelDelta.ToString("+0;-0;0", CultureInfo.InvariantCulture)} {(HorizontalWheel ? "horizontal" : "vertical")}",
         _ => string.Empty
     };
@@ -155,10 +219,12 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.MouseUp => "Releases a button held by an earlier Mouse down step.",
         MacroStepKind.MoveTo => "Moves the cursor to exact screen pixels at up to 9,000 px/s.",
         MacroStepKind.MoveCursorBy => "Moves the on-screen cursor this many pixels from where it is when the step runs. " +
-            "Positive X is right, positive Y is down. Fails if that lands off-screen. Doesn't turn a game's camera; use Move mouse by for that.",
+            "Positive X is right, positive Y is down. Fails if that lands off-screen. Use Raw to turn a game camera.",
         MacroStepKind.MoveMouseBy => "Sends mouse movement the way a real mouse does, for turning a game camera. " +
-            "How far it turns depends on the game's sensitivity; on the desktop, Windows mouse speed changes the distance. " +
-            "Use Move cursor by for exact pixels.",
+            "The game's sensitivity controls how far the camera turns. Windows mouse speed controls the distance on the desktop. " +
+            "Use Pixels for exact screen distances.",
+        MacroStepKind.SavePosition => "Remembers where the cursor is now in the chosen slot. A later Move set to Saved returns there.",
+        MacroStepKind.MoveToSaved => "Moves the cursor back to the position saved in the chosen slot, like a move to a position. Stops if that spot is no longer on a screen.",
         MacroStepKind.MouseWheel => "120 is one notch. Negative values scroll down or left.",
         MacroStepKind.FreezeMouse => "Blocks your physical mouse movement until an Unfreeze mouse step or the end of the macro. " +
             "The macro's own cursor moves still work; F12 stops playback. Some games read the mouse directly and may still see movement.",
@@ -173,6 +239,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         sWinShortcuts.Models.MouseButton.XButton2 => "Button 5",
         _ => button.ToString()
     };
+    private static string FormatSlot(int slot) => $"#{slot.ToString(CultureInfo.InvariantCulture)}";
     private string PositionText => $"{X.ToString(CultureInfo.InvariantCulture)}, {Y.ToString(CultureInfo.InvariantCulture)}";
     private string MillisecondsText => $"{DurationMs.ToString(CultureInfo.InvariantCulture)} ms";
     public string Error =>
@@ -243,13 +310,14 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         }
     }
 
-    private void Change(MacroStep value, [CallerMemberName] string? propertyName = null)
+    private void Change(MacroStep value, [CallerMemberName] string? propertyName = null, bool resetCoordinateText = false)
     {
         if (!_canEdit() || (value == _step && propertyName != string.Empty)) return;
         var previous = _step;
         _step = value;
-        if (previous.X != X || propertyName == string.Empty) _xText = X.ToString(CultureInfo.InvariantCulture);
-        if (previous.Y != Y || propertyName == string.Empty) _yText = Y.ToString(CultureInfo.InvariantCulture);
+        resetCoordinateText |= propertyName == string.Empty;
+        if (previous.X != X || resetCoordinateText) _xText = X.ToString(CultureInfo.InvariantCulture);
+        if (previous.Y != Y || resetCoordinateText) _yText = Y.ToString(CultureInfo.InvariantCulture);
         if (previous.DurationMs != DurationMs) _durationText = DurationMs.ToString(CultureInfo.InvariantCulture);
         if (previous.WheelDelta != WheelDelta) _wheelDeltaText = WheelDelta.ToString(CultureInfo.InvariantCulture);
         OnPropertyChanged(nameof(XText));
@@ -280,6 +348,15 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
             OnPropertyChanged(nameof(HasMouseButton));
             OnPropertyChanged(nameof(HasCoordinates));
             OnPropertyChanged(nameof(HasOffset));
+            OnPropertyChanged(nameof(HasSlot));
+            OnPropertyChanged(nameof(Slot));
+            OnPropertyChanged(nameof(IsMove));
+            OnPropertyChanged(nameof(ActionChoice));
+            OnPropertyChanged(nameof(MoveIsPosition));
+            OnPropertyChanged(nameof(MoveIsOffset));
+            OnPropertyChanged(nameof(MoveIsSaved));
+            OnPropertyChanged(nameof(MoveAsPixels));
+            OnPropertyChanged(nameof(MoveAsRaw));
             OnPropertyChanged(nameof(HasHeldButtons));
             OnPropertyChanged(nameof(HasDuration));
             OnPropertyChanged(nameof(HasHold));

@@ -220,5 +220,38 @@ public sealed class MacroModelTests
         Assert.Null(MacroValidation.GetPlaybackError(Assigned(unfreeze)));
     }
 
+    [Fact]
+    public void GetPlaybackError_MoveToSavedBeforeItsSave_ReportsTheStep()
+    {
+        var macro = Assigned(
+            new MacroStep { Kind = MacroStepKind.SavePosition, Slot = 1 },
+            new MacroStep { Kind = MacroStepKind.MoveToSaved, Slot = 2 },
+            new MacroStep { Kind = MacroStepKind.SavePosition, Slot = 2 });
+
+        Assert.Null(MacroValidation.GetFormatError(macro));
+        Assert.Equal("Step 2: save position #2 before moving to it.", MacroValidation.GetPlaybackError(macro));
+    }
+
+    [Fact]
+    public void GetPlaybackError_SaveWithoutReturn_IsAllowed()
+    {
+        var macro = Assigned(new MacroStep { Kind = MacroStepKind.SavePosition, Slot = 8 });
+
+        Assert.Null(MacroValidation.GetPlaybackError(macro));
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.SavePosition, 0)]
+    [InlineData(MacroStepKind.SavePosition, 9)]
+    [InlineData(MacroStepKind.SavePosition, -1)]
+    [InlineData(MacroStepKind.MoveToSaved, 0)]
+    [InlineData(MacroStepKind.MoveToSaved, 9)]
+    [InlineData(MacroStepKind.MoveToSaved, -1)]
+    public void GetStepError_SlotOutOfRange_IsRejected(MacroStepKind kind, int slot)
+    {
+        Assert.Equal("Choose a saved position from 1 to 8.",
+            MacroValidation.GetStepError(new MacroStep { Kind = kind, Slot = slot }));
+    }
+
     private static MacroDefinition Assigned(params MacroStep[] steps) => new() { ShortcutKey = Key.F6, Steps = steps };
 }

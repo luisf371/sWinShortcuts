@@ -210,8 +210,8 @@ Shortcut conflicts and incomplete sequences are shown in the editor and cannot r
 
 Two header rows sit above the sequence. The first picks the macro: the macro list, its own
 **On** switch and status (**Ready**, **Off**, a short reason, or **Fix step N** when one step
-needs attention), **New…**, and **⋯** for **Rename…**, **Duplicate**, **Clear all steps…**, and
-**Delete macro…**. The second sets when it runs: the Ctrl/Alt/Shift/Win modifiers, the key or
+needs attention), **New…**, and **⋯** for **Rename…**, **Duplicate**, **Export to clipboard**,
+**Import from clipboard**, **Clear all steps…**, and **Delete macro…**. The second sets when it runs: the Ctrl/Alt/Shift/Win modifiers, the key or
 mouse button, and the **Playback** button, whose label shows what is set (for example **Once**
 or **Loop · on press**). Its menu holds **Play once per press** or **Loop until pressed
 again**, **Start when released** or **Start when pressed**, and **Stop when the mouse moves**.
@@ -219,12 +219,20 @@ again**, **Start when released** or **Start when pressed**, and **Stop when the 
 available number to its name, such as **Ammo 1** and **Ammo 2**, and the copy starts off
 without a shortcut.
 
+**Export to clipboard** copies the selected macro as a code that starts with `SWSM:` and ends with
+`:74656B6B79:`. **Import from clipboard** accepts one complete code at a time. Line breaks between the
+markers are allowed. An incomplete or invalid code shows an error. The code leaves out the shortcut
+and the **On** state, so an imported macro starts off without a shortcut. It keeps
+its name, or gets the next free number when another macro already uses that name. A code made
+on a different screen layout keeps its screen positions and shows a warning with how many fall
+outside your screens. Codes from a newer version of the app ask you to update first.
+
 The sequence stays beside an inspector for the selected step. New steps and recordings go
 at the end unless you select a step, which inserts after it; the **New steps go** hint in
 the toolbar shows where. **Add step** lets you choose an action directly: a new **Wait**
-starts at 100 ms, and a new **Move to** or **Mouse click** starts at the macro's nearest
-earlier position. **Clear all steps…** (under **⋯**) removes every step after asking, for
-example to record a macro again; its name, shortcut, and options stay.
+starts at 100 ms. A new **Move** starts in **Position** mode. Both **Move** and **Mouse click**
+start at the macro's nearest earlier position. **Clear all steps…** (under **⋯**) removes every
+step after asking, for example to record a macro again; its name, shortcut, and options stay.
 With the step list focused, use **Delete** to remove a step, **Ctrl+D** to duplicate it,
 and **Alt+Up/Down** to reorder it. **Fix step N** jumps to the row named in a validation error;
 that row shows a warning mark, and the step editor shows the full message.
@@ -268,9 +276,10 @@ does not capture free cursor movement. Interrupted or capacity-limited takes ret
 their captured prefix and add release rows for inputs still held. Each macro supports
 1,000 steps, each profile supports 64 macros, and one recording lasts at most 10 minutes.
 
-Mouse positions are signed absolute physical screen pixels, including monitors left of
-or above the primary display. The coordinate picker gives you three seconds to move
-the cursor. Playback travels along a quick, slightly curved path with a shared
+**Move** in **Position** mode moves to a fixed screen position. **Position** and **Mouse click**
+use signed physical screen pixels, including monitors left of or above the primary display.
+**Pick in 3 s** gives you three seconds to move the cursor and shows a countdown beside it; the
+Windows cursor itself never changes. While it runs, the button becomes **Cancel**. Playback travels along a quick, slightly curved path with a shared
 9,000-pixel/second speed cap and checks arrival before clicking. Travel adds time to
 the saved waits. Clipped cursors, changed display geometry, and paths crossing monitor gaps stop playback with
 an explanation; the app does not remove a game's cursor confinement.
@@ -297,7 +306,7 @@ playback when you move the mouse, including during waits and held inputs. Inject
 movement does not trigger this option. Coordinate actions still require arrival at the
 requested pixel before continuing.
 
-A **Freeze mouse** step blocks your physical mouse movement from that row on, so **Move to**
+A **Freeze mouse** step blocks your physical mouse movement from that row on, so **Move**
 and **Mouse click** steps are not pushed off their pixels; an **Unfreeze mouse** step lets the
 mouse move again. Only physical movement is blocked: the macro's own cursor moves, your mouse
 buttons, and the wheel work as usual. A freeze always ends with the run, whether it completes
@@ -307,22 +316,31 @@ is frozen, **Stop when the mouse moves** does not trigger; it applies again afte
 mouse**. The freeze stops the Windows cursor, but games that read raw mouse input may still
 see the motion.
 
-A **Move cursor by** step moves the cursor a set number of pixels from wherever it is when the
-step runs (positive X is right, positive Y is down) instead of to a fixed position. It uses the
-same smooth movement and arrival check as **Move to**, so an offset that would land off every
-screen stops the macro. It moves the on-screen cursor, so it does not turn the camera in games
-that hide and recenter the cursor.
+**Move** in **Offset** mode uses a distance from where the cursor is when the step runs.
+Positive X moves right. Positive Y moves down. Switch between **Position** and **Offset**
+to edit each mode's own X and Y values. **Offset** has two choices:
 
-A **Move mouse by** step sends the same kind of offset as mouse movement, the way a real mouse
-does, so games that read the mouse directly turn the camera. It moves smoothly at the same speed
-as **Move to**. The offset is mouse movement rather than exact pixels: the game's sensitivity
-decides how far the camera turns, and on the desktop Windows mouse speed changes the distance.
-Windows marks the movement as software-generated, and some games ignore that kind of input.
+- **Pixels** moves the on-screen cursor by an exact screen distance. It uses the same smooth
+  movement and arrival check as **Position**. A destination off every screen stops the macro.
+- **Raw** sends movement the way a real mouse does. Use it to turn the camera in games that
+  read the mouse directly. It moves smoothly at the same speed as **Position**. The game's
+  sensitivity controls the turn distance. Windows mouse speed controls the distance on the
+  desktop. Windows marks the movement as software-generated, and some games ignore it.
 
-Each move step (**Move to**, **Move cursor by**, **Move mouse by**) has an **If a mouse button is
-held** choice. **Stop** (the default) stops the macro at that step; **Wait** pauses until every
-mouse button is released, then continues; **Move anyway** moves with the button held, which drags
-on the desktop. The macro's own shortcut button never counts as held, and keyboard keys never block
+**Measure**, beside **Pixels** and **Raw**, fills in the offset for you. You get three seconds to
+point at where the move starts. Then a ruler shows the distance from there until you click where
+the move should end. **Esc**, a right click, or 30 seconds cancels and keeps the old offset. With
+**Raw**, the shown distance is approximate, because the game's sensitivity decides how far Raw
+movement turns. The ruler takes focus while it is open, so a game may minimize or pause.
+
+A **Save position** step stores the cursor's current screen position in one of eight slots, **#1** through **#8**.
+Set a **Move** step to **Saved** and choose the same slot to return there. A Saved move must come after a
+**Save position** step with the same number. It stops the macro if the saved spot is no longer on a screen.
+Games that hide and recenter the cursor save the recentered spot. Put a **10 ms Wait** between a **Raw** move and a **Save position** step.
+
+Every **Move** step has an **If a mouse button is held** choice. **Stop** is the default and
+stops the macro at that step. **Wait** pauses until every mouse button is released.
+**Move anyway** moves with the button held, which drags on the desktop. The macro's own shortcut button never counts as held, and keyboard keys never block
 a move.
 
 With **Enable Debug Logging** on, macro diagnostics include session states, step numbers
@@ -367,7 +385,8 @@ Pressing only a modifier assigns that key itself, such as **LShift** for Sprint.
 triggers, macro shortcuts and Hold-breath Early Cancel also capture a mouse button pressed over
 the box. Alt + Shortcut triggers and Key Mapping sources capture a wheel notch scrolled over it.
 Press **Esc**, click **Cancel**, click outside the box, or switch windows to keep the old value.
-**Esc** only cancels and can't be assigned. Click **✕** to clear a key.
+**Esc** only cancels and can't be assigned, except in a macro step's **Key** box: there Esc is
+assigned like any other key, so cancel with **Cancel** or a click outside the box. Click **✕** to clear a key.
 Capture also ends after 10 seconds without input or 30 seconds overall. While a capture runs,
 keystrokes go only to the box, so shortcuts such as Win+E, Alt+Tab and the app's own hotkeys
 don't fire. If input hooks aren't running, the box captures through the window instead and

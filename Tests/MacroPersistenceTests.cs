@@ -174,6 +174,34 @@ public sealed class MacroPersistenceTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndLoad_SavedPositionSteps_RoundTripSlotsAndNonDefaultHeldButtonOptions()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        profile.Macros.Definitions = [new()
+        {
+            ShortcutKey = Key.F6,
+            Steps =
+            [
+                new() { Kind = MacroStepKind.SavePosition, Slot = 8 },
+                new() { Kind = MacroStepKind.MoveToSaved, Slot = 8 },
+                new() { Kind = MacroStepKind.MoveToSaved, Slot = 8, HeldButtons = MacroHeldButtonPolicy.Wait },
+                new() { Kind = MacroStepKind.MoveToSaved, Slot = 8, HeldButtons = MacroHeldButtonPolicy.Allow }
+            ]
+        }];
+
+        await _store.SaveProfileAsync(profile, CancellationToken.None);
+        var loaded = (await _store.LoadProfilesAsync(CancellationToken.None)).Single(p => p.Name == "Game");
+
+        Assert.False(loaded.IsPersistenceSuspended);
+        Assert.Equal(profile.Macros.Definitions[0].Steps, loaded.Macros.Definitions[0].Steps);
+        var ini = IniDocument.Load(profile.SourcePath);
+        Assert.Equal(new[] { "Kind", "Slot" }, ini.GetSection("Macro0.Step0").Keys);
+        Assert.Equal(new[] { "Kind", "Slot" }, ini.GetSection("Macro0.Step1").Keys);
+        Assert.Equal("Wait", ini.GetValue("Macro0.Step2", "HeldButtons"));
+        Assert.Equal("Allow", ini.GetValue("Macro0.Step3", "HeldButtons"));
+    }
+
+    [Fact]
     public async Task SaveAndLoad_MouseFreezeSteps_RoundTripWithOnlyTheirKind()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -214,6 +242,13 @@ public sealed class MacroPersistenceTests : IDisposable
     [InlineData("Kind=MoveMouseBy\nX=0\nY=0\nHeldButtons=\n")]
     [InlineData("Kind=MoveMouseBy\nX=0\nY=0\nHeldButtons=7\n")]
     [InlineData("Kind=MoveMouseBy\nX=1\n")]
+    [InlineData("Kind=SavePosition\n")]
+    [InlineData("Kind=SavePosition\nSlot=broken\n")]
+    [InlineData("Kind=SavePosition\nSlot=0\n")]
+    [InlineData("Kind=MoveToSaved\n")]
+    [InlineData("Kind=MoveToSaved\nSlot=1.0\n")]
+    [InlineData("Kind=MoveToSaved\nSlot=9\n")]
+    [InlineData("Kind=MoveToSaved\nSlot=1\nHeldButtons=Sometimes\n")]
     [InlineData("Kind=MouseDown\nMouseButton=99\nX=0\nY=0\n")]
     [InlineData("Kind=MouseWheel\nWheelDelta=-120\nX=0\nY=0\nHorizontalWheel=\n")]
     public async Task LoadMacros_MalformedStepField_SuspendsUnrelatedSaves(string invalidFields)

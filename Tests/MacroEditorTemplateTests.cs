@@ -193,6 +193,12 @@ public sealed class MacroEditorTemplateTests
             Assert.Same(profile.Macros.DuplicateMacroCommand, MenuItemNamed(more, "Duplicate macro").Command);
             Assert.Same(profile.Macros.ClearStepsCommand, MenuItemNamed(more, "Clear all steps").Command);
             Assert.Same(profile.Macros.DeleteMacroCommand, MenuItemNamed(more, "Delete macro").Command);
+            Assert.Same(profile.Macros.ExportMacroCommand, MenuItemNamed(more, "Export macro to clipboard").Command);
+            Assert.Same(profile.Macros.ImportMacroCommand, MenuItemNamed(more, "Import macro from clipboard").Command);
+            // Import must stay reachable in a profile with no macros, so More never follows the selection.
+            var moreButton = Assert.Single(controls.OfType<Button>(), button => AutomationProperties.GetName(button) == "More macro commands");
+            Assert.Null(BindingOperations.GetBindingExpression(moreButton, UIElement.IsEnabledProperty));
+            Assert.True(moreButton.IsEnabled);
             var newButtons = controls.OfType<Button>()
                 .Where(button => AutomationProperties.GetName(button) is "New macro" or "Create first macro").ToArray();
             Assert.Equal(2, newButtons.Length);
@@ -298,10 +304,13 @@ public sealed class MacroEditorTemplateTests
             Assert.True(stop.Focusable);
             Assert.False(stop.IsEnabled);
             Assert.DoesNotContain(controls.OfType<Button>(), button => AutomationProperties.GetName(button).Contains("Stop playback", StringComparison.Ordinal));
-            // Selector, press button, step action and step button; every key field is a capture box.
-            Assert.Equal(4, controls.OfType<ComboBox>().Count());
+            Assert.Equal(new[] { "Press mouse button", "Saved position number", "Selected macro", "Step action", "Step mouse button" },
+                controls.OfType<ComboBox>().Select(box => AutomationProperties.GetName(box)).Order());
             Assert.Equal(new[] { "Macro shortcut", "Press key", "Step key" },
                 controls.OfType<KeyCaptureBox>().Select(box => AutomationProperties.GetName(box)).Order().ToArray());
+            // Esc is a key only where a macro step presses it; the shortcut keeps Esc as cancel.
+            Assert.Equal(new[] { "Press key", "Step key" },
+                controls.OfType<KeyCaptureBox>().Where(box => box.AcceptsEscape).Select(box => AutomationProperties.GetName(box)).Order().ToArray());
             var cancelOnMovement = MenuItemNamed(playback, "Cancel on mouse movement");
             Assert.False(cancelOnMovement.IsChecked);
             cancelOnMovement.SetCurrentValue(MenuItem.IsCheckedProperty, true);
@@ -328,9 +337,9 @@ public sealed class MacroEditorTemplateTests
             var pickerBottom = coordinatePicker.TransformToAncestor(host).Transform(new Point(0, coordinatePicker.ActualHeight)).Y;
             Assert.True(pickerBottom <= host.ActualHeight, $"Coordinate picker bottom {pickerBottom} exceeds viewport {host.ActualHeight}.");
 
-            // Move to is the tallest move inspector: position, picker, then the held-button choice. The choice sits
-            // below the picker, so the picker stays in view (the inspector scrolls for the rest) and the choices fit its width.
-            macro.SelectedStep!.Kind = MacroStepKind.MoveTo;
+            // The Position picker stays in view, and the inspector can scroll to the held-button choice.
+            var actionChoice = Assert.Single(controls.OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Step action");
+            actionChoice.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedValueProperty, MacroStepKind.MoveTo);
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             host.UpdateLayout();
             var moveAnyway = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "If a mouse button is held, move anyway");
@@ -340,11 +349,71 @@ public sealed class MacroEditorTemplateTests
             Assert.True(moveAnyway.ActualHeight > 0);
             var movePicker = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Pick screen coordinates after three seconds");
             var movePickerBottom = movePicker.TransformToAncestor(host).Transform(new Point(0, movePicker.ActualHeight)).Y;
-            Assert.True(movePickerBottom <= host.ActualHeight, $"Move to picker bottom {movePickerBottom} exceeds viewport {host.ActualHeight}.");
+            Assert.True(movePickerBottom <= host.ActualHeight, $"Position picker bottom {movePickerBottom} exceeds viewport {host.ActualHeight}.");
             var inspector = Assert.IsAssignableFrom<FrameworkElement>(heldGroup.Parent);
             var heldRight = moveAnyway.TransformToAncestor(inspector).Transform(new Point(moveAnyway.ActualWidth, 0)).X;
             Assert.True(heldRight <= inspector.ActualWidth, $"Held-button choice right edge {heldRight} exceeds inspector width {inspector.ActualWidth}.");
-            macro.SelectedStep!.Kind = MacroStepKind.MouseClick;
+
+            var offset = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "Move by an offset");
+            var moveModes = Assert.IsType<Border>(Assert.IsType<StackPanel>(offset.Parent).Parent);
+            Assert.Equal(Visibility.Visible, moveModes.Visibility);
+            Assert.True(moveModes.ActualWidth > 0);
+            var offsetRight = moveModes.TransformToAncestor(inspector).Transform(new Point(moveModes.ActualWidth, 0)).X;
+            Assert.True(offsetRight <= inspector.ActualWidth, $"Offset mode right edge {offsetRight} exceeds inspector width {inspector.ActualWidth}.");
+            offset.SetCurrentValue(RadioButton.IsCheckedProperty, true);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+            Assert.Equal(MacroStepKind.MoveCursorBy, macro.SelectedStep!.Kind);
+            var raw = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "Move with raw mouse movement");
+            var offsetUnits = Assert.IsType<Border>(Assert.IsType<StackPanel>(raw.Parent).Parent);
+            Assert.Equal(Visibility.Visible, Assert.IsType<StackPanel>(offsetUnits.Parent).Visibility);
+            Assert.True(offsetUnits.ActualWidth > 0);
+            var rawRight = offsetUnits.TransformToAncestor(inspector).Transform(new Point(offsetUnits.ActualWidth, 0)).X;
+            Assert.True(rawRight <= inspector.ActualWidth, $"Raw option right edge {rawRight} exceeds inspector width {inspector.ActualWidth}.");
+            // Measure shares the Pixels | Raw row and stays fully in view at the minimum window size.
+            var measure = Assert.Single(Descendants(view).OfType<Button>(), button => AutomationProperties.GetName(button) == "Measure offset");
+            Assert.Equal(Visibility.Visible, measure.Visibility);
+            Assert.True(measure.ActualWidth > 0);
+            var measureCorner = measure.TransformToAncestor(inspector).Transform(new Point(measure.ActualWidth, measure.ActualHeight));
+            Assert.True(measureCorner.X <= inspector.ActualWidth, $"Measure right edge {measureCorner.X} exceeds inspector width {inspector.ActualWidth}.");
+            var measureBottom = measure.TransformToAncestor(host).Transform(new Point(0, measure.ActualHeight)).Y;
+            Assert.True(measureBottom <= host.ActualHeight, $"Measure bottom {measureBottom} exceeds viewport {host.ActualHeight}.");
+            raw.SetCurrentValue(RadioButton.IsCheckedProperty, true);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal(MacroStepKind.MoveMouseBy, macro.SelectedStep.Kind);
+            Assert.Equal(MacroStepKind.MoveTo, actionChoice.SelectedValue);
+            Assert.True(offset.IsChecked);
+
+            var saved = Assert.Single(Descendants(view).OfType<RadioButton>(), radio => AutomationProperties.GetName(radio) == "Move to a saved position");
+            var modeButtons = Assert.IsType<StackPanel>(saved.Parent).Children.OfType<RadioButton>().ToArray();
+            Assert.Equal(new[] { "Position", "Offset", "Saved" }, modeButtons.Select(radio => (string)radio.Content));
+            Assert.Same(moveModes, Assert.IsType<Border>(Assert.IsType<StackPanel>(saved.Parent).Parent));
+            Assert.True(saved.ActualWidth > 0);
+            var savedRight = saved.TransformToAncestor(inspector).Transform(new Point(saved.ActualWidth, 0)).X;
+            Assert.True(savedRight <= inspector.ActualWidth, $"Saved mode right edge {savedRight} exceeds inspector width {inspector.ActualWidth}.");
+            var slot = Assert.Single(Descendants(view).OfType<ComboBox>(), box => AutomationProperties.GetName(box) == "Saved position number");
+            var slotRow = Assert.IsType<StackPanel>(slot.Parent);
+            Assert.Equal(Visibility.Collapsed, slotRow.Visibility);
+
+            saved.SetCurrentValue(RadioButton.IsCheckedProperty, true);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            host.UpdateLayout();
+
+            Assert.Equal(MacroStepKind.MoveToSaved, macro.SelectedStep.Kind);
+            Assert.Equal(MacroStepKind.MoveTo, actionChoice.SelectedValue);
+            Assert.Same(saved, Assert.Single(modeButtons, radio => radio.IsChecked == true));
+            Assert.Equal(Visibility.Visible, slotRow.Visibility);
+            Assert.True(slot.ActualHeight > 0);
+            Assert.Equal(1, slot.SelectedValue);
+            Assert.Equal(Enumerable.Range(1, 8).Select(number => $"#{number}"),
+                slot.Items.Cast<KeyValuePair<int, string>>().Select(option => option.Value));
+            var slotBounds = slot.TransformToAncestor(host).TransformBounds(new Rect(slot.RenderSize));
+            Assert.True(new Rect(host.RenderSize).Contains(slotBounds), $"Slot picker exceeds the view: {slotBounds}.");
+            slot.SetCurrentValue(System.Windows.Controls.Primitives.Selector.SelectedValueProperty, 8);
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            Assert.Equal(8, macro.SelectedStep.Slot);
+
+            macro.SelectedStep.Kind = MacroStepKind.MouseClick;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
 
             // Stop stays operable with the section off and the profile disabled while recording.
@@ -390,7 +459,9 @@ public sealed class MacroEditorTemplateTests
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             Assert.Same(second, menu.DataContext);
             var actions = menu.Items.OfType<MenuItem>().ToArray();
-            Assert.Equal(Enum.GetValues<MacroStepKind>().Order(), actions.Select(item => (MacroStepKind)item.CommandParameter).Order());
+            Assert.Equal(MacroViewModel.ActionOptions.Select(option => option.Key).Order(),
+                actions.Select(item => (MacroStepKind)item.CommandParameter).Order());
+            Assert.Equal(MacroStepKind.MoveTo, Assert.Single(actions, item => (string)item.Header == "Move").CommandParameter);
             // Activate the actual template trigger without a native window or physical pointer.
             var highlightKey = Assert.IsType<DependencyPropertyKey>(typeof(MenuItem).GetField("IsHighlightedPropertyKey",
                 System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!.GetValue(null));

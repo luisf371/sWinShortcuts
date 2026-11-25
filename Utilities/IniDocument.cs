@@ -13,8 +13,6 @@ public sealed class IniDocument
 
     public static IniDocument Load(string path)
     {
-        var document = new IniDocument();
-
         string[] lines;
         try
         {
@@ -22,13 +20,22 @@ public sealed class IniDocument
         }
         catch (FileNotFoundException)
         {
-            return document;
+            return new IniDocument();
         }
         catch (DirectoryNotFoundException)
         {
-            return document;
+            return new IniDocument();
         }
 
+        return Parse(lines);
+    }
+
+    // Same line splitting as File.ReadAllLines (CR, LF, CRLF only; ReplaceLineEndings would also split on U+2028).
+    public static IniDocument Parse(string text) => Parse(text.Split(["\r\n", "\r", "\n"], StringSplitOptions.None));
+
+    private static IniDocument Parse(string[] lines)
+    {
+        var document = new IniDocument();
         string currentSection = string.Empty;
 
         foreach (var rawLine in lines)
@@ -165,7 +172,7 @@ public sealed class IniDocument
         }
     }
 
-    public void Save(string path)
+    public string ToText()
     {
         var builder = new StringBuilder();
 
@@ -190,13 +197,18 @@ public sealed class IniDocument
             builder.AppendLine();
         }
 
+        return builder.ToString().TrimEnd() + Environment.NewLine;
+    }
+
+    public void Save(string path)
+    {
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        var content = builder.ToString().TrimEnd() + Environment.NewLine;
+        var content = ToText();
 
         // Atomic write: a crash/power-loss/AV mid-write must not truncate the real profile file. Write a
         // UNIQUE sibling temp file first (unique so two app instances saving the same INI don't clobber

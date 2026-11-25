@@ -28,6 +28,10 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     private IReadOnlyList<MacroStepViewModel> _visibleSteps = [];
     private MacroStepViewModel? _selectedStep;
     private CancellationTokenSource? _coordinatePick;
+    // The view supplies the cursor badge and the ruler; without a view, a pick waits and reads the cursor directly.
+    private Func<string, CancellationToken, Task<(int X, int Y)?>> _countdown = WaitThenReadCursorAsync;
+    private Action<string> _showCaptured = static _ => { };
+    private Func<bool, CancellationToken, Task<(int X, int Y)?>>? _measure;
     private bool _disposed;
     private string _validationMessage = string.Empty;
     private string _coordinatePickStatus = string.Empty;
@@ -60,6 +64,10 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         MoveStepUpCommand = new RelayCommand(() => MoveStep(-1), () => CanEdit && SelectedIndex > 0);
         MoveStepDownCommand = new RelayCommand(() => MoveStep(1), () => CanEdit && SelectedIndex >= 0 && RecordingInsertionIndex < Steps.Count);
         PickCoordinatesCommand = new AsyncRelayCommand(PickCoordinatesAsync, () => CanEdit && SelectedStep?.HasCoordinates == true && _coordinatePick is null);
+        MeasureOffsetCommand = new AsyncRelayCommand(MeasureOffsetAsync,
+            () => CanEdit && SelectedStep?.HasOffset == true && _coordinatePick is null && _measure is not null);
+        // A running AsyncRelayCommand reports CanExecute false, so Cancel needs its own command.
+        CancelCoordinatePickCommand = new RelayCommand(CancelCoordinatePick, () => _coordinatePick is not null);
         ShowProblemStepCommand = new RelayCommand(ShowProblemStep, () => CanEdit && ProblemStepNumber <= Steps.Count);
         ExpandSelectedStepCommand = new RelayCommand(() => CollapseSteps = false, () => CanEdit && SelectedStep?.IsCollapsedPress == true);
         ShowWaitEditorCommand = new RelayCommand(ShowWaitEditor, () => CanEdit && WaitTargetCount(MacroWaitScope.AllWaits) > 0);
@@ -260,6 +268,9 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public IRelayCommand MoveStepUpCommand { get; }
     public IRelayCommand MoveStepDownCommand { get; }
     public IAsyncRelayCommand PickCoordinatesCommand { get; }
+    public IAsyncRelayCommand MeasureOffsetCommand { get; }
+    public IRelayCommand CancelCoordinatePickCommand { get; }
+    public bool IsCapturingCoordinates => _coordinatePick is not null;
     public IRelayCommand ShowProblemStepCommand { get; }
     public IRelayCommand ExpandSelectedStepCommand { get; }
     public IRelayCommand ShowWaitEditorCommand { get; }
@@ -272,7 +283,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     [
         new(MacroStepKind.KeyPress, "Key press"), new(MacroStepKind.KeyDown, "Key down"), new(MacroStepKind.KeyUp, "Key up"),
         new(MacroStepKind.MouseClick, "Mouse click"), new(MacroStepKind.MouseDown, "Mouse down"),
-        new(MacroStepKind.MouseUp, "Mouse up"), new(MacroStepKind.MoveTo, "Move to"), new(MacroStepKind.MoveCursorBy, "Move cursor by"), new(MacroStepKind.MoveMouseBy, "Move mouse by"),
+        new(MacroStepKind.MouseUp, "Mouse up"), new(MacroStepKind.MoveTo, "Move"),
+        new(MacroStepKind.SavePosition, "Save position"),
         new(MacroStepKind.MouseWheel, "Mouse wheel"),
         new(MacroStepKind.FreezeMouse, "Freeze mouse"), new(MacroStepKind.UnfreezeMouse, "Unfreeze mouse"),
         // Same order as the Add step menu.
@@ -347,7 +359,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
 
     private MacroStepViewModel CreateStep(MacroStep step)
     {
-        var row = new MacroStepViewModel(step, () => CanEdit);
+        var row = new MacroStepViewModel(step, () => CanEdit, row => FindPositionBefore(row.Number - 1),
+            row => FindSavedSlotBefore(row.Number - 1));
         row.Changed += OnStepChanged;
         return row;
     }
@@ -509,10 +522,16 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         if (kind == MacroStepKind.Wait) step = step with { DurationMs = DEFAULT_WAIT_MS };
         else if (kind is MacroStepKind.MoveTo or MacroStepKind.MouseClick && FindPositionBefore(index) is { } position)
             step = step with { X = position.X, Y = position.Y };
+        else if (kind == MacroStepKind.SavePosition)
+        {
+            var usedSlots = Steps.Take(index).Where(row => row.Kind == MacroStepKind.SavePosition).Select(row => row.Slot).ToHashSet();
+            step = step with { Slot = Enumerable.Range(1, MacroValidation.MaxPositionSlots).FirstOrDefault(slot => !usedSlots.Contains(slot), 1) };
+        }
+        else if (kind == MacroStepKind.MoveToSaved) step = step with { Slot = FindSavedSlotBefore(index) };
         InsertRecording(index, [step]);
     }
 
-    // A new Move to or Mouse click starts where this macro last pointed instead of the screen's top-left corner.
+    // Find the last screen position above the given zero-based step index.
     private (int X, int Y)? FindPositionBefore(int index)
     {
         for (var i = Math.Min(index, Steps.Count) - 1; i >= 0; i--)
@@ -521,6 +540,15 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         }
         return null;
     }
+    private int FindSavedSlotBefore(int index)
+    {
+        for (var i = index - 1; i >= 0; i--)
+        {
+            if (Steps[i].Kind == MacroStepKind.SavePosition) return Steps[i].Slot;
+        }
+        return 1;
+    }
+
     private void DuplicateStep()
     {
         if (DuplicateStepCommand.CanExecute(null))
@@ -620,7 +648,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     }
 
     // A press hold is the one Wait between a fresh Down and its matching Up; a recorded click may move the cursor
-    // (Move to rows) before releasing. Waits inside repeats, longer holds, or around other input pause between steps.
+    // before releasing. Waits inside repeats, longer holds, or around other input pause between steps.
     private void RefreshPressHolds()
     {
         var holds = new bool[Steps.Count];
@@ -664,7 +692,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         var upIndex = downIndex + 2;
         if (down.Kind == MacroStepKind.MouseDown)
         {
-            while (upIndex < Steps.Count && Steps[upIndex].Kind is MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy) upIndex++;
+            while (upIndex < Steps.Count && (Steps[upIndex].IsMove || Steps[upIndex].Kind == MacroStepKind.SavePosition)) upIndex++;
         }
         if (upIndex >= Steps.Count) return;
         var up = Steps[upIndex];
@@ -743,6 +771,9 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         MoveStepUpCommand.NotifyCanExecuteChanged();
         MoveStepDownCommand.NotifyCanExecuteChanged();
         PickCoordinatesCommand.NotifyCanExecuteChanged();
+        MeasureOffsetCommand.NotifyCanExecuteChanged();
+        CancelCoordinatePickCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsCapturingCoordinates));
         ShowProblemStepCommand.NotifyCanExecuteChanged();
         ExpandSelectedStepCommand.NotifyCanExecuteChanged();
         NotifyWaitEditor();
@@ -758,12 +789,16 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         {
             CoordinatePickStatus = "Point to the screen position; capturing in 3 seconds…";
             RefreshCommands();
-            await Task.Delay(TimeSpan.FromSeconds(3), cancellation.Token);
-            if (CanEdit && ReferenceEquals(destination, SelectedStep) && destination.HasCoordinates &&
-                WindowsInputSender.TryGetPhysicalCursorPosition(out var x, out var y))
+            var point = await _countdown("Pick", cancellation.Token);
+            if (point is (int x, int y) && IsCaptureTarget(destination, cancellation) && destination.HasCoordinates)
             {
                 destination.SetPosition(x, y);
                 CoordinatePickStatus = $"Captured ({x}, {y}).";
+                _showCaptured($"✓ {x}, {y}");
+            }
+            else
+            {
+                CoordinatePickStatus = string.Empty;
             }
         }
         catch (OperationCanceledException) { }
@@ -772,6 +807,66 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
             if (ReferenceEquals(_coordinatePick, cancellation)) _coordinatePick = null;
             RefreshCommands();
         }
+    }
+
+    // Countdown to the start point, then the ruler from there; the measured distance becomes the offset.
+    private async Task MeasureOffsetAsync()
+    {
+        var destination = SelectedStep;
+        if (!CanEdit || destination?.HasOffset != true || _measure is not { } measure) return;
+        using var cancellation = new CancellationTokenSource();
+        _coordinatePick = cancellation;
+        try
+        {
+            CoordinatePickStatus = "Point to where the move starts; measuring in 3 seconds…";
+            RefreshCommands();
+            // The ruler reads its own start point, so only a finished countdown matters here.
+            var start = await _countdown("Start", cancellation.Token);
+            if (start is null || !IsCaptureTarget(destination, cancellation) || !destination.HasOffset)
+            {
+                CoordinatePickStatus = string.Empty;
+                return;
+            }
+            CoordinatePickStatus = "Click where the move should end. Esc cancels.";
+            var distance = await measure(destination.MoveAsRaw, cancellation.Token);
+            if (distance is (int x, int y) && IsCaptureTarget(destination, cancellation) && destination.HasOffset)
+            {
+                destination.SetPosition(x, y);
+                CoordinatePickStatus = FormattableString.Invariant($"Measured ({x:+0;-0;0}, {y:+0;-0;0}).");
+            }
+            else
+            {
+                CoordinatePickStatus = string.Empty;
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (ReferenceEquals(_coordinatePick, cancellation)) _coordinatePick = null;
+            RefreshCommands();
+        }
+    }
+
+    // A result applies only to the step that started the capture, while it is still selected and editable.
+    private bool IsCaptureTarget(MacroStepViewModel destination, CancellationTokenSource cancellation) =>
+        !cancellation.IsCancellationRequested && CanEdit && ReferenceEquals(destination, SelectedStep);
+
+    private static async Task<(int X, int Y)?> WaitThenReadCursorAsync(string caption, CancellationToken token)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(3), token);
+        return WindowsInputSender.TryGetPhysicalCursorPosition(out var x, out var y) ? (x, y) : null;
+    }
+
+    // Null restores the view-less defaults: a plain wait for picks and no Measure.
+    internal void ConfigureCoordinateCapture(
+        Func<string, CancellationToken, Task<(int X, int Y)?>>? countdown,
+        Action<string>? showCaptured,
+        Func<bool, CancellationToken, Task<(int X, int Y)?>>? measure)
+    {
+        _countdown = countdown ?? WaitThenReadCursorAsync;
+        _showCaptured = showCaptured ?? (static _ => { });
+        _measure = measure;
+        MeasureOffsetCommand.NotifyCanExecuteChanged();
     }
 
     public void CancelCoordinatePick()

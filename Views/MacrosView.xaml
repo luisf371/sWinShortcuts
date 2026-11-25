@@ -410,11 +410,11 @@
                 <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.Wait}">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconWait}" />
                 </DataTrigger>
-                <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.MoveTo}">
+                <DataTrigger Binding="{Binding IsMove}" Value="True">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMove}" />
                 </DataTrigger>
-                <DataTrigger Binding="{Binding HasOffset}" Value="True">
-                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconMove}" />
+                <DataTrigger Binding="{Binding Kind}" Value="{x:Static models:MacroStepKind.SavePosition}">
+                    <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconTarget}" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsWheel}" Value="True">
                     <Setter TargetName="Icon" Property="Data" Value="{StaticResource MacroIconWheel}" />
@@ -602,7 +602,7 @@
             <!-- Rarer commands for the selected macro. Names change only through the naming dialog, so an unaccepted
                  name never reaches the macro; Clear and Delete ask first. -->
             <Button Grid.Column="3" x:Name="MoreButton" Style="{StaticResource MacroIconButton}" Click="MenuButton_Click"
-                    IsEnabled="{Binding HasSelection}" ToolTip="Rename, duplicate, clear, or delete this macro"
+                    ToolTip="Rename, duplicate, share, clear, or delete this macro, or import one"
                     AutomationProperties.Name="More macro commands">
                 <Button.ContextMenu>
                     <ContextMenu MinWidth="190" DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
@@ -613,6 +613,18 @@
                         <MenuItem Header="Duplicate" Command="{Binding DuplicateMacroCommand}" AutomationProperties.Name="Duplicate macro"
                                   ToolTip="The copy starts off, without a shortcut.">
                             <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconDuplicate}" /></MenuItem.Icon>
+                        </MenuItem>
+                        <Separator Style="{StaticResource MacroMenuSeparator}" />
+                        <!-- One tooltip covers both states, so it also explains a disabled item. -->
+                        <MenuItem Header="Export to clipboard" Command="{Binding ExportMacroCommand}" AutomationProperties.Name="Export macro to clipboard"
+                                  ToolTip="Copy this macro as a share code. Fix any highlighted fields first."
+                                  ToolTipService.ShowOnDisabled="True">
+                            <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconUp}" /></MenuItem.Icon>
+                        </MenuItem>
+                        <MenuItem Header="Import from clipboard" Command="{Binding ImportMacroCommand}" AutomationProperties.Name="Import macro from clipboard"
+                                  ToolTip="Add a macro from a code on the clipboard. A profile holds up to 64 macros."
+                                  ToolTipService.ShowOnDisabled="True">
+                            <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconDown}" /></MenuItem.Icon>
                         </MenuItem>
                         <Separator Style="{StaticResource MacroMenuSeparator}" />
                         <MenuItem Header="Clear all steps…" Command="{Binding ClearStepsCommand}" AutomationProperties.Name="Clear all steps"
@@ -714,14 +726,11 @@
                             <MenuItem Header="Mouse up" CommandParameter="{x:Static models:MacroStepKind.MouseUp}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMouse}" /></MenuItem.Icon>
                             </MenuItem>
-                            <MenuItem Header="Move to" CommandParameter="{x:Static models:MacroStepKind.MoveTo}" Command="{Binding AddStepCommand}">
+                            <MenuItem Header="Move" CommandParameter="{x:Static models:MacroStepKind.MoveTo}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
                             </MenuItem>
-                            <MenuItem Header="Move cursor by" CommandParameter="{x:Static models:MacroStepKind.MoveCursorBy}" Command="{Binding AddStepCommand}">
-                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
-                            </MenuItem>
-                            <MenuItem Header="Move mouse by" CommandParameter="{x:Static models:MacroStepKind.MoveMouseBy}" Command="{Binding AddStepCommand}">
-                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconMove}" /></MenuItem.Icon>
+                            <MenuItem Header="Save position" CommandParameter="{x:Static models:MacroStepKind.SavePosition}" Command="{Binding AddStepCommand}">
+                                <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconTarget}" /></MenuItem.Icon>
                             </MenuItem>
                             <MenuItem Header="Mouse wheel" CommandParameter="{x:Static models:MacroStepKind.MouseWheel}" Command="{Binding AddStepCommand}">
                                 <MenuItem.Icon><Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconWheel}" /></MenuItem.Icon>
@@ -1071,7 +1080,7 @@
                                         Visibility="{Binding SelectedStep.HasKey, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
                                 <ctrl:KeyCaptureBox Width="150" Chord="{Binding SelectedPressKey, Converter={StaticResource KeyChord}, Mode=TwoWay}"
-                                                    Validator="{x:Static vm:MacroViewModel.KeyValidator}"
+                                                    Validator="{x:Static vm:MacroViewModel.KeyValidator}" AcceptsEscape="True"
                                                     BoxStyle="{StaticResource MacroCaptureField}" ButtonStyle="{StaticResource MacroButton}"
                                                     AutomationName="Press key" />
                             </StackPanel>
@@ -1133,14 +1142,27 @@
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock Text="Action" Style="{StaticResource MacroFieldLabel}" />
                                 <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroViewModel.ActionOptions}" DisplayMemberPath="Value"
-                                          SelectedValuePath="Key" SelectedValue="{Binding Kind}" ItemContainerStyle="{StaticResource MacroComboItem}"
+                                          SelectedValuePath="Key" SelectedValue="{Binding ActionChoice}" ItemContainerStyle="{StaticResource MacroComboItem}"
                                           BorderBrush="{StaticResource MacroInputLineBrush}" FocusVisualStyle="{StaticResource MacroFocusRing}"
                                           AutomationProperties.Name="Step action" />
                             </StackPanel>
+                            <Border HorizontalAlignment="Left" Margin="0,0,0,8" Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
+                                    Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}"
+                                    Visibility="{Binding IsMove, Converter={StaticResource VisibleIfTrue}}">
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton Content="Position" IsChecked="{Binding MoveIsPosition}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                 AutomationProperties.Name="Move to a screen position" />
+                                    <RadioButton Content="Offset" IsChecked="{Binding MoveIsOffset}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                 AutomationProperties.Name="Move by an offset" />
+                                    <RadioButton Content="Saved" IsChecked="{Binding MoveIsSaved}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                 AutomationProperties.Name="Move to a saved position" />
+                                </StackPanel>
+                            </Border>
+
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasKey, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Key" Style="{StaticResource MacroFieldLabel}" />
                                 <ctrl:KeyCaptureBox Width="150" Chord="{Binding Key, Converter={StaticResource KeyChord}, Mode=TwoWay}"
-                                                    Validator="{x:Static vm:MacroViewModel.KeyValidator}"
+                                                    Validator="{x:Static vm:MacroViewModel.KeyValidator}" AcceptsEscape="True"
                                                     BoxStyle="{StaticResource MacroCaptureField}" ButtonStyle="{StaticResource MacroButton}"
                                                     AutomationName="Step key" />
                             </StackPanel>
@@ -1152,17 +1174,49 @@
                                           FocusVisualStyle="{StaticResource MacroFocusRing}" AutomationProperties.Name="Step mouse button" />
                             </StackPanel>
 
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasSlot, Converter={StaticResource VisibleIfTrue}}">
+                                <TextBlock Text="Saved position" Style="{StaticResource MacroFieldLabel}" TextWrapping="Wrap" />
+                                <ComboBox Width="150" MinHeight="30" ItemsSource="{x:Static vm:MacroStepViewModel.SlotOptions}"
+                                          DisplayMemberPath="Value" SelectedValuePath="Key" SelectedValue="{Binding Slot}"
+                                          ItemContainerStyle="{StaticResource MacroComboItem}" BorderBrush="{StaticResource MacroInputLineBrush}"
+                                          FocusVisualStyle="{StaticResource MacroFocusRing}" AutomationProperties.Name="Saved position number" />
+                            </StackPanel>
+
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasOffset, Converter={StaticResource VisibleIfTrue}}">
                                 <TextBlock Text="Offset" Style="{StaticResource MacroFieldLabel}"
-                                           ToolTip="Distance from the current position. Positive X moves right, positive Y moves down. Move mouse by sends mouse movement, not exact pixels." />
+                                           ToolTip="Distance from the current position. Positive X moves right, positive Y moves down. Choose Pixels for an exact screen distance or Raw for mouse movement." />
                                 <TextBlock Text="X" FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
                                 <TextBox Width="56" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
                                          Text="{Binding XText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
-                                         AutomationProperties.Name="X offset in pixels" />
+                                         AutomationProperties.Name="X offset" />
                                 <TextBlock Text="Y" FontSize="12" Margin="10,0,5,0" VerticalAlignment="Center" Foreground="{StaticResource MacroMutedBrush}" />
                                 <TextBox Width="56" MinHeight="30" VerticalContentAlignment="Center" BorderBrush="{StaticResource MacroInputLineBrush}"
                                          Text="{Binding YText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
-                                         AutomationProperties.Name="Y offset in pixels" />
+                                         AutomationProperties.Name="Y offset" />
+                            </StackPanel>
+                            <!-- Pixels | Raw reads as the unit of the offset above it; Measure shares the row so the picker-sized
+                                 inspector still fits at the minimum window size. -->
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Visibility="{Binding HasOffset, Converter={StaticResource VisibleIfTrue}}">
+                                <Border HorizontalAlignment="Left" Padding="2" CornerRadius="4" BorderThickness="1" TextElement.FontSize="12"
+                                        Background="{DynamicResource InputSurfaceBrush}" BorderBrush="{StaticResource MacroLineBrush}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton Content="Pixels" IsChecked="{Binding MoveAsPixels}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                     ToolTip="Exact screen pixels, checked on arrival."
+                                                     AutomationProperties.Name="Move by exact pixels" />
+                                        <RadioButton Content="Raw" IsChecked="{Binding MoveAsRaw}" Padding="9,4" Style="{DynamicResource SegmentRadioButtonStyle}"
+                                                     ToolTip="Real mouse movement for game cameras. Distance depends on sensitivity."
+                                                     AutomationProperties.Name="Move with raw mouse movement" />
+                                    </StackPanel>
+                                </Border>
+                                <Button Content="Measure" Style="{StaticResource MacroButton}" Margin="8,0,0,0"
+                                        Command="{Binding DataContext.SelectedMacro.MeasureOffsetCommand, ElementName=Editor}"
+                                        Visibility="{Binding DataContext.SelectedMacro.IsCapturingCoordinates, ElementName=Editor, Converter={StaticResource VisibleIfFalse}}"
+                                        ToolTip="Move to the start point within 3 seconds, then click where the move should end. Esc cancels."
+                                        AutomationProperties.Name="Measure offset" />
+                                <Button Content="Cancel" Style="{StaticResource MacroButton}" Margin="8,0,0,0"
+                                        Command="{Binding DataContext.SelectedMacro.CancelCoordinatePickCommand, ElementName=Editor}"
+                                        Visibility="{Binding DataContext.SelectedMacro.IsCapturingCoordinates, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}"
+                                        AutomationProperties.Name="Cancel coordinate pick" />
                             </StackPanel>
 
                             <StackPanel Margin="0,0,0,8" Visibility="{Binding HasCoordinates, Converter={StaticResource VisibleIfTrue}}">
@@ -1178,29 +1232,37 @@
                                              Text="{Binding YText, UpdateSourceTrigger=PropertyChanged, ValidatesOnDataErrors=True}"
                                              AutomationProperties.Name="Screen Y coordinate" />
                                 </StackPanel>
-                                <Button Style="{StaticResource MacroButton}" Margin="56,8,0,0" HorizontalAlignment="Left"
-                                        Command="{Binding DataContext.SelectedMacro.PickCoordinatesCommand, ElementName=Editor}"
-                                        ToolTip="After you click, point at the spot on screen. The position is captured after 3 seconds."
-                                        AutomationProperties.Name="Pick screen coordinates after three seconds">
-                                    <StackPanel Orientation="Horizontal">
-                                        <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconTarget}" Margin="0,0,6,0" />
-                                        <TextBlock Text="Pick in 3 s" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                </Button>
-                                <TextBlock Text="{Binding DataContext.SelectedMacro.CoordinatePickStatus, ElementName=Editor}" Margin="56,6,0,0"
-                                           FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource MacroDetailBrush}"
-                                           AutomationProperties.LiveSetting="Polite">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding DataContext.SelectedMacro.CoordinatePickStatus, ElementName=Editor}" Value="">
-                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
+                                <Grid Margin="56,8,0,0" HorizontalAlignment="Left">
+                                    <Button Style="{StaticResource MacroButton}"
+                                            Command="{Binding DataContext.SelectedMacro.PickCoordinatesCommand, ElementName=Editor}"
+                                            Visibility="{Binding DataContext.SelectedMacro.IsCapturingCoordinates, ElementName=Editor, Converter={StaticResource VisibleIfFalse}}"
+                                            ToolTip="After you click, point at the spot on screen. The position is captured after 3 seconds."
+                                            AutomationProperties.Name="Pick screen coordinates after three seconds">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Path Style="{StaticResource MacroIcon}" Data="{StaticResource MacroIconTarget}" Margin="0,0,6,0" />
+                                            <TextBlock Text="Pick in 3 s" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button Content="Cancel" Style="{StaticResource MacroButton}" HorizontalAlignment="Left"
+                                            Command="{Binding DataContext.SelectedMacro.CancelCoordinatePickCommand, ElementName=Editor}"
+                                            Visibility="{Binding DataContext.SelectedMacro.IsCapturingCoordinates, ElementName=Editor, Converter={StaticResource VisibleIfTrue}}"
+                                            AutomationProperties.Name="Cancel coordinate pick" />
+                                </Grid>
                             </StackPanel>
+                            <!-- Pick and Measure share this status line. -->
+                            <TextBlock Text="{Binding DataContext.SelectedMacro.CoordinatePickStatus, ElementName=Editor}" Margin="0,-2,0,8"
+                                       FontSize="12" TextWrapping="Wrap" Foreground="{StaticResource MacroDetailBrush}"
+                                       AutomationProperties.LiveSetting="Polite">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding DataContext.SelectedMacro.CoordinatePickStatus, ElementName=Editor}" Value="">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
 
                             <!-- One of three, like the wait-time scope. The macro's own shortcut button never counts as held.
                                  Sits below the coordinate picker so the picker stays in view at the minimum size; at that size

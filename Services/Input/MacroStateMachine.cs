@@ -202,6 +202,7 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
     private readonly Action _prepareRecording;
     private readonly Func<Action, Task> _onHookThread;
     private readonly Func<(int X, int Y)> _cursor;
+    private readonly (int X, int Y)[] _savedPositions = new (int, int)[MacroValidation.MaxPositionSlots];
     private readonly Func<Rectangle[]> _monitors;
     private readonly AutoResetEvent _wake = new(false);
     private readonly Thread _worker;
@@ -773,6 +774,22 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
                 var cursor = _cursor();
                 MoveTo(cursor.X + step.X, cursor.Y + step.Y, step.HeldButtons); break;
             case MacroStepKind.MoveMouseBy: MoveMouseBy(step.X, step.Y, step.HeldButtons); break;
+            case MacroStepKind.SavePosition:
+                var saved = _cursor();
+                _savedPositions[step.Slot - 1] = saved;
+                if (_logger.IsEnabled)
+                {
+                    _logger.Log($"[Macros] Saved position session={_sessionId} {MacroTag} slot={step.Slot} x={saved.X} y={saved.Y}");
+                }
+                break;
+            case MacroStepKind.MoveToSaved:
+                var (x, y) = _savedPositions[step.Slot - 1];
+                if (_logger.IsEnabled)
+                {
+                    _logger.Log($"[Macros] Move to saved position session={_sessionId} {MacroTag} slot={step.Slot} x={x} y={y}");
+                }
+                MoveTo(x, y, step.HeldButtons);
+                break;
             case MacroStepKind.MouseClick:
                 MoveTo(step.X, step.Y);
                 _clickX = step.X; _clickY = step.Y;

@@ -469,7 +469,7 @@
 - `MacroStep.HeldButtons` (`MacroHeldButtonPolicy` Stop/Wait/Allow) on MoveTo/MoveCursorBy/MoveMouseBy only; Mouse click always stops. INI key `HeldButtons` is written only when non-Stop (existing files unchanged); old builds ignore unknown step keys and fall back to Stop. Malformed/undefined values reject the macro section.
 - The choice travels on `InputCommand.HeldButtons`. Executor gate (`CanStartMacroOutput`) skips the physical-button check for Allow, and for Wait calls `DeferForPhysicalModifiers()` so `MacroStateMachine.Send` loops; Send's top waits via `HoldForMouseButtons` when the command is Wait. Mutation check: dropping the executor Allow bypass fails all 3 `HeldButton_Allow` tests.
 - New session mode `WaitingForMouseRelease` (appended); `MacrosViewModel` counts it as playing, status "Waiting for mouse buttons to be released". `HoldForMouseButtons` republishes Playing with the same row after release.
-- Layout gotcha: the inspector is only 209 px wide at the 650x480 minimum, so the held-button label can't sit beside the three keycap radios. The group sits below the coordinate picker; at minimum size with Move to it is ~6 px below the fold (inspector scrolls). `MacroEditorTemplateTests` now asserts the Move to picker stays in view and the radio row fits the width. Its wait-scope radio query filters on the "Change " automation-name prefix.
+- Layout gotcha: the inspector is only 209 px wide at the 650x480 minimum, so the held-button label can't sit beside the three keycap radios. The group sits below the coordinate picker; at 650x480 on 21542b8, Action ends at 328 px, the Move to picker at 404 and the group at 462 (offset steps: row 366, group 424). `MacroEditorTemplateTests` now asserts the Move to picker stays in view and the radio row fits the width. Its wait-scope radio query filters on the "Change " automation-name prefix.
 - WPF test gotcha: `IsVisible` is always false for a host not in a window/PresentationSource; check `Visibility` and `ActualHeight` instead.
 - Tests: tests that press a physical button reflect `_physical` (MacroPhysicalState) from `_macros` and call `ObserveButton`.
 - Verification: app + tests 0 warnings; full suite 1,679 passed twice in a row. One earlier run failed a Rapid Fire log assertion ("Rapid Fire press started…"), the known flake. Not checked in the live app or a real game.
@@ -588,3 +588,18 @@
 - Esc is never assigned: `KeyCaptureBox.HandleEscape` runs before the accumulator and decides on the RELEASE, so the gate keeps swallowing Esc and its auto-repeat can't trigger IsCancel buttons. User decision: Esc only cancels, with no hold-to-clear; ✕ clears. A held Esc blocks other keys from finishing the capture, so its release always cancels.
 - Tests that hold a modifier for Auto-Run through a fake `GetAsyncKeyState` must use the sided VK (0xA2), not generic 0x11 (MacroRecordingIntegrationTests needed this). Macro shortcut tests need sided VKs too.
 - Verification: Release win-x64 build 0 warnings/errors; full suite 1,965/1,965 passed.
+
+### 2026-11-24 (macro plans review)
+
+- Staged plan for one Move action, saved positions, countdown ruler and share codes: `docs/superpowers/plans/2026-11-24-macro-editor-four-features.md` (local, `Docs/` ignore rule).
+- No app manifest: WPF runs SystemAware (`dotnet run` probe, UI and new threads). Overlay `SetWindowPos` takes logical coordinates; `GetPhysicalCursorPos` returns physical.
+
+### 2026-11-25 (macro editor four features)
+
+- Codex CLI rejects `-m gpt-sol-6.2` ("not supported when using Codex with a ChatGPT account"); `-m gpt-6.2-sol` works.
+- .NET 10 WinForms `Clipboard.SetDataObject` and `GetText` already retry 10 x 100 ms (`ClipboardCore.cs`), then throw `ExternalException`; map that to "clipboard busy".
+- Layered windows pass clicks through alpha-0 pixels; the Measure ruler uses a `#01000000` background to catch them (learn.microsoft.com/windows/win32/winmsg/window-features).
+- `KeyCaptureBox` key edges run on the hook thread: copy dependency properties such as `AcceptsEscape` to a field in `BeginCapture`, never read them in `HandleKeyEdge`.
+- Duplicate's counter starts at 0, so a first copy of "Ammo" is "Ammo 1". Share-code import reuses that rule via `MacrosViewModel.GetFreeLabel`.
+- Measure rulers complete the shared result in `Closed`; Alt+F4 closes one ruler (learn.microsoft.com/dotnet/desktop/wpf/windows). Unshown windows raise `Closed` too, so tests skip `Show()`.
+- Macro share codes require both markers. Check `BrotliDecoder.Decompress` bytes consumed to reject trailing bytes. https://learn.microsoft.com/dotnet/api/system.io.compression.brotlidecoder.decompress

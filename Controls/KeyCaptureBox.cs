@@ -45,6 +45,7 @@ public sealed class KeyCaptureBox : UserControl
 {
     public const string CapturingText = "Capturing keys…";
     private const string AssignToolTip = "Click, then press the new key. Esc cancels.";
+    private const string AssignEscapeToolTip = "Click, then press the new key, Esc included. Click Cancel or outside the box to cancel.";
     internal static readonly TimeSpan MessageDuration = TimeSpan.FromMilliseconds(2500);
     // Close to WPF's own disabled-TextBox look (0.56) while keeping the value text above 4.5:1 contrast.
     internal const double IDLE_OPACITY = 0.6;
@@ -67,6 +68,9 @@ public sealed class KeyCaptureBox : UserControl
 
     public static readonly DependencyProperty AcceptsWheelProperty = DependencyProperty.Register(
         nameof(AcceptsWheel), typeof(bool), typeof(KeyCaptureBox), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty AcceptsEscapeProperty = DependencyProperty.Register(
+        nameof(AcceptsEscape), typeof(bool), typeof(KeyCaptureBox), new PropertyMetadata(false, OnAcceptsEscapeChanged));
 
     public static readonly DependencyProperty AllowNoneProperty = DependencyProperty.Register(
         nameof(AllowNone), typeof(bool), typeof(KeyCaptureBox), new PropertyMetadata(false, OnAllowNoneChanged));
@@ -103,6 +107,8 @@ public sealed class KeyCaptureBox : UserControl
     private bool _progressPosted;
     // A held Esc cancels on its release, whatever else is pressed meanwhile.
     private bool _escapeHeld;
+    // AcceptsEscape copied at capture start: the hook callback runs off the UI thread and can't read the property.
+    private bool _escapeIsKey;
     private bool _pendingCancel;
     private int _captureId;
     private int _pendingCaptureId;
@@ -225,6 +231,16 @@ public sealed class KeyCaptureBox : UserControl
         set => SetValue(AcceptsWheelProperty, value);
     }
 
+    /// <summary>
+    /// Esc is captured like any other key instead of cancelling. Only macro step keys use it; every other field
+    /// keeps Esc as cancel, so Esc can't be assigned there.
+    /// </summary>
+    public bool AcceptsEscape
+    {
+        get => (bool)GetValue(AcceptsEscapeProperty);
+        set => SetValue(AcceptsEscapeProperty, value);
+    }
+
     /// <summary>Shows the Clear button, which sets the chord to None.</summary>
     public bool AllowNone
     {
@@ -285,6 +301,7 @@ public sealed class KeyCaptureBox : UserControl
         StopMessageTimer();
         _capturing = true;
         _resultPosted = false;
+        _escapeIsKey = AcceptsEscape;
         _captureId++;
         Current = this;
         _hookCapture = CaptureSource?.TryBeginKeyCapture(_sink) == true;
@@ -338,7 +355,7 @@ public sealed class KeyCaptureBox : UserControl
     // Both key routes land here; for hook captures this runs inside the keyboard hook callback.
     private KeyCaptureStatus HandleKeyEdge(int virtualKey, bool isDown)
     {
-        if (virtualKey == VK_ESCAPE)
+        if (virtualKey == VK_ESCAPE && !_escapeIsKey)
         {
             return HandleEscape(isDown);
         }
@@ -783,6 +800,9 @@ public sealed class KeyCaptureBox : UserControl
         var box = (KeyCaptureBox)d;
         box._clear.Visibility = e.NewValue is true ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    private static void OnAcceptsEscapeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((KeyCaptureBox)d)._assign.ToolTip = e.NewValue is true ? AssignEscapeToolTip : AssignToolTip;
 
     private static void OnAutomationNameChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
         ((KeyCaptureBox)d).ApplyAutomationNames(e.NewValue as string ?? string.Empty);

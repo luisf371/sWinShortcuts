@@ -1,0 +1,28 @@
+<Window x:Class="sWinShortcuts.Views.OffsetRulerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Measure offset"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="#01000000"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        Cursor="Cross"
+        Left="0"
+        Top="0">
+    <!-- The near-transparent background (alpha 1) catches clicks so they never reach the app below;
+         alpha 0 would let them through. -->
+    <Canvas IsHitTestVisible="False">
+        <!-- The dashed X and Y legs are hidden. Delete both Visibility="Collapsed" attributes to show them again. -->
+        <Line x:Name="LegX" Stroke="#FFFFC940" StrokeThickness="1" StrokeDashArray="4 3" Visibility="Collapsed" />
+        <Line x:Name="LegY" Stroke="#FFFFC940" StrokeThickness="1" StrokeDashArray="4 3" Visibility="Collapsed" />
+        <Line x:Name="Distance" Stroke="#FFFFC940" StrokeThickness="2" />
+        <Ellipse x:Name="StartMarker" Width="12" Height="12" Stroke="#FFFFC940" StrokeThickness="2" Fill="#80000000" />
+        <Border x:Name="Label" Background="#E6202024" BorderBrush="#59FFFFFF" BorderThickness="1" CornerRadius="6" Padding="8,4"
+                Visibility="Collapsed">
+            <TextBlock x:Name="LabelText" Foreground="White" FontSize="13" />
+        </Border>
+    </Canvas>
+</Window>

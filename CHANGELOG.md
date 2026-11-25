@@ -4,6 +4,32 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## Unreleased
+
+### Added
+- **Saved Positions in Macros**: a new Save position step remembers where the cursor is, and a Move step set to Saved returns to it later in the macro.
+  - There are eight numbered slots. A Move to a saved position must come after a Save with the same number.
+  - It moves like a Move to position and stops with an error if that spot is no longer on a screen. It has the same **If a mouse button is held** choice.
+  - Profiles save these steps as `Kind=SavePosition` or `Kind=MoveToSaved` with `Slot`. Older versions can't read them and stop saving that profile.
+- **Measure Offset**: in a Move step's Offset mode, **Measure** gives you 3 seconds to point at the start, then shows the distance until you click the end point.
+  - Esc, a right click or 30 seconds cancels. With **Raw**, the distance is approximate.
+- **Macro Import and Export**: the **⋯** menu can copy a macro to the clipboard as a code and import one complete code at a time.
+  - Copy the whole code from `SWSM:` through `:74656B6B79:`. Incomplete or invalid codes show an error.
+  - The code leaves out the shortcut and the On state. An imported macro starts off and without a shortcut.
+  - It keeps its name, or gets the next free number if another macro already uses it, such as Ammo 1.
+  - A code made on a different screen layout keeps its positions and shows a warning.
+
+### Changed & Improved
+- **One Move Action**: **Move to**, **Move cursor by** and **Move mouse by** are now one **Move** action with **Position** and **Offset** modes, and Offset has **Pixels** and **Raw**.
+  - Each mode keeps its own numbers when you switch, and changing a step to a position starts at the macro's last position, like a new step.
+  - Rows show `+40, -5 px` or `+40, -5 raw`. Saved macros are unchanged and still load in older versions.
+- **Esc in Macro Steps**: a **Key press**, **Key down** or **Key up** step can now be set to Esc. Press Esc in the step's **Key** box to assign it, and use **Cancel** or click outside the box to cancel. Every other key box still uses Esc only to cancel.
+- **Countdown Next to the Cursor**: **Pick in 3 s** shows a countdown beside the cursor, and its button becomes **Cancel** while it runs. The Windows cursor itself never changes.
+
+### Fixed
+- **Changing a Move Step's Action**: changing an offset move to **Mouse click** no longer uses the offset as a screen position.
+- **Pick Status After Changing a Step**: changing a step to another action while **Pick in 3 s** counts down no longer leaves "Point to the screen position…" showing.
+
 ## November 23, 2026
 
 ### Changed & Improved

@@ -318,45 +318,7 @@ public sealed class IniProfileStore : IProfileStore
         var definitions = new MacroDefinition[count];
         for (var index = 0; index < count; index++)
         {
-            var section = FormattableString.Invariant($"Macro{index}");
-            RequireMacroSection(indexedSections, section);
-            if (!Guid.TryParse(ReadMacroString(document, section, "Id"), out var id))
-            {
-                throw InvalidMacroField(section, "Id");
-            }
-
-            var stepCount = ReadMacroInt(document, section, "StepCount");
-            if (stepCount is < 0 or > MacroValidation.MaxSteps)
-            {
-                throw InvalidMacroField(section, "StepCount");
-            }
-
-            var steps = new MacroStep[stepCount];
-            for (var stepIndex = 0; stepIndex < stepCount; stepIndex++)
-            {
-                var stepSection = FormattableString.Invariant($"{section}.Step{stepIndex}");
-                RequireMacroSection(indexedSections, stepSection);
-                steps[stepIndex] = ReadMacroStep(document, stepSection);
-            }
-
-            var shortcutModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutModifiers");
-            definitions[index] = new MacroDefinition
-            {
-                Id = id,
-                Label = ReadMacroString(document, section, "Label"),
-                IsEnabled = ReadMacroBoolean(document, section, "Enabled"),
-                ToggleMode = ReadMacroBoolean(document, section, "ToggleMode", false),
-                StartOnPress = ReadMacroBoolean(document, section, "StartOnPress", false),
-                CancelOnMouseMovement = ReadMacroBoolean(document, section, "CancelOnMouseMovement", false),
-                ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
-                ShortcutMouseButton = document.TryGetSourceValue(section, "ShortcutMouseButton", out _)
-                    ? ReadMacroEnum<Models.MouseButton>(document, section, "ShortcutMouseButton") : null,
-                ShortcutModifiers = shortcutModifiers,
-                // Files from before sides were saved have none, so their modifiers are left. Masked so a stray bit
-                // can't make two equal shortcuts differ.
-                ShortcutRightModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutRightModifiers", 0) & shortcutModifiers,
-                Steps = steps
-            };
+            definitions[index] = ReadMacroDefinition(document, FormattableString.Invariant($"Macro{index}"), indexedSections, includeIdentity: true);
         }
 
         if (indexedSections.Count != 0)
@@ -373,7 +335,60 @@ public sealed class IniProfileStore : IProfileStore
         return settings;
     }
 
-    private static bool IsIndexedMacroSection(string section) =>
+    // One [MacroN] section and its steps. Without identity (share codes) the definition keeps the record defaults:
+    // a new Id, off, and no shortcut.
+    internal static MacroDefinition ReadMacroDefinition(IniDocument document, string section, HashSet<string> indexedSections,
+        bool includeIdentity)
+    {
+        RequireMacroSection(indexedSections, section);
+        var stepCount = ReadMacroInt(document, section, "StepCount");
+        if (stepCount is < 0 or > MacroValidation.MaxSteps)
+        {
+            throw InvalidMacroField(section, "StepCount");
+        }
+
+        var steps = new MacroStep[stepCount];
+        for (var stepIndex = 0; stepIndex < stepCount; stepIndex++)
+        {
+            var stepSection = FormattableString.Invariant($"{section}.Step{stepIndex}");
+            RequireMacroSection(indexedSections, stepSection);
+            steps[stepIndex] = ReadMacroStep(document, stepSection);
+        }
+
+        var macro = new MacroDefinition
+        {
+            Label = ReadMacroString(document, section, "Label"),
+            ToggleMode = ReadMacroBoolean(document, section, "ToggleMode", false),
+            StartOnPress = ReadMacroBoolean(document, section, "StartOnPress", false),
+            CancelOnMouseMovement = ReadMacroBoolean(document, section, "CancelOnMouseMovement", false),
+            Steps = steps
+        };
+        if (!includeIdentity)
+        {
+            return macro;
+        }
+
+        if (!Guid.TryParse(ReadMacroString(document, section, "Id"), out var id))
+        {
+            throw InvalidMacroField(section, "Id");
+        }
+
+        var shortcutModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutModifiers");
+        return macro with
+        {
+            Id = id,
+            IsEnabled = ReadMacroBoolean(document, section, "Enabled"),
+            ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
+            ShortcutMouseButton = document.TryGetSourceValue(section, "ShortcutMouseButton", out _)
+                ? ReadMacroEnum<Models.MouseButton>(document, section, "ShortcutMouseButton") : null,
+            ShortcutModifiers = shortcutModifiers,
+            // Files from before sides were saved have none, so their modifiers are left. Masked so a stray bit
+            // can't make two equal shortcuts differ.
+            ShortcutRightModifiers = (ModifierKeys)ReadMacroInt(document, section, "ShortcutRightModifiers", 0) & shortcutModifiers
+        };
+    }
+
+    internal static bool IsIndexedMacroSection(string section) =>
         section.StartsWith("Macro", StringComparison.OrdinalIgnoreCase) && section.Length > 5 &&
         (char.IsAsciiDigit(section[5]) || section[5] is '-' or '+');
 
@@ -424,13 +439,18 @@ public sealed class IniProfileStore : IProfileStore
                     HorizontalWheel = ReadMacroBoolean(document, section, "HorizontalWheel", false)
                 };
                 break;
+            case MacroStepKind.SavePosition:
+                step = step with { Slot = ReadMacroInt(document, section, "Slot") };
+                break;
             case MacroStepKind.MoveTo:
             case MacroStepKind.MoveCursorBy:
             case MacroStepKind.MoveMouseBy:
+            case MacroStepKind.MoveToSaved:
+                step = kind == MacroStepKind.MoveToSaved
+                    ? step with { Slot = ReadMacroInt(document, section, "Slot") }
+                    : step with { X = ReadMacroInt(document, section, "X"), Y = ReadMacroInt(document, section, "Y") };
                 step = step with
                 {
-                    X = ReadMacroInt(document, section, "X"),
-                    Y = ReadMacroInt(document, section, "Y"),
                     // Optional: steps saved before the option existed have no key and keep stopping.
                     HeldButtons = document.TryGetSourceValue(section, "HeldButtons", out _)
                         ? ReadMacroEnum<MacroHeldButtonPolicy>(document, section, "HeldButtons") : MacroHeldButtonPolicy.Stop
@@ -486,62 +506,80 @@ public sealed class IniProfileStore : IProfileStore
         document.SetInt32("Macros", "Count", settings.Definitions.Length);
         for (var index = 0; index < settings.Definitions.Length; index++)
         {
-            var macro = settings.Definitions[index];
-            var section = FormattableString.Invariant($"Macro{index}");
-            document.SetString(section, "Id", macro.Id.ToString("N"));
-            document.SetString(section, "Label", macro.Label.Trim());
-            document.SetBoolean(section, "Enabled", macro.IsEnabled);
-            document.SetBoolean(section, "ToggleMode", macro.ToggleMode);
-            document.SetBoolean(section, "StartOnPress", macro.StartOnPress);
-            document.SetBoolean(section, "CancelOnMouseMovement", macro.CancelOnMouseMovement);
+            WriteMacroDefinition(document, FormattableString.Invariant($"Macro{index}"), settings.Definitions[index], includeIdentity: true);
+        }
+    }
+
+    // Identity is the Id, the On state and the shortcut; share codes leave it out.
+    internal static void WriteMacroDefinition(IniDocument document, string section, MacroDefinition macro, bool includeIdentity)
+    {
+        if (includeIdentity) document.SetString(section, "Id", macro.Id.ToString("N"));
+        document.SetString(section, "Label", macro.Label.Trim());
+        if (includeIdentity) document.SetBoolean(section, "Enabled", macro.IsEnabled);
+        document.SetBoolean(section, "ToggleMode", macro.ToggleMode);
+        document.SetBoolean(section, "StartOnPress", macro.StartOnPress);
+        document.SetBoolean(section, "CancelOnMouseMovement", macro.CancelOnMouseMovement);
+        if (includeIdentity)
+        {
             document.SetKey(section, "ShortcutKey", macro.ShortcutKey);
             if (macro.ShortcutMouseButton is { } button) document.SetEnum(section, "ShortcutMouseButton", button);
             document.SetInt32(section, "ShortcutModifiers", (int)macro.ShortcutModifiers);
             document.SetInt32(section, "ShortcutRightModifiers", (int)macro.ShortcutRightModifiers);
-            document.SetInt32(section, "StepCount", macro.Steps.Length);
-            for (var stepIndex = 0; stepIndex < macro.Steps.Length; stepIndex++)
+        }
+        document.SetInt32(section, "StepCount", macro.Steps.Length);
+        for (var stepIndex = 0; stepIndex < macro.Steps.Length; stepIndex++)
+        {
+            var step = macro.Steps[stepIndex];
+            var stepSection = FormattableString.Invariant($"{section}.Step{stepIndex}");
+            document.SetEnum(stepSection, "Kind", step.Kind);
+            switch (step.Kind)
             {
-                var step = macro.Steps[stepIndex];
-                var stepSection = FormattableString.Invariant($"{section}.Step{stepIndex}");
-                document.SetEnum(stepSection, "Kind", step.Kind);
-                switch (step.Kind)
-                {
-                    case MacroStepKind.KeyPress:
-                    case MacroStepKind.KeyDown:
-                    case MacroStepKind.KeyUp:
-                        document.SetKey(stepSection, "Key", step.Key);
-                        if (step.Kind == MacroStepKind.KeyPress)
-                        {
-                            document.SetInt32(stepSection, "DurationMs", step.DurationMs);
-                        }
-                        break;
-                    case MacroStepKind.Wait:
+                case MacroStepKind.KeyPress:
+                case MacroStepKind.KeyDown:
+                case MacroStepKind.KeyUp:
+                    document.SetKey(stepSection, "Key", step.Key);
+                    if (step.Kind == MacroStepKind.KeyPress)
+                    {
                         document.SetInt32(stepSection, "DurationMs", step.DurationMs);
-                        break;
-                    case MacroStepKind.MouseClick:
-                    case MacroStepKind.MouseDown:
-                    case MacroStepKind.MouseUp:
-                        document.SetEnum(stepSection, "MouseButton", step.MouseButton.GetValueOrDefault());
-                        if (step.Kind == MacroStepKind.MouseClick)
-                        {
-                            document.SetInt32(stepSection, "DurationMs", step.DurationMs);
-                            document.SetInt32(stepSection, "X", step.X);
-                            document.SetInt32(stepSection, "Y", step.Y);
-                        }
-                        break;
-                    case MacroStepKind.MouseWheel:
-                        document.SetInt32(stepSection, "WheelDelta", step.WheelDelta);
-                        document.SetBoolean(stepSection, "HorizontalWheel", step.HorizontalWheel);
-                        break;
-                    case MacroStepKind.MoveTo:
-                    case MacroStepKind.MoveCursorBy:
-                    case MacroStepKind.MoveMouseBy:
+                    }
+                    break;
+                case MacroStepKind.Wait:
+                    document.SetInt32(stepSection, "DurationMs", step.DurationMs);
+                    break;
+                case MacroStepKind.MouseClick:
+                case MacroStepKind.MouseDown:
+                case MacroStepKind.MouseUp:
+                    document.SetEnum(stepSection, "MouseButton", step.MouseButton.GetValueOrDefault());
+                    if (step.Kind == MacroStepKind.MouseClick)
+                    {
+                        document.SetInt32(stepSection, "DurationMs", step.DurationMs);
                         document.SetInt32(stepSection, "X", step.X);
                         document.SetInt32(stepSection, "Y", step.Y);
-                        // Stop is the default, so leave it out and keep existing files unchanged.
-                        if (step.HeldButtons != MacroHeldButtonPolicy.Stop) document.SetEnum(stepSection, "HeldButtons", step.HeldButtons);
-                        break;
-                }
+                    }
+                    break;
+                case MacroStepKind.MouseWheel:
+                    document.SetInt32(stepSection, "WheelDelta", step.WheelDelta);
+                    document.SetBoolean(stepSection, "HorizontalWheel", step.HorizontalWheel);
+                    break;
+                case MacroStepKind.SavePosition:
+                    document.SetInt32(stepSection, "Slot", step.Slot);
+                    break;
+                case MacroStepKind.MoveTo:
+                case MacroStepKind.MoveCursorBy:
+                case MacroStepKind.MoveMouseBy:
+                case MacroStepKind.MoveToSaved:
+                    if (step.Kind == MacroStepKind.MoveToSaved)
+                    {
+                        document.SetInt32(stepSection, "Slot", step.Slot);
+                    }
+                    else
+                    {
+                        document.SetInt32(stepSection, "X", step.X);
+                        document.SetInt32(stepSection, "Y", step.Y);
+                    }
+                    // Stop is the default, so leave it out and keep existing files unchanged.
+                    if (step.HeldButtons != MacroHeldButtonPolicy.Stop) document.SetEnum(stepSection, "HeldButtons", step.HeldButtons);
+                    break;
             }
         }
     }

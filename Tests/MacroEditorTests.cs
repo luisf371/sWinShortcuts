@@ -469,15 +469,15 @@ public sealed class MacroEditorTests
         macro.AddStepCommand.Execute(MacroStepKind.MoveCursorBy);
         var offset = macro.SelectedStep!;
         Assert.Equal((0, 0), (offset.X, offset.Y));
-        Assert.Equal("Move cursor by", offset.ActionLabel);
+        Assert.Equal("Move", offset.ActionLabel);
         Assert.True(offset.HasOffset);
         Assert.False(offset.HasCoordinates);
         Assert.False(macro.PickCoordinatesCommand.CanExecute(null));
-        Assert.Contains(new KeyValuePair<MacroStepKind, string>(MacroStepKind.MoveCursorBy, "Move cursor by"), MacroViewModel.ActionOptions);
+        Assert.DoesNotContain(MacroViewModel.ActionOptions, option => option.Key == MacroStepKind.MoveCursorBy);
 
         offset.XText = "-25";
         offset.YText = "12";
-        Assert.Equal("-25, +12", offset.Detail);
+        Assert.Equal("-25, +12 px", offset.Detail);
         Assert.Empty(offset.Error);
         offset.XText = "left";
         Assert.Equal("Offsets must be signed whole numbers.", offset.Error);
@@ -487,6 +487,195 @@ public sealed class MacroEditorTests
         Assert.Equal((-1280, 300), (macro.SelectedStep!.X, macro.SelectedStep.Y));
         Assert.Equal(new MacroStep { Kind = MacroStepKind.MoveCursorBy, Key = Key.A, MouseButton = sWinShortcuts.Models.MouseButton.Left, WheelDelta = 120, X = -25, Y = 12 },
             macro.ToDefinition().Steps[1]);
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.MoveTo)]
+    [InlineData(MacroStepKind.MoveCursorBy)]
+    [InlineData(MacroStepKind.MoveMouseBy)]
+    public void ActionChoice_AnyMoveKind_ShowsMove(MacroStepKind kind)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition { Steps = [new() { Kind = kind }] }, () => true);
+        var step = Assert.Single(macro.Steps);
+
+        Assert.True(step.IsMove);
+        Assert.Equal(MacroStepKind.MoveTo, step.ActionChoice);
+        Assert.Equal("Move", step.ActionLabel);
+        Assert.Contains(new KeyValuePair<MacroStepKind, string>(MacroStepKind.MoveTo, "Move"), MacroViewModel.ActionOptions);
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.MoveCursorBy)]
+    [InlineData(MacroStepKind.MoveMouseBy)]
+    public void ActionChoice_SelectMoveOnAMoveStep_KeepsItsMode(MacroStepKind kind)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition { Steps = [new() { Kind = kind, X = 40, Y = -5 }] }, () => true);
+        var step = Assert.Single(macro.Steps);
+
+        step.ActionChoice = MacroStepKind.MoveTo;
+
+        Assert.Equal(kind, step.Kind);
+        Assert.Equal((40, -5), (step.X, step.Y));
+    }
+
+    [Fact]
+    public void MoveIsOffset_FromPosition_StartsAtZeroAndUsesPixels()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveTo, X = 1200, Y = 800 }]
+        }, () => true);
+        var step = Assert.Single(macro.Steps);
+
+        step.MoveIsPosition = false;
+        Assert.True(step.MoveIsPosition);
+        step.MoveIsOffset = true;
+
+        Assert.Equal((0, 0), (step.X, step.Y));
+        Assert.Equal(MacroStepKind.MoveCursorBy, step.Kind);
+        Assert.True(step.MoveIsOffset);
+        Assert.False(step.MoveIsPosition);
+    }
+
+    [Theory]
+    [InlineData(true, 300, 400)]
+    [InlineData(false, 0, 0)]
+    public void MoveIsPosition_FromOffset_StartsAtLastPointedPosition(bool hasPriorPosition, int x, int y)
+    {
+        MacroStep[] steps =
+        [
+            new() { Kind = MacroStepKind.MoveTo, X = 100, Y = 200 },
+            new() { Kind = MacroStepKind.MouseClick, X = 300, Y = 400 },
+            new() { Kind = MacroStepKind.MoveCursorBy, X = 60, Y = 80 },
+            new() { Kind = MacroStepKind.MoveMouseBy, X = 40, Y = -5 },
+            new() { Kind = MacroStepKind.MoveTo, X = 500, Y = 600 }
+        ];
+        using var macro = new MacroViewModel(new MacroDefinition { Steps = hasPriorPosition ? steps : steps[2..] }, () => true);
+        var step = macro.Steps[^2];
+
+        step.MoveIsPosition = true;
+
+        Assert.Equal(MacroStepKind.MoveTo, step.Kind);
+        Assert.Equal((x, y), (step.X, step.Y));
+    }
+
+    [Fact]
+    public void MoveTarget_FlipBackAndForth_RestoresEachModesValues()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveTo, X = 1200, Y = 800 }]
+        }, () => true);
+        var step = Assert.Single(macro.Steps);
+        step.MoveIsOffset = true;
+        step.SetPosition(40, -5);
+
+        step.MoveIsPosition = true;
+        Assert.Equal((1200, 800), (step.X, step.Y));
+        step.MoveIsOffset = true;
+        Assert.Equal((40, -5), (step.X, step.Y));
+    }
+
+    [Fact]
+    public void MoveAs_SwitchPixelsAndRaw_KeepsOffsetAndHeldButtons()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveCursorBy, X = 40, Y = -5, HeldButtons = MacroHeldButtonPolicy.Wait }]
+        }, () => true);
+        var step = Assert.Single(macro.Steps);
+
+        step.MoveAsRaw = true;
+        step.MoveAsPixels = false;
+        Assert.Equal((false, true), (step.MoveAsPixels, step.MoveAsRaw));
+        Assert.Equal((40, -5, MacroHeldButtonPolicy.Wait), (step.X, step.Y, step.HeldButtons));
+
+        step.MoveAsPixels = true;
+        step.MoveAsRaw = false;
+        Assert.Equal((true, false), (step.MoveAsPixels, step.MoveAsRaw));
+        Assert.Equal((40, -5, MacroHeldButtonPolicy.Wait), (step.X, step.Y, step.HeldButtons));
+    }
+
+    [Fact]
+    public void MoveIsOffset_AfterRaw_ReturnsToRaw()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveMouseBy, X = 40, Y = -5, HeldButtons = MacroHeldButtonPolicy.Allow }]
+        }, () => true);
+        var step = Assert.Single(macro.Steps);
+
+        step.MoveIsOffset = true;
+        Assert.True(step.MoveAsRaw);
+        step.MoveIsPosition = true;
+        Assert.True(step.HeldButtonsAllow);
+        step.MoveIsOffset = true;
+
+        Assert.Equal(MacroStepKind.MoveMouseBy, step.Kind);
+        Assert.Equal((40, -5), (step.X, step.Y));
+        Assert.True(step.HeldButtonsAllow);
+    }
+
+    [Fact]
+    public void ActionChoice_OffsetToMouseClick_DoesNotUseOffsetAsPosition()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveTo, X = 1200, Y = 800 }, new() { Kind = MacroStepKind.MoveCursorBy, X = 40, Y = -5 }]
+        }, () => true);
+        var step = macro.Steps[1];
+
+        step.ActionChoice = MacroStepKind.MouseClick;
+        Assert.Equal(MacroStepKind.MouseClick, step.Kind);
+        Assert.Equal((1200, 800), (step.X, step.Y));
+
+        step.SetPosition(10, 20);
+        step.ActionChoice = MacroStepKind.MoveTo;
+        Assert.Equal((10, 20), (step.X, step.Y));
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.MoveTo, 1200, 800, "1200, 800")]
+    [InlineData(MacroStepKind.MoveCursorBy, 40, -5, "+40, -5 px")]
+    [InlineData(MacroStepKind.MoveMouseBy, 40, -5, "+40, -5 raw")]
+    public void Detail_MoveKinds_ShowPositionPxOrRaw(MacroStepKind kind, int x, int y, string detail)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition { Steps = [new() { Kind = kind, X = x, Y = y }] }, () => true);
+
+        Assert.Equal(detail, Assert.Single(macro.Steps).Detail);
+    }
+
+    [Fact]
+    public void ActionChoice_OffsetToKeyPressAndBack_DoesNotUseOffsetAsPosition()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveTo, X = 1200, Y = 800 }, new() { Kind = MacroStepKind.MoveMouseBy, X = 40, Y = -5 }]
+        }, () => true);
+        var step = macro.Steps[1];
+
+        step.ActionChoice = MacroStepKind.KeyPress;
+        Assert.Equal(MacroStepKind.KeyPress, step.ActionChoice);
+        Assert.False(step.IsMove);
+        step.ActionChoice = MacroStepKind.MoveTo;
+        Assert.Equal((1200, 800), (step.X, step.Y));
+
+        step.MoveIsOffset = true;
+        Assert.Equal((40, -5), (step.X, step.Y));
+    }
+
+    [Fact]
+    public void MoveIsOffset_WithInvalidXText_ReplacesTheText()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition { Steps = [new() { Kind = MacroStepKind.MoveTo }] }, () => true);
+        var step = Assert.Single(macro.Steps);
+        step.XText = "left";
+        step.YText = "up";
+        Assert.NotEmpty(step.Error);
+
+        step.MoveIsOffset = true;
+
+        Assert.Equal(("0", "0"), (step.XText, step.YText));
     }
 
     [Theory]
@@ -512,10 +701,10 @@ public sealed class MacroEditorTests
         using var macro = new MacroViewModel(new MacroDefinition(), () => true);
         macro.AddStepCommand.Execute(MacroStepKind.MoveMouseBy);
         var step = macro.SelectedStep!;
-        Assert.Equal("Move mouse by", step.ActionLabel);
+        Assert.Equal("Move", step.ActionLabel);
         Assert.True(step.HasOffset);
         Assert.False(step.HasCoordinates);
-        Assert.Contains(new KeyValuePair<MacroStepKind, string>(MacroStepKind.MoveMouseBy, "Move mouse by"), MacroViewModel.ActionOptions);
+        Assert.DoesNotContain(MacroViewModel.ActionOptions, option => option.Key == MacroStepKind.MoveMouseBy);
 
         step.HeldButtonsWait = true;
         Assert.Equal((false, true, false), (step.HeldButtonsStop, step.HeldButtonsWait, step.HeldButtonsAllow));
@@ -547,6 +736,131 @@ public sealed class MacroEditorTests
         }, () => true);
 
         Assert.True(macro.Steps[1].IsPressHold);
+    }
+
+    [Fact]
+    public void AddStep_SavePosition_UsesLowestFreeSlotAboveTheInsertionPoint()
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps =
+            [
+                new() { Kind = MacroStepKind.SavePosition, Slot = 1 },
+                new() { Kind = MacroStepKind.SavePosition, Slot = 3 },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 50 },
+                new() { Kind = MacroStepKind.SavePosition, Slot = 2 }
+            ]
+        }, () => true);
+        macro.SelectedStep = macro.Steps[2];
+
+        macro.AddStepCommand.Execute(MacroStepKind.SavePosition);
+
+        Assert.Same(macro.Steps[3], macro.SelectedStep);
+        Assert.Equal(2, macro.SelectedStep!.Slot);
+        Assert.Equal("Save position", macro.SelectedStep.ActionLabel);
+        Assert.Equal("#2", macro.SelectedStep.Detail);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(8)]
+    public void AddStep_SavePositionWithNoEarlierSlotsOrAllSlotsUsed_DefaultsToFirstSlot(int slotsUsed)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = Enumerable.Range(1, slotsUsed)
+                .Select(slot => new MacroStep { Kind = MacroStepKind.SavePosition, Slot = slot }).ToArray()
+        }, () => true);
+        macro.SelectedStep = null;
+
+        macro.AddStepCommand.Execute(MacroStepKind.SavePosition);
+
+        Assert.Equal(1, macro.SelectedStep!.Slot);
+    }
+
+    [Theory]
+    [InlineData(true, 3)]
+    [InlineData(false, 1)]
+    public void MoveIsSaved_WithOrWithoutEarlierSaves_UsesClosestSlotOrFirstSlot(bool hasEarlierSaves, int expectedSlot)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps =
+            [
+                new() { Kind = MacroStepKind.SavePosition, Slot = 6 },
+                new() { Kind = MacroStepKind.SavePosition, Slot = 3 },
+                new() { Kind = MacroStepKind.MoveTo },
+                new() { Kind = MacroStepKind.SavePosition, Slot = 7 }
+            ]
+        }, () => true);
+        var step = macro.Steps[hasEarlierSaves ? 2 : 0];
+        step.Kind = MacroStepKind.MoveTo;
+        step.Slot = 0;
+
+        step.MoveIsSaved = true;
+        step.MoveIsSaved = false;
+
+        Assert.True(step.MoveIsSaved);
+        Assert.Equal(expectedSlot, step.Slot);
+        Assert.Equal(MacroStepKind.MoveTo, step.ActionChoice);
+        Assert.Equal("Move", step.ActionLabel);
+        Assert.Equal($"to saved #{expectedSlot}", step.Detail);
+        Assert.True(step.HasSlot);
+        Assert.False(step.HasCoordinates || step.HasOffset);
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.MoveCursorBy)]
+    [InlineData(MacroStepKind.MoveMouseBy)]
+    public void MoveIsSaved_VisitedFromPositionAndOffset_RestoresValuesAndHeldButtons(MacroStepKind offsetKind)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps = [new() { Kind = MacroStepKind.MoveTo, X = -120, Y = 300, HeldButtons = MacroHeldButtonPolicy.Allow }]
+        }, () => true);
+        var step = Assert.Single(macro.Steps);
+
+        step.MoveIsSaved = true;
+        Assert.True(step.HasHeldButtons);
+        Assert.Equal(MacroHeldButtonPolicy.Allow, step.HeldButtons);
+        step.HeldButtonsWait = true;
+        step.Slot = 8;
+        step.MoveIsPosition = true;
+        Assert.Equal((-120, 300), (step.X, step.Y));
+        Assert.Equal(MacroHeldButtonPolicy.Wait, step.HeldButtons);
+
+        step.Kind = offsetKind;
+        step.X = 40;
+        step.Y = -5;
+        step.MoveIsSaved = true;
+        Assert.Equal(8, step.Slot);
+        Assert.Equal(MacroHeldButtonPolicy.Wait, step.HeldButtons);
+        step.MoveIsOffset = true;
+
+        Assert.Equal(offsetKind, step.Kind);
+        Assert.Equal((40, -5), (step.X, step.Y));
+        Assert.Equal(MacroHeldButtonPolicy.Wait, step.HeldButtons);
+    }
+
+    [Theory]
+    [InlineData(MacroStepKind.SavePosition)]
+    [InlineData(MacroStepKind.MoveToSaved)]
+    public void RefreshPressHolds_SavedPositionStepBetweenWaitAndMouseUp_MarksTheWaitAsAHold(MacroStepKind kind)
+    {
+        using var macro = new MacroViewModel(new MacroDefinition
+        {
+            Steps =
+            [
+                new() { Kind = MacroStepKind.SavePosition, Slot = 1 },
+                new() { Kind = MacroStepKind.MouseDown, MouseButton = sWinShortcuts.Models.MouseButton.Left },
+                new() { Kind = MacroStepKind.Wait, DurationMs = 50 },
+                new() { Kind = kind, Slot = 1 },
+                new() { Kind = MacroStepKind.MouseUp, MouseButton = sWinShortcuts.Models.MouseButton.Left }
+            ]
+        }, () => true);
+
+        Assert.True(macro.Steps[2].IsPressHold);
+        Assert.Equal("50 ms hold", macro.Steps[2].TimingText);
     }
 
     [Theory]

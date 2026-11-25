@@ -26,3 +26,4 @@ TestResults/
 .review-baseline/
 Internal_Doc/
 Docs/
+*.lnk
