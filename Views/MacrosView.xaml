@@ -714,6 +714,9 @@
                         <Separator Style="{StaticResource MacroMenuSeparator}" />
                         <MenuItem Header="Stop when the mouse moves" IsCheckable="True" IsChecked="{Binding CancelOnMouseMovement}"
                                   AutomationProperties.Name="Cancel on mouse movement" />
+                        <MenuItem Header="Show steps being played" IsCheckable="True" IsChecked="{Binding ShowPlayingSteps}"
+                                  ToolTip="Shows the step being played in a small badge beside the cursor while this macro runs."
+                                  AutomationProperties.Name="Show steps being played" />
                     </ContextMenu>
                 </Button.ContextMenu>
                 <StackPanel Orientation="Horizontal">

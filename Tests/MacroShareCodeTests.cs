@@ -25,6 +25,7 @@ public sealed class MacroShareCodeTests
         ToggleMode = true,
         StartOnPress = true,
         CancelOnMouseMovement = true,
+        ShowPlayingSteps = true,
         ShortcutKey = Key.F6,
         ShortcutModifiers = ModifierKeys.Control | ModifierKeys.Shift,
         ShortcutRightModifiers = ModifierKeys.Shift,
@@ -86,13 +87,14 @@ public sealed class MacroShareCodeTests
         var code = MacroShareCode.Export(Full, Desktop);
         var payload = Decode(code);
 
-        foreach (var key in new[] { "Id=", "Enabled=", "ShortcutKey=", "ShortcutMouseButton=", "ShortcutModifiers=", "ShortcutRightModifiers=" })
+        foreach (var key in new[] { "Id=", "Enabled=", "ShortcutKey=", "ShortcutMouseButton=", "ShortcutModifiers=", "ShortcutRightModifiers=", "ShowPlayingSteps=" })
         {
             Assert.DoesNotContain("\n" + key, payload.ReplaceLineEndings("\n"));
         }
         var macro = MacroShareCode.Import(code, Desktop).Macro!;
         Assert.NotEqual(Full.Id, macro.Id);
         Assert.False(macro.IsEnabled);
+        Assert.False(macro.ShowPlayingSteps);
         Assert.Equal(InputTrigger.FromKey(Key.None), macro.ShortcutTrigger);
         Assert.Equal((ModifierKeys.None, ModifierKeys.None), (macro.ShortcutModifiers, macro.ShortcutRightModifiers));
     }

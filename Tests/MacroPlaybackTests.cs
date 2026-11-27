@@ -235,11 +235,14 @@ public sealed class MacroPlaybackTests
     public void Playback_PhysicalModifierOverlap_RestoresIntendedModifierBeforeNextKey()
     {
         var sender = new RecordingInputSender();
-        using var service = Create(sender, out _,
+        using var service = Create(sender, out var profile,
             [new MacroStep { Kind = MacroStepKind.KeyDown, Key = Key.LeftCtrl },
             new MacroStep { Kind = MacroStepKind.Wait, DurationMs = 150 },
             .. MacroPresses.Press(Key.S),
             new MacroStep { Kind = MacroStepKind.KeyUp, Key = Key.LeftCtrl }]);
+        // Changed is raised on the worker right after each publish, so this reads every published value exactly.
+        var published = new System.Collections.Concurrent.ConcurrentQueue<MacroSessionSnapshot>();
+        service.MacroSessionChanged += (_, _) => published.Enqueue(service.GetMacroSession());
         Press(service, 0x75);
         WaitUntil(() => sender.Transitions.Any(x => x.Key == Key.LeftCtrl && x.IsDown));
         Assert.False(service.DispatchDecodedKeyboardEvent(0xA2, true, false));
@@ -249,6 +252,12 @@ public sealed class MacroPlaybackTests
         WaitUntil(() => sender.Transitions.Any(x => x.Key == Key.S && !x.IsDown));
         var downs = sender.Transitions.Where(x => x.IsDown).Select(x => x.Key).ToArray();
         Assert.Equal(new[] { Key.LeftCtrl, Key.LeftCtrl, Key.S }, downs);
+        // The pause keeps the Key down S row and resumes on it, and the session carries the running copy.
+        var states = published.Select(snapshot => (snapshot.Mode, snapshot.RowCount)).ToList();
+        var paused = states.IndexOf((MacroSessionMode.WaitingForPhysicalModifiers, 3));
+        Assert.True(paused >= 0, string.Join(", ", states));
+        Assert.Equal((MacroSessionMode.Playing, 3), states[paused + 1]);
+        Assert.Equal(profile.Macros.Definitions[0].Id, published.ElementAt(paused).Definition?.Id);
     }
 
     [Fact]

@@ -30,17 +30,50 @@ public partial class CursorCountdownWindow : Window
 
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly TimeSpan _duration;
+    // Live badge only: runs before each placement and may hide the badge.
+    private readonly Action? _onFrame;
     private IntPtr _hwnd;
     private System.Drawing.Point? _lastCursor;
+    private double _placedWidth;
+    private bool _rendering;
 
-    private CursorCountdownWindow(string caption, TimeSpan duration)
+    private CursorCountdownWindow(string caption, TimeSpan duration, Action? onFrame = null)
     {
         InitializeComponent();
         Caption.Text = caption;
         _duration = duration;
+        _onFrame = onFrame;
         if (duration == TimeSpan.Zero) Dial.Visibility = Visibility.Collapsed;
-        CompositionTarget.Rendering += OnRendering;
-        Closed += (_, _) => CompositionTarget.Rendering -= OnRendering;
+        if (onFrame is null) SetRendering(true);
+        Closed += (_, _) => SetRendering(false);
+    }
+
+    /// <summary>A badge that stays open between uses and follows the cursor only while shown.</summary>
+    internal static CursorCountdownWindow CreateLiveBadge(Action onFrame) => new(string.Empty, TimeSpan.Zero, onFrame);
+
+    internal void ShowLive(string text)
+    {
+        Caption.Text = text;
+        if (IsVisible) return;
+        _lastCursor = null;
+        Opacity = 0;
+        SetRendering(true);
+        Show();
+    }
+
+    internal void HideLive()
+    {
+        SetRendering(false);
+        Opacity = 0;
+        Hide();
+    }
+
+    private void SetRendering(bool on)
+    {
+        if (on == _rendering) return;
+        _rendering = on;
+        if (on) CompositionTarget.Rendering += OnRendering;
+        else CompositionTarget.Rendering -= OnRendering;
     }
 
     /// <summary>Shows the badge for the countdown, then returns the physical cursor position.</summary>
@@ -94,12 +127,15 @@ public partial class CursorCountdownWindow : Window
 
     private void OnRendering(object? sender, EventArgs e)
     {
-        if (_hwnd == IntPtr.Zero || ActualWidth == 0) return;
+        _onFrame?.Invoke();
+        if (!_rendering || _hwnd == IntPtr.Zero || ActualWidth == 0) return;
         if (_duration > TimeSpan.Zero) DrawDial();
 
         var cursor = WinForms.Cursor.Position;
-        if (cursor == _lastCursor) return;
+        // A wider caption near the right edge must flip left even while the cursor stays still.
+        if (cursor == _lastCursor && ActualWidth == _placedWidth) return;
         _lastCursor = cursor;
+        _placedWidth = ActualWidth;
         var device = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
         var (x, y) = PlaceBeside(cursor.X, cursor.Y, (int)Math.Ceiling(ActualWidth * device.M11),
             (int)Math.Ceiling(ActualHeight * device.M22), WinForms.Screen.FromPoint(cursor).Bounds);

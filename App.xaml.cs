@@ -75,6 +75,9 @@ public partial class App : System.Windows.Application
         // hotkey press never pays the window-build jank. Disposal is owned by the host.
         _ = _host.Services.GetRequiredService<ColorProfileToastService>();
 
+        // Eager: subscribes MacroSessionChanged before any macro can play. Disposal is owned by the host.
+        _ = _host.Services.GetRequiredService<MacroStepOverlayService>();
+
         await _host.StartAsync();
 
         var tray = _host.Services.GetRequiredService<ISystemTrayService>();
@@ -107,6 +110,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<ICrosshairService, CrosshairService>();
         services.AddSingleton<RapidFireStatusService>();
         services.AddSingleton<ColorProfileToastService>();
+        services.AddSingleton<MacroStepOverlayService>();
         services.AddSingleton<ProfileActivationService>();
         services.AddSingleton<IProfileRuntimeService>(
             provider => provider.GetRequiredService<ProfileActivationService>());

@@ -183,6 +183,28 @@ public sealed class MacroEditorTests
     }
 
     [Fact]
+    public void ShowPlayingSteps_DefaultOff_PublishesEachChangedValue()
+    {
+        var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
+        var edits = 0;
+        using var editor = new MacrosViewModel(profile, () => edits++);
+        editor.NewMacroCommand.Execute(null);
+        var macro = editor.SelectedMacro!;
+        var before = edits;
+        Assert.False(macro.ShowPlayingSteps);
+
+        macro.ShowPlayingSteps = true;
+        macro.ShowPlayingSteps = true;
+
+        Assert.True(profile.Macros.Definitions[0].ShowPlayingSteps);
+        Assert.Equal(before + 1, edits);
+        Assert.Equal("Once", macro.PlaybackSummary);
+        macro.ShowPlayingSteps = false;
+        Assert.False(profile.Macros.Definitions[0].ShowPlayingSteps);
+        Assert.Equal(before + 2, edits);
+    }
+
+    [Fact]
     public void MalformedNumericText_IsVisibleAndDisablesPlayback_UntilCorrected()
     {
         var profile = ProfileFactory.CreateCustomProfile("Game", "game.exe");
@@ -1024,6 +1046,8 @@ public sealed class MacroEditorTests
         macro.PlaysInLoop = true;
         macro.StartsWhenPressed = true;
         macro.CancelOnMouseMovement = true;
+        // Left out of the label so it still fits the row at the minimum width.
+        macro.ShowPlayingSteps = true;
         Assert.Equal((true, true), (macro.ToggleMode, macro.StartOnPress));
         Assert.Equal("Loop · on press · stops on move", macro.PlaybackSummary);
 

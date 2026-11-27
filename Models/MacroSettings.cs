@@ -22,6 +22,8 @@ public sealed record MacroDefinition
     // Off: playback waits for the shortcut and its modifiers to be released. On: it starts at the press.
     public bool StartOnPress { get; init; }
     public bool CancelOnMouseMovement { get; init; }
+    // Shows the playing step beside the cursor. Profile only; share codes leave it out.
+    public bool ShowPlayingSteps { get; init; }
     public Key ShortcutKey { get; init; } = Key.None;
     public MouseButton? ShortcutMouseButton { get; init; }
     public InputTrigger ShortcutTrigger => ShortcutMouseButton is { } button
@@ -109,7 +111,9 @@ public readonly record struct MacroSessionSnapshot(
     MacroSessionMode Mode,
     TimeSpan Elapsed,
     int RowCount,
-    string? FailureReason = null);
+    string? FailureReason = null,
+    // The running copy during playback, so RowCount indexes the steps that actually play. Null while recording.
+    MacroDefinition? Definition = null);
 
 public enum MacroRecordingEndReason
 {

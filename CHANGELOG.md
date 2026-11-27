@@ -4,6 +4,16 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
 
 ---
 
+## Unreleased
+
+### Added
+- **Show Steps Being Played**: a new **Playback** menu option shows the step a macro is playing in a small badge beside the cursor, such as `3/12 · Move 100, 200`.
+  - It is off by default and set per macro. Profiles save it as `ShowPlayingSteps`.
+  - A key press or mouse click shows its hold, such as `Hold A (50 ms)`, because the down and up take under a millisecond.
+  - While playback waits for you to release modifier keys or mouse buttons, the badge says so.
+  - The badge shows over windowed and borderless games, not exclusive fullscreen ones. Clicks pass through it.
+  - Exported macro codes leave this option out, so an imported macro starts with it off.
+
 ## November 25, 2026
 
 ### Added

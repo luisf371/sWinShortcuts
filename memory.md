@@ -1,617 +1,151 @@
-# Active project notes
-
-- Configuration intentionally supports only the current format: app-level toggle/startup keys, `Win.ini`, current binding sections, five-field color rows, and current Caps Lock values. Do not restore readers for legacy `Color.ini`, per-button AltMouse, `RightMouse`, or old Caps aliases without an explicit migration decision.
-- `IniDocument.Save` uses `File.Replace` first, with an `UnauthorizedAccessException` fallback to `File.Move(..., overwrite: true)` for restricted Windows hosts. Keep sibling temp-file cleanup on failures.
-- `ObservableCollection.Clear()` is unsafe for binding rows that own handlers: it emits `Reset` without the removed items. Bulk removal must use the existing per-entry removal path.
-- WPF style triggers cannot override local attributes. For profile-kind tab visibility, use the proven local `Visibility` binding pattern; disabled tab headers need `ToolTipService.ShowOnDisabled="True"`. UI Automation is the non-pixel verification route; do not take screen captures.
-- `Services/Input/` contains the split input pipeline. Preserve `_profileLock` → feature-lock → executor-enqueue ordering, never take a feature lock on the executor worker, and keep previously-recorded UP releases unconditional. Auto-Run activation and background human-input edges require live HWND/PID ownership checks; cached foreground identity alone is unsafe during watcher lag.
-- `CapsLockMode.DoubleNormal` teardown may enqueue only its guarded second tap after disposal begins; execution must decide whether it is needed after the first tap's acknowledgement. Do not replace this with per-press heap allocations.
-
-# 2026-08-26 (Update checks)
-
-- `UpdateCheckService` is the only network client. It checks GitHub's latest-release endpoint with redirects disabled, and release URLs belong in `Utilities/GitHubUrls.cs`.
-- Update checks are opt-in through `[App] CheckForUpdates`; only literal `true` enables them. `dev` builds must make no request. In CI, `BuildInfo.Number` is numeric, so service tests must set `CurrentBuildNumber` explicitly.
-- Open update links through the existing fail-closed `ProcessLauncher` de-elevation path using absolute `%WINDIR%\explorer.exe`; direct `UseShellExecute` could open the browser elevated. Recheck `Enabled` inside the dispatcher callback so an in-flight response cannot show a banner after opt-out.
-
-# 2026-08-27 (Build and release)
-
-- The CI workflow uses `${{ github.run_number }}` for both `-p:BuildNumber` and `build-N` tags. Numbers naturally skip runs that are PR-only or fail; reruns keep the original number.
-- Build metadata generation must run before compile even when only `BuildNumber` changes, register its generated file in `FileWrites`, and skip `*_wpftmp.csproj` to avoid WPF temporary-project collisions.
-- The release flow RID-builds `Tests/Tests.csproj`, tests with `--no-build`, and publishes with `--no-build`. Package scans after the RID build need `--no-restore`, otherwise they can overwrite the RID assets and make publish fail with `NETSDK1047`.
-
-# 2026-08-29 (AMD vibrance)
-
-- GPU vendor routing is based on DXGI 1.1: join `DXGI_OUTPUT_DESC.DeviceName` to `Screen.DeviceName` and classify `DXGI_ADAPTER_DESC1.VendorId`. Conflicting or missing mappings fail closed. AMD is only `0x1002`; `0x1022` remains unknown.
-- AMD control uses one serialized ADL2 context. Match `AdapterInfo.strDisplayName` to `\\.\DISPLAYn`, flush driver data after a successful saturation change, and refresh the ADL context under its lock after topology changes. The unmatched single-display fallback is permitted only after Windows has already classified that display as AMD.
-- Keep gamma in `WindowsGammaService`, NVAPI-only behavior in `NvidiaColorControlService`, and routing/order in `CompositeColorControlService`. Preserve the gamma-first `ColorApplyOutcome` retry contract.
-- Clamp stepped ADL saturation values to the driver-reported default rather than the minimum; reject a step larger than the full supported range.
-
-# 2026-08-29 (memory cleanup)
-
-- Removed superseded plans, historical review loops, branch/commit references, and obsolete test totals. Keep this file to durable constraints and current implementation gotchas; project structure and broad conventions live in `AGENTS.md`.
-
-# 2026-08-30 (Anti-AFK background and forced modes)
-
-- `AntiAfkSendMode` is persisted in `[AntiAfk] SendMode` and must be copied by `ProfilePersistenceSnapshot`; missing or invalid values fall back to `Foreground`.
-- Background/Forced posting retains the last activated profile window and revalidates its PID before every DOWN. Snapshot the retained target once per tick so gating and dispatch use the same profile, and recheck `ProfileInputGenerationIsCurrent()` before every posted step.
-- Retained Anti-AFK targets release on removal, identity change, master-disable, hard deactivation, session teardown, or stop. Anti-AFK setting edits do not release the target because mode and interval are read live.
-- Anti-AFK and Auto-Run arbitrate each posted tap through `TryBeginAntiAfkTap`/`EndAntiAfkTap`; always release that latch in `finally`.
-- PR 21 conflict resolution: merge `origin/main` by keeping main's cleaned `memory.md` as the base and appending only durable Anti-AFK notes. Release verification after the merge: `dotnet build .\\sWinShortcuts.csproj -c Release --no-incremental` completed with 0 warnings/errors; `dotnet test .\\Tests\\Tests.csproj -c Release --no-restore` passed 551/551.
-- PR 21 review fixes: resolve a same-PID `GW_CHILD` before retaining the Anti-AFK posting target; reject taps while a retiring Background Auto-Run worker is alive; recapture the settled active target on session unlock/connect; and recheck all live guards after Auto-Run arbitration before posting DOWN. The four focused regression tests failed before their fixes and pass afterward (47/47 combined runtime tests).
-- Final Anti-AFK guard order is blocking PID validation first, then `CanPostBackgroundStep` immediately before DOWN; reversing them leaves a stale-DOWN race during the native lookup. Final Release verification: build completed with 0 warnings/errors, full tests passed 555/555, and the four new regressions passed in 5 consecutive runs.
-- Forced/Background Anti-AFK uses `PostMessage`, so Windows UIPI rejects delivery from medium-integrity sWinShortcuts to a high-integrity game with Win32 error 5. Capture `GetLastWin32Error()` immediately after the failed post, report the integrity mismatch once per retained target, and call successful delivery "queued" because it does not prove the game processed the message.
-- Anti-AFK runtime diagnostics log the captured HWND/PID and report invalidation when that exact window is destroyed or reused. The delivery-diagnostics regression plus the full Release suite passed 556/556; use an elevated build for high-integrity games.
-- Live validation with a High-integrity game confirmed all three modes: Forced and Background queued WASD to the retained window while unfocused, and Foreground fired through SendInput while active. A normal Medium-integrity launch still fails with UIPI error 5, so match the target's integrity level.
-
-# 2026-08-31 (Debug logging review)
-
-- Debug-log conventions: subsystem/service entries carry a `[Tag]` (`[Input]`, `[Color]`, `[Settings]`, `[UI]`, `[Launcher]`); input state-machine entries stay untagged prose. Release wording is "release requested" — injected UPs are queued to the executor or signaled to the Background worker, not completed on return. Rapid Fire's per-press cadence line says "press started" so it cannot be confused with the sticky-toggle "armed" line.
-- `AntiAfkTarget` is a positional record, so `==` is value equality (Profile compares by reference): every CAS-result comparison guarding an Anti-AFK removal/invalidation log must use `ReferenceEquals`, or a racing same-valued recapture reads as a removal that never happened.
-- `SendInput` failure facts exist only at the `WindowsInputSender` boundary (inserted-event count + last error captured immediately after the call; UIPI blocking is not reported). `IInputSender`'s bare bool lacks those native details, so the executor/Rapid Fire layers keep no duplicate bool-failure logging.
-- The debug-logging toggle is order-sensitive with the logger gate: enablement flips `IsEnabled` before logging the entry, disablement logs before flipping; INI hydration and dialog-cancel rollback go through `SetEnableDebugLoggingProgrammatically`/`RollBackEnableDebugLogging` so they never claim "via settings".
-- Hot-path diagnostic helpers must take raw values, not pre-built interpolated descriptions — an argument string is built on every call, including successes with logging disabled. `WindowsInputSender.SendInputLogged` takes the key/direction or virtual key plus a `SendInputKind` and constructs the description only after a short count, inside the `IsEnabled` branch.
-- State-machine `Log(string)` helpers cannot defer interpolation: callback-reachable Auto-Run/Rapid Fire diagnostics must check `ILoggerService.IsEnabled` before constructing the message. The disabled Rapid Fire release regression uses `GC.GetAllocatedBytesForCurrentThread` to keep that path allocation-free.
-
-# 2026-09-05 (Codebase review)
-
-- `AGENTS.md` still describes the former monolithic input service. Review current input behavior in `Services/Input/` and use the lock ordering documented above; do not infer current ownership or timer behavior from the old code-map counts.
-- Review regressions reproduced two unresolved boundaries: Background Auto-Run `SprintActivation.Press` can lose its UP on cancellation, and a pre-rename autosave snapshot can persist its old `Name` after rename succeeds. Fixes must preserve paired releases and reconcile queued snapshot identity, respectively.
-- Additional fake-driven review probes confirmed: inactive Auto-Run owners survive master-disable, Anti-AFK can post after disable during its third PID lookup, and the default color editor writes an inactive preset directly to hardware. Recheck owner invalidation, place DOWN guards after all native preparation, and keep hardware writes coordinated with the activation plan.
-- Native review constraints: obtain the desktop shell through `FindWindowSW(SWC_DESKTOP)` rather than ordinary ShellWindows enumeration; normalize display identifiers and compare them exactly; restrict system driver DLL searches as the AMD loader already does.
-- NVAPI DLLs are driver-installed runtime dependencies, not bundled assets. .NET 10 single-file publishing still searches beside the executable for default P/Invokes; explicit `DefaultDllImportSearchPaths(DllImportSearchPath.System32)` excludes that directory (Microsoft: `dotnet/core/compatibility/interop/10.0/native-library-search`).
-
-# 2026-09-05 (Review fix planning)
-
-- Requested implementation-plan scope is review findings 1–9 and 11–14 only; elevated-startup location protection (#10), unrelated dead-code removal, and CI cleanup are excluded. The Auto-Run lock/native-work change (#13) follows the input correctness fixes (#1–3) so their release/ownership regressions protect the refactor.
-- The staged fix plan is `docs/superpowers/plans/2026-09-05-review-fixes.md` (locally saved; existing `Docs/` ignore rule applies). Native cleanup must be bounded inside the AMD/NVIDIA services, not by moving the whole host disposal off the UI thread; the tray has creating-thread affinity.
-- Planning checks: `schtasks /Query /TN <fresh-nonexistent-name> /HRESULT` returned `0x80070002` without startup mutation. `IniDocument.Load` currently uses `File.Exists`, which can conflate absence with unreadable/directory paths; the settings-load fix must distinguish those before treating defaults as a valid baseline.
-
-# 2026-09-05 (Cleanup planning)
-
-- Cleanup is a separate, behavior-preserving plan from the review fixes. Count WPF bindings/resources, generated MVVM members, native ABI declarations, and reflection-based test helpers as consumers; no-C#-caller results alone do not justify deletion. Keep current-format persistence safety tests and useful fake/service boundaries.
-
-# 2026-09-06 (Cleanup plan)
-
-- Closed cleanup list C1–C8 is saved in `docs/superpowers/plans/2026-09-05-code-cleanup.md`; start with orphaned UI artifacts. No package, native ABI, artwork, or local-directory purge is planned. Retiring the unused `SuppressOriginalWhileAltIsHeld` projections also retires exactly eight tests of those projections, not runtime suppression coverage.
-
-# 2026-09-06 (Review fixes)
-
-- Desktop-user COM launching resolves ShellWindows.FindWindowSW(SWC_DESKTOP), then IServiceProvider → IShellBrowser → IShellView → folder Application. Keep full SDK vtable layouts including IOleWindow slots and release each acquired RCW once; never final-release cast aliases. Read-only STA/MTA regressions reproduced the enumeration failure and pass with the supported lookup.
-- Startup task queries use /HRESULT: only completed 0 means present and 0x80070002 means absent. Timeout/access/other errors abort before any task/Run-key mutation; registry errors propagate. A fresh nonexistent task query confirmed 0x80070002 without changing startup configuration.
-- Queued profile snapshots reconcile only Name to the managed profile inside ProfileManager's gate; retain captured feature values so a rename cannot be undone by a delayed autosave.
-- Settings hydration reads/parses one IniDocument before live setters; only true missing-file exceptions count as defaults. IsIniLoaded gates editing, Save and rollback baseline capture, independently of startup readiness.
-- Production color editors notify the activation worker; standalone direct writes additionally require the edited variant still be active when execution occurs. Do not bypass active/game/forced-preview precedence with a second color writer.
-- NVIDIA handle matching uses exact names after the leading \\.\ display prefix; unmatched single-handle fallback requires known NVIDIA ownership. Both NVAPI imports explicitly use System32-only DLL search.
-- Crosshair events publish desired held state under the configuration gate; dispatcher callbacks read the latest policy, and ungated profiles clear held state. Keep RMB callbacks enqueue-only and keep assets/window work outside the gate.
-- Background Auto-Run retains an activation-captured run/target through worker retirement, even before target resolution finishes: a suppressed physical W-up is already a release obligation. Native result accounting must carry movement vs sprint explicitly because SprintKey=W is valid. Keep epoch invalidation before reset and account successful DOWN before detach.
-- AMD/NVIDIA disposal closes admission before either lock acquisition, schedules one serialized cleanup, and waits only 100 ms. Timed-out/hung cleanup stays rooted and deferred; never unload in-flight native code or retry cleanup synchronously. Host disposal remains on the UI thread.
-- Anti-AFK validates captured HWND/PID again after AttachThreadInput, for both DOWN and UP, then performs the final live DOWN guard. Attachment can block while a window is destroyed/reused; rejected posts still detach and restore keyboard state.
-
-# 2026-09-07 (Review remediation)
-
-- Auto-Run-consumed key-UP still reconciles prior Caps, combined-remap and launcher ownership through `ReleaseOwnedKeyUp`; W handoff performs that cleanup earlier. Foreground Press sprint on W restores movement through the existing generation/foreground-guarded DOWN, while prior UP remains unconditional.
-- Startup changes read both task and Run-key state before mutation. `/Create /F` replaces without pre-deleting; failed transitions query actual state before compensating and report restoration failure plus known/unknown resulting state. Keep startup tests on fake delegates, never real task/registry writes.
-- Log retention trims to 75% of the same threshold to leave batch headroom; the helper also serves crash.log. Temp-file regressions cover repeated append/trim cycles and newest-record retention.
-- Accepted scope: executable replacement in a writable install location when running elevated is a known deployment risk. Do not require certificates, Program Files installation, or executable-path lockdown as remediation without a new user decision.
-- Color-plan dedup is invalidated before native writes; attempted enabled displays retain separate worker-owned restore obligations until an Applied restore. Do not clear that set from StopAsync while an uncancelable worker could still be running. Preview hotkeys toggle from the visible preview variant; nonfinite gamma defaults to 1.0 before finite clamping.
-- A hide for a never-created crosshair must remain asynchronous: Application.Exit can block its dispatcher before HasShutdownStarted becomes true.
-- App-settings reads and complete read/modify/write transactions share the AppSettings queue. Capture WPF values before enqueuing, and include AppSettings.FlushAsync in the existing bounded exit flush; UI continuations must not be needed to finish storage. Disable Settings editing during Save so captured values and live previews cannot diverge.
-- Combined profile identity edits validate/persist a captured proposed name+executable together, publishing identity only on success. Queued autosave snapshots reconcile both identity fields while keeping their captured feature values.
-- Key deserialization must accept only defined keys with a Windows virtual-key mapping. Undefined numeric values and WPF-only sentinel keys otherwise form suppressed remaps that emit nothing. Keep bare digits mapped to D0-D9, aliases and defined numeric key values compatible.
-- Startup Advanced Mode inference requires a successful settings read with an absent key. On read failure, preserve live state and skip persistence; a later successful write must not replace an explicit preference with inferred defaults. The regression releases a temporary exclusive file lock from the error logger before any fallback write could run.
-- SystemEvents captures the subscribing synchronization context and uses Send; display callbacks subscribed during WPF startup run on the hook-owning dispatcher. AMD/NVIDIA callbacks only mark pending invalidation atomically; the next apply refreshes caches under the native-operation lock, retaining events that arrive during in-flight work.
-- DisplayService invalidation must not take the enumeration lock. GetDisplays consumes pending changes on its worker and publishes a cache only after an uninterrupted successful enumeration. Color editors use coalesced async snapshots on their owning context, discard stale/disposed results, retain rows after failures, and reuse the snapshot when switching presets; gated tests cover responsiveness without native displays.
-- Successful Settings hydration must synchronize live watchdog/Advanced Mode/toggle-key services even when INI values equal fresh VM defaults. Keep normal UI notification deduplication and parse the whole snapshot before applying anything; repeated service assignments are idempotent, including an unchanged Rapid Fire toggle key.
-- Optional logger construction performs no directory I/O. Create storage only inside caught nonempty worker/final-drain writes, trim after successful appends, and leave idle shutdown storage untouched; this lets profile-store inaccessible-storage recovery run and permits later writes when the directory becomes available.
-
-# 2026-09-08 (PR 23 merge CI diagnosis)
-
-- PR 23 head, its green synthetic merge, and main squash 6c96fba have identical trees. CI run 34299207336 failed only NvidiaColorControlServiceTests.Dispose_WhenNativeApplyBlocked_ReturnsBeforeNativeCleanup at the post-dispose Task.Run/500 ms WaitAsync (line 103); local full Release/RID suite passed 775/775. Setting DOTNET_PROCESSOR_COUNT=2 for the AMD/NVIDIA test classes reproduced that exact NVIDIA failure plus AMD's matching disposal timeout (45/47 passed). Their intentionally blocked pool work makes short queue-inclusive deadlines scheduling-sensitive; isolate blocking test work/probes on dedicated threads and retain release-order assertions instead of changing production disposal or merely increasing deadlines.
-- CI setup-dotnet resolves channel 10.0 and global.json allows latestFeature: the green run used SDK 10.0.400/runtime 10.0.11, red used SDK 10.0.401/runtime 10.0.12 despite the same runner image. This drift is observed, not established as the failure cause.
-- Local CI-test fix: both vendor test classes use a standard LongRunning TaskFactory with TaskScheduler.Default for synchronous blocked native calls and timed probes, including topology tests with the same scheduling dependency. Keep the 500 ms deadlines and cleanup/rejection assertions; production scheduling and disposal are unchanged.
-- Verification: original AMD/NVIDIA constrained run failed 2/47 before the test-only change; afterward 5 consecutive constrained runs passed 47/47. Final Release/RID full suite passed 775/775 both normally and with DOTNET_PROCESSOR_COUNT=2; build had 0 warnings/errors and git diff --check passed.
-
-# 2026-09-08 (Wheel plan revision)
-
-- Wheel support is planned in `docs/superpowers/plans/2026-09-06-mouse-wheel-support.md`: existing Key Mapping sources/Right Click Only plus AltMouse tap targets, not a separate RMB feature. Preserve signed wheel distance, including fractional or multiple 120-unit increments.
-- General InputTrigger wheel support requires feature-specific validation: hold-breath panic currently supports only keyboard/mouse buttons. Existing executor enqueue takes a lock; old blanket lock-free callback documentation does not describe queued gesture delivery.
-- Plan review boundary: Background Auto-Run holds use PostMessage and are invisible to executor/OS key-state checks. Wheel busy-target protection covers executor-owned/OS-reported holds only; document posted-target overlap rather than claiming cross-transport ownership coordination.
-- Deterministic actual-service wheel tests need clock/key-state delegates forwarded through an internal InputHookService constructor; a fake IInputSender alone still leaves native keyboard-state reads. Lifecycle checks must use production transitions, with test extensions reserved for initial setup.
-- Native Start/reinstall/session resume cannot be proven by hook-free fixture worker restarts. Exercise shared production wheel resets and safe service transitions automatically; report actual hook/session integration separately as manual checks, including checks not run.
-- Clarification to the constructor-test note: test extensions may also invoke shared production reset/seeding routines and clean up fixtures; the restriction is against duplicated lifecycle logic or direct field replacement standing in for a production transition.
-
-# 2026-09-08 (Wheel implementation)
-
-- Implementation branch `feat/mouse-wheel-mappings` starts at `807d3b7`; baseline Release build passed with 0 warnings/errors and full tests passed 773 with 2 existing desktop-dependent skips (775 total). Keep the reviewed plan under ignored `docs/superpowers/plans/2026-09-06-mouse-wheel-support.md` local.
-- Wheel producer/executor share injected Stopwatch ticks; only worker-side native state checks gate busy targets. Preserve physical Alt during mapped output and keep Background Auto-Run posted holds outside executor ownership accounting.
-- Wheel settings keep existing INI conventions: SetKey writes unassigned nullable targets as empty values (None also reads unassigned). Source-choice list notifications are presentation-only; ignore SelectableSources in mapping-change handlers to prevent repeated model publication/autosave during picker refreshes.
-- InputExecutor tracks successful sends for held-target protection: a failed UP must retain its virtual-key hold bit. Guard completion belongs in the drain finally so cancellation, send failures and shutdown still refund accepted wheel reservations exactly once.
-- Never reset `_pendingWheelTaps` during wheel epoch invalidation or lifecycle reset. Accepted stale commands keep their reservations until executor completion; only rejected admission refunds synchronously.
-
-# 2026-09-09 (Review remediation loop)
-
-- PR 24 uses `feat/mouse-wheel-mappings`; remediation starts at `7adb684`. Keep input foreground checks at worker-side DOWN admission, preserve global bindings and prior UP obligations, and treat Background Auto-Run's posted holds as a separate transport.
-- Shared executor holds need stable owner identity: Caps typematic repeats must not create extra owners. A failed UP needs bounded recovery without clearing conservative busy-target state from an ambiguous native key-state read.
-- Crosshair display-change notifications bypass unchanged-config/HWND dedup and enqueue the existing full apply; dispatch reads current desired state, and disposal detaches the static SystemEvents handler. Focused regression check passed 11/11.
-- Composite color restoration tracks gamma/vibrance independently before native calls; retain pending components through failed, thrown or skipped attempts until an applied restore, while never-supported components remain non-retrying. A real AMD service with fake enumeration loss reproduced the missing restore; focused color tests passed 75/75 after correction.
-- Profile-scoped executor DOWNs and Rapid Fire clicks validate live HWND/PID through the existing transport on workers, then recheck published state; global bindings and recorded UPs retain their admission rules. Test fixtures inject the transport through construction, and default construction is checked for native wiring.
-- Executor holds use fixed feature-owner flags with combined mappings retaining their source counts. Failed or throwing UPs remain pending per virtual key, retry once at each worker/drain opportunity, and block new holders until recovery; Auto-Run Press sprint on W preserves its deliberate pulse/restore.
-- Remediation verification: `dotnet test Tests/Tests.csproj -c Release --no-restore` passed 911 tests with 2 existing Explorer-dependent skips and no build/analyzer warnings. Independent input diff inspection and `git diff --check` found no issues; live hook/display/GPU behavior remains a manual check.
-- Fresh review after green CI at `c0a6a1a` reproduced Auto-Run cancellation during worker PID lookup. Its commands use `ExpectedExecutable` rather than `ExpectedProfile`, so its own `CanExecute` must recheck lifecycle/generations and captured foreground-guard identity after native lookup; executor profile checks do not cover this producer.
-- Auto-Run post-lookup revalidation passed four regressions that first failed for movement/sprint cancellation with and without focus publication, preserving an admitted W release. Focused checks passed 152/152; full Release tests passed 915 with 2 existing Explorer-dependent skips and no build/analyzer warnings.
-- Keep README feature instructions aligned with UI/runtime: Caps `2x Normal` taps on press and release, Foreground/Background Anti-AFK require keyboard idle while Forced bypasses it, and vibrance supports AMD as well as NVIDIA. AMD's official ADL documentation confirms Adrenalin 25.3.1+; update requirements, troubleshooting and FAQ together when support changes.
-- App color/Rapid Fire toggles intentionally reject modifiers, but the general key catalog must retain them for remaps and holds. Filter only app-toggle choices and normalize assignment/hydration/load/save to the same runtime rule; preserve valid manually configured keys outside the common picker list, such as F13.
-- WPF maps `ImeProcessed` to `VK_PROCESSKEY`, so preserve it under the runtime's existing acceptance rule. Valid saved keys outside the picker list must enter its ItemsSource before selection notification; retain existing options so the other hotkey selection stays available. Settings regressions passed 53/53 and full Release passed 935 with 2 existing Explorer skips, without warnings.
-- Advanced Mode off stops the gated assists and forces original-input suppression for Key Mapping; it does not disable Caps `2x Normal` or guarantee universal 1:1 output/game safety. Keep the Settings tooltip and service contract specific to the features actually gated.
-
-# 2026-09-09 (Alt + Mouse wheel editor)
-
-- Alt + Mouse rows use `InputTrigger` so wheels share the trigger dropdown without entering the physical `MouseButton` enum. Wheel rows route Tap to the existing `WheelUpKey`/`WheelDownKey` fields; Hold is cleared and disabled, and removal clears the saved wheel target. Keep per-row source availability notifications presentation-only so one edit publishes one runtime/autosave change.
-
-# 2026-09-10 (Alt + Mouse suppression investigation)
-
-- Alt + Mouse consumes recognized button DOWN and latches its UP in GestureChordStateMachine; InputHookService.MouseCallback returns 1 for handled events. Alt-wheel routes also set WHEEL_SUPPRESS. Alt itself passes through; README already documents games bypassing mouse suppression. Distinguish target raw-input behavior from an unrecognized binding before changing suppression logic.
-- Current GestureChordStateMachine logging does not record ordinary AltMouse button recognition/suppression or successful wheel admission; a quiet debug log cannot establish that a gesture was missed. Use targeted decision logging if runtime suppression needs diagnosis.
-
-# 2026-09-11 (Crosshair offset)
-
-- Crosshair offsets are saved per profile as physical pixels; apply them after centered bounds calculation in `CrosshairWindow.ComputeOverlayBounds`, independently of image size and WPF DIP conversion. The app-level hotkey switches centered/saved-offset mode; mode starts centered and resets on profile changes or crosshair disable, while same-profile edits/display refreshes preserve it.
-- Offset edits must be included in `CrosshairService` configuration dedup and `ProfilePersistenceSnapshot.CloneCrosshair`; otherwise live slider changes or queued autosaves lose the new values.
-- Offset toggle callbacks only update desired mode and enqueue the existing dispatcher apply; callbacks read the latest configuration, so queued toggles cannot restore an old profile after disable/switch. Focused crosshair/persistence/runtime validation passed 144 tests after seven new drawing/state regressions first failed against the centered-only implementation.
-- Crosshair offset requests carry the captured profile and foreground generation as a value tuple; compare both against the overlay configuration before toggling. Always advance the stored generation even on deduped applies, and snapshot `_latestForeground` once for HWND/generation in live edits. Reseed the key latch on unlock/console-connect/remote-connect as well as Start/reinstall to recover missed UPs.
-- Final offset verification: `dotnet build sWinShortcuts.csproj -c Release --no-restore` completed with 0 warnings/errors; `dotnet test Tests/Tests.csproj -c Release --no-restore` passed 974 with 2 existing Explorer-dependent skips. Release app for manual overlay checks: `bin/Release/net10.0-windows/sWinShortcuts.exe`.
-- Launch-crash regression: never assign `int` constants through `x:Static` directly to WPF `Slider.Minimum`/`Maximum` (`double`). Markup-extension values bypass XAML numeric conversion and fail during deferred template loading despite a clean build. Use numeric XAML literals as the existing sliders do; `CrosshairSliderTemplateTests` loads the actual slider declarations through WPF and reproduced the failure before the fix.
-- Tests are nested under the app project: copied XAML fixtures must use a non-`.xaml` output extension (for example `.xaml.testdata`), or the parent WPF Page glob compiles them again and creates duplicate MainWindow members.
-- Launch fix verified: deferred slider-template test failed before the four literal-bound replacements and passes afterward. Release build has 0 warnings/errors; full suite passed 975 with 2 existing skips. Actual rebuilt EXE stayed running/responding after launch with no growth in crash.log.
-
-# 2026-09-11 (Fresh review validation)
-
-- Local CI-equivalent validation uses the workflow's win-x64 Release build/test and no-build single-file publish. If solution restore exits 1 with zero diagnostics on this host, rerun with -m:1; serialized restore succeeded without project changes. Preserve the RID restore by using --no-restore on package scans.
-
-- Elevated startup tasks need per-user ownership: the legacy machine-wide task name can collide across administrator accounts. Any legacy adoption/removal must verify its principal against the current user SID; persistent app tasks need explicit battery allowance and an unlimited execution time.
-- Elevated startup tasks now use a per-user SID name; adopt the legacy shared name only after resolving its principal to the current SID. Preserve that selected name through compensation, and never overwrite an unverified principal. New task creation omits `/F` so a post-query name collision fails instead of replacing another task.
-- Scheduled startup XML explicitly binds both LogonTrigger.UserId and Principal.UserId, uses InteractiveToken/HighestAvailable, permits battery use, and sets ExecutionTimeLimit=PT0S. Settings skips unchanged startup options, so old task policy upgrades require off+Save then on+Save while elevated. Fake-runner startup checks passed 47/47; native in-memory Task Scheduler XmlText validation accepted the generated definition without registration.
-- Startup task XML sets the current SID on both LogonTrigger and InteractiveToken/HighestAvailable principal, allows battery operation, and sets ExecutionTimeLimit=PT0S. Settings skips unchanged startup preferences, so upgrading an old task requires turning startup off and saving, then re-enabling elevated startup and saving. Keep this OS mutation out of unrelated Settings saves.
-- Native task-schema validation can use Schedule.Service.NewTask(0).XmlText without registering a task. Pass the generated document root without its UTF-8 file declaration because COM takes a Unicode string; the original UTF-8 file remains appropriate for schtasks /XML. The generated definition passed this in-memory Windows check.
-- Crosshair shutdown needs its own admission boundary: Start/Stop under the configuration gate reject late non-null profile applies, while Stop publishes a hidden configuration. A blocked ActiveProfileChanged subscriber reproduced overlay resurrection after StopAsync; guard captured notifications with the activation publication lock and use only asynchronous overlay dispatcher work so exit cannot wait on a first-window Invoke.
-- Review remediation validation passed all 996 Release/win-x64 tests with 0 skips and no compiler warnings; single-file no-build publish passed. A temporary read-only production StartupService.GetState probe also recognized the existing owned legacy task; remove machine-specific probes afterward and retain fake-driven startup tests in the suite.
-- ActiveProfileChanged payloads can arrive out of order because UI reconciliation and worker activation raise events after releasing the input lock. Consumers must re-read InputHookService.ActiveProfile under the activation publication lock rather than cache the payload. A real-producer regression reproduced an older null notification hiding the newer profile on its next crosshair edit.
-- All app-toggle physical latches must reseed at Start, successful keyboard reinstall, and session resume. Keyboard watchdog recovery preserves the sticky Rapid Fire arm while reconciling missed toggle UPs; shared-seed regressions failed 4 of 8 before the fix and focused lifecycle checks passed 57 of 57.
-- Crosshair profile publications must share the activation publication gate across live edits, removals, and the input worker. Skip visual output for obsolete foreground snapshots while keeping input transitions lossless; two real-overlay regressions reproduced stale visibility and the 111 focused crosshair/activation checks passed after ordering the publications.
-- Rapid Fire timer callbacks need serialization across physical press generations: a fresh press can rearm while the previous synthetic DOWN/UP pair is still sending. Keep the dedicated callback lock off hook paths, and recheck timer/lifecycle state after acquisition so cancellation skips a waiting click.
-- Alt gesture timer and UP completion claims belong to the existing press object, not the reusable button/key timer state. A paused old callback otherwise claims the next press; check HoldKey before claiming so queued callbacks cannot swallow tap-only rebindings. Both mouse/keyboard races were reproduced and focused gesture/Rapid Fire/executor checks passed 198 tests.
-- Rapid Fire cadence metadata now has one writer: the timer worker. Hooks publish a requested generation after settings and wake the timer; cancellation only invalidates the generation, so delayed cancellation cannot erase a newer request. Restore a newer kick after any timer rearm, and rearm remaining time for an early kick. RNG-gated stale scheduling and delayed-wakeup regressions first failed; the combined focused checks passed 157 tests.
-- Final round-four remediation validation: workflow-equivalent Release/win-x64 build completed without warnings; full suite passed 1,013 with two Explorer-dependent skips, and those two passed their targeted desktop rerun. The no-build single-file publish passed its size check. A fresh independent review must follow code changes before declaring the loop clean.
-- The fifth fresh-context Astra review found zero supported actionable findings after nine issues were repaired across the first four passes (six Medium, three Low). Reports are archived by date/round; local CI equivalents validate the uncommitted worktree, while hosted CI still refers to the existing committed HEAD.
-
-# 2026-09-11 (Crosshair offset focus restoration)
-
-- Supersedes the original offset reset-on-profile-change decision: each profile now remembers its centered/offset choice for the app session, including Alt-Tab through desktop, a profile without a crosshair, or another crosshair-enabled profile. New sessions start centered; saved X/Y values are unchanged. Use weak profile keys and allocate state during `ApplyProfile`, so removed profiles are not retained and toggle callbacks only flip an existing value.
-- A null crosshair publication may mean focus loss or active-profile master disable. Preserve the mode on focus loss; inspect the previous active profile's enabled flags to retain explicit-disable reset behavior. Four regressions failed before the fix, including real `ProfileActivationService` round trips; focused crosshair/activation validation then passed 114/114.
-- Focus-restoration fix passed independent scoped review with no findings. Release/win-x64 build had 0 warnings/errors; full suite passed 1,016 plus both initially skipped Explorer tests on a targeted rerun (1,018 unique tests). Published the tested build to `bin/Release/net10.0-windows/win-x64/publish/sWinShortcuts.exe`; fresh native GUI testing remains manual because the existing tray instance is running and native UI automation is unavailable.
-
-# 2026-09-13 (Macro planning)
-
-- Macro waits must run outside `InputExecutor`: its existing sequence/tap delays block the shared worker. Reuse `InputCommand.Completion` to await each delivered transition; cancellation must invalidate future input before an executor-owned release fence, including a DOWN already in flight.
-- `ModifierKeys` can represent shortcut combinations, but `IniExtensions.GetEnum` requires `Enum.IsDefined` and Auto-Run matches one modifier only. Macro shortcut flags need explicit mask validation and numeric INI persistence rather than reusing Auto-Run's enum reader unchanged.
-- Recording needs the original hook payload before decoded dispatch discards coordinates/scan codes. Existing callbacks reject all injected input; recording with remaps still enabled would capture physical actions that differ from target-visible actions. Keep capture separate from editor-row allocation and pause automation without uninstalling the recording hooks.
-- The macro draft is `MACROS_PLAN.md` at the repository root. Existing executor ownership covers synthetic keyboard holds only: Rapid Fire sends mouse clicks independently, background Auto-Run/Anti-AFK use PostMessage, and GetAsyncKeyState includes injected state. Macro admission/cleanup must coordinate those boundaries rather than assuming one owner bit covers all input.
-- Confirmed macro scope: per-profile keyboard shortcuts execute once; busy presses do not cancel/restart/queue. Record endpoint coordinates without free-movement paths; playback generates speed-capped, slightly curved travel to exact absolute pixels. The user permits temporary hard-coded F12 cancellation, with no stop setting or normal playback Stop control; retain Record/Stop for capture.
-- Generated mouse travel adds time while preserving saved Wait/press-duration values. Schedule one rounded point at a time outside the executor and enforce the speed cap between acknowledged points; cancellation must leave the cursor where it is and still release owned input.
-- Macro plan review: IniDocument.Load discards explicitly empty values through SetValue and GetSection cannot distinguish an absent section from an empty one. Strict macro corruption preservation needs minimal source-presence/section access while retaining legacy readers' behavior.
-- Macro physical takeover must cover queued UPs and pending failed-UP retries, not only cleanup. Retain release origin, distinguish passed-through from suppressed physical pairs, and account for a physical DOWN racing the final native UP.
-- Global color/crosshair/Rapid Fire toggle setters bypass profile reconciliation, including Settings rollback. Macro shortcut conflicts must refresh through those setters; each toggle reserves its base key regardless of modifiers. A key picker plus modifier checkboxes avoids adding a competing shortcut-capture mode.
-- Busy modifier shortcuts arrive as separate events: cancelling on Ctrl DOWN breaks ignored Ctrl+F6 activation. Defer new macro output until physical modifiers release, distinguish deferral from native failure, retain owed UPs, and restore a still-intended macro modifier after physical overlap. Foreign synthetic modifiers need executor admission arbitration because a remap's physical source key may not itself be a modifier.
-- Macro plan review completed in three fresh-context Astra/xhigh passes: six supported findings fixed (one High, five Medium), final pass zero actionable gaps. Reviewed plan SHA256 is D9CA36A561C9BA65099559CEC70BF8F9ACAF081828E18D227FCE6C895022499A; MACROS_PLAN_REVIEW.md records findings and readiness. This validates the plan only; production implementation and native checks remain future work.
-
-# 2026-09-13 (Macro implementation)
-
-- Feature branch `feat/macros` starts at `0bf8192`. Baseline Release/win-x64 build passed without warnings; full suite passed 1,016 with two existing Explorer-dependent skips. User requested a PR, initial green hosted CI, then fresh-context Astra/xhigh reviews with each fix round committed separately; do not merge.
-- Macro format validity is separate from playback eligibility: incomplete representable drafts save normally; malformed Macro* sections retain other features but suspend every save of that profile until the source is corrected and reloaded.
-- WPF numeric conversion failures do not call a VM setter. Macro number fields bind raw text, validate invariant integers, and disable the last saveable runnable definition while malformed text is visible. Explicit Exit awaits recorded-row application before flushing saves while the dispatcher is alive.
-- Macro input reservation uses a nonzero run token and publishes target ownership before native DOWN. Retain failed-UP origin and reservation until cleanup or confirmed physical takeover retires it. Absolute SendInput cannot uniquely address desktops wider/taller than 65,536 pixels, so the sender rejects them.
-- A consumed busy activation still needs raw held-state tracking for its paired UP, but cannot count as a target-visible physical collision. Plain F6 and Ctrl+F6 (Ctrl released first) both reproduced cancellation when F6 was the next macro output; publish the consumed activation bit before waking the worker.
-- Keep explicit Exit asynchronous through macro retirement while the hook dispatcher pumps. A two-second cleanup timeout retains the app and pending recording for retry; blocked recording preparation reports failure promptly but retains its queued release fence. Physical takeover UP tracking must survive the macro reaching Idle during hook replacement.
-- Initial macro validation: Release/win-x64 build completed without warnings/errors; full suite passed 1,221 with two existing Explorer-dependent skips. The tested single-file publish succeeded; native game and mixed-DPI desktop checks remain manual.
-- First code review after green PR #25 CI reproduced four gaps: rejected mapped modifier releases can outlive macro cleanup; recording must keep Auto-Run's W/S observer current; physical modifier revisions must be sampled before native delivery/reassertion; WPF macro pickers must include every accepted loaded/recorded key. Keep these as permanent regressions and commit each review fix round separately.
-- Round-one fixes retain rejected owner bits through the eventual mapped UP (Combined collapses shared/repeated sources), keep W/S and app-toggle physical observation active while actions are paused, and preserve the pre-delivery modifier revision across repeated restoration. Reject unreachable modifier self-chords as saveable drafts. Full Release/win-x64 validation passed 1,249 tests with zero skips/failures; tested single-file publish passed.
-- Round-two review reproduced recording-held key repeats being remapped after Stop and inactive-profile removal clearing the active macro lookup. Retain recording pass-through until physical UP (including recovery reseeds), honor an explicitly requested Auto-Run W handoff, and serialize macro lookup selection/publication with the existing profile gate. Regression checks failed before the fixes; focused input/macro validation passed 343 tests.
-- Macro Caps shortcuts must consult RemapStateMachine's effective custom/global Caps selector: an enabled custom Normal/unremapped setting still falls back to a global override. Global Caps edits invalidate active playback before lookup replacement. Six regression variants first failed; focused validation passed 280 tests and full Release/win-x64 passed 1,264 with two existing Explorer skips; tested publish passed.
-- Recovery mouse VK reads are physical, so macro seeds must apply SM_SWAPBUTTON like existing Rapid Fire/RMB seeds. Reuse the physical ACTIVATION bit for consumed shortcuts, reconcile on the hook dispatcher, and retry a pending full seed after cleanup when synthetic state can mask a missed physical release. Preserve held recording/takeover pairs; full Release/win-x64 validation passed 1,279 tests with zero skips/failures, and tested publish passed.
-- Physical macro takeover skips action dispatch but must retain Alt observation for passed-through DOWN/UP pairs. Keep consumed modifier shortcuts invisible to the Alt gesture latch. Both Alt keys reproduced missing Alt+Mouse during playback and after F12 retirement; four regressions failed before the shared dispatch fix, and all 57 focused checks passed afterward.
-- Post-cleanup recovery can be queued behind the next physical hook event after busy clears. Complete a pending seed before reading keyboard/button pairing, including retained lifecycle tracking; keep tagged releases on their existing ownership path. An STA recovery test now forces this ordering and failed before the guard. Stack-allocate the six mouse VKs because this rare seed can run in a callback; 286 focused checks passed.
-- Recording must deliver every physical key UP through existing release bookkeeping, including originally unsuppressed Auto-Run, Alt-keyboard, panic and mapping latches. Preserve the original pass-through result unless Auto-Run explicitly took over W; a newly active Hold-mode sprint otherwise consumes an old recorded pair's UP. Observe Rapid Fire Left outside mouse action dispatch, and retain raw RMB state when ReleaseAllState preserves pairing. Six regressions failed before these shared fixes; 436 focused checks passed.
-- The user reduced macros to 1,000 steps during review remediation. MaxSteps is shared by validation, recording capacity, insertion/duplication and capture availability; reject larger loaded sources without overwriting them. Keep duration totals as long: 1,000 maximum-duration rows still exceed Int32 milliseconds.
-- Recording must retain an already acknowledged DoubleNormal compensation through enqueue, ExecuteTap and the final SendKey recording gate. Pass only the executor-verified token acknowledgement; unrelated new automation, missing first taps, pending UPs and macro modifier ownership remain rejected. Four Caps/Ctrl regressions failed before the fix and all nine focused compensation cases passed.
-- Publish macro row progress as snapshots for the existing 250 ms status timer; immediate events cover session/mode/error changes and configuration rebuilds. Coalesce UI notifications at Background priority and requery current state so app-toggle conflict updates survive. The old per-row validation cloned whole definitions; the 1,000-row probe fell from 1,005 validations to a bounded handful after the fix.
-- Native macro playback on a scaled secondary monitor reproduced a requested Y=855 landing at Y=854. Physical monitor enumeration alone was insufficient: retain per-monitor-v2 thread DPI awareness through the final absolute SendInput call, then restore the caller in finally. Unaware/system-aware send controls lost odd Y pixels; per-monitor sends landed exactly. The production cursor-only probe failed before this scope and passed at the same endpoint afterward with and without real hooks.
-- CancelOnMouseMovement is an optional per-macro INI boolean, default false for new and legacy macros. Reuse strict optional-boolean parsing and record cloning. Opt-in physical-movement cancellation covers waits/holds as well as travel; injected events remain excluded, and default-off/idle mouse moves exit before payload decoding. Exact-arrival and input-ownership checks still apply.
-- Macro debug diagnostics belong on the worker: session/mode, row/action, recording end, and requested/observed cursor positions with settling time and monitor bounds on failure. The old cursor message named clipping/movement without evidence; use a neutral arrival failure while retaining the strict endpoint check.
-- User testing requested globally faster macro travel. The shared cap is now 9,000 pixels/second; derive point spacing from that cap and the existing 8 ms interval. Raising only the delay divisor would leave 24-pixel steps limited by the interval floor. Keep explicit waits/holds unchanged and retain every segment's monitor-gap checks despite fewer updates.
-- Recorder BuildSteps emits MoveTo before every mouse edge, including UP. A stationary click therefore gets two equal coordinate rows; playback sends no movement or movement delay when already at that pixel. Release coordinates preserve drag endpoints and can re-anchor a cursor moved by the target app. Any recording cleanup must distinguish unchanged release coordinates from real endpoint changes while retaining DOWN/Wait/UP timing.
-
-# 2026-09-14 (Macro UI redesign)
-
-- UI redesign is delegated for direct edits, with the runtime and profile format preserved. Keep a baseline commit before delegation and commit the returned UI work before follow-up corrections so review fixes remain separately traceable.
-- Macro Add step menus bind DataContext to PlacementTarget.DataContext; a one-time assignment on left-click leaves native context-menu opening without the current macro after selection changes. Preserve detailed LoadError presentation when saves are suspended.
-- Macro format-error presentation reuses the format result already computed by RefreshValidation. IsPlayable also covers saveable incomplete drafts and shortcut conflicts, so it cannot stand in for the red Not saved state.
-- Isolated WPF template checks have no presentation source: assert arranged bounds and Visibility instead of IsVisible. Materialize a closed ContextMenu with Measure/Arrange to verify its child commands without opening a native popup; the 1,000-step editor must retain recycling and scroll the selected error row into view.
-- Selected macro dropdown text needs its own selected-state foreground override; the step-row override does not apply there. The actual-template regression reproduced 3.71:1 shortcut contrast and now checks ready/off/unsaved states against 4.5:1. Inspect VisualTreeHelper.GetClip for WPF layout clipping; a null FrameworkElement.Clip alone does not prove content overpaint.
-- The macro Add step popup needs its own keyed item style to keep highlighted headers/icons readable without changing other app menus. Its header template explicitly follows MenuItem.Foreground because the app implicit TextBlock style otherwise wins over inheritance. In no-Application WPF tests, merge the real host resources into detached ContextMenu.Resources so menu theme checks exercise the production style.
-- Claude CLI 2.1.270 marks /low-priority supportsNonInteractive=false: --print reports unavailable even on eligible accounts. Use an interactive PTY, let the quota response populate session state, then issue /low-priority in that same process. Keep the consultation tools read-only; the active mode uses weekly allowance until the five-hour reset.
-- Bulk Wait edits operate on canonical Wait rows, including waits inside a collapsed press; native KeyPress/MouseClick hold durations are separate. Batch row changes before one PublishChange so a 1,000-row update preserves other raw invalid editor text and avoids per-row profile publication.
-
-- Duplicate names reserve both visible and persisted labels: an invalid draft can retain an older saved label. Increment a trailing space-separated number, skip case-insensitive collisions, and keep the 100-character label limit without splitting a surrogate pair.
-- Collapse is a view projection over original row objects. Group only valid adjacent matching Down/Wait/Up triples; row commands consume the entire raw span, and recording inserts after its raw end. Guard transient two-way SelectedItem=null writes during ItemsSource replacement, and expand before navigating to an exact validation row. The actual deferred-tab check passed selection normalization and grouped duplication without a native window.
-
-- Claude's completed low-priority placement review supersedes the initial summary-only group inspector: editing invalid Wait text must not collapse the editor after its first valid digit. Keep matching groups stable through malformed hold text, show the Wait error on the group, and edit both target endpoints atomically. Show step selects the containing displayed row; Show all steps is the explicit view expansion. Surrounding held-key/button tracking keeps overlapping holds expanded even when a numeric format error masks playback validation.
-- Bulk Wait controls live in the sequence-panel header and inline strip, per Claude's recommendation. Keep input/result state outside saved definitions; close it through existing macro selection, LeaveEditor and CanEdit lifecycle paths. Scope Enter to the duration field and Escape to the strip, so Enter still activates a focused Close button normally. Official WPF routed-input guidance confirms container-scoped PreviewKeyDown/Handled; no window-wide default/cancel button is needed.
-- The editor follow-up passed 40 focused checks and the full Release/win-x64 suite (1,358 passed, two existing desktop skips), with no compiler warnings/errors. Actual deferred-template checks cover direct grouped typing, both target endpoints, raw/visible selection, bulk input validation/application, and controls staying within the sequence panel at 650x480. Published the tested compilation before committing; native interactive focus/game acceptance remains manual.
-
-- For a master-disabled Macros body, keep the master setter's CanEdit guard independent of Macros.IsEnabled or the switch cannot re-enable itself. Stop recording also needs an enabled ancestor outside the disabled body. Neighboring sections use GroupBox headers and FeatureToggleContentStyle with a 0.75 body opacity when off.
-
-- Adding the neighboring GroupBox frame consumed enough vertical space to push the coordinate picker to Y=491.97 in the existing 650x480 template test. The intermediate container stage builds cleanly but has this one layout failure; preserve the original bounds check and recover space in the naming/layout follow-up, rather than increasing the test viewport.
-
-- Recording retained repeated modifier DOWNs while already held. A user Ctrl+click capture contained 78 extra Ctrl DOWNs and 174 Wait rows; setting every Wait to100ms amplified those repeat boundaries. Filter modifier repeats before row budgeting/timestamp advancement, preserve elapsed gaps and non-modifier typematic, and leave existing saved sequences unchanged.
-- Modifier-repeat regression failed for all11 accepted generic/side-specific modifier VKs before the shared Capture guard; timing/hold/row-budget checks and ordinary-letter repeats then passed. A runtime-only test EXE was built from the last validated UI in ignored .tmp/ctrl-repeat-build while UI edits continued; 127 focused and1,370 full tests passed with two existing desktop skips.
-- A saved recording with uniform100ms waits needs both repeated modifier DOWN removal and coalescing the resulting adjacent waits back to one100ms row to undo bulk-edit amplification. Apply only with explicit user authorization, the app exited, a byte-for-byte backup, and source-hash checks; future recorder filtering must instead preserve original elapsed timing.
-
-- Naming uses the existing native modal-dialog convention and a view-supplied callback, with no new dialog service. Keep input local until acceptance, recheck the editor identity/availability and intended macro after modal dispatch, and publish accepted creation once. The container/naming follow-up recovered minimum-size space through an ellipsized status line with a full tooltip and smaller row gaps; all100 focused UI/lifecycle checks passed.
-
-# 2026-09-15 (Macro toggle mode)
-
-- Toggle mode reuses the current one-session worker/reservation and balanced sequence validation. The activation latch must consume the stop press through its physical UP after cleanup, so key repeats cannot start another loop; only the pending macro identity/owner may cancel via its shortcut. Keep one-shot and other busy shortcuts unchanged.
-- Toggle regression checks first reproduced all 11 playback failures and three strict-persistence failures. Reusing Cancel for the second fresh shortcut and a cancellable 10 ms gap between passes passed 511 focused checks and all 1,396 tests; no native input APIs or dependencies changed. The actual-template checkbox binding, disabled state and original minimum viewport also passed.
-
-# 2026-09-15 (Mouse macro activation)
-
-- Mouse activations reuse the keyboard activation latch but need separate raw/target-visible button queries. Keep consumed DOWN/repeat/UP pairs through cleanup and hook replacement, exclude them from macro physical takeover, and use logical-to-physical swapped-button mapping when recovering missed releases. Consumed RMB also stays excluded from right-click observation and RederivePhysicalModifierState; a regression reproduced that recovery otherwise re-armed right-click features.
-- The user chose direct local UI implementation after automatic approval review rejected the Claude network retry. The existing InputTrigger picker/display/typing behavior supports all five mouse buttons without a new capture service; optional ShortcutMouseButton persistence retains legacy keyboard assignments.
-- First mouse review reproduced four gaps: pre-published DOWN could race executor admission, AltMouse/RapidFire conflict edits did not cancel playback, crosshair resync ignored consumed RMB ownership, and recorder preholds lost the next press after a swallowed activation UP. Classify before the single button-state write, extend the cancellation mask and resync guard, and seed recording from target-visible holds for both devices. Five permanent regression cases first failed; all 1,435 tests passed after the fixes.
-- Second mouse review reproduced cross-thread RMB resync publishing a consumed press after its ownership check. Share native-read/activation filtering and serialize publication on the existing hook dispatcher; keep same-thread recovery synchronous and crosshair calls nonblocking because their caller holds its gate. Both native-read interleavings and both thread-affinity regressions failed before the fix and passed afterward.
-- The shared RMB resync fix passed all 1,439 Release/win-x64 tests with zero failures/skips and no build warnings/errors.
-- Third mouse review caught queued RMB recovery leaving old eligibility live after foreground generation settled. Clear the old input latch before off-hook enqueue; fresh DOWN or the serialized native baseline restores a real hold. This deliberately rejects right-click-only mapping admission during the short pending-baseline interval. Released/still-held profile-switch regressions both failed before the fix.
-- The pending-baseline correction passed all 1,441 Release/win-x64 tests with zero failures/skips and no compiler warnings/errors.
-
-## 2026-09-23
-- Rapid Fire first-shot hitch: the physical LMB DOWN passes through as shot 1, so the old first synthetic DOWN (a full interval later) landed on an already-held button; games reading button state saw no edge and shot 2 slipped to ~2x interval. Each press now releases the physical DOWN after a normal click hold (10-20 ms, `SendMouseButton(Left, up)`), then fires the first click at press + interval + jitter (`_pressTick` recorded in the hook, so thread-pool hop latency no longer shifts it). The release-to-first-DOWN gap floors at `RELEASE_GAP_MIN_MS` (= min interval - max hold = 5 ms). `FireTimerForTesting` steps through the release phase; the two new FirstPress_ regressions failed on the old code; all 1,447 tests passed.
-
-## 2026-09-23 (Delivery-failure hardening)
-- Rapid Fire now checks delivery: `IInputSender.SendLeftClick` returns `LeftClickResult {Sent, DownFailed, UpFailed}`. Any failure ends the burst; a failed initial physical-press release sends no clicks (the user's own UP releases it). Only UpFailed creates `_owedUpGeneration` debt; any physical LMB transition clears it; SettleOwedUp claims it by CAS before sending a cleanup UP and restores it if that UP fails. `_deliveryFaulted` keeps GetStatus off Ready (gray dot) until the next delivered send; raised via the `statusChanged` ctor callback -> RaiseRapidFireArmChanged. 6 of 7 new RF tests failed on old logic; full Release/win-x64 suite 1,458 passed.
-- `INPUT_IGNORE`/`INPUT_MACRO_RELEASE` are now random per process (even base, +1) instead of 12345/12346, and the macro-release UP swallow requires LLKHF_INJECTED/LLMHF_INJECTED. Forged-tag regressions failed 3/3 on the old check.
-- Docs: "Anti-Cheat Humanization" -> "Timing Variance" (AGENTS.md); CHANGELOG/README no longer claim detection protection; Anti-AFK background copy says experimental. `.tmp/ctrl-repeat-build` is a registered worktree with uncommitted MacroRecorder changes — do not delete blindly.
-- Caps DoubleNormal (2x) has two confirmed pairing bugs (probed 2026-09-24, probe removed): (1) a physical Caps UP the hook never sees leaves `_capsPhysicallyDown` true, so the next DOWN is treated as a repeat (no tap) and the old release tap fires on the next UP — the press/release phases swap for one press; (2) the release tap (RequireTapPairToken) is dropped by `IsBusyForTap`/SendKey admission when another owner holds the target key (e.g. Shift via Combined/AutoRun sprint/Hold Breath), leaving the target toggled once — every later press is inverted. Neither is fixed yet.
-- Caps 2x fixes landed (uncommitted): (1) KBDLLHOOKSTRUCT.time now flows DispatchDecodedKeyboardEvent -> DispatchKeyboardFeatures -> RemapStateMachine.HandleKeyboardEvent; a Caps DOWN more than CAPS_MISSED_UP_GAP_MS (1500 ms, uint-wrap safe) after the last one while "held" runs CompleteCapsRelease first. (2) InputExecutor defers an acknowledged paired release tap whose key is busy (IsBusyForTap or macro-owned) in one worker-only slot, retried before/after each command, dropped with a log after DEFERRED_RELEASE_TAP_MAX_MS (1000). The two bug tests failed with the fixes disabled.
-- One full-suite run hung once (testhost idle, never finished); 7 later Release/win-x64 runs passed 1,464/1,464 in ~7 s with --blame-hang-timeout 45s, so the hanging test was not identified. Rerun with --blame-hang-timeout if it recurs.
-
-## 2026-09-25 (Rapid Fire right-button gate)
-- New per-profile `RapidFireSettings.RequireRightButton` ([RapidFire] RequireRightButton, default false): a gated burst starts only on a fresh LMB press while logical RMB (`_rightButtonPressed`) is held; RMB UP calls `RapidFireStateMachine.HandleRightButtonReleased` -> CancelPress (latched, so a quick RMB UP->DOWN between timer wakes cannot resume); IsCurrent also rechecks RMB. No LMB re-press after cancel; status stays Ready. Codex review: design correction adopted, implementation "no defects". 1,469 tests pass.
-- The one-off full-suite hang (2026-09-24 00:35) was diagnosed from a dump (`dnx -y dotnet-dump collect -p <pid> --type Heap`, then `dotnet-dump analyze -c "clrstack -all"`; dotnet-stack itself hangs on a wedged runtime): a WPF XAML-template test thread sat in ThemeManager..cctor -> AccentColorHelper -> WinRT RoActivateInstance(UISettings) while every other thread blocked in native loader paths (Thread.StartCore, SHGetKnownFolderPath). Environmental WPF/WinRT activation stall under memory pressure, not input code. Candidate mitigation: serialize real-XAML template tests into one non-parallel xunit collection.
-- A resumed Codex session can fail with "thread-store conflict ... already has an active writer" when another Codex process holds the thread; start a fresh `codex exec` with self-contained context instead of killing the other process.
-- Toggling the RMB gate originally used ProfileChangeKind.RapidFire, which disarms the owner (user-visible: "enabling the option turns Rapid Fire off"). It now raises a dedicated `ProfileChangeKind.RapidFireGate` (1 << 15, in AllRuntime, NOT in macroDependencies); ReconcileProfileSettings keeps the arm and only calls `RapidFireStateMachine.CancelPressOwnedBy` so the new gate applies from the next press. Interval/jitter/enable edits still disarm. 1,473 tests pass.
-- Superseded the RapidFireGate kind: ALL Rapid Fire settings edits (enable, interval, jitter, RMB gate) now keep the arm (user request). ReconcileProfileSettings disarms only on Removed/Identity/master-off; a ProfileChangeKind.RapidFire edit calls `CancelPressOwnedBy` (returns owner match) and raises RapidFireArmChanged so Enabled off/on flips the dot Off/Ready without re-arming. InputFeatureHarness mirrors this logic and must be kept in sync. 1,475 tests pass.
-- Status dot gate mark: a Ready dot shows a 3-raw-px black center (`GateDot` in RapidFireStatusWindow) when the active owner's `RapidFire.RequireRightButton` is on. RapidFireStatusService dedups on (status, gate), since a gate edit keeps Ready and raises RapidFireArmChanged via the CancelPressOwnedBy path. Gray dots never show it. A stray Debug `Tests` process can lock Tests/bin/Debug; `-c Release -r win-x64` sidesteps it. 1,476 tests pass.
-
-## 2026-09-26 (Caps 2x + focus change mid-press)
-- Bug: an accidental Win tap (Start menu steals focus) mid Caps-2x-press ran foreground teardown -> `ReleaseCapsState`, which fired the release tap immediately into the new foreground window (early Caps Lock revert; remapped game key left toggled + stray key into Start search). Codex (gpt-6-astra xhigh) concurred.
-- Fix: `ReleaseAllState(..., foregroundDeparture: true)` ONLY from ActivateProfile switch, DeactivateProfile and ReleaseForegroundState (InputHookService + InputFeatureHarness mirror). `RemapStateMachine.RetainCapsSecondTap` keeps the tap for the physical UP / missed-UP recovery. Caps Lock output stays unguarded (global state); remapped output gets `GUARD_CAPS_RELEASE` bound to the press's window/PID (+ owning profile when profile-scoped) via generation-free `InputRuntimeState.LiveForegroundIsWindow`, else dropped with a log. Stop/dispose/settings/watchdog/recording/hard-deactivate still complete immediately (disposal/recording contract noted earlier in this file).
-- `ProcessDeferredReleaseTap` now re-checks `GuardAllows` before sending (unguarded taps unaffected). Target object is allocated at departure (activation thread), never on the hook UP path.
-- `Tests/InputHookServiceTestExtensions.cs` invokes private `InputHookService.ReleaseAllState` by reflection with a positional arg array — adding a parameter needs those arrays updated (TargetParameterCountException otherwise).
-- `sed -i` in Git Bash strips CRLF; Python `open().read()` text mode does too. Restore CRLF after scripted edits.
-- 4 of 5 new regressions failed with retention disabled; deferred test failed with the recheck disabled. Full Release/win-x64: 1,481 pass (3 reruns). `RapidFireStateMachineTests.Click_OwedReleaseNotDelivered_RetainsDebtUntilNextPhysicalClick` flaked once (ObjectDisposedException), unrelated.
-- Not addressed: a physically HELD Win still modifies a synthetic Caps tap (SendTap doesn't neutralize physical modifiers).
-
-## 2026-09-26 (Win key blocked during remapped Caps 2x hold)
-- User scenario (2x remapped to M = "hold to view map"): an accidental Win opens Start, the user releases Caps while away, and the closing M is dropped by the departure fix -> map stuck. The closing tap cannot reach a background game (SendInput has no target HWND), so prevention is the fix. Codex (gpt-6-astra xhigh) agreed; the "resend on return" option (#2) was declined by the user.
-- `Services/Input/CapsHoldWinKeyBlocker.cs`: per-side (LWin/RWin) swallow + passed-down state, allocation/lock-free. It swallows a Win DOWN that starts while `RemapStateMachine.BlocksWinKey` (set at a DoubleNormal press when output != Key.CapsLock, cleared in `EnqueueCapsSecondTap`), plus its repeats (while held, or <=1500 ms apart after) and its UP. A preheld Win passes. An unknown (0) or long event-time gap fails open.
-- Placement: `DispatchDecodedKeyboardEvent`, right after `NotePhysicalKeyboardActivity` and BEFORE AutoRun observe / `_macros.HandleKey` / `_macroPhysical`, so swallowed pairs are invisible to macro modifiers, the recorder and takeover. Async key state never reflects LL-swallowed keys, so launcher/AutoRun/Seed stay consistent.
-- Stuck-Win safety: the `!featuresActive` branch of KeyboardCallback calls `ObserveUnfiltered` (retires debt), and `SeedAppTogglePhysicalState` (Start, session unlock, hook reinstall) calls `Reset(_isPhysicalKeyDown)`. A stray Win UP is harmless; a swallowed UP whose DOWN reached the OS would leave Win stuck.
-- Known limits: a stale block flag after a missed Caps UP with no boundary lasts until the next Caps press; Win+L cannot be blocked by LL hooks; a preheld Win still modifies the closing tap.
-- Tests: `Tests/CapsHoldWinKeyBlockerTests.cs` (unit) + 4 `InputHookDispatcherTests` cases. The accidental-Win cases failed with the block disabled, and the session case failed with Reset disabled. Full Release/win-x64: 1,498 pass (x2).
-
-## 2026-09-27 (Rapid Fire quick-tap truncation)
-- Bug: since 89d84da the passed-through physical LMB DOWN was synthetically released 10-20 ms after the press, so any tap shorter than the interval reached the game as a 10-20 ms blip (physical UP then cancels the first click); frame/tick-polling games missed it. RMB gate was not involved. Codex (gpt-5.6-sol high) confirmed.
-- Fix: StartPress arms the release at the press-relative first-shot deadline D (interval+jitter, sampled once); ReleasePhysicalPress then arms the first click `HANDOFF_GAP_MS` (20, fixed) + FIRE_TOLERANCE_MS after the delivered UP, so a late wake never shortens the gap. Shot 2 lands at ~D+20; taps < D stay fully physical. `RELEASE_GAP_MIN_MS` and `_firstClickDelayMs` removed.
-- Test gotcha: HandleLeftButton kicks the REAL timer (ChangeTimer(0)), so tests can't assume StartPress hasn't run; wait with `SpinUntil(TimerState == TIMER_ARMED)` instead of invoking a phase helper. Real-timer timing asserts use lower bounds only (press->release >= interval-2, release->click >= gap). The two new FirstPress_ regressions failed with the old 10-20 ms release; full Release/win-x64 suite 1,499 pass (x2).
-
-## 2026-10-05 (Macro failure diagnostics)
-- Macro playback errors must retain the step index/count/action in FailureReason before cleanup resets the live row to zero; wrap only non-cancellation Play failures so preparation and cancellation behavior stays intact.
-- A 0x57 SendInput failure is not enough to blame macro coordinates: a cursor-only production-sender probe reproduced sent=0/1 for both absolute and zero-distance relative movement with INPUT size 40, union offset 8, and valid flags. Desktop probes require execution outside the sandbox; sandbox GetPhysicalCursorPos fails before the send. The external rejection cause remains unconfirmed.
-- Foreground diagnostics now log the initial unmatched snapshot and departures from configured profiles, suppressing only consecutive no-match entries. Never deduplicate the actual foreground generations/deactivations: they protect input ownership across intermediate focus changes.
-- Closing WarDogs did not resolve the 0x57 mouse-injection failure; an independent raw 40-byte x64 INPUT call also failed outside the app wrapper. Both monitors enumerate correctly (6000x1440 combined), and relative movement fails too, so monitor-coordinate conversion alone does not explain this incident.
-- Verification for these diagnostic changes: dotnet test Tests/Tests.csproj -c Release -r win-x64 --no-restore --blame-hang-timeout 60s passed all 1,500 tests with no skips/failures. The live native-injection failure remains a separate unresolved issue.
-- User also exited sWinShortcuts; confirmed neither it nor WarDogs was running, yet production and independent raw Win32 cursor-only sends still returned 0/error 87. Active sWinShortcuts hooks therefore do not explain the reproduced rejection; next isolation is a fresh Windows session, not a speculative macro transport rewrite.
-
-## 2026-10-05 (Macro editor flow review)
-- Unlanded work (Caps Win-key blocker, Rapid Fire quick-tap fix, macro/foreground diagnostics) was committed as 4 local commits on `feat/macro-editor-flow` (1361688..c4a760b, not pushed); `main` stays equal to `origin/main` (a08fe63) because main lands only via GitHub API squash. Each intermediate commit built with 0 warnings; tip passed 1,500/1,500.
-- Partial staging without `git add -p`: `git update-index --cacheinfo 100644,$(<filtered copy> | tr -d '\r' | git hash-object -w --stdin),<path>`. The index stores LF (`core.autocrlf=true`; check with `git ls-files --eol`) and stdin hashing applies no filters, so strip CR before hashing.
-- Recording start gate: a take starts only once its owner is the settled active profile (`ActiveProfile` + `ProfileInputGenerationIsCurrent()`), checked at `Begin` and per hook event; edges before the start only set/clear the recorder's preheld bits, so the Alt+Tab or focusing click (and any pair straddling the start) is never half-recorded. The worker publishes `MacroSessionMode.WaitingForRecordingTarget` (appended last) until then, and `Elapsed` restarts at the start; the 600 s cap covers the wait from `Begin` and the take from its start.
-- Test fixtures built on `MacroPlaybackTests.Create` activate the owner, so their takes start at `Begin`; a test whose owner is not active (e.g. after `DeactivateProfile`) must wait for `WaitingForRecordingTarget`, not `Recording`.
-- Removing a forked worker's worktree can fail with "Permission denied" after its build: MSBuild/VBCSCompiler servers keep the folder open. Run `dotnet build-server shutdown`; `git worktree remove` may already have unregistered it, so delete the empty folder and the worker's branch only after confirming it has no unique commits.
-- Macro page layout (user-approved "regroup in place"): row 1 = macro selector + New…/Rename…/Duplicate/Delete…; row 2 = Shortcut keycaps + key picker + per-macro Enabled; row 3 = Toggle loop, Cancel on mouse movement, status; toolbar = Record, Add step, Wait times… | step icons, then "New steps go …" (session status replaces it while busy); Clear… sits beside the step count. Row heights are unchanged so the 650x480 coordinate-picker check still holds.
-- Insertion now appends by default: MacroViewModel selects `Steps.LastOrDefault()` (normalized to its collapsed group) and `InsertRecording` selects the LAST inserted row. Tests that assumed step 1 was selected must select it explicitly.
-- Wait times scopes (`MacroWaitScope`): PressHolds = a Wait directly after a fresh Down whose matching Up follows (mouse may have MoveTo rows before the Up, as recorded clicks do) plus every KeyPress/MouseClick hold; BetweenSteps = all other Wait rows; AllWaits = both. Repeats (Down while already held) never start a hold. Classification runs in RefreshVisibleSteps and flags rows (`IsPressHold`), which also labels them "N ms hold". The editor opens on PressHolds with a suggested 50 ms (user: ~50 ms holds are normally enough), else BetweenSteps with no suggestion.
-- Delete (only when the macro has steps) and Clear confirm through a view-supplied `ConfigureConfirmation` callback (`MacroConfirmDialog`, no IsDefault on the action); programmatic callers without a view proceed unasked, and both recheck their target after the modal returns. New macros start enabled; duplicates still start off.
-- A full test run once reported 1,164/1,164 right after a non-quiet build in the same shell command; three immediate reruns reported 1,513/1,513. Re-run before trusting a lower total.
-- Profile-off graying regression (from 97862e4): it replaced the `DockPanel IsEnabled="{Binding CanEditContent}" Style=DisabledContentShadeStyle` wrapper with `IsEnabled` on each TabItem, but a TabControl presents SelectedContent outside the TabItem, so the page never inherited it. Gating now sits on each page's StackPanel inside its ScrollViewer (pages scroll, tabs stay clickable); Macros gates itself so Stop recording stays reachable. `ProfileEditorTabsTemplateTests` fails on the old markup (page stayed enabled).
-- Loading MainWindow.xaml through `XamlReader.Parse` in tests: runtime System.Xaml rejects a quote after the `{}` escape (`StringFormat={}{0:+0 '%'}`) that the build-time compiler accepts, and attached-property attributes (`behaviors:...`) need the `;assembly=sWinShortcuts` rewrite like element names. The tabs harness drops those display-only labels and rewrites attribute namespaces.
-
-## 2026-11-02 (Sticky Alt latch)
-- Git Bash `sed -i` rewrites CRLF working files as LF (`git ls-files --eol` shows `w/lf`). Restore with `sed -i 's/$/\r/' <file>` or edit with the Edit tool instead.
-- Root cause: `GetAsyncKeyState` counts this app's own injected keys, and the hook skips injected events. Grey Zone's hold-breath key is RightAlt, so the old "other Alt still held?" check (on LeftAlt UP) and every focus-change re-seed latched Alt, and the app's own RightAlt release could never clear it. WarDogs' trigger was never pinned down (no app-held Alt in its current config).
-- `GestureChordStateMachine` now keeps `_physicalAlt` (per-side bits set only by non-injected hook events) apart from `_injectedAlt` (our tagged `INPUT_IGNORE`/`INPUT_MACRO_RELEASE` Alt events, observed in `KeyboardCallback` before the injected early return). Never derive a physical Alt side from `GetAsyncKeyState`.
-- `ConfirmAltHeld` runs inside non-Alt trigger events (Alt+Keyboard/Mouse DOWN, wheel). `GetAsyncKeyState` is exact for Alt there because earlier events finish updating it before the next one reaches the hook. If Windows reports a latched side up, its release was missed (secure desktop, another hook), so the latch clears and the trigger passes through. It only ever clears.
-- `AdoptHeldAltFromWindows` (Start, unlock, reinstall, focus changes) only adds sides Windows reports down that the app is not holding. It must always bump the wheel epoch, as the old `SeedAltPressed` did; `ServiceBoundary_InvalidatesQueuedWheelAndRemainder("rederive")` fails otherwise.
-- Tests must model Windows' key state consistently with the Alt they press: `CreateWithFakeForeground` services expose `SetWindowsKeyDownForTesting`, `ConfigureActiveProfileForTesting(altPressed)` mirrors LeftAlt into it, and the wheel fixture mirrors its dispatched LeftAlt. A `GestureChordStateMachine` built without `isWindowsKeyDown` skips the trigger-time check. `SeedAltPressed` is now `SeedAltPressedForTesting`.
-- New debug lines (untagged): `Alt latch: ... down/up (held=...)`, `Alt latch: app pressed/released ... (injected ...)`, `Alt latch: re-derived from Windows; adopted=..., ignored app-held=...`, `Alt latch: cleared ... at <trigger>; Windows reports it up ...`, `Alt+Mouse|Alt+Keyboard: X → Y (tap|hold: released|timer at N ms; hold threshold T ms)`, `... released at N ms, before the T ms hold threshold; no tap key bound`, `... press cancelled before its release; no key sent`.
-- Verification: reintroducing each old behavior (no trigger-time check, adopting app-held Alt, other side from Windows on release) failed its new regression; a zero-allocation test covers the disabled-logging hot path. `dotnet test Tests/Tests.csproj -c Release -r win-x64 --no-restore --blame-hang-timeout 60s` passed 1,527/1,527; app build 0 warnings.
-
-## 2026-11-02 (Caps 2x stuck map diagnostics)
-- Report: WarDogs Caps `2x Normal` remapped to M ("hold to view map"). After a hold, the release left the map open and every later press was inverted. The debug log had no Caps line at all (the Caps path only logged three rare cases), so there was no evidence to go on.
-- Code review found no app-side loss for a normal hold: a press tap the executor does not send makes its release tap skip (`RequireTapPairToken` acknowledgement), so the M count stays even. A stuck map needs one closing tap the game did not act on. Ranked suspects: (1) a modifier held at the closing tap (`SendTap` passes physical/injected Shift/Ctrl/Alt/Win through, so the game sees Shift+M; unaddressed since 2026-09-26); (2) the release tap starting ~0 ms after the press tap's UP on a fast tap or missed-UP recovery, which a once-per-frame input poll merges into one press; (3) the game missing a 31-53 ms tap while the open map lowers its frame rate.
-- New debug lines, tied together by the pair number: hook side `Caps Lock 2x: Caps down → press tap M queued (pair N)`, `Caps Lock 2x: Caps up after N ms → release tap M queued (pair N)`, early `input state released before the Caps up ...`, `Caps Lock: Caps up after N ms; nothing left to send`, the missed-UP gap, and pass-through/blocked decisions. Executor side `Input: paired press|release tap M (pair N) sent; held N ms[, N ms after its press tap]; modifiers held: X`, plus `dropped`/`skipped`/`deferred` reasons. Modifiers come from the executor's `_keyState` (`GetAsyncKeyState`), which is what the game reads.
-- Not fixed, now logged: the initial-press generation check in `HandleCapsLock` passes a Caps DOWN that should be suppressed through to Windows when a state release races it (microsecond window).
-- `NullLoggerService.Log` now locks `Messages`: executor tests log from the worker and the test thread at once. Cross-thread log order is not fixed, so assert each line's presence, not the sequence.
-- Verification: 3 new `InputExecutorTests` (`CapsDoubleNormal_DebugLog_*`, `..._PressTapDroppedWhileTargetHeld_...`). Full Release/win-x64 suite passed 1,530/1,530; app build 0 warnings.
-- Known open bug, left unfixed by choice: `RemapStateMachine.HandleCapsLock` reads `_capsConfigurationGeneration` and the effective Caps settings before taking `_capsLock`. On an initial press it re-checks the generation inside the lock and returns false on a mismatch (`Services/Input/RemapStateMachine.cs` ~441/454). So any `ReleaseCapsState` in between (every `ReleaseAllState`: focus or profile switch, `ReleaseForegroundState`, a Caps settings save, macro recording start) passes a physical Caps DOWN that should be suppressed through to Windows. The later generation check (~511) fails closed instead: it swallows the press and sends nothing.
-- Effect: real Caps Lock toggles and the game gets a Caps key-down. A quick press sends no M, and its UP passes through. A held press is picked up at the first typematic repeat (2x: late press tap, release tap on the UP), and that UP is swallowed, so Windows keeps Caps logically down until a Caps UP reaches it. If that lasts until the next Start, `SeedCapsPhysicalState` adopts it unsuppressed and the first press after restart passes through without M. The M pair stays even, so this cannot cause the stuck or inverted 2x map. Odds: a sub-microsecond window against state releases every few seconds at most, so well under one in a million presses. Log signature: `Caps Lock: Caps down passed through; input state was released during the press`.
-- Fix it if that line ever appears, or when the Caps code changes anyway: on the mismatch, re-read the generation, settings and `foregroundGeneration` under `_capsLock` and continue instead of passing the press through. The reads are lock-free, so no new lock order. No test can force the timing, so the fix rests on review.
-
-## 2026-11-04 (Alt + Shortcut migration plan v2)
-- User decision: merge Alt + Mouse and Alt + Keyboard into ONE "Alt + Shortcut" section with ONE on/off toggle and ONE hold threshold, stored in new combined `[AltShortcut]`/`[AltShortcutBindings]` INI sections. Plan: `Alt_Shortcuts_Migration_v2.md` (supersedes v1).
-- The current writer always emits `[AltMouse]` and `[AltKeyboard]` with `HoldThreshold`, so a missing threshold only comes from hand edits or pre-feature files.
-- `InputTriggerSerializer.Deserialize` and `KeySerializer.Deserialize` accept comma lists because `Enum.TryParse` ORs them (`Mouse:Left, Right` -> Middle, `A, B` -> B). Only `IniExtensions.TryGetKey`/`TryGetEnum` reject commas.
-- Alt+Keyboard runtime state exists only for `KeyCatalog.GetCommonKeys()` minus Alt (`GestureChordStateMachine` ctor). A loaded non-common source such as F13 round-trips but never fires.
-- `ComboBoxKeySelectionBehavior` selects whichever catalog key is pressed while a dropdown is open, so Up/Down/Enter/Escape/PageUp/PageDown/Home/End pick those keys instead of navigating.
-- A legacy `[AltMouseBindings] 99=F|G` (undefined button) loads as an inert entry; the old editor shows it as a None row and drops it on the next Alt+Mouse edit.
-- v2 design: keep `Profile.AltMouse`/`Profile.AltKeyboard` (runtime untouched); loader and editor always set both to the same `IsEnabled`/threshold, and the writer must refuse a mismatch. Split files merge on load: a family's toggle counts only if it has bound rows; if both have bound rows with different toggles, the result is on and the off family's rows are dropped (logged, `.pre-alt-shortcut.bak` keeps them); threshold = the value that affected Hold rows, Alt + Mouse's on a real conflict.
-
-## 2026-11-04 (Alt + Shortcut migration implementation)
-- Implemented per `Alt_Shortcuts_Migration_v2.md`: `AltShortcutViewModel`/`AltShortcutBindingEntryViewModel` replace the four Alt editors; `IniProfileStore.LoadAltShortcut` (section presence picks format), `MergeLegacyAlt`, strict `ReadAltShortcutV1`, `WriteAltShortcut` (throws on mouse/keyboard toggle or threshold mismatch), `BackUpSplitAltProfile` (`<file>.ini.pre-alt-shortcut.bak`, first save only).
-- No python3 in this shell; use the Edit tool or sed. Git Bash `sed -i` writes LF: restore with `sed -i 's/\r*$/\r/' <file>`.
-- A forked worker's worktree lives under `.claude/worktrees/` inside the repo; the SDK's default `**/.*/**` exclude keeps it (like `.tmp/`) out of the build, but exclude it from repo-wide greps.
-- WPF template tests: a Collapsed GroupBox is never templated, so its header controls are absent from the visual tree; find them with `LogicalTreeHelper` (see `ProfileEditorTabsTemplateTests.AltShortcut_IsOneSection_...`).
-- Runtime fake time is visible only on the test thread; real hold timers read time 0, so `AltShortcutRuntimeTests` fires the timer callback via reflection and stays synchronous. `RunScriptedAltSequence(profile)` there is the format-equivalence script (used by `AltShortcutPersistenceTests.SplitLoadAndNewFormatReload_ProduceSameRuntimeOutput`).
-- Mutation check: loosening the toggle merge, the threshold merge, the comma check or the writer's mismatch guard each failed `AltShortcutPersistenceTests`. Full Release/win-x64 suite 1,599/1,599 (x2); app build 0 warnings. Live input and the minimum-window layout were not checked.
-
-## 2026-11-04 (Rapid Fire hold and first-gap cadence)
-- Grey Zone debug log (2026-11-03, 90/10 and 95/5): steady DOWN-to-DOWN gaps averaged 95.8/98.0 ms (max 102/101), but the first gap was 117.3/122.3 ms, which is the old fixed 20 + 2 ms handoff after the release at D. No burst was interrupted. Any audible gaps left are most likely clicks the game drops (frame polling, weapon fire-rate cap), not app timing.
-- User request: click hold 10-20 -> 20-30 ms (`HOLD_MIN_MS`/`HOLD_MAX_MS`), and shot 2 must be on the cadence while held. `MacroStateMachine.Play` reuses those constants for 0 ms MouseClick holds, so macro clicks moved to 20-30 too (kept coupled on purpose).
-- Handoff now: StartPress arms the physical release at D - `HandoffLeadMilliseconds(interval)` (min(20, interval/2) + 2 tolerance); ReleasePhysicalPress arms the first click one lead after the delivered UP, so shot 2 is due at press + D, the same as the steady target. Taps shorter than D - lead stay physical; longer ones are cut to D - lead (>= 68 ms at 90).
-- Short intervals: hold = Math.Min(rand(20..30), interval/2). Without the cap, a 25 ms interval with a 25-30 ms hold makes `CalculateSuccessorDelay` wait a full target after the UP (period ~50-55 ms), or leaves a 1-5 ms up-gap.
-- Test pattern: `FirstPress_HeldPress_FirstClickLandsOneIntervalAfterPress` reads `_armedDelayMs` inside the sender callbacks, since each send runs while its own phase's delay is still the armed one. Release + click delays must sum to <= interval. Reverting the release lead failed it (272 vs 250 at interval 250, 39 vs 25 at 25).
-
-## 2026-11-04 (BUILD_WINDOWS.bat)
-- `BUILD_WINDOWS.bat` runs the user's baseline `dotnet publish sWinShortcuts.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true` (extra args pass through). Output stays in the default `bin\Release\net10.0-windows\win-x64\publish\`: the user runs the app from there and keeps backup exes and folders in it, so never clean that folder. Unlike CI, it keeps the .pdb.
-- The running app locks that exe, and publish then fails after about 10 s of copy retries (MSB3027/MSB3021). The script checks first with `2>nul (>>"%EXE%" (call ))`, which opens the file for append without writing; tested to leave an unlocked file's timestamp and size unchanged. Never kill the app from a script: it may run elevated, and a hard kill skips its shutdown cleanup (color/gamma restore).
-- Telling a double-click apart: Explorer (ShellExecute) starts `cmd.exe /c ""<script>" "` (trailing space), PowerShell `& script` starts `cmd.exe /c ""<script>""`, and `cmd /c` gives `/c "<script>"`. Strip the quotes from `%cmdcmdline%` and pause only if it ends with `<ext> `. Verified with Start-Process (same open verb as a double-click).
-- Batch gotchas: a cmd started from Git Bash inherits Git's PATH, so `find` is GNU find (use findstr or `%SystemRoot%\System32\find.exe`). `.gitattributes` has `*.bat text eol=crlf`, because LF-only batch files can make cmd miss goto labels.
-
-## 2026-11-04 (Crosshair right-click hide delay)
-- New `CrosshairSettings.HideDelayMilliseconds` (0 = hide at once, max 1000, slider step 50; changed from 3000/100 the same day), INI `[Crosshair] HideDelayMilliseconds` (clamped on read), cloned in `ProfilePersistenceSnapshot`. Slider row sits under the "Hide while right mouse button is held" checkbox and is disabled/shaded (`DisabledContentShadeStyle`) unless that box is checked.
-- `CrosshairService`: `_rightButtonDown` is the physical state, `_rightButtonHeld` now means "hidden". On RMB down with a delay > 0, a pre-allocated one-shot `System.Threading.Timer` is re-armed; its callback hides only if the button is still down. Release cancels the timer and shows the crosshair again. Use `System.Threading.Timer` fully qualified (WinForms is also referenced).
-- The repo's .cs/.xaml files are LF (core.autocrlf=true), so the memory note about restoring CRLF after `sed -i` does not apply to them. Check with `git show HEAD:<file> | grep -c $'\r'` first.
-- Full suite 1,602/1,602; app build 0 warnings. Not checked in the live app.
-
-## 2026-11-06 (Macro Start on press)
-- `MacroDefinition.StartOnPress` (INI `[MacroN] StartOnPress`, optional strict boolean, default false = start on release). Old builds ignore the key: `DeserializeMacros` validates sections, not keys, so no `[Macros] Version` bump.
-- The only engine change is skipping the `WaitingForShortcutRelease` loop in `MacroStateMachine.ExecuteSession`. A held shortcut is flagged `ACTIVATION`, which `IsPhysicalKeyDown`/`IsPhysicalMouseButtonDown`/`Modifiers` exclude, so the executor guards and `MoveTo` never block on it, and steps may send the shortcut's own key or button while it is held. Repeats and the final UP are swallowed by the `WasActivation` branch; injected output never re-enters `HandleKey` (filtered in the native callback).
-- Held modifiers still gate every new output in `Send` (`WaitingForPhysicalModifiers`), so a Ctrl+F6 on-press macro starts at Ctrl-up, not F6-up. This is intentional: output must never combine with the user's held modifiers.
-- File line endings: these .cs/.xaml/.md files are CRLF on disk even though Git Bash `grep -c $''` prints 0. Check with Python byte counts. Use the Edit tool instead of Python heredoc replacements, since the `
-` escapes in C# string literals got mangled.
-- Tests: `Tests/MacroStartOnPressTests.cs` (5 cases, all fail with the gate forced back to always-wait). Full suite 1,609/1,609, build 0 warnings. Not checked in the live app.
-- Superseded the same day after live testing: a Shift+Q on-press macro still felt release-triggered, because `Send` waited for Shift (debug log: `WaitingForPhysicalModifiers` for ~780 ms). The user chose play-through: at an on-press activation, `MacroPhysicalState.BeginModifierPlayThrough` marks held Shift/Ctrl (`PLAY_THROUGH` bit) and `PhysicalModifiersDown` ignores marked keys while `_playThroughSession` is set. A mark clears at that key's UP; the worker clears the session flag first thing in the `ExecuteSession` finally. Alt/Win are never marked (Alt+Tab, Alt+F4, Win+D risk). `Modifiers` (chord matching) is untouched.
-- Keep marks hook-thread-only (`Interlocked.Or` in `TryActivate`). A worker-side RMW clear would race `ObserveKey`'s read-then-write on typematic repeats. `Seed` never runs while busy, and it drops the bit, which fails safe.
-- Known limit: an on-press step that sends the same side's Shift/Ctrl the user is holding is refused (`SendTransition`/`CanStartMacroOutput` reject a DOWN for a physically held key) and stops the run.
-- Pre-existing quirk: a toggle stop that lands mid-`Send` reports `Macro input was refused...`, not `Stopped with the macro shortcut.` (the catch overwrites `_failure`). Don't assert stop text in fast-loop toggle tests; that flaked only under the parallel full suite.
-- Negative timing assertions need a hold window: `Press()` sends down+up at once, so use `Assert.False(SpinWait.SpinUntil(..., 200))` after releasing the shortcut. The first version of the session-scope test passed even with `EndModifierPlayThrough` removed. Full suite 1,614/1,614 (3 runs), build 0 warnings.
-
-## 2026-11-07 (Macro Freeze mouse / Unfreeze mouse steps)
-- New `MacroStepKind.FreezeMouse`/`UnfreezeMouse` (appended last; old builds reject the unknown Kind as a malformed macro section and suspend saving, so no `[Macros] Version` bump). Steps carry only `Kind` in the INI; `ReadMacroStep`/`WriteMacros` and `MacroValidation` needed no change.
-- Failsafe design: `MacroStateMachine.FreezesMouseMovement => _mouseFrozen != 0 && Current()`. Any `Cancel()` (F12, toggle, focus loss, settings, hook replacement, Stop/Dispose) lifts the freeze at the next mouse event even if the worker is stuck in a native call; `ExecuteSession`'s finally also `Interlocked.Exchange`s `_mouseFrozen` to 0 before `_busy` clears, so the next session (or a recording) always starts unfrozen.
-- `MouseCallback`: the early move filter admits moves when cancel OR freeze is live, and the freeze check (`return (IntPtr)1`) sits BEFORE the Cancel on mouse movement check, after the injected early return. That order is what makes a freeze win over the cancel option; the macro's own (injected) moves still pass.
-- Tests: `Tests/MacroMouseFreezeTests.cs` (11 cases) plus one each in `MacroPersistenceTests`, `MacroEditorTests` (Theory x2), `MacroModelTests`. A gated `_cursor` probe that blocks on its FIRST call (not after the first move, like `MacroMovementTests`) holds the worker at the start of a Move to, so the "frozen" assertion is deterministic and an off-monitor Move to still fails after release.
-- Mutation checks (files restored from sha1-checked backups): no `finally` reset failed only `NextSession_AfterAFreezeWithoutUnfreeze_StartsUnfrozen`; no `Current()` in the getter failed only `Cancel_LiftsTheFreezeBeforeTheBlockedWorkerFinishes`; cancel checked before freeze failed only `MouseCallback_FreezeWinsOverCancelOnMouseMovement_UntilUnfreeze`. `EveryEndPath_LiftsTheFreeze` passes under all three by design: once a session ends, `Current()` alone already unblocks the hook.
-- `dotnet test ... -r win-x64 --no-restore` fails with NETSDK1047 when `Tests/obj/project.assets.json` was last restored without the RID; run once without `--no-restore`.
-- Verification: app and test project `--no-incremental` builds 0 warnings; full Release/win-x64 suite 1,629/1,629 three runs in a row (1,614 + 15 new). Not checked in the live app: real hook blocking, F12 release during a freeze, and the raw-input game limit.
-
-## 2026-11-11
-
-- Background Auto-Run stutter on return (Grey Zone / Unreal Enhanced Input): the game can drop the single re-engage W-DOWN while regaining focus, then reads repeat-flagged DOWNs (lParam bit 30) as one-frame presses. User confirmed Alt-Tab out/in clears it. Fix: `BackgroundInputLoop` posts the 35 ms W ticks as fresh (repeat off, forceAttach) for `BG_W_REENGAGE_FRESH_MS` = 500 after return, then repeats as before. Regression `BackgroundReturnToTarget_WDownsStayFreshBeforeRepeating` failed (1 fresh down) before the fix. Not yet verified in game; Press-mode sprint is still not re-tapped on return.
-
-## 2026-11-16
-
-- Background Auto-Run, S-cancel then W "swallowed": only after a physical-W handoff (W held at Ctrl+R). The hook swallows that W-UP, and a swallowed LL-hook event never updates Windows' key state, so Windows keeps W down. Background release only posts `WM_KEYUP` (no key-state effect), so the next physical W-DOWN arrives repeat-flagged (lParam bit 30) and Unreal reads it as a one-frame press. Foreground mode was never affected: its release is an injected UP. Fix: `_backgroundSwallowedWUp` (set in `BeginAfterPhysicalWRelease`) makes the background branch of `ReleaseLocked` also enqueue an injected W-UP, unless W is physically down. Covers every release path (S, Ctrl+R, focus/profile), not only S. Regression `BackgroundCancel_AfterSwallowedHandoffWUp_InjectsWUpToResyncWindows`. Not verified in game.
-- The debug log cannot confirm that fix: it records only `AutoRun activated` / `release requested`, and `WindowsInputSender` logs failed sends only. Added a one-shot diagnostic after each Background release: `AutoRun: first physical W after release (Windows already had W down=…, handoff W-UP swallowed=…, W-UP resync sent=…)`. `GetAsyncKeyState(W)` inside W's own hook event is the pre-press state, so `down=True` means that press reaches the game repeat-flagged. Don't add log lines after `AutoRun release requested (...)` in `ReleaseLocked`: tests assert it as `Messages[^1]`.
-
-## 2026-11-20 (Third display color preset plan)
-
-- Optional color presets need explicit variant snapshots in both `ProfilePersistenceSnapshot.CloneColor` and `IniProfileStore.WriteColorSection`. The shared color INI codec covers custom profiles and `Win.ini`.
-- The color hotkey advances at press time before the color worker coalesces apply requests. It can retarget Force Preview independently of the editor selection, so turning off an optional preset should end the preview even when a different preset is selected in the editor.
-- Plan v2 (`docs/superpowers/plans/2026-11-20-third-display-color-profile_v2.md`): `ToggleVariant` should be one cyclic "next available" loop, not per-case branches. `ColorSettingsViewModel.HasSecondary` setter's unconditional `SetActiveVariant(Primary)` must go once a third slot exists, or turning Secondary off yanks the screen off Tertiary. Serializers build a fresh `IniDocument`, so a downgrade save drops unknown sections.
-
-## 2026-11-20 (Third display color preset implementation)
-
-- Color availability requires an opted-in, populated optional store. An unavailable hotkey origin is treated as Primary, while explicit snapshots retain disabled preset rows for editing and saving.
-- The autosave clone keeps a detached copy of every stored preset. The shared INI writer selects each preset explicitly and leaves the active selection session-only.
-- Seed optional rows before enabling the flag so a concurrent hotkey cannot advance into a partially initialized preset. Clearing Force Preview before resetting the editor avoids queuing a preview of Primary just before restoring the foreground plan.
-- WPF ComboBox incremental text search can navigate to disabled items. The preset picker disables text search, and its local item style dims disabled rows because ComboBoxItemLightStyle has no disabled visual.
-- Debug verification: app build had 0 warnings. Across full-suite runs all 1,640 cases passed. The Rapid Fire profile-switch timer assertion failed once and passed both reruns. The two ProcessLauncher desktop cases passed on the first run and skipped on reruns when GetShellWindow returned zero.
-
-## 2026-11-20 (Edit preset segmented picker)
-
-- The Edit preset ComboBox is replaced by three RadioButtons (`SegmentRadioButtonStyle` in `Resources/Styles.xaml`) bound to the `ColorSettingsViewModel.IsEditingPrimary/Secondary/Tertiary` projections. Same pattern as the Macros wait-scope radios: a `false` push is ignored, and `EditingVariant` notifies all three.
-- Why not a styled ListBox: in Single mode, Ctrl+click or Ctrl+Space deselects. The null can't convert to the non-nullable `EditingVariant`, so the picker would show nothing selected. ListBox also turns text search on by default. Radios can't be cleared and have no text search, so the old ComboBox text-search gotcha is gone.
-- Checked segment = `AccentDarkBrush` + white SemiBold (about 4.75:1). `AccentBrush` with light text is only about 2.4-3:1.
-- Test `ColorPresetSegments_SelectAnEnabledPresetInOneClick_AndFollowTheEditor` selects through `RadioButtonAutomationPeer` (`ISelectionItemProvider.Select`, which throws `ElementNotEnabledException` on a disabled segment). It fails if the projection notifications are removed.
-- Visual check without launching the app: from a temporary test, call `ProfileEditorTabsTemplateTests.LoadProfileTabs` via reflection, then render the element through a `VisualBrush` into a `RenderTargetBitmap`. That avoids RenderTargetBitmap's VisualOffset shift. Set `host.Foreground`, since harness TextBlocks don't get the App-level implicit style.
-- Full suite 1,640/1,640; `--no-incremental` app build 0 warnings. Not checked in the live app: hover, keyboard focus ring.
-- Line endings: Git Bash `grep -c $'\r$'` reported CRLF for LF-only `MainWindow.xaml`. Count raw bytes instead: `tr -dc '\r' < f | wc -c` vs `tr -dc '\n' < f | wc -c`. As of 2026-11-20 `MainWindow.xaml` and `memory.md` are LF on disk; `Styles.xaml`, `CHANGELOG.md` and most `.cs` files are CRLF (autocrlf=true). Edit tool and heredoc appends keep each file's style.
-
-## 2026-11-20 (Edit preset follows the color hotkey)
-
-- `ColorSettings.VariantToggled` is raised by `ToggleVariant` outside `_sync` when `after != (origin ?? active)`. That is the toast's before/after test, so a preview press from Secondary to Primary fires even when `ActiveVariant` was already Primary. It runs on the keyboard-hook thread, so handlers must only queue work and never throw.
-- `ColorSettingsViewModel` subscribes in the ctor and unsubscribes in `Dispose`. It posts `FollowActiveVariant` to `_ownerContext`, or runs it inline when already on it, which keeps toggles from the test thread deterministic. The follow re-reads `ActiveVariant` when it runs, so a burst of presses settles on the latest preset. It calls `ShowVariant`, not the `EditingVariant` setter: the service has already retargeted Force Preview, and setting it again from a stale UI read could flash the previous preset during rapid presses.
-- Hot path: adds one closure plus queued UI work per physical press, the same cost as the toast enqueue. Nothing is added per keyboard event.
-- Tests: `ToggleVariant_RaisesVariantToggled_OnlyWhenThePresetMoves`, `HotkeyToggle_OnAnotherThread_EditorFollowsOnTheOwnerThread` (DisplayRefreshTests `OwnerContext`), `HotkeyToggleDuringPreview_EditorFollowsWithoutResettingThePreview`, `ColorVariantToggle_InGame_EditorFollowsTheHotkeyPreset` (real service). Mutations caught: following through the setter, no marshaling (updates ran on threads 3 and 8, not the owner's 9), and an `_activeVariant`-based event condition.
-- Full suite 1,644/1,644 (two runs); `--no-incremental` app build 0 warnings. Not checked in the live app.
-
-## 2026-11-20 (Macro Move cursor by step)
-- New `MacroStepKind.MoveCursorBy` (appended last, no `[Macros] Version` bump; same old-build behavior as FreezeMouse). It reuses `X`/`Y` as a signed offset and the same INI keys. Playback reads `_cursor()` and calls the existing `MoveTo(cursor + offset)`, so path, arrival check, and off-monitor fail-closed are shared. Unchecked int overflow wraps far off every monitor, so `MacroCursorPath.Create` rejects it (covered by int.MaxValue/MinValue cases).
-- Naming reserved for a future raw relative (non-absolute `MOUSEEVENTF_MOVE`) step: `MoveMouseBy` / "Move mouse by". "Cursor" = on-screen cursor via absolute input; "mouse" = device-like deltas for game cameras. A does not work for FPS mouselook (game recenters cursor → arrival check fails).
-- Editor: `HasCoordinates` stays absolute-only (it gates the 3 s picker and `FindPositionBefore`); `HasOffset` drives a separate Offset X/Y panel in `MacrosView.xaml`. `MarkPressHold` skips MoveCursorBy rows like MoveTo.
-- Playback tests must wait for `{ SessionId: 1, Mode: Idle }`, not just `Mode == Idle` — the session is Idle before the worker starts, so a bare Idle wait returns immediately.
-- Verification: app build 0 warnings; full suite 1,648/1,648 (Debug). Not checked in the live app.
-
-## 2026-11-20 (Macro Move mouse by + held-button choice)
-- `MacroStepKind.MoveMouseBy` (appended after MoveCursorBy): relative `MOUSEEVENTF_MOVE` (no ABSOLUTE) via new `IInputSender.MoveMouseBy` + `InputCommandKind.MoveMouseBy` (appended). Four senders implement IInputSender: WindowsInputSender, Tests/Fakes/RecordingInputSender (`RelativeMouseMoves`), AutoRunStateMachineTests.PausedSprintUpSender, WheelInputExecutorTests.ScriptedSender.
-- Smooth chunks: `MacroCursorPath.RelativeChunkCount/RelativeChunk` = 72 counts per 8 ms (same 9,000/s as Move to); chunk = difference of truncated running totals in long math, so the sum is exact. No arrival/monitor checks for relative moves.
-- `MacroStep.HeldButtons` (`MacroHeldButtonPolicy` Stop/Wait/Allow) on MoveTo/MoveCursorBy/MoveMouseBy only; Mouse click always stops. INI key `HeldButtons` is written only when non-Stop (existing files unchanged); old builds ignore unknown step keys and fall back to Stop. Malformed/undefined values reject the macro section.
-- The choice travels on `InputCommand.HeldButtons`. Executor gate (`CanStartMacroOutput`) skips the physical-button check for Allow, and for Wait calls `DeferForPhysicalModifiers()` so `MacroStateMachine.Send` loops; Send's top waits via `HoldForMouseButtons` when the command is Wait. Mutation check: dropping the executor Allow bypass fails all 3 `HeldButton_Allow` tests.
-- New session mode `WaitingForMouseRelease` (appended); `MacrosViewModel` counts it as playing, status "Waiting for mouse buttons to be released". `HoldForMouseButtons` republishes Playing with the same row after release.
-- Layout gotcha: the inspector is only 209 px wide at the 650x480 minimum, so the held-button label can't sit beside the three keycap radios. The group sits below the coordinate picker; at 650x480 on 21542b8, Action ends at 328 px, the Move to picker at 404 and the group at 462 (offset steps: row 366, group 424). `MacroEditorTemplateTests` now asserts the Move to picker stays in view and the radio row fits the width. Its wait-scope radio query filters on the "Change " automation-name prefix.
-- WPF test gotcha: `IsVisible` is always false for a host not in a window/PresentationSource; check `Visibility` and `ActualHeight` instead.
-- Tests: tests that press a physical button reflect `_physical` (MacroPhysicalState) from `_macros` and call `ObserveButton`.
-- Verification: app + tests 0 warnings; full suite 1,679 passed twice in a row. One earlier run failed a Rapid Fire log assertion ("Rapid Fire press started…"), the known flake. Not checked in the live app or a real game.
-
-## 2026-11-20 (Merged macro Move cursor/mouse by into main)
-- Worktree `feat/macro-move-cursor-by` sat on 3ccc394, an older copy of the third-color-preset commit (main has d0abbfa). Ported its uncommitted diff with `git diff --binary` + `git apply --3way --exclude=memory.md` + copying the untracked tests; only memory.md conflicted (both sides appended). Uncommitted on main.
-- Verification: `--no-incremental` app build 0 warnings; full suite 1,683/1,683 (= 1,679 worktree + 4 color tests main gained).
-
-## 2026-11-21 (Keep color active review)
-
-- `ProfileActivationService` publishes foreground input transitions losslessly but coalesces color writes in a one-slot channel. Track ownership-ending focus changes before the color queue can drop them, so a quick game A → profiled app B → desktop cannot revive A's retained colors.
-- `ForegroundWatcher` supplies HWND, PID and executable name but observes focus only. .NET 10 `Process.Exited` on an existing Windows process opens an all-access handle. A one-shot wait on a handle opened with `SYNCHRONIZE` is sufficient for exit tracking.
-- The Keep color active plan uses one custom-profile owner and the same resolved source for plan application and the preset hotkey. A watched exit must invalidate that owner even without a focus change, and cached foreground republishes must not reapply colors for that dead process. Keep native wait disposal outside `_publicationLock`, which the color hotkey also uses.
-- Opus review follow-up: both .NET 10 Windows thread-pool backends retain the registered `WaitHandle.SafeWaitHandle` until native wait teardown. Use one owning safe handle, unregister before disposing it, and keep callbacks limited to owner-state checks since an already-queued callback can still run. Test a focus change while registration is blocked, in addition to the existing planned exit-during-enumeration case.
-- Opus 5.5 review: watch installation must recheck `_stopping` under `_publicationLock` because `StopAsync` sets it before clearing `_latestForeground`. Capture the owner revision after the worker's own installation. Test a blocked registration across stop/restart and the first color apply after arming.
-- The updated plan limits failed watch acquisition to one attempt per foreground generation. Color edits and hotkeys requeue the same generation, so a protected game can keep its ordinary foreground colors without repeated `OpenProcess` calls.
-
-## 2026-11-21 (Keep color active plan v2)
-
-- `docs/superpowers/plans/2026-11-21-keep-color-active_v2.md` supersedes v1 and the one-attempt-per-generation note above. Cut: dead-window color suppression and `isForegroundObservation`, the owner revision and post-enumeration recheck, the per-generation failure memory, the live-foreground/name verification, and the already-exited branch. An exit or edit mid-build may write the old plan once; the already-queued next plan corrects it, as focus changes do today.
-- Native wait probe (`dotnet run probe.cs` outside the repo, SDK 10.0.302): `OpenProcess(SYNCHRONIZE)` + `RegisterWaitForSingleObject(executeOnlyOnce)` fired once on exit, fired in 0 ms for an already-exited process, and never fired after `Unregister(null)` + `Dispose`. The handle was non-inheritable; a refused open of PID 4 returned error 5 in ~0.55 µs. An exited process stays openable while any other handle exists, so reject dead processes with the exit flag, not a failed open.
-- Nothing restores colors at exit: `StopAsync` keeps the last plan, NVIDIA/AMD `Dispose` only release native contexts, and `WindowsGammaService` has no restore. After a restart, `ApplyColorPlan` skips untouched disabled monitors, so a held game's colors can outlive an app exit.
-- `GetWindowThreadProcessId` returns 0 and leaves the out PID unchanged on failure; use the existing `processId != 0 && processId == expected` pattern. The project has no `SkipLocalsInit`.
-- Exit decision (user): quitting is deliberate, so leaving the last colors on screen stays. README Troubleshooting documents the crash workaround: **Window [Default]** on, Color Profiles on, every monitor checked. Defaults 50/50/1.0/50 build the identity ramp and neutral vibrance. An `explorer.exe` profile would also reset colors at start, but it ends every Keep color active hold at the desktop.
-- .NET 10 `Process.GetProcessById` (called by `ForegroundWatcher.ResolveProcessName` on every focus change) opens the process with `PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE` and closes it. A refused open silently falls back to enumerating PIDs, so working profile matching does not prove a `SYNCHRONIZE` open is allowed.
-- Watch costs measured by the throwaway probe on this PC: open + register + unregister + dispose ≈ 28 µs, refused open ≈ 0.6 µs, `GetWindowThreadProcessId` ≈ 11 ns, and 0.0 ms CPU over 3 s while a watch sat idle. .NET 10 on Windows defaults to the portable thread pool (`UseWindowsThreadPool` is opt-in and the app doesn't set it). Its wait thread blocks in `WaitAny` with an infinite timeout, so nothing polls.
-- The taskbar (`Shell_TrayWnd`) and desktop (`Progman`/`WorkerW`/`GetShellWindow`) belong to explorer.exe, so the app sees explorer.exe whenever they have focus and falls back to Window [Default]. The only explorer.exe use in the codebase is `ProcessLauncher`'s de-elevated launch fallback.
-
-## 2026-11-21 (Keep color active implementation, orchestrated Codex gpt-6.2-sol high)
-
-- Step 1 done: `[Color] KeepColorActive` read/written only in the custom-profile load/serializer (beside `DeserializeColorSettings`/`WriteColorSection` calls), so Win.ini ignores it. Checkbox row sits inside the Color Profiles-gated StackPanel (inherits its disable); `IsCustomProfile` hides it on Window [Default]. Suite 1,689/1,689.
-- Step 2 sequencing: the `tryWatchColorProcess` constructor parameter moved to step 3 so step 2 does not leave an unused private field.
-- Step 2 done: `WindowsProcessExitWatch.TryWatch/TryRegister` (SYNCHRONIZE OpenProcess -> window check -> RegisterWaitForSingleObject once; Dispose = Unregister(null) then handle). Real-process tests keep a `cmd /c set /p` child alive until stdin closes (no fixed-delay race). `FakeProcessExitWatch` (Deny/BlockRegistration/RunExitBeforeReturn/counters/FireExit after dispose), `FakeForegroundWatcher.OnStart` + windowHandle param; Queued/BlockingColorControlService moved to Tests/Fakes. Suite 1,696/1,696.
-- Fake-vs-real gotcha for step 3 tests: the fake watch skips the window check, so after an owner exits while its snapshot is still the latest foreground the worker would re-arm on the dead PID; real TryRegister fails because the process's windows are destroyed before its object is signaled. Tests set `Deny = true` before firing that exit.
-- Step 3 done: one `ColorOwner` (profile, normalized exe, PID, watch, IsValid/HasExited/ReleaseReason) guarded by `_publicationLock`; handoff invalidation in `PublishForegroundLocked`; worker detaches invalid owner then acquires (registration outside the lock, install rechecks `_stopping`/generation/eligibility/HasExited); selection = enabled snapshot profile, else valid owner. Suite 1,714/1,714; StickyColor 18/18 x8 runs, no flakes.
-- Kept agent deviation: `NotifyProfileChanged` now runs owner invalidation and the Master/Identity/Removed `RepublishLatestForeground()` in ONE `_publicationLock` block. Without it, removing A while A is foreground let the worker re-arm A from the old snapshot (old generation still current) and hold a removed profile's colors.
-- Step 4 docs done (README Display Color bullet + Window [Default] exceptions + Troubleshooting addendum; CHANGELOG `## November 21, 2026`; IProfileRuntimeService preview comments). Final: `--no-incremental` build 0 warnings, suite 1,714/1,714. Live-app checks (plan step 4 last two bullets: Alt+Tab/exit/two monitors/elevated game/tray exit) still need a manual run. Uncommitted.
-
-## 2026-11-22 (Macro UI/UX review)
-- Real macro tab content is ~734 DIPs wide (window fixed at 960; editor column 8* minus 16+16 border margin) and ~540 tall at the default 720 height. Template tests use 650x480 as a conservative floor; at 650 the step list's Detail column (`*` after 64+24+92+84 fixed columns) collapses to 0 px, at 734 it gets ~120 px. Check layout ideas at both widths.
-- Offscreen render recipe for this view: load the Macros TabItem exactly as `MacroEditorTemplateTests.ActualDeferredMacroTab_...` does, set host Foreground/FontFamily, collapse the Advanced Mode notice (its Window binding fails in the harness), then draw `new VisualBrush(host) { Viewbox = (0,0,w,h), ViewboxUnits = Absolute }` into a RenderTargetBitmap. Put the probe test in Tests/ temporarily and delete it; it writes to %TEMP% if no output path is given.
-- `KeyDisplayConverter.ToDisplayText` now returns keycap names (Enter, Page Down, Left Shift, Num 7). `ConvertBack` cannot parse them, but every binding using it is OneWay; `KeyCatalog.SortKeys` sorts by enum name, so picker order is unchanged.
-- A macro playback problem ("Step N: ...") is routed to its row by `MacroViewModel.RefreshValidation` → `MacroStepViewModel.SetProblem` (presentation only). `DisplayError` = own field error first, then the problem; `IsProblemOnly` switches the mark/text to the warning brush. Keep the "Step N:" prefix in validation messages: `FindStepNumber` parses it.
-- `MacroSessionSnapshot.RowCount` is the captured step count while Recording but the 1-based current step while Playing/WaitingForMouseRelease; status copy says "step N of M" (total from `OwnerProfile.Macros.Definitions` by `MacroId`) vs "N steps".
-- Serena `replace_content` keeps CRLF in multi-line literal replacements (verified with byte counts). Its regex mode rejects whitespace-capture needles like `(\s+)if ...` or `^([ \t]*)...` as ambiguous; use single-line literal needles instead.
-- Verification: app build 0 warnings; full suite 1,737/1,737 (1,714 + 23 new). Not checked in the live app.
-
-## 2026-11-22 (Wait times bar facelift)
-- Supersedes "Bulk Wait controls live in the sequence-panel header and inline strip": the user rejected multi-line panels ("nothing multiline"). Wait times is now a one-row bar that replaces the toolbar row while `IsWaitEditorOpen` (like the recording banner); the commands DockPanel and the bar share one gated wrapper Grid, so `FeatureToggleContentStyle` still has exactly 3 users.
-- One row only fits in the toolbar (~640 DIPs at the real 734 width, ~556 at the 650 test floor); the list card is ~386/~290 wide. The bar must stay 32 px like the toolbar or the list shifts: `MacroButton` (and `MacroIconButton`) set MinWidth/MinHeight 30, which beat a local Width/Height 28, so set Min* locally too. The template test asserts the list top is unchanged.
-- Scope picker reuses the app's `SegmentRadioButtonStyle` via DynamicResource (app styles can't be StaticResource/BasedOn here: the view's BAML loads before it is parented). Count chips flip from 12% white to 25% black on the checked accent segment to keep the white number above 4.5:1.
-- Rows the open scope would change get `MacroStepViewModel.IsWaitTarget` (presentation only, set by `MacroViewModel.RefreshWaitTargets`; a collapsed press counts through its `CollapsedWait`). `IsWaitTarget(step, scope)` is the single classifier shared by `SetWaitTimes`, the highlight and the "Now 30–800 ms + auto" range.
-- Impeccable craft floor bans colored left borders >1px on list rows and Unicode glyphs as icons: the highlight is text color/weight only, and the close/check icons are authored Path geometries.
-- Verification: app build 0 warnings; full suite 1,738/1,738. Not checked in the live app.
-
-## 2026-11-22 (Macro page two-row header)
-- User picked the "Two-row header" layout: row 1 = picker (fixed 240) + On + short status (*) + New… + ⋯ (Rename/Duplicate/Clear all steps/Delete macro); row 2 = modifiers as one segmented group + key + Playback button (summary label, menu with Once/Loop and Release/Press radio pairs plus "Stop when the mouse moves"); then the toolbar/wait bar. Steps gained ~2 rows. The old "Show step N" became "Fix step N" and replaces the status text when a step is the problem (the step shows the full message).
-- `SegmentRadioButtonStyle` now has TargetType ToggleButton (key unchanged) so CheckBoxes can use it; template and TextBlock ancestor binding moved to ToggleButton. `MacroKeycap` was removed.
-- MenuItem radio pairs: bind IsCheckable items two-way to projections (`PlaysOnce`/`PlaysInLoop`, `StartsWhenReleased`/`StartsWhenPressed`) whose setter ignores false and re-raises PropertyChanged; WPF refreshes the target during the source update, so clicking the checked item keeps it checked (template test covers it). The menu style shows the checkmark only for IsCheckable items.
-- A ToolTip set through a Binding with StringFormat shows the raw value (ToolTip is object-typed); use a `<ToolTip Content=... ContentStringFormat=...>` element. To hide part of a ComboBox ItemTemplate only in the closed selection box, DataTrigger on `{Binding RelativeSource={RelativeSource AncestorType=ComboBoxItem}, FallbackValue={x:Null}}` = `{x:Null}`.
-- Template tests reach menu items with a local `MenuItemsAsync` helper (merge host resources into the ContextMenu, set PlacementTarget, Measure/Arrange); MenuItem.IsEnabled follows the bound command once the DataContext resolves. Playback button width: defaults are left out of `PlaybackSummary` so "Loop · on press · stops on move" fits the 734 px row; at the 650 px test floor only shorter summaries fit.
-- Verification: app build 0 warnings; full suite 1,740/1,740. Not checked in the live app (real menus, hover tooltips, keyboard focus order).
-
-## 2026-11-22
-- Wait times bar: dropped the "Now xx ms" status (`DescribeCurrentTimes` removed; `WaitEditMessage` is empty until Apply/error). X close button replaced by a text Cancel button next to Apply (automation name "Cancel wait time editor"). Empty status needs a style trigger to null its ToolTip, or WPF shows an empty tooltip box.
-- Wait times bar: shaded Border now sizes to its controls (ends after Cancel); status text moved outside it into an outer Grid's * column. Visibility lives on that outer Grid.
-
-## 2026-11-22 (macro logging)
-- Macro debug lines now carry `macro="<label>" profile="<name>"` (state, Playback, Failed). New lines: `Cancel requested` (with reason + row), `Physical key/mouse takeover` (vk/key/button), `Input refused` (CanExecute breakdown: foreground changed, owner/advanced off, monitors). Takeover log is behind `IsEnabled` in the rare macro-owned-key branch only.
-- Diagnosed Drop Bag stops: physical D keydown while macro holds D => "Physical input took over a macro key." (user strafes with D).
-
-## 2026-11-23 (Capture-based keybind assignment, card 48af14e2)
-
-- `Controls/KeyCaptureBox` is CODE-ONLY (no .xaml): `MainWindow.xaml`/`MacrosView.xaml` template tests parse XAML at runtime via XamlReader (with `;assembly=sWinShortcuts` rewriting), and a BAML UserControl using StaticResource would fail to resolve outside the app tree. Parts use implicit TextBox/Button styles; `BoxStyle`/`ButtonStyle` DPs override (macro editor).
-- `IKeyCaptureSource.EndKeyCapture(sink)` takes the sink (deviation from plan's parameterless form) so a late deferred apply can't end another box's capture. Internal boundaries (`ReleaseAllState`, so Stop/session switch/profile switch) call `_keyCapture.End()` unconditionally.
-- `Models.MouseButton` collides with `System.Windows.Input.MouseButton` in any file outside `sWinShortcuts.Models` that imports both: add `using MouseButton = sWinShortcuts.Models.MouseButton;`.
-- Gate insertion point: `KeyboardCallback` right after the injected-event filter and the `vkCode` locals, before `!featuresActive`. `TryBeginKeyCapture` refuses off `_hookDispatcher` thread, when stopped, or while macros are busy/recording/have takeovers (no `_profileLock`: UI thread).
-- `KeyCaptureBox.Current` is `[ThreadStatic]` (per UI thread) so STA test threads never cancel each other's boxes cross-thread; `CaptureSource` stays a process static, so `KeyCaptureBoxTests` runs in a non-parallel xUnit collection and resets it in `Dispose`.
-- Capture boxes put the same automation name on the inner TextBox ("Macro shortcut") and "Assign X"/"Clear X" on buttons: template tests must find fields with `OfType<KeyCaptureBox>()`, not any control by name.
-- `MacrosView.xaml` resources can't `BasedOn` the app's implicit styles (not in scope at InitializeComponent in tests); the local `MacroCaptureField` TextBox style repeats the setters with DynamicResource.
-- `MacroViewModel.Shortcut = None` clears modifiers; `ShortcutTrigger = None` still keeps them (existing test relies on it).
-- Row uniqueness moved from per-row `SelectableSources` lists to `SourceValidator` delegates set at attach time (`ProfileViewModel.AttachCombinedVm`, `AltShortcutViewModel.AttachRow`); "Add row" defaults still come from `Available*Sources` (catalog-based).
-- `[AutoRun] TriggerModifier` uses `IniExtensions.Get/SetModifierKeys`: single names byte-identical, combos `Control+Alt` (Ctrl, Alt, Shift, Win order); `+`/`,` accepted on read; "None" only alone. Old builds read a combo as default Control.
-- Alt + Shortcut table now ~170 keys (`KeyCatalog.AltShortcutKeys`): `ResetKeyboardStates` runs `Timer.Change` on every idle timer per physical Alt release (~1.8x old count, tens of µs). Skipping unarmed timers would need an armed flag; not done.
-- Auto-Run tests that re-press the trigger must send its up through `Handle` (the `_triggerKeyDownVk` latch), not only `ObservePhysicalEvent`.
-- Verification: no `dotnet` on the Linux implementation host; nothing compiled or run. Build/tests must run on Windows (plan §7).
-- Review fix (stuck key): `KeyCaptureGate.Begin(sink, now, isKeyDown)` snapshots held keys; `TryBeginKeyCapture` passes `_isPhysicalKeyDown` (GetAsyncKeyState, UI thread). Pre-held auto-repeat downs are swallowed but never owned/forwarded (owning one swallowed the real up after Windows saw the down). The pre-held up passes through AND is forwarded to the sink so `KeyChordAccumulator` clears its `_preheld` flag; otherwise a re-press of that key after release was ignored in hook mode.
-
-## 2026-11-23 (PR #26 rebase and capture fixes)
-
-- Rebased onto 727a509. Keep the compact macro header and Playback menu from main with the capture control in the shortcut slot. The keycap display keeps main menu and numpad names plus Num Lock and the ISO key label.
-- WPF and WinForms implicit imports overlap in code-only controls. Use local aliases for WPF types, including the Binding sentinel in the chord converter.
-- Upgrade decision: numeric Auto-Run modifiers continue to fall back to Ctrl. Tell users to reconfirm keybinds in the changelog and Assigning Keys section.
-- Capture tests reproduce Pause as a one-edge key and mouse-first chords spanning the keyboard idle deadline. The gate reads the accumulator activity so both devices share the idle decision. Mouse dispatch disables new activations while assigning and still settles prior releases.
-- The XAML template tests must preserve namespaces from merged dictionaries. Styles.xaml still uses the behaviors prefix even after the last use in MainWindow.xaml is removed.
-- The Windows Release build passed with no warnings and all 1,932 tests passed after the fixes.
-
-## 2026-11-23 (PR #26 review fixes, live capture text, dimmed idle box)
-
-- Cancel restarted capture: WPF `ButtonBase.OnMouseLeftButtonUp` releases mouse capture BEFORE `OnClick`, so the box's LostMouseCapture cancelled and the Click then began a new capture. Fix: while capturing, `OnPreviewMouseDown` handles Left over Assign/Clear on press; no child ever takes capture, so `OnLostMouseCapture` just cancels. Tests raising `ButtonBase.ClickEvent` can't see this class of bug.
-- `KeyCaptureGate` has no DRAINING state: `_sink != null` is the whole state, `End()` runs as soon as the sink finishes (the box's deferred apply ended it one dispatcher turn later anyway). Held-key ups pass through unforwarded; hook captures give `KeyChordAccumulator` an empty held snapshot (only the WPF fallback needs one).
-- `HandleFallbackKey` accepts WPF keys during hook captures too: swallowed keys never reach WPF, so nothing double-counts, and the box keeps working if `ReleaseAllState` (watchdog reinstall) ends the gate mid-capture.
-- Timeouts live once in `KeyCaptureGate.IdleLimit/HardLimit` (box timer reads them).
-- Live text: `KeyChordAccumulator.Progress` = the chord releasing now would give (also feeds `BuildResult`). The box posts at most one `ShowProgress` at a time (`_progressPosted`); never touch UI inside the hook callback.
-- Idle look: `_box.Opacity = KeyCaptureBox.IDLE_OPACITY` (0.6, near WPF's 0.56 disabled TextBox, text still >4.5:1); 1 while capturing or showing a message. Opacity keeps the box enabled for UIA.
-- `[AutoRun] TriggerModifier` now parses with `Enum.TryParse(value.Replace('+', ','))` plus a bits check (numbers load again, "4" = Shift) and writes `ToString().Replace(", ", "+")` ("Alt+Control").
-- Serena MCP was bound to another project (no C# server), so this pass used the built-in tools.
-- Verification: `dotnet build Tests/Tests.csproj -c Release -r win-x64` 0 warnings/errors; `dotnet test Tests/Tests.csproj -c Release -r win-x64 --no-build --blame-hang-timeout 60s` passed 1,937/1,937.
-
-## 2026-11-23 (sided modifiers, Esc cancel and hold-to-clear)
-
-- User decision: keybinds keep their side and match it exactly (LCtrl+S never fires on Right Ctrl+S); values saved before sides existed load as LEFT (default Auto-Run Ctrl+R = LCtrl+R). Names: LCtrl/RCtrl, LAlt/RAlt, LShift/RShift, LWin/RWin, alone and as prefixes (`KeyChord` prefixes reuse `KeyDisplayConverter` names).
-- Model: `KeyChord.RightModifiers` (normalized `& Modifiers`), `AutoRunSettings.TriggerRightModifiers`, `MacroDefinition.ShortcutRightModifiers`. INI keeps the family flags where they were and adds `[AutoRun] TriggerRightModifiers` and macro `ShortcutRightModifiers`, so older builds still read the modifiers (and match either side).
-- Matching: Auto-Run checks sided VKs with GetAsyncKeyState (never the generic 0x10-0x12, which report either side). Macro activation keeps the exact family match and adds `MacroPhysicalState` side checks on sided VKs only (the hook never reports 0x10-0x12).
-- Accumulator: the last press of a modifier decides its side (LCtrl then RCtrl held = RCtrl).
-- Esc is never assigned: `KeyCaptureBox.HandleEscape` runs before the accumulator and decides on the RELEASE, so the gate keeps swallowing Esc and its auto-repeat can't trigger IsCancel buttons. User decision: Esc only cancels, with no hold-to-clear; ✕ clears. A held Esc blocks other keys from finishing the capture, so its release always cancels.
-- Tests that hold a modifier for Auto-Run through a fake `GetAsyncKeyState` must use the sided VK (0xA2), not generic 0x11 (MacroRecordingIntegrationTests needed this). Macro shortcut tests need sided VKs too.
-- Verification: Release win-x64 build 0 warnings/errors; full suite 1,965/1,965 passed.
-
-### 2026-11-24 (macro plans review)
-
-- Staged plan for one Move action, saved positions, countdown ruler and share codes: `docs/superpowers/plans/2026-11-24-macro-editor-four-features.md` (local, `Docs/` ignore rule).
-- No app manifest: WPF runs SystemAware (`dotnet run` probe, UI and new threads). Overlay `SetWindowPos` takes logical coordinates; `GetPhysicalCursorPos` returns physical.
-
-### 2026-11-25 (macro editor four features)
-
-- Codex CLI rejects `-m gpt-sol-6.2` ("not supported when using Codex with a ChatGPT account"); `-m gpt-6.2-sol` works.
-- .NET 10 WinForms `Clipboard.SetDataObject` and `GetText` already retry 10 x 100 ms (`ClipboardCore.cs`), then throw `ExternalException`; map that to "clipboard busy".
-- Layered windows pass clicks through alpha-0 pixels; the Measure ruler uses a `#01000000` background to catch them (learn.microsoft.com/windows/win32/winmsg/window-features).
-- `KeyCaptureBox` key edges run on the hook thread: copy dependency properties such as `AcceptsEscape` to a field in `BeginCapture`, never read them in `HandleKeyEdge`.
-- Duplicate's counter starts at 0, so a first copy of "Ammo" is "Ammo 1". Share-code import reuses that rule via `MacrosViewModel.GetFreeLabel`.
-- Measure rulers complete the shared result in `Closed`; Alt+F4 closes one ruler (learn.microsoft.com/dotnet/desktop/wpf/windows). Unshown windows raise `Closed` too, so tests skip `Show()`.
-- Macro share codes require both markers. Check `BrotliDecoder.Decompress` bytes consumed to reject trailing bytes. https://learn.microsoft.com/dotnet/api/system.io.compression.brotlidecoder.decompress
-
-### 2026-11-25 (macro press groups plan)
-
-- Plan: `docs/superpowers/plans/2026-11-25-macro-press-groups.md` (local, Codex gpt-6.2-sol reviewed). `ContextMenuItemStyle` (Resources/Styles.xaml) has no `PART_Popup`/`ItemsPresenter`: any MenuItem submenu needs a new template.
-- Press groups: Narrator gets open state from `AutomationProperties.ItemStatus` set by `MacroStepItem` DataTriggers, no custom peer. https://learn.microsoft.com/dotnet/api/system.windows.automation.automationproperties.itemstatus
-- `IniProfileStore.ExpandCompactPresses` runs only on format-valid definitions, before the `includeIdentity` return, so share import converts and load errors keep file step numbers.
-- `MacrosView.xaml` can't use `BasedOn="{StaticResource MacroContextMenuItemStyle}"`: Styles.xaml loads dynamically and template tests throw "Cannot find resource".
-
-# 2026-11-25 (Exit and load warnings)
-
+# Lessons learned
+
+### 2026-08-26
+- `UpdateCheckService` is the only network client. It queries the GitHub latest-release endpoint with redirects disabled; release URLs live in `Utilities/GitHubUrls.cs`.
+- Update checks are opt-in. Only a literal `true` in `[App] CheckForUpdates` enables them. Service tests must set `CurrentBuildNumber`, because CI build numbers are numeric.
+
+### 2026-08-30
+- Anti-AFK and Auto-Run serialize each posted tap through `TryBeginAntiAfkTap` and `EndAntiAfkTap`. Always release that latch in `finally`.
+- `AntiAfkTarget` is a positional record, so `==` compares by value. Guard removal and invalidation logs with `ReferenceEquals`.
+- `PostMessage` from a medium-integrity build to an elevated game fails with Win32 error 5. Capture `GetLastWin32Error` right after the post.
+
+### 2026-08-31
+- Hot-path log helpers take raw values and build the message only inside the `IsEnabled` branch, as `WindowsInputSender.SendInputLogged` does.
+
+### 2026-09-05
+- Before deleting a member, count XAML bindings, generated MVVM members, P/Invoke ABI declarations, and reflection-based test helpers as callers.
+- NVAPI DLLs ship with the driver, not the app. On .NET 10 single-file, default P/Invokes still search beside the exe; `DefaultDllImportSearchPaths(System32)` excludes it. https://learn.microsoft.com/dotnet/core/compatibility/interop/10.0/native-library-search
+
+### 2026-09-06
+- AMD and NVIDIA disposal close admission, run one serialized cleanup, and wait 100 ms. Never unload native code that is still running.
+
+### 2026-09-07
+- Key deserialization accepts only defined keys that have a Windows virtual-key mapping. Other values would load as remaps that emit nothing.
+- Running elevated from a writable folder allows exe replacement. This risk is accepted, so do not add certificate or install-location requirements without a new decision.
+
+### 2026-09-08
+- Vendor color tests run blocking native fakes and timed probes on a `LongRunning` `TaskScheduler.Default` thread. On `Task.Run`, the 500 ms deadlines flaked in CI.
+- `InputExecutor.Enqueue` takes `_enqueueLock` although the header comment calls the hook path lock-free. Queued gesture delivery relies on it.
+- A new `InputTrigger` kind needs per-feature validation. Hold-breath panic accepts only keyboard and mouse buttons, not wheel.
+- Deterministic `InputHookService` tests need the internal constructor's clock and key-state delegates. A fake `IInputSender` alone still reads `GetAsyncKeyState`.
+- Hook-free test fixtures cannot prove native Start, hook reinstall, or session resume. Report those as manual checks, including the ones not run.
+- Test extensions may call production reset and seeding routines and clean up fixtures. Never duplicate lifecycle logic or replace fields where a production transition belongs.
+- Wheel busy-target checks see executor-tracked and `GetAsyncKeyState` holds only. Background Auto-Run and Anti-AFK post with `PostMessage`, which they cannot see.
+- Set `_keysDown` only after a successful send, so a failed UP keeps its hold bit. Complete guards in the drain `finally` to refund reservations once.
+- Never reset `_pendingWheelTaps` on wheel epoch invalidation or lifecycle reset. Accepted taps refund only on executor completion.
+- Mapping-change handlers must ignore per-row `SourceValidator` notifications. They fire on attach and detach and would republish the model and autosave.
+
+### 2026-09-09
+- AMD vibrance needs Adrenalin 25.3.1 or later. README states this in its requirements, troubleshooting, and FAQ, so update them together.
+
+### 2026-09-11
+- `ProfilePersistenceSnapshot` has one `Clone*` method per settings type. Copy new fields there, or queued autosaves write them back stale.
+- A new `CrosshairSettings` field must also join the `CrosshairService` dedup, or live edits skip the redraw.
+- Crosshair offsets are physical pixels added after centering in `ComputeOverlayBounds`. Centered or offset mode is kept per profile for the session.
+- Crosshair offset toggles must match the applied profile and foreground generation. Advance the stored generation even on deduped applies.
+- `CrosshairService.Stop` closes admission and publishes a hidden configuration. Overlay work stays `BeginInvoke`-only so app exit never blocks on the dispatcher.
+- Never bind `Slider.Minimum` or `Maximum` to `x:Static` int constants. The deferred template load crashes at startup; use XAML literals.
+- `Tests` is nested in the app project, whose default Page glob covers `Tests/**/*.xaml`. Link copied XAML fixtures as `*.xaml.testdata`.
+- Elevated startup tasks are named `sWinShortcuts_AutoStart_<SID>`. Adopt or delete the legacy shared name only after its principal resolves to the current SID.
+- Settings skips unchanged startup options, so an existing task keeps its old policy until the user saves startup off, then on, elevated.
+- A solution `dotnet restore` that exited 1 with no diagnostics succeeded when rerun with `-m:1`.
+
+### 2026-09-13
+- Macro waits run on the macro worker, not inside `InputExecutor`, whose delays block shared input. Await `InputCommand.Completion` for each transition.
+- F12 is the hard-coded emergency stop for macros (`MacroStateMachine.EMERGENCY_STOP_VK`), kept by user decision.
+- Absolute `SendInput` cannot address a desktop larger than 65,536 pixels per axis, so `WindowsInputSender` rejects wider or taller ones.
+- `MacroValidation.MaxSteps` is 1,000, a user decision. Validation, recording, insertion, and duplication all share it.
+- Only the Caps 2x release tap whose press tap the executor sent may cross a recording pause. Enqueue, `ExecuteTap`, and `SendKey` each allow it.
+- Macro cursor speed is 9 px per ms over an 8 ms interval, tuned from user testing. Faster needs closer points, not a shorter delay.
+- The recorder writes a `MoveTo` before every mouse edge, including UP, and playback skips same-pixel moves. Keep release coordinates in any cleanup.
+
+### 2026-09-14
+- Headless WPF template tests have no presentation source, so `IsVisible` is always false. Assert `Visibility` and arranged bounds; materialize menus with `Measure` and `Arrange`.
+- Macro menu items need a `HeaderTemplate` bound to `MenuItem.Foreground`. The implicit `TextBlock` style otherwise overrides the highlight color.
+- The wait bar handles Enter only in the duration field and Escape anywhere in the bar, so Enter still activates a focused button.
+
+### 2026-09-25
+- Every Rapid Fire settings edit keeps the arm and only cancels the owner's burst. `InputHookService` and `InputFeatureHarness` duplicate this logic, so change both.
+- If the suite hangs, rerun with `--blame-hang-timeout`. For a wedged testhost, collect `dotnet-dump collect --type Heap` and run `clrstack -all`.
+
+### 2026-09-26
+- Pass `foregroundDeparture: true` only from the profile switch, `DeactivateProfile`, and `ReleaseForegroundState`. Every other `ReleaseAllState` caller completes the Caps tap immediately.
+- `Tests/InputHookServiceTestExtensions.cs` calls private `ReleaseAllState` by reflection with positional arguments. Adding a parameter breaks it with `TargetParameterCountException`.
+- Caps 2x focus loss is fixed by blocking the accidental Win key, not by resending the closing tap on return. The user declined resending.
+- A remapped Caps 2x press sets `RemapStateMachine.BlocksWinKey`. `CapsHoldWinKeyBlocker` then swallows that Win press, its repeats, and its UP; a preheld Win passes.
+- Call `_winKeyBlocker.Handle` in `DispatchDecodedKeyboardEvent` right after `NotePhysicalKeyboardActivity`, before Auto-Run observation and `_macros.HandleKey`.
+- Win-block debt must also be retired by `ObserveUnfiltered` in the `!featuresActive` branch and by `Reset` in `SeedAppTogglePhysicalState`, or Win stays stuck.
+- A missed Caps UP can leave `BlocksWinKey` set; the flag clears at the next Caps press.
+- `SendTap` passes held Shift, Ctrl, Alt, and Win through, so a tap sent during a held modifier reaches the game as a chord.
+
+### 2026-09-27
+- `HandleLeftButton` starts the real timer. Rapid Fire tests must wait with `SpinWait.SpinUntil(TimerState == TIMER_ARMED)` and assert timing with lower bounds only.
+
+### 2026-10-05
+- Profile-off graying sits on each page's `StackPanel` with `IsEnabled="{Binding CanEditContent}"`. A `TabControl` presents selected content outside its `TabItem`.
+
+### 2026-11-02
+- `GetAsyncKeyState` counts this app's injected keys while the hook skips them. `GestureChordStateMachine` tracks `_physicalAlt` separately from `_injectedAlt` for that reason.
+- `AdoptHeldAltFromWindows` must always bump the wheel epoch. `ServiceBoundary_InvalidatesQueuedWheelAndRemainder("rederive")` fails otherwise.
+- `RemapStateMachine.HandleCapsLock` has an open bug. It reads the Caps generation outside `_capsLock`, so a racing state release passes a suppressed Caps press to Windows.
+- Its log line is "Caps down passed through; input state was released during the press". Fix by re-reading generation and settings under `_capsLock`.
+- `NullLoggerService.Log` locks `Messages`, but cross-thread order is undefined. Assert that each line is present, not their sequence.
+
+### 2026-11-04
+- `InputTriggerSerializer` and `KeySerializer` accept comma lists, because `Enum.TryParse` does not reject them. Only `IniExtensions.TryGetKey` and `TryGetEnum` reject commas.
+- Template tests parse XAML at runtime: rewrite namespaces to `;assembly=sWinShortcuts`, and find controls inside collapsed GroupBoxes with `LogicalTreeHelper`.
+- Never clean `bin\Release\net10.0-windows\win-x64\publish`. The user runs the app from that folder and keeps backup exes in it.
+- Never kill the app from a script. It may run elevated, and a hard kill skips its shutdown cleanup of colors and gamma.
+
+### 2026-11-06
+- New optional macro INI keys need no version bump, because older builds ignore unknown keys. An unknown step `Kind` is a malformed macro to them.
+
+### 2026-11-07
+- Run package scans with `--no-restore` after the RID build. `dotnet test -r win-x64 --no-restore` fails if the last restore had no RID.
+
+### 2026-11-11
+- Unreal reads a repeat-flagged W DOWN as a one-frame press. Background Auto-Run posts fresh W ticks for 500 ms after focus returns (`BG_W_REENGAGE_FRESH_MS`).
+
+### 2026-11-16
+- A swallowed low-level-hook W UP leaves the Windows key state stuck, so a background Auto-Run release must also inject a W UP (`_backgroundSwallowedWUp`).
+
+### 2026-11-20
+- Playback tests must wait for `{ SessionId: 1, Mode: Idle }`. A bare `Mode == Idle` returns before the worker starts.
+- Exclusive pickers use `SegmentRadioButtonStyle` on `ToggleButton` controls. Radio-style buttons cannot be deselected and have no text search.
+- A `ToolTip` bound with `StringFormat` shows the raw value, so use `<ToolTip ContentStringFormat=...>`. Hide closed-box content with a `ComboBoxItem` ancestor trigger.
+- Git Bash `sed -i` rewrites CRLF files as LF. Disk line endings are mixed, so count CR bytes per file and prefer the Edit tool.
+
+### 2026-11-21
+- `NotifyProfileChanged` must invalidate the color owner and republish the latest foreground inside one `_publicationLock` block, or a removed profile's colors are re-armed.
+- Track process exits through `WindowsProcessExitWatch`: `OpenProcess(SYNCHRONIZE)` plus a registered thread-pool wait. `Process.Exited` is not used.
+
+### 2026-11-22
+- `Views/MacrosView.xaml` can only `BasedOn` styles defined in that file, such as `MacroButton`. For app styles from `Styles.xaml`, repeat setters with `DynamicResource`.
+- Keep the "Step N:" prefix in macro validation messages. `MacroViewModel.FindStepNumber` parses it to route the error to its row.
+- A macro stops with "Physical input took over a macro key" when a pressed key is one the macro holds, such as strafing with D.
+
+### 2026-11-23
+- `[AutoRun] TriggerModifier` reads `Control+Alt` style values through `IniExtensions.GetModifierKeys` and writes them back with `SetModifierKeys` (`+` separated).
+- `KeyCaptureBox` is code-only. Template tests parse XAML at runtime, and a BAML `UserControl` with `StaticResource` would fail outside the app tree.
+- The key-capture gate runs in `KeyboardCallback` right after the injected-event filter and before the `!featuresActive` branch.
+- `KeyCaptureBox.CaptureSource` is a process static. Its tests run in the non-parallel `KeyCaptureBoxCollection` and reset it in `Dispose`.
+- WPF `ButtonBase` drops mouse capture before `OnClick`, so a `LostMouseCapture` cancel restarted the capture. While capturing, handle `PreviewMouseDown` over Assign and Clear.
+- Keybinds keep their modifier side and match it exactly. Older files without `TriggerRightModifiers` or `ShortcutRightModifiers` load as left-sided.
+- Auto-Run tests that re-press the trigger must clear its `_triggerKeyDownVk` latch by handling the UP, not only by observing physical events.
+- Esc assigns a key only where `KeyCaptureBox.AcceptsEscape` is true, the macro step Key boxes. Every other key box uses Esc to cancel.
+
+### 2026-11-25
+- Layered windows pass clicks through pixels with zero alpha. The measure ruler uses a `#01000000` background to catch them. https://learn.microsoft.com/windows/win32/winmsg/window-features
+- `ContextMenuItemStyle` has no `PART_Popup`, so any submenu needs its own template.
 - `MainWindow.ExitCoreAsync` closes the window in its `finally`, so any check that can cancel Exit must return before that `try`.
-- `CHANGELOG.md` uses dated headings and CI `build-N` tags, not semantic versions. The newest `build-N` tag marks the last release; there is nothing to bump.
+- `CHANGELOG.md` uses dated headings and CI `build-N` release tags, not semantic versions. The csproj has no version, so there is nothing to bump.
+- Configuration supports only the current format. Legacy `Color.ini`, `RightMouse`, and old Caps readers were removed on purpose. Do not restore them without a migration decision.
+- `IniDocument.Save` tries `File.Replace` first and falls back to `File.Move` with overwrite on `UnauthorizedAccessException`. Keep its temp-file cleanup on failure.
+- `InputHookService` serializes owner selection and publication under `_profileLock`. `InputExecutor` takes only `_enqueueLock`, so never take a feature lock on its worker.
+- A teardown during a remapped Caps 2x press may enqueue only the guarded second tap. The executor sends it only after the first tap's acknowledgement.
+- `git status` ignores an LF working copy of a `text eol=crlf` file such as `BUILD_WINDOWS.bat`. Check `git ls-files --eol`; restore by deleting and checking out.
+
+### 2026-11-26
+- With every option on, the Playback button has 18 px spare at 650 px. By user decision, new options stay out of `MacroViewModel.PlaybackSummary`.
+- `MacroStateMachine` raises `Changed` on its worker right after each publish, so a test handler calling `GetMacroSession()` sees every published value exactly.
+- Input hooks run on the UI dispatcher (`StartInputHookOnDispatcher`). A first WPF window show blocks all input about 55 ms, so prebuild overlays used during playback at `ApplicationIdle`.

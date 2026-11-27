@@ -214,15 +214,16 @@ needs attention), **New…**, and **⋯** for **Rename…**, **Duplicate**, **Ex
 **Import from clipboard**, **Clear all steps…**, and **Delete macro…**. The second sets when it runs: the Ctrl/Alt/Shift/Win modifiers, the key or
 mouse button, and the **Playback** button, whose label shows what is set (for example **Once**
 or **Loop · on press**). Its menu holds **Play once per press** or **Loop until pressed
-again**, **Start when released** or **Start when pressed**, and **Stop when the mouse moves**.
+again**, **Start when released** or **Start when pressed**, **Stop when the mouse moves**, and
+**Show steps being played**. The label leaves out **Show steps being played** so it fits the row.
 **Delete macro…** asks first when the macro has steps. Duplicating a macro adds the next
 available number to its name, such as **Ammo 1** and **Ammo 2**, and the copy starts off
 without a shortcut.
 
 **Export to clipboard** copies the selected macro as a code that starts with `SWSM:` and ends with
 `:74656B6B79:`. **Import from clipboard** accepts one complete code at a time. Line breaks between the
-markers are allowed. An incomplete or invalid code shows an error. The code leaves out the shortcut
-and the **On** state, so an imported macro starts off without a shortcut. It keeps
+markers are allowed. An incomplete or invalid code shows an error. The code leaves out the shortcut,
+the **On** state and **Show steps being played**, so an imported macro starts off without a shortcut. It keeps
 its name, or gets the next free number when another macro already uses that name. A code made
 on a different screen layout keeps its screen positions and shows a warning with how many fall
 outside your screens. Codes from a newer version of the app ask you to update first.
@@ -313,6 +314,13 @@ run starts pause output as usual.
 playback when you move the mouse, including during waits and held inputs. Injected
 movement does not trigger this option. Coordinate actions still require arrival at the
 requested pixel before continuing.
+
+**Show steps being played** is a per-macro option, off by default. While the macro plays, a small
+badge beside the cursor shows the step number and the step, such as `3/12 · Move 100, 200`. A key
+press or mouse click shows its hold, such as `Hold A (50 ms)`, because its down and up take under a
+millisecond. When playback waits for you to release modifier keys or mouse buttons, the badge says
+so. Clicks pass through the badge, and it never takes focus. It shows over windowed and borderless
+games, not exclusive fullscreen ones.
 
 A **Freeze mouse** step blocks your physical mouse movement from that row on, so **Move**
 steps and the clicks after them are not pushed off their pixels; an **Unfreeze mouse** step lets the

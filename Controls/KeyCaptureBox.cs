@@ -36,8 +36,8 @@ public enum KeyCaptureMode
 /// A keybind field: <c>[read-only box][Assign]</c>, plus <c>[Clear]</c> when None is allowed. The idle box is
 /// dimmed like a disabled field, since only Assign changes it. Assign shows "Capturing keys…", then the keys
 /// pressed so far, until the user releases the key or chord; the result is applied after the input event
-/// returns, through <see cref="Validator"/>. Esc is never assigned: releasing it cancels, and the Clear button
-/// sets a field that allows None. While capturing, the keyboard hook routes
+/// returns, through <see cref="Validator"/>. Esc is assigned only when <see cref="AcceptsEscape"/> is true;
+/// otherwise releasing it cancels, and the Clear button sets a field that allows None. While capturing, the keyboard hook routes
 /// physical keys only here (<see cref="CaptureSource"/>); without a hook it falls back to WPF key events, where
 /// Windows shell shortcuts such as Win+E can still fire.
 /// </summary>

@@ -69,6 +69,7 @@ public sealed class MacroPersistenceTests : IDisposable
                     ToggleMode = true,
                     StartOnPress = true,
                     CancelOnMouseMovement = true,
+                    ShowPlayingSteps = true,
                     ShortcutKey = Key.F6,
                     ShortcutModifiers = ModifierKeys.Control | ModifierKeys.Alt,
                     Steps =
@@ -98,6 +99,7 @@ public sealed class MacroPersistenceTests : IDisposable
             Assert.True(loaded.Macros.Definitions[0].ToggleMode);
             Assert.True(loaded.Macros.Definitions[0].StartOnPress);
             Assert.True(loaded.Macros.Definitions[0].CancelOnMouseMovement);
+            Assert.True(loaded.Macros.Definitions[0].ShowPlayingSteps);
             Assert.Equal(ModifierKeys.Control | ModifierKeys.Alt, loaded.Macros.Definitions[0].ShortcutModifiers);
             // Old Key press and Mouse click steps load as Down, Wait, Up groups.
             Assert.Equal(IniProfileStore.ExpandCompactPresses(profile.Macros.Definitions[0].Steps), loaded.Macros.Definitions[0].Steps);
@@ -105,6 +107,7 @@ public sealed class MacroPersistenceTests : IDisposable
             Assert.False(loaded.Macros.Definitions[1].ToggleMode);
             Assert.False(loaded.Macros.Definitions[1].StartOnPress);
             Assert.False(loaded.Macros.Definitions[1].CancelOnMouseMovement);
+            Assert.False(loaded.Macros.Definitions[1].ShowPlayingSteps);
             Assert.Equal(profile.Macros.Definitions[1].Steps, loaded.Macros.Definitions[1].Steps);
             Assert.Null(MacroValidation.GetPlaybackError(loaded.Macros.Definitions[0]));
             Assert.NotNull(MacroValidation.GetPlaybackError(loaded.Macros.Definitions[1]));
@@ -116,6 +119,8 @@ public sealed class MacroPersistenceTests : IDisposable
             Assert.Equal("False", ini.GetValue("Macro1", "StartOnPress"));
             Assert.Equal("True", ini.GetValue("Macro0", "CancelOnMouseMovement"));
             Assert.Equal("False", ini.GetValue("Macro1", "CancelOnMouseMovement"));
+            Assert.Equal("True", ini.GetValue("Macro0", "ShowPlayingSteps"));
+            Assert.Equal("False", ini.GetValue("Macro1", "ShowPlayingSteps"));
             Assert.Null(ini.GetValue("Macro0.Step0", "DurationMs"));
             Assert.Null(ini.GetValue("Macro0.Step2", "Key"));
         }
@@ -321,6 +326,8 @@ public sealed class MacroPersistenceTests : IDisposable
     [InlineData("[Macro0]\nStartOnPress=broken\n")]
     [InlineData("[Macro0]\nCancelOnMouseMovement=\n")]
     [InlineData("[Macro0]\nCancelOnMouseMovement=broken\n")]
+    [InlineData("[Macro0]\nShowPlayingSteps=\n")]
+    [InlineData("[Macro0]\nShowPlayingSteps=broken\n")]
     [InlineData("[Macro0]\nId=00000000000000000000000000000000\n")]
     [InlineData("[Macro0]\nLabel=\n")]
     [InlineData("[Macro0]\nLabel=\tUnsafe label\t\n")]
@@ -356,6 +363,7 @@ public sealed class MacroPersistenceTests : IDisposable
         Assert.False(macro.ToggleMode);
         Assert.False(macro.StartOnPress);
         Assert.False(macro.CancelOnMouseMovement);
+        Assert.False(macro.ShowPlayingSteps);
         Assert.Null(macro.ShortcutMouseButton);
         Assert.Equal(InputTrigger.FromKey(Key.F6), macro.ShortcutTrigger);
     }

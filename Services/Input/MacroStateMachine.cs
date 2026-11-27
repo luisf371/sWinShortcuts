@@ -812,7 +812,13 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         {
             if (newOutput)
             {
-                while (_physical.PhysicalModifiersDown) { Publish(MacroSessionMode.WaitingForPhysicalModifiers); Wait(10); }
+                if (_physical.PhysicalModifiersDown)
+                {
+                    // Keep the paused step's number, as HoldForMouseButtons does.
+                    var row = GetSession().RowCount;
+                    while (_physical.PhysicalModifiersDown) { Publish(MacroSessionMode.WaitingForPhysicalModifiers, row); Wait(10); }
+                    Publish(MacroSessionMode.Playing, row);
+                }
                 // A button pressed after the step's own check makes the executor defer; wait here, then retry.
                 if (command.HeldButtons == MacroHeldButtonPolicy.Wait) HoldForMouseButtons(command.HeldButtons);
                 if (!CanExecute(default)) throw new OperationCanceledException();
@@ -949,14 +955,14 @@ internal sealed class MacroStateMachine : IInputCommandGuard, IDisposable
         var previous = Volatile.Read(ref _status).Value;
         var value = new MacroSessionSnapshot(_sessionId, _recordRequest?.Owner ?? _pending?.Owner,
             _recordRequest?.MacroId ?? _pending?.Definition.Id ?? Guid.Empty, mode,
-            Stopwatch.GetElapsedTime(_startedAt), row, _failure);
+            Stopwatch.GetElapsedTime(_startedAt), row, _failure, _recordRequest is null ? _pending?.Definition : null);
         Volatile.Write(ref _status, new Status(value));
         // Progress is polled through GetSession; notify immediately for lifecycle/error changes.
         if (previous.SessionId != value.SessionId || previous.Mode != mode || previous.FailureReason != value.FailureReason)
         {
             if (_logger.IsEnabled)
                 _logger.Log($"[Macros] Session={value.SessionId} {MacroTag} state={mode} row={row} elapsed={value.Elapsed.TotalMilliseconds:F0}ms " +
-                    $"toggleMode={_pending?.Definition.ToggleMode ?? false} startOnPress={_pending?.Definition.StartOnPress ?? false} cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} failure={value.FailureReason ?? "none"}");
+                    $"toggleMode={_pending?.Definition.ToggleMode ?? false} startOnPress={_pending?.Definition.StartOnPress ?? false} cancelOnMouseMovement={_pending?.Definition.CancelOnMouseMovement ?? false} showPlayingSteps={_pending?.Definition.ShowPlayingSteps ?? false} failure={value.FailureReason ?? "none"}");
             RaiseChanged();
         }
     }

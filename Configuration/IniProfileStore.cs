@@ -442,6 +442,7 @@ public sealed class IniProfileStore : IProfileStore
         {
             Id = id,
             IsEnabled = ReadMacroBoolean(document, section, "Enabled"),
+            ShowPlayingSteps = ReadMacroBoolean(document, section, "ShowPlayingSteps", false),
             ShortcutKey = ReadMacroKey(document, section, "ShortcutKey"),
             ShortcutMouseButton = document.TryGetSourceValue(section, "ShortcutMouseButton", out _)
                 ? ReadMacroEnum<Models.MouseButton>(document, section, "ShortcutMouseButton") : null,
@@ -574,7 +575,7 @@ public sealed class IniProfileStore : IProfileStore
         }
     }
 
-    // Identity is the Id, the On state and the shortcut; share codes leave it out.
+    // Identity is the Id, the On state, the shortcut and Show steps being played; share codes leave it out.
     internal static void WriteMacroDefinition(IniDocument document, string section, MacroDefinition macro, bool includeIdentity)
     {
         if (includeIdentity) document.SetString(section, "Id", macro.Id.ToString("N"));
@@ -589,6 +590,7 @@ public sealed class IniProfileStore : IProfileStore
             if (macro.ShortcutMouseButton is { } button) document.SetEnum(section, "ShortcutMouseButton", button);
             document.SetInt32(section, "ShortcutModifiers", (int)macro.ShortcutModifiers);
             document.SetInt32(section, "ShortcutRightModifiers", (int)macro.ShortcutRightModifiers);
+            document.SetBoolean(section, "ShowPlayingSteps", macro.ShowPlayingSteps);
         }
         document.SetInt32(section, "StepCount", macro.Steps.Length);
         for (var stepIndex = 0; stepIndex < macro.Steps.Length; stepIndex++)

@@ -316,6 +316,11 @@ public sealed class MacroEditorTemplateTests
             cancelOnMovement.SetCurrentValue(MenuItem.IsCheckedProperty, true);
             Assert.True(macro.ToDefinition().CancelOnMouseMovement);
             Assert.Equal("Once · stops on move", macro.PlaybackSummary);
+            var showSteps = MenuItemNamed(playback, "Show steps being played");
+            Assert.False(showSteps.IsChecked);
+            showSteps.SetCurrentValue(MenuItem.IsCheckedProperty, true);
+            Assert.True(macro.ToDefinition().ShowPlayingSteps);
+            Assert.Equal("Once · stops on move", macro.PlaybackSummary);
             Assert.Contains(controls.OfType<ListBoxItem>(), item => AutomationProperties.GetName(item).StartsWith("Step 1: Wait", StringComparison.Ordinal));
 
             // Insert adds a Key press group after the Wait; moving it up crosses the Wait as one row.

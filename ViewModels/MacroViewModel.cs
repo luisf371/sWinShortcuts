@@ -96,6 +96,8 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     public bool ToggleMode { get => _definition.ToggleMode; set => Change(_definition with { ToggleMode = value }, nameof(ToggleMode)); }
     public bool StartOnPress { get => _definition.StartOnPress; set => Change(_definition with { StartOnPress = value }, nameof(StartOnPress)); }
     public bool CancelOnMouseMovement { get => _definition.CancelOnMouseMovement; set => Change(_definition with { CancelOnMouseMovement = value }, nameof(CancelOnMouseMovement)); }
+    // Left out of PlaybackSummary: with every other option on, the label would no longer fit the row at 650 px.
+    public bool ShowPlayingSteps { get => _definition.ShowPlayingSteps; set => Change(_definition with { ShowPlayingSteps = value }, nameof(ShowPlayingSteps)); }
     // Playback menu: two radio pairs over ToggleMode and StartOnPress. A menu click on the checked item writes false,
     // which is ignored and re-announced so the item stays checked.
     public bool PlaysOnce { get => !ToggleMode; set { if (value) ToggleMode = false; OnPropertyChanged(); } }
@@ -668,28 +670,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
     // before releasing. Waits inside repeats, longer holds, or around other input pause between steps.
     private void RefreshPressHolds()
     {
-        var holds = new bool[Steps.Count];
-        HashSet<ushort> heldKeys = [];
-        HashSet<MouseButton> heldButtons = [];
-        for (var i = 0; i < Steps.Count; i++)
-        {
-            var row = Steps[i];
-            switch (row.Kind)
-            {
-                case MacroStepKind.KeyDown when MacroValidation.IsSupportedKey(row.Key):
-                    if (heldKeys.Add(KeyInteropUtilities.ToVirtualKey(row.Key))) MarkPressHold(holds, i);
-                    break;
-                case MacroStepKind.KeyUp when MacroValidation.IsSupportedKey(row.Key):
-                    heldKeys.Remove(KeyInteropUtilities.ToVirtualKey(row.Key));
-                    break;
-                case MacroStepKind.MouseDown when row.MouseButton is MouseButton downButton:
-                    if (heldButtons.Add(downButton)) MarkPressHold(holds, i);
-                    break;
-                case MacroStepKind.MouseUp when row.MouseButton is MouseButton upButton:
-                    heldButtons.Remove(upButton);
-                    break;
-            }
-        }
+        var holds = FindPressHolds(Steps.Select(step => step.ToModel()).ToArray());
         var holdWaits = 0;
         var compactHolds = 0;
         for (var i = 0; i < Steps.Count; i++)
@@ -702,17 +683,46 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
         _compactHoldCount = compactHolds;
     }
 
-    private void MarkPressHold(bool[] holds, int downIndex)
+    // Also names the held key or button in the cursor badge (MacroStepOverlayService).
+    internal static bool[] FindPressHolds(MacroStep[] steps)
     {
-        var down = Steps[downIndex];
-        if (downIndex + 2 >= Steps.Count || Steps[downIndex + 1].Kind != MacroStepKind.Wait) return;
+        var holds = new bool[steps.Length];
+        HashSet<ushort> heldKeys = [];
+        HashSet<MouseButton> heldButtons = [];
+        for (var i = 0; i < steps.Length; i++)
+        {
+            var row = steps[i];
+            switch (row.Kind)
+            {
+                case MacroStepKind.KeyDown when MacroValidation.IsSupportedKey(row.Key):
+                    if (heldKeys.Add(KeyInteropUtilities.ToVirtualKey(row.Key))) MarkPressHold(steps, holds, i);
+                    break;
+                case MacroStepKind.KeyUp when MacroValidation.IsSupportedKey(row.Key):
+                    heldKeys.Remove(KeyInteropUtilities.ToVirtualKey(row.Key));
+                    break;
+                case MacroStepKind.MouseDown when row.MouseButton is MouseButton downButton:
+                    if (heldButtons.Add(downButton)) MarkPressHold(steps, holds, i);
+                    break;
+                case MacroStepKind.MouseUp when row.MouseButton is MouseButton upButton:
+                    heldButtons.Remove(upButton);
+                    break;
+            }
+        }
+        return holds;
+    }
+
+    private static void MarkPressHold(MacroStep[] steps, bool[] holds, int downIndex)
+    {
+        var down = steps[downIndex];
+        if (downIndex + 2 >= steps.Length || steps[downIndex + 1].Kind != MacroStepKind.Wait) return;
         var upIndex = downIndex + 2;
         if (down.Kind == MacroStepKind.MouseDown)
         {
-            while (upIndex < Steps.Count && (Steps[upIndex].IsMove || Steps[upIndex].Kind == MacroStepKind.SavePosition)) upIndex++;
+            while (upIndex < steps.Length && steps[upIndex].Kind is MacroStepKind.MoveTo or MacroStepKind.MoveCursorBy or
+                MacroStepKind.MoveMouseBy or MacroStepKind.MoveToSaved or MacroStepKind.SavePosition) upIndex++;
         }
-        if (upIndex >= Steps.Count) return;
-        var up = Steps[upIndex];
+        if (upIndex >= steps.Length) return;
+        var up = steps[upIndex];
         if (down.Kind == MacroStepKind.KeyDown
             ? up.Kind == MacroStepKind.KeyUp && up.Key == down.Key
             : up.Kind == MacroStepKind.MouseUp && up.MouseButton == down.MouseButton)

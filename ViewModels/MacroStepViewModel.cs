@@ -158,7 +158,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     public bool HasHold => Kind is MacroStepKind.KeyPress or MacroStepKind.MouseClick;
     public bool IsWheel => Kind == MacroStepKind.MouseWheel;
     public string DurationLabel => Kind == MacroStepKind.Wait ? "Wait" : "Hold";
-    public string ActionLabel => Kind switch
+    public string ActionLabel => ActionLabelOf(Kind);
+    internal static string ActionLabelOf(MacroStepKind kind) => kind switch
     {
         // Old one-step presses no longer play; the label tells the user which rows to replace.
         MacroStepKind.KeyPress => "Old key press", MacroStepKind.KeyDown => "Key down", MacroStepKind.KeyUp => "Key up",
@@ -170,17 +171,19 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
     };
 
     // Row presentation: what the step targets, and how long it holds or waits (kept in its own column).
-    public string Detail => Kind switch
+    public string Detail => DetailOf(_step);
+    // Also the cursor badge's wording for the playing step (MacroStepOverlayService).
+    internal static string DetailOf(MacroStep step) => step.Kind switch
     {
-        MacroStepKind.KeyPress or MacroStepKind.KeyDown or MacroStepKind.KeyUp => KeyDisplayConverter.ToDisplayText(Key),
-        MacroStepKind.MouseClick => $"{ButtonText} at {PositionText}",
-        MacroStepKind.MouseDown or MacroStepKind.MouseUp => ButtonText,
-        MacroStepKind.MoveTo => PositionText,
-        MacroStepKind.SavePosition => FormatSlot(Slot),
-        MacroStepKind.MoveToSaved => $"to saved {FormatSlot(Slot)}",
+        MacroStepKind.KeyPress or MacroStepKind.KeyDown or MacroStepKind.KeyUp => KeyDisplayConverter.ToDisplayText(step.Key),
+        MacroStepKind.MouseClick => $"{ButtonText(step.MouseButton)} at {PositionText(step)}",
+        MacroStepKind.MouseDown or MacroStepKind.MouseUp => ButtonText(step.MouseButton),
+        MacroStepKind.MoveTo => PositionText(step),
+        MacroStepKind.SavePosition => FormatSlot(step.Slot),
+        MacroStepKind.MoveToSaved => $"to saved {FormatSlot(step.Slot)}",
         MacroStepKind.MoveCursorBy or MacroStepKind.MoveMouseBy =>
-            FormattableString.Invariant($"{X:+0;-0;0}, {Y:+0;-0;0} {(MoveAsPixels ? "px" : "raw")}"),
-        MacroStepKind.MouseWheel => $"{WheelDelta.ToString("+0;-0;0", CultureInfo.InvariantCulture)} {(HorizontalWheel ? "horizontal" : "vertical")}",
+            FormattableString.Invariant($"{step.X:+0;-0;0}, {step.Y:+0;-0;0} {(step.Kind == MacroStepKind.MoveCursorBy ? "px" : "raw")}"),
+        MacroStepKind.MouseWheel => $"{step.WheelDelta.ToString("+0;-0;0", CultureInfo.InvariantCulture)} {(step.HorizontalWheel ? "horizontal" : "vertical")}",
         _ => string.Empty
     };
     public string TimingText => Kind switch
@@ -233,7 +236,7 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         MacroStepKind.UnfreezeMouse => "Lets your physical mouse move the cursor again.",
         _ => "Pauses before the next step."
     };
-    private string ButtonText =>MouseButton is { } button ? ButtonName(button) : "Choose button";
+    private static string ButtonText(MouseButton? button) => button is { } value ? ButtonName(value) : "Choose button";
     // XButton1/2 are the side buttons; the shortcut picker calls them Mouse Button 4 and 5.
     internal static string ButtonName(MouseButton button) => button switch
     {
@@ -242,7 +245,8 @@ public sealed class MacroStepViewModel : ViewModelBase, IDataErrorInfo
         _ => button.ToString()
     };
     private static string FormatSlot(int slot) => $"#{slot.ToString(CultureInfo.InvariantCulture)}";
-    private string PositionText => $"{X.ToString(CultureInfo.InvariantCulture)}, {Y.ToString(CultureInfo.InvariantCulture)}";
+    private static string PositionText(MacroStep step) =>
+        $"{step.X.ToString(CultureInfo.InvariantCulture)}, {step.Y.ToString(CultureInfo.InvariantCulture)}";
     private string MillisecondsText => $"{DurationMs.ToString(CultureInfo.InvariantCulture)} ms";
     public string Error =>
         HasCoordinates && (!IsNumber(XText) || !IsNumber(YText)) ? "Screen coordinates must be signed whole numbers." :
