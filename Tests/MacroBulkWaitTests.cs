@@ -189,7 +189,7 @@ public sealed class MacroBulkWaitTests
             Steps =
             [
                 Edge(MacroStepKind.KeyDown, Key.A), Wait(80), Edge(MacroStepKind.KeyUp, Key.A), Wait(200),
-                // A recorded click re-anchors the cursor before its release.
+                // A recorded drag moves the cursor before its release.
                 Move(100, 200), Click(MacroStepKind.MouseDown), Wait(90), Move(100, 200), Click(MacroStepKind.MouseUp), Wait(300),
                 new() { Kind = MacroStepKind.KeyPress, Key = Key.B },
                 // A typematic repeat is not a fresh press, so neither of its waits holds one.

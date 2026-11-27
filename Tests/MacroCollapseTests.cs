@@ -553,9 +553,9 @@ public sealed class MacroCollapseTests
     }
 
     [Fact]
-    public void RecordedClick_IsPlainButCountsAsPressHold()
+    public void RecordedDrag_IsPlainButCountsAsPressHold()
     {
-        // The recorder adds a Move before each captured Mouse up, so a recorded click never groups.
+        // A recorded drag moves the cursor before its release, so it never groups.
         using var macro = Create([Mouse(MacroStepKind.MouseDown), Wait(40), new() { Kind = MacroStepKind.MoveTo, X = 5, Y = 5 }, Mouse(MacroStepKind.MouseUp)]);
 
         Assert.Equal(4, macro.VisibleSteps.Count);

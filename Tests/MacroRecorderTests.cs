@@ -40,7 +40,7 @@ public sealed class MacroRecorderTests
 
         Assert.False(balanced);
         Assert.Equal(new[] { MacroStepKind.KeyDown, MacroStepKind.Wait, MacroStepKind.MoveTo,
-            MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MoveTo, MacroStepKind.MouseUp,
+            MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MouseUp,
             MacroStepKind.Wait, MacroStepKind.KeyUp }, steps.Select(x => x.Kind));
         Assert.Equal(new[] { 50, 30, 50 }, steps.Where(x => x.Kind == MacroStepKind.Wait).Select(x => x.DurationMs));
         Assert.Equal(KeyInteropUtilities.FromVirtualKey(virtualKey), steps[0].Key);
@@ -127,6 +127,103 @@ public sealed class MacroRecorderTests
         Assert.Equal(MacroStepKind.MoveTo, steps[0].Kind);
         Assert.Equal(button, steps[1].MouseButton);
         Assert.Equal(button, steps[2].MouseButton);
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(MacroRecorder.ReleaseTolerancePx, 0)]
+    [InlineData(0, -MacroRecorder.ReleaseTolerancePx)]
+    [InlineData(MacroRecorder.ReleaseTolerancePx, MacroRecorder.ReleaseTolerancePx)]
+    public void Capture_ClickReleasedBesidePress_WritesNoMoveBeforeItsUp(int dx, int dy)
+    {
+        var recorder = new MacroRecorder(20, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        recorder.Capture(new(0, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 100, 200, 0));
+        recorder.Capture(new(80, NativeMethods.WM_LBUTTONUP, 0, 0, 0, 0, 100 + dx, 200 + dy, 0));
+        recorder.RequestStop(MacroRecordingEndReason.Stopped);
+
+        var (steps, balanced) = recorder.BuildSteps();
+
+        Assert.False(balanced);
+        Assert.Equal(new[] { MacroStepKind.MoveTo, MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MouseUp },
+            steps.Select(step => step.Kind));
+        Assert.Equal((100, 200), (steps[0].X, steps[0].Y));
+        Assert.Equal(80, steps[2].DurationMs);
+    }
+
+    [Theory]
+    [InlineData(MacroRecorder.ReleaseTolerancePx + 1, 0)]
+    [InlineData(0, MacroRecorder.ReleaseTolerancePx + 1)]
+    [InlineData(-MacroRecorder.ReleaseTolerancePx - 1, -MacroRecorder.ReleaseTolerancePx - 1)]
+    public void Capture_DragReleasedBeyondPress_KeepsMoveToWhereItWasReleased(int dx, int dy)
+    {
+        var recorder = new MacroRecorder(20, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        recorder.Capture(new(0, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 100, 200, 0));
+        recorder.Capture(new(80, NativeMethods.WM_LBUTTONUP, 0, 0, 0, 0, 100 + dx, 200 + dy, 0));
+        recorder.RequestStop(MacroRecordingEndReason.Stopped);
+
+        var steps = recorder.BuildSteps().Steps;
+
+        Assert.Equal(new[] { MacroStepKind.MoveTo, MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MoveTo,
+            MacroStepKind.MouseUp }, steps.Select(step => step.Kind));
+        Assert.Equal((100, 200), (steps[0].X, steps[0].Y));
+        Assert.Equal((100 + dx, 200 + dy), (steps[3].X, steps[3].Y));
+    }
+
+    [Fact]
+    public void Capture_OverlappingButtons_ReleaseBesideOwnPressKeepsMoveAfterOtherClick()
+    {
+        var recorder = new MacroRecorder(20, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        recorder.Capture(new(0, NativeMethods.WM_RBUTTONDOWN, 0, 0, 0, 0, 300, 300, 0));
+        recorder.Capture(new(10, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 10, 10, 0));
+        recorder.Capture(new(20, NativeMethods.WM_LBUTTONUP, 0, 0, 0, 0, 10, 10, 0));
+        recorder.Capture(new(30, NativeMethods.WM_RBUTTONUP, 0, 0, 0, 0, 301, 300, 0));
+        recorder.RequestStop(MacroRecordingEndReason.Stopped);
+
+        var steps = recorder.BuildSteps().Steps;
+
+        // The left click left the cursor at 10,10, so the right release needs a Move back beside its press.
+        Assert.Equal(new[] { MacroStepKind.MoveTo, MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MoveTo,
+            MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MouseUp, MacroStepKind.Wait, MacroStepKind.MoveTo,
+            MacroStepKind.MouseUp }, steps.Select(step => step.Kind));
+        Assert.Equal(sWinShortcuts.Models.MouseButton.Right, steps[9].MouseButton);
+        Assert.Equal((301, 300), (steps[8].X, steps[8].Y));
+    }
+
+    [Fact]
+    public void Capture_WheelWhileHeld_ReleaseBesidePressKeepsMoveBack()
+    {
+        var recorder = new MacroRecorder(20, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        recorder.Capture(new(0, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 100, 200, 0));
+        recorder.Capture(new(300, NativeMethods.WM_MOUSEWHEEL, 0, 0, 0, 0, 500, 400, -120));
+        recorder.Capture(new(600, NativeMethods.WM_LBUTTONUP, 0, 0, 0, 0, 101, 200, 0));
+        recorder.RequestStop(MacroRecordingEndReason.Stopped);
+
+        var steps = recorder.BuildSteps().Steps;
+
+        // Without the Move back, playback would release at the wheel's 500,400 and drag there.
+        Assert.Equal(new[] { MacroStepKind.MoveTo, MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MoveTo,
+            MacroStepKind.MouseWheel, MacroStepKind.Wait, MacroStepKind.MoveTo, MacroStepKind.MouseUp }, steps.Select(step => step.Kind));
+        Assert.Equal((101, 200), (steps[6].X, steps[6].Y));
+    }
+
+    [Fact]
+    public void Capture_ClickFillingLastRows_CountsNoRowForItsReleaseMove()
+    {
+        // The click fills the budget exactly, so its Up would not fit if it counted a Move row.
+        var recorder = new MacroRecorder(4, 1000);
+        recorder.Begin(0, new bool[256], new bool[6]);
+        recorder.Capture(new(0, NativeMethods.WM_LBUTTONDOWN, 0, 0, 0, 0, 100, 200, 0));
+        recorder.Capture(new(80, NativeMethods.WM_LBUTTONUP, 0, 0, 0, 0, 100, 200, 0));
+
+        Assert.Equal(MacroRecordingEndReason.RowLimit, recorder.EndReason);
+        var (steps, balanced) = recorder.BuildSteps();
+        Assert.False(balanced);
+        Assert.Equal(new[] { MacroStepKind.MoveTo, MacroStepKind.MouseDown, MacroStepKind.Wait, MacroStepKind.MouseUp },
+            steps.Select(step => step.Kind));
     }
 
     [Fact]

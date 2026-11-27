@@ -260,7 +260,7 @@ stays down: the Wait inside a press), **Between steps**
 changes, and the list highlights those rows' times while the bar is open. Enter a duration
 from **0 to 3,600,000 ms** and choose **Apply** (or press Enter in the duration field). It opens on **Press holds** with a suggested 50 ms, enough for most
 games to register a press, so the pauses that set the macro's rhythm keep their recorded
-timing. A recorded click's hold counts as a press hold even though the click re-anchors the
+timing. A recorded drag's hold counts as a press hold even though the drag moves the
 cursor before releasing; waits around a key's typematic repeats or other input count as
 between steps. The bar's close button or Escape discards the input; switching macros, leaving the
 editor, or starting a recording closes it automatically.
@@ -280,8 +280,9 @@ profile's application is in front: choose **Record**, then switch to the applica
 banner names it while it waits). The click or Alt+Tab that brings it forward is not
 recorded, and an input held across that moment is skipped until released. **F12** or **Stop
 recording** ends the take, which goes where **New steps go** shows and leaves its last row
-selected, so the next take follows it; edit out unwanted actions afterward. Recording
-pauses other automation, leaves the hooks installed, and
+selected, so the next take follows it; edit out unwanted actions afterward. A click records as a
+**Move** to where you pressed and one **Mouse click** press; a drag also records a **Move** to
+where you released. Recording pauses other automation, leaves the hooks installed, and
 does not capture free cursor movement. Interrupted or capacity-limited takes retain
 their captured prefix and add release rows for inputs still held. Each macro supports
 1,000 steps, each profile supports 64 macros, and one recording lasts at most 10 minutes.

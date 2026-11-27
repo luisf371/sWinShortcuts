@@ -57,7 +57,7 @@
 - `MacroValidation.MaxSteps` is 1,000, a user decision. Validation, recording, insertion, and duplication all share it.
 - Only the Caps 2x release tap whose press tap the executor sent may cross a recording pause. Enqueue, `ExecuteTap`, and `SendKey` each allow it.
 - Macro cursor speed is 9 px per ms over an 8 ms interval, tuned from user testing. Faster needs closer points, not a shorter delay.
-- The recorder writes a `MoveTo` before every mouse edge, including UP, and playback skips same-pixel moves. Keep release coordinates in any cleanup.
+- No `MoveTo` before a button UP within 4 px of the last recorded `MoveTo` (`ReleaseTolerancePx`), not its press: wheel or other clicks move the cursor between.
 
 ### 2026-09-14
 - Headless WPF template tests have no presentation source, so `IsVisible` is always false. Assert `Visibility` and arranged bounds; materialize menus with `Measure` and `Arrange`.

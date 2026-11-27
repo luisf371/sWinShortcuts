@@ -666,7 +666,7 @@ public sealed class MacroViewModel : ViewModelBase, IDisposable, IDataErrorInfo
               up.MouseButton == button && !heldButtons.Contains(button)));
     }
 
-    // A press hold is the one Wait between a fresh Down and its matching Up; a recorded click may move the cursor
+    // A press hold is the one Wait between a fresh Down and its matching Up; a recorded drag moves the cursor
     // before releasing. Waits inside repeats, longer holds, or around other input pause between steps.
     private void RefreshPressHolds()
     {

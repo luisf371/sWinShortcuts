@@ -18,7 +18,10 @@ internal readonly record struct RecordedMacroEvent(
 internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
 {
     private const int CAPTURING = -1;
+    // A release within this many pixels per axis of the last recorded Move needs no Move of its own.
+    internal const int ReleaseTolerancePx = 4;
     private readonly RecordedMacroEvent[] _events = new RecordedMacroEvent[Math.Clamp(availableRows, 0, MacroValidation.MaxSteps)];
+    private readonly bool[] _skipMove = new bool[Math.Clamp(availableRows, 0, MacroValidation.MaxSteps)];
     private readonly int _availableRows = Math.Clamp(availableRows, 0, MacroValidation.MaxSteps);
     private readonly long _timestampFrequency = timestampFrequency > 0
         ? timestampFrequency : throw new ArgumentOutOfRangeException(nameof(timestampFrequency));
@@ -26,6 +29,8 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
     private readonly bool[] _heldButtons = new bool[6];
     private readonly bool[] _preheldKeys = new bool[256];
     private readonly bool[] _preheldButtons = new bool[6];
+    // Where the last recorded Move row leaves the cursor during playback.
+    private (int X, int Y) _cursor;
     private long _start;
     private long _previous;
     private int _count;
@@ -159,16 +164,21 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
             }
 
             var heldDelta = keyEdge || buttonEdge ? (isDown ? (held[index] ? 0 : 1) : -1) : 0;
-            var addedRows = 1 + (mouse ? 1 : 0) + (_count > 0 && GapMs(input.Timestamp, _previous) > 0 ? 1 : 0);
+            // A release where playback already left the cursor adds no Move row, so a click stays Down, Wait, Up
+            // and the editor shows one press. A drag, or a release after another mouse row moved the cursor, keeps it.
+            var skipMove = buttonEdge && !isDown && ReleasedBesideCursor(input, _cursor);
+            var addedRows = 1 + (mouse && !skipMove ? 1 : 0) + (_count > 0 && GapMs(input.Timestamp, _previous) > 0 ? 1 : 0);
             if (_count == _events.Length || _rows + addedRows + _heldCount + heldDelta > _availableRows)
             {
                 RequestStop(MacroRecordingEndReason.RowLimit);
                 return;
             }
             _events[_count] = input;
+            _skipMove[_count] = skipMove;
             _rows += addedRows;
             _heldCount += heldDelta;
             if (keyEdge || buttonEdge) held[index] = isDown;
+            if (mouse && !skipMove) _cursor = (input.X, input.Y);
             _previous = input.Timestamp;
             Volatile.Write(ref _count, _count + 1);
             if (_rows == _availableRows || _count == _events.Length)
@@ -194,7 +204,7 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
             if (!TryDecode(input, out var step, out var mouse)) continue;
             var gap = i == 0 ? 0 : GapMs(input.Timestamp, previous);
             if (gap > 0) rows.Add(new MacroStep { Kind = MacroStepKind.Wait, DurationMs = gap });
-            if (mouse) rows.Add(new MacroStep { Kind = MacroStepKind.MoveTo, X = input.X, Y = input.Y });
+            if (mouse && !_skipMove[i]) rows.Add(new MacroStep { Kind = MacroStepKind.MoveTo, X = input.X, Y = input.Y });
             rows.Add(step);
             if (step.Kind == MacroStepKind.KeyDown) keys.Add(step.Key);
             else if (step.Kind == MacroStepKind.KeyUp) keys.Remove(step.Key);
@@ -210,6 +220,10 @@ internal sealed class MacroRecorder(int availableRows, long timestampFrequency)
 
     private int GapMs(long next, long previous) =>
         (int)Math.Clamp(Math.Round((next - previous) * 1000.0 / _timestampFrequency), 0, MacroValidation.MaxDurationMs);
+
+    private static bool ReleasedBesideCursor(in RecordedMacroEvent release, (int X, int Y) cursor) =>
+        Math.Abs((long)release.X - cursor.X) <= ReleaseTolerancePx &&
+        Math.Abs((long)release.Y - cursor.Y) <= ReleaseTolerancePx;
 
     private static bool TryDecode(in RecordedMacroEvent input, out MacroStep step, out bool mouse)
     {

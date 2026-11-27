@@ -14,6 +14,11 @@ All notable changes, new features, improvements, and bug fixes for **sWinShortcu
   - The badge shows over windowed and borderless games, not exclusive fullscreen ones. Clicks pass through it.
   - Exported macro codes leave this option out, so an imported macro starts with it off.
 
+### Changed & Improved
+- **Recorded Mouse Clicks**: a click you record now appears as a **Move** followed by one **Mouse click** step, the same as an added click. Before, it appeared as a **Move**, then separate Mouse down, Wait, **Move** and Mouse up rows.
+  - The cursor can move up to 4 px between the press and the release and still record as a click. A drag keeps a **Move** to where you released it.
+  - Recordings made before this change keep their extra **Move** row. Delete that row and the click shows as one step.
+
 ## November 25, 2026
 
 ### Added
